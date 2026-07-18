@@ -127,10 +127,45 @@ export interface TenantModuleDeps {
  * deliberately NOT bound here; it lands in installInvokeKey. Idempotent-by-name: a re-run adopts the
  * namespace and re-PUTs each script. Returns the script names it uploaded.
  */
+/**
+ * Fetch EVERY catalog module bundle for a release before anything is uploaded (cf#103).
+ *
+ * WHY THIS EXISTS AS A SEPARATE PASS: uploadTenantModules fetches and uploads in one loop, so a
+ * release that is missing the 4th bundle swaps modules 1-3 and only then fails. On a fresh
+ * provision that is survivable (the tenant was never serving). On an UPGRADE of a live tenant it
+ * is the difference between a zero-write refusal and a paying tenant left with mixed module bytes.
+ * The most likely real failure here is a bad release pin or an empty mirror slot, which this turns
+ * into a failure that has written nothing.
+ *
+ * Deliberately NOT wired into the provision path in this change: that path works, is live-proven,
+ * and reordering its writes is a separate, separately-verified change (tracked as cf#103 follow-up)
+ * rather than a drive-by on the way past.
+ */
+export async function prefetchModuleBundles(
+  deps: TenantModuleDeps,
+  release: string,
+): Promise<Map<string, ModuleBundle>> {
+  const bundles = new Map<string, ModuleBundle>();
+  for (const spec of TENANT_MODULE_CATALOG) {
+    try {
+      bundles.set(spec.module, await deps.moduleBundle.fetch(release, spec.module));
+    } catch (e) {
+      throw new TenantModuleError(
+        "modules_upload",
+        `fetch module bundle ${spec.module} at ${release}: ${(e as Error).message}`,
+      );
+    }
+  }
+  return bundles;
+}
+
 export async function uploadTenantModules(
   deps: TenantModuleDeps,
   tenantId: string,
   endpoints: TenantEndpoint[],
+  /** Pre-fetched bundles (prefetchModuleBundles). When absent each bundle is fetched inline, which
+   *  is the original provision behaviour and is left exactly as it was. */
+  prefetched?: Map<string, ModuleBundle>,
 ): Promise<string[]> {
   await deps.cf.createDispatchNamespace(deps.moduleNamespace);
   const scriptNames: string[] = [];
@@ -143,10 +178,15 @@ export async function uploadTenantModules(
       );
     }
     let bundle: ModuleBundle;
-    try {
-      bundle = await deps.moduleBundle.fetch(deps.release, spec.module);
-    } catch (e) {
-      throw new TenantModuleError("modules_upload", `fetch module bundle ${spec.module}: ${(e as Error).message}`);
+    const ready = prefetched?.get(spec.module);
+    if (ready) {
+      bundle = ready;
+    } else {
+      try {
+        bundle = await deps.moduleBundle.fetch(deps.release, spec.module);
+      } catch (e) {
+        throw new TenantModuleError("modules_upload", `fetch module bundle ${spec.module}: ${(e as Error).message}`);
+      }
     }
     const scriptName = tenantModuleScriptName(tenantId, spec.module);
     const bindings: WorkerBinding[] = [

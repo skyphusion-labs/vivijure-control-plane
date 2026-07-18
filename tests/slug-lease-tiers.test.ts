@@ -28,6 +28,7 @@ function row(over: Partial<Tenant>): Tenant {
     endpoints_json: null,
     r2_token_id: null,
     studio_release: null,
+    modules_release: null,
     studio_token_enc: null,
     created_at: "2026-07-18 00:00:00",
     live_at: null,

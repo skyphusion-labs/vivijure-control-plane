@@ -171,6 +171,7 @@ async function buildHalfBuiltTenant(): Promise<Tenant> {
     r2_token_id: null,
     endpoints_json: null,
     studio_release: null,
+    modules_release: null,
     studio_token_enc: null,
     created_at: new Date().toISOString(),
     live_at: null,

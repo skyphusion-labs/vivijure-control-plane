@@ -36,6 +36,8 @@ let wiring: {
   start: ReturnType<typeof vi.fn>;
   installInvokeKey: ReturnType<typeof vi.fn>;
   teardown: ReturnType<typeof vi.fn>;
+  preflightUpgrade: ReturnType<typeof vi.fn>;
+  upgradeModules: ReturnType<typeof vi.fn>;
 };
 
 const env = (over: Partial<ControlPlaneEnv> = {}): ControlPlaneEnv =>
@@ -84,6 +86,19 @@ beforeEach(() => {
     })),
     // Reclaim reaps through this. Default is a clean teardown; the failure cases override it.
     teardown: vi.fn(async () => ({ ok: true, failures: [] })),
+    // cf#103: the upgrade route preflights through the seam, then hands the context to the runner.
+    // Default is a PASSING preflight; the refusal cases override it.
+    preflightUpgrade: vi.fn(async () => ({
+      ok: true,
+      context: {
+        script: "tenant-hero-studio",
+        endpoints: [],
+        studioApiToken: "tok",
+        release: "v1.1.0",
+        bundles: new Map(),
+      },
+    })),
+    upgradeModules: vi.fn(async () => {}),
   };
   deps = {
     store,
@@ -1066,5 +1081,153 @@ describe("admin switches", () => {
     const cfg = await (await handle(req("/api/platform/config"), env(), ctx, deps)).json();
     expect(cfg).toMatchObject({ signups_enabled: false });
     expect(store.audit.map((a) => a.action)).toContain("settings.set");
+  });
+});
+
+// ---- the module-upgrade route (cf#103 half two) ----
+
+describe("POST /api/admin/tenants/:id/upgrade-modules", () => {
+  const admin = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${ADMIN_TOKEN}`, ...extra });
+
+  /** An already-provisioned LIVE tenant, the only shape this route ever operates on. */
+  async function liveTenant() {
+    const t = await store.createTenant("ten_abc123", "hero", "acct_1", "live");
+    t.live_at = "t0";
+    t.script_name = "tenant-hero-studio";
+    t.modules_release = "v1.0.0";
+    // The wiring stub stands in for preflight, so the route test proves the ROUTE contract
+    // (refusals, ordering, the 202 shape, what gets written) and the provisioner test proves the
+    // step machine. Same split as the provision routes.
+    wiring.preflightUpgrade = vi.fn(async () => ({
+      ok: true,
+      context: {
+        script: "tenant-hero-studio",
+        endpoints: [],
+        studioApiToken: "tok",
+        release: "v1.1.0",
+        bundles: new Map(),
+      },
+    }));
+    wiring.upgradeModules = vi.fn(async () => {});
+    return t;
+  }
+
+  it("REFUSES a request with no release: there is deliberately no default", async () => {
+    await liveTenant();
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/upgrade-modules", {}, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "release_required" });
+    // Nothing was started, and nothing was recorded.
+    expect(wiring.upgradeModules).not.toHaveBeenCalled();
+    expect(store.audit).toEqual([]);
+  });
+
+  it("REFUSES a blank/whitespace release rather than treating it as absent-but-fine", async () => {
+    await liveTenant();
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/upgrade-modules", { release: "   " }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(400);
+    expect(wiring.upgradeModules).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES while another job for this tenant is still running (no two drivers, one script set)", async () => {
+    await liveTenant();
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    running.status = "running";
+
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/upgrade-modules", { release: "v1.1.0" }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "job_in_progress", job_id: "job_running", kind: "provision" });
+    expect(wiring.upgradeModules).not.toHaveBeenCalled();
+  });
+
+  it("a preflight refusal creates NO job and starts NO work", async () => {
+    await liveTenant();
+    wiring.preflightUpgrade = vi.fn(async () => ({
+      ok: false,
+      refusal: { code: "tenant_not_live", status: 409, message: "not live" },
+    }));
+
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/upgrade-modules", { release: "v1.1.0" }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "tenant_not_live", message: "not live" });
+    // THE POINT of preflighting before the insert: a refusal leaves no row behind.
+    expect(store.jobs.size).toBe(0);
+    expect(store.audit).toEqual([]);
+    expect(wiring.upgradeModules).not.toHaveBeenCalled();
+  });
+
+  it("ACCEPTS with 202 carrying EXACTLY the job id and both ends of the move, and no ok:true", async () => {
+    await liveTenant();
+
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/upgrade-modules", { release: "v1.1.0" }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as Record<string, unknown>;
+    // EXACT key set (cp#20): a 202 that carried ok:true would claim a success that has not happened
+    // yet, and toMatchObject would never notice it being added back.
+    expect(Object.keys(body).sort()).toEqual(["from_release", "job_id", "to_release"]);
+    expect(body.from_release).toBe("v1.0.0");
+    expect(body.to_release).toBe("v1.1.0");
+    expect(typeof body.job_id).toBe("string");
+    await flush();
+    expect(wiring.upgradeModules).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the move in the audit trail, both ends of it", async () => {
+    await liveTenant();
+    await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/upgrade-modules", { release: "v1.1.0" }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    await flush();
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.upgrade_modules"]);
+    const detail = JSON.parse(store.audit[0].detail as string) as Record<string, unknown>;
+    expect(detail.from).toBe("v1.0.0");
+    expect(detail.to).toBe("v1.1.0");
+  });
+
+  it("the created job carries the release PAIR, so a failed upgrade stays rollback-able", async () => {
+    await liveTenant();
+    await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/upgrade-modules", { release: "v1.1.0" }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    const job = [...store.jobs.values()][0];
+    expect(job.kind).toBe("module_upgrade");
+    expect(job.from_release).toBe("v1.0.0");
+    expect(job.to_release).toBe("v1.1.0");
+  });
+
+  it("404s an unknown tenant, and REFUSES without the admin token", async () => {
+    await liveTenant();
+    expect(
+      (await handle(
+        jsonReq("/api/admin/tenants/ten_nope99/upgrade-modules", { release: "v1.1.0" }, { headers: admin() }),
+        env(), ctx, deps,
+      )).status,
+    ).toBe(404);
+    expect(
+      (await handle(
+        jsonReq("/api/admin/tenants/ten_abc123/upgrade-modules", { release: "v1.1.0" }),
+        env(), ctx, deps,
+      )).status,
+    ).toBe(401);
   });
 });

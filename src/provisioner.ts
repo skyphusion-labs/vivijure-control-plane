@@ -23,9 +23,11 @@ import type { ControlPlaneStore, Tenant } from "./store";
 import { decryptStudioToken, encryptStudioToken } from "./token-crypto";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
 import type { TokenMinter } from "./token-minter";
-import type { ModuleBundleSource } from "./tenant-modules";
+import type { ModuleBundle, ModuleBundleSource } from "./tenant-modules";
 import {
+  TENANT_MODULE_CATALOG,
   installTenantModules,
+  prefetchModuleBundles,
   teardownTenantModules,
   uploadTenantModules,
   verifyTenantModulesInstalled,
@@ -615,40 +617,14 @@ export async function continueProvisionJob(
     const studioApiToken = await decryptStudioToken(deps.kek, tenant.studio_token_enc);
     const script = deps.tenantScriptName(tenant.slug);
 
-    if (!complete("modules_upload")) {
-      await uploadTenantModules(deps, tenant.id, endpoints);
-      await mark("modules_upload");
-    }
-    if (!complete("modules_install")) {
-      await installTenantModules(deps, tenant.id, script, studioApiToken);
-      await mark("modules_install");
-    }
-    if (!complete("verify")) {
-      const bindings = await deps.cf.getScriptBindings(deps.namespace, script);
-      const names = new Set(bindings.map((b) => b.name));
-      const required = [
-        "DB",
-        "R2_RENDERS",
-        "ASSETS",
-        "SPEND_RATE_LIMITER",
-        ...REQUIRED_TENANT_STUDIO_VARS,
-        ...endpoints.map((e) => e.endpointVar),
-      ];
-      for (const need of required) {
-        if (!names.has(need)) throw new ProvisionFailure("verify", `tenant worker is missing the ${need} binding after upload`);
-      }
-      const secrets = await deps.cf.getScriptSecretNames(deps.namespace, script);
-      for (const need of ["R2_S3_SECRET_ACCESS_KEY", "STUDIO_API_TOKEN"]) {
-        if (!secrets.includes(need)) throw new ProvisionFailure("verify", `tenant worker is missing the ${need} secret after upload`);
-      }
-      const probe = await deps.callTenantStudio(script, { method: "GET", path: "/", studioApiToken });
-      if (probe.status >= 500) {
-        throw new ProvisionFailure("verify", `tenant studio root returned ${probe.status}; the worker is not serving`);
-      }
-      const installedModules = await verifyTenantModulesInstalled(deps, script, studioApiToken);
-      deps.log("provision.modules_installed", { tenant: tenant.id, modules: installedModules });
-      await mark("verify");
-    }
+    await runModuleSteps(
+      deps,
+      { tenantId: tenant.id, script, endpoints, studioApiToken, release: deps.release },
+      // Resume semantics: skip what the progress record says is already done. The UPGRADE caller
+      // passes the opposite (always run), which is the entire behavioural difference between the
+      // two and the reason this is a parameter rather than a hardcoded rule.
+      { shouldRun: (step) => !complete(step), onDone: mark },
+    );
 
     await deps.store.setTenantStatus(tenant.id, "awaiting_invoke_key");
     await deps.store.finishJob(jobId, "succeeded", null, null);
@@ -665,6 +641,307 @@ export async function continueProvisionJob(
     deps.log("provision.failed", { tenant: tenant.id, step, message, resumed: true });
     await deps.store.finishJob(jobId, "failed", step, message);
     await deps.store.setTenantStatus(tenant.id, "failed");
+    return { ok: false, step, message };
+  }
+}
+
+/**
+ * The module half of provisioning, as ONE subroutine shared by resume and upgrade (cf#103).
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO: it writes no tenant status and finishes no job. Those are the
+ * two things resume and upgrade must NOT share -- resume ends a provision (awaiting_invoke_key),
+ * upgrade must leave a live tenant exactly as live as it found it. Keeping both out of here is what
+ * makes the sharing safe; a shared helper that also owned the terminal writes would be the
+ * same-function-with-reset-state design that was rejected.
+ *
+ * `release` is a REQUIRED ARGUMENT, not deps.release. That is the fix for the defect this route was
+ * built on top of: deps.release is the PLANE-WIDE STUDIO_RELEASE, so every module fetch used to
+ * silently mean "whatever the plane is pinned to right now". Making it a parameter forces every
+ * caller to say which release it means, and makes the tenant-visible answer auditable.
+ */
+export interface ModuleStepsHooks {
+  shouldRun(step: MarkableProvisionStep): boolean;
+  onDone(step: MarkableProvisionStep): Promise<void>;
+}
+
+export interface ModuleStepsArgs {
+  tenantId: string;
+  script: string;
+  endpoints: TenantEndpoint[];
+  studioApiToken: string;
+  release: string;
+  /** Bundles already fetched by the caller (the upgrade path fetches all of them up front). */
+  prefetched?: Map<string, ModuleBundle>;
+}
+
+export async function runModuleSteps(
+  deps: ProvisionDeps,
+  args: ModuleStepsArgs,
+  hooks: ModuleStepsHooks,
+): Promise<void> {
+  const { tenantId, script, endpoints, studioApiToken } = args;
+  // The explicit release overrides deps.release for every module fetch below.
+  const at: ProvisionDeps = { ...deps, release: args.release };
+
+  if (hooks.shouldRun("modules_upload")) {
+    await uploadTenantModules(at, tenantId, endpoints, args.prefetched);
+    await hooks.onDone("modules_upload");
+  }
+  if (hooks.shouldRun("modules_install")) {
+    await installTenantModules(at, tenantId, script, studioApiToken);
+    await hooks.onDone("modules_install");
+  }
+  if (hooks.shouldRun("verify")) {
+    const bindings = await at.cf.getScriptBindings(at.namespace, script);
+    const names = new Set(bindings.map((b) => b.name));
+    const required = [
+      "DB",
+      "R2_RENDERS",
+      "ASSETS",
+      "SPEND_RATE_LIMITER",
+      ...REQUIRED_TENANT_STUDIO_VARS,
+      ...endpoints.map((e) => e.endpointVar),
+    ];
+    for (const need of required) {
+      if (!names.has(need)) throw new ProvisionFailure("verify", `tenant worker is missing the ${need} binding after upload`);
+    }
+    const secrets = await at.cf.getScriptSecretNames(at.namespace, script);
+    for (const need of ["R2_S3_SECRET_ACCESS_KEY", "STUDIO_API_TOKEN"]) {
+      if (!secrets.includes(need)) throw new ProvisionFailure("verify", `tenant worker is missing the ${need} secret after upload`);
+    }
+    const probe = await at.callTenantStudio(script, { method: "GET", path: "/", studioApiToken });
+    if (probe.status >= 500) {
+      throw new ProvisionFailure("verify", `tenant studio root returned ${probe.status}; the worker is not serving`);
+    }
+    const installedModules = await verifyTenantModulesInstalled(at, script, studioApiToken);
+    at.log("provision.modules_installed", { tenant: tenantId, modules: installedModules });
+    await hooks.onDone("verify");
+  }
+}
+
+/** Everything the upgrade needs, gathered by a preflight that has written nothing. */
+export interface ModuleUpgradeContext {
+  script: string;
+  endpoints: TenantEndpoint[];
+  studioApiToken: string;
+  release: string;
+  bundles: Map<string, ModuleBundle>;
+}
+
+/** A preflight refusal, carrying the HTTP shape the route should answer with. */
+export interface ModuleUpgradeRefusal {
+  code: string;
+  status: number;
+  message: string;
+}
+
+export type ModuleUpgradePreflight =
+  | { ok: true; context: ModuleUpgradeContext }
+  | { ok: false; refusal: ModuleUpgradeRefusal };
+
+/**
+ * Everything that can be checked WITHOUT writing, checked before anything is written (cf#103).
+ *
+ * This exists as its own function, called by the route BEFORE it creates a job row, so that a
+ * refusal is structurally incapable of leaving state behind: no job, no NULLed release, no
+ * half-swapped module. The blast-radius gate on this whole route is "a failed upgrade must leave
+ * the tenant serving", and the cheapest way to honour it is for the overwhelmingly likely failures
+ * (bad release pin, incomplete tenant, studio not answering) to happen here, where there is nothing
+ * to leave behind.
+ *
+ * Fetching every module bundle is part of PREFLIGHT for that reason, even though it is the
+ * expensive step: a release missing one bundle must refuse before the first upload, not after the
+ * third.
+ */
+export async function preflightModuleUpgrade(
+  deps: ProvisionDeps,
+  tenant: Tenant,
+  release: string,
+): Promise<ModuleUpgradePreflight> {
+  const refuse = (code: string, status: number, message: string): ModuleUpgradePreflight => ({
+    ok: false,
+    refusal: { code, status, message },
+  });
+
+  if (tenant.deleted_at !== null) return refuse("tenant_deleted", 404, "this tenant no longer exists");
+  // Suspension is the admin kill switch and is checked before the lifecycle, exactly as routing
+  // does it: shipping new code into a suspended tenant would be working around the kill switch.
+  if (tenant.suspended_at !== null) {
+    return refuse("tenant_suspended", 409, "this tenant is suspended; resume it before upgrading modules");
+  }
+  // ONLY a live tenant. An unfinished provision belongs to the resume path, which knows how to
+  // finish it; overlapping that here would give one tenant two drivers with different terminal
+  // writes. Refusing is not a limitation, it is the boundary between the two operations.
+  if (tenant.status !== "live") {
+    return refuse(
+      "tenant_not_live",
+      409,
+      `module upgrade requires a live tenant; this one is ${tenant.status}. ` +
+        "An unfinished provision is resumed through the provision job, not upgraded.",
+    );
+  }
+  if (!tenant.script_name) {
+    return refuse("tenant_has_no_studio", 409, "this tenant has no studio script recorded; it cannot be upgraded");
+  }
+
+  const endpoints = readTenantEndpoints(tenant);
+  // Every catalog module must have its endpoint, checked HERE rather than discovered mid-upload:
+  // uploadTenantModules throws on a missing endpoint, and finding that out after two modules were
+  // already swapped is precisely the mixed state this route exists to avoid.
+  const missing = TENANT_MODULE_CATALOG.filter((spec) => !endpoints.some((e) => e.key === spec.endpointKey));
+  if (missing.length) {
+    return refuse(
+      "tenant_endpoints_incomplete",
+      422,
+      `this tenant is missing the endpoint(s) needed by: ${missing.map((m) => m.module).join(", ")}`,
+    );
+  }
+  if (!tenant.studio_token_enc) {
+    return refuse("tenant_studio_token_missing", 422, "no studio token recorded for this tenant");
+  }
+  let studioApiToken: string;
+  try {
+    studioApiToken = await decryptStudioToken(deps.kek, tenant.studio_token_enc);
+  } catch (e) {
+    return refuse("tenant_studio_token_unreadable", 422, `the stored studio token could not be decrypted: ${String(e)}`);
+  }
+
+  // The tenant must be SERVING before we touch it. If it is already broken, an upgrade would be
+  // blamed for a fault it did not cause, and "leave the tenant serving" is unverifiable when it was
+  // not serving to begin with.
+  const probe = await deps.callTenantStudio(tenant.script_name, { method: "GET", path: "/", studioApiToken });
+  if (probe.status >= 500) {
+    return refuse(
+      "tenant_studio_not_serving",
+      422,
+      `the tenant studio answered ${probe.status} before the upgrade started; fix that first`,
+    );
+  }
+
+  let bundles: Map<string, ModuleBundle>;
+  try {
+    bundles = await prefetchModuleBundles({ ...deps, release }, release);
+  } catch (e) {
+    return refuse("module_bundle_unavailable", 422, e instanceof TenantModuleError ? e.message : String(e));
+  }
+
+  return { ok: true, context: { script: tenant.script_name, endpoints, studioApiToken, release, bundles } };
+}
+
+export type ModuleUpgradeOutcome =
+  | { ok: true; release: string; modules: string[] }
+  | { ok: false; step: ProvisionStep; message: string };
+
+/**
+ * Ship newly published modules to a LIVE tenant (cf#103 half two).
+ *
+ * WHY THIS IS A SIBLING OF continueProvisionJob AND NOT THAT FUNCTION WITH steps_done RESET:
+ * that function ends a PROVISION. Its success path writes setTenantStatus("awaiting_invoke_key"),
+ * which routingStatusFor maps to a non-routable state and tenantRefusal answers with 503 "this
+ * studio is still being set up". Pointed at a live tenant it would therefore take a paying customer
+ * DARK on the path where everything went RIGHT. That is not a mismatch of intent to paper over; it
+ * is proof that the two operations have different terminal state machines, and the terminal writes
+ * are the one thing they must not share. Reuse of the middle is real and lives in runModuleSteps.
+ *
+ * THE STATUS RULE, which is the whole safety story: this function NEVER writes tenants.status. Not
+ * on entry, not on success, not on failure. A live tenant stays live for the entire upgrade, so
+ * routing keeps dispatching to its unchanged script_name and its users keep being served. Progress
+ * and failure live on the JOB row. A "provisioning-shaped" transit would have meant every user
+ * getting 503 + retry-after for the duration, which is an outage, not a state.
+ *
+ * WHAT A USER CAN STILL NOTICE, stated honestly rather than rounded up to seamless: module scripts
+ * are replaced by in-place PUT and there is no atomic multi-script swap on Workers for Platforms.
+ * The STUDIO never stops serving, but a module invocation inside the swap window may execute old or
+ * new bytes. Both are conformance-gated, so neither is broken -- see the cross-module note below.
+ *
+ * NO AUTOMATIC ROLLBACK, deliberately. Rolling back means issuing MORE writes against a tenant that
+ * just failed a write, on the same path that is already failing, to reach a state we have not
+ * verified is reachable. Instead the failure is recorded in full and the tenant keeps serving;
+ * rollback is re-running this same route at the previous release, which the job row preserves
+ * (from_release) precisely because modules_release is NULLed before the first write.
+ *
+ * CROSS-MODULE COMPATIBILITY of a partially-upgraded state, stated from the catalog rather than
+ * assumed from the conformance gate: the five catalog modules serve four hooks -- keyframe
+ * (`keyframe`), own-gpu (`motion.backend`), speech-upscale (`speech`), and finish-upscale +
+ * finish-lipsync (both `finish`). Modules on DIFFERENT hooks never see each other output, so those
+ * three are mutually independent and a mixed state across them is not expressible. The one coupled
+ * pair is the two `finish` modules, which CHAIN: each takes FinishInput{shot_id, clip_key} and
+ * returns FinishOutput{clip_key}, so the second consumes the output key of the first. A mixed
+ * finish chain therefore means two vendored copies of that contract meeting on one clip. That is
+ * bounded, but NOT by conformance (which is per-module and says nothing about pairs): it is bounded
+ * by the `api: "vivijure-module/2"` version the contract carries, because an incompatible change to
+ * the finish payload requires bumping it and the studio install gate rejects an api it does not
+ * accept -- so an incompatible mixed chain fails at INSTALL, leaving the old module resident and
+ * the tenant serving. The residual this does NOT cover is a semantic redefinition of an existing
+ * field WITHOUT an api bump; that is a release-discipline defect which would break a full
+ * re-provision just as badly, and it is a known limit of this route rather than something it can
+ * detect.
+ */
+export async function upgradeTenantModules(
+  deps: ProvisionDeps,
+  jobId: string,
+  tenant: Tenant,
+  context: ModuleUpgradeContext,
+  clock: ProvisionClock = realClock,
+  budgetMs: number = PROVISION_INVOCATION_BUDGET_MS,
+): Promise<ModuleUpgradeOutcome> {
+  const startedAt = clock.now();
+  const done: MarkableProvisionStep[] = [];
+  const mark = async (step: MarkableProvisionStep) => {
+    done.push(step);
+    await deps.store.updateJobProgress(jobId, step, JSON.stringify(done));
+    if (clock.now() - startedAt >= budgetMs) throw new ProvisionYield(step);
+  };
+
+  try {
+    // Clear the recorded module release BEFORE the first upload. From here until success the tenant
+    // is not known to be uniformly at any one release, and the column must say so: a value left
+    // standing through a partial failure would assert a uniformity the resident scripts do not
+    // have. NULL means "consult the job row", which is why from_release lives there.
+    await deps.store.setTenantModulesRelease(tenant.id, null);
+
+    await runModuleSteps(
+      deps,
+      {
+        tenantId: tenant.id,
+        script: context.script,
+        endpoints: context.endpoints,
+        studioApiToken: context.studioApiToken,
+        release: context.release,
+        prefetched: context.bundles,
+      },
+      // An upgrade re-runs every module step against a tenant that already completed them, which is
+      // exactly what resume must never do.
+      { shouldRun: () => true, onDone: mark },
+    );
+
+    await deps.store.setTenantModulesRelease(tenant.id, context.release);
+    await deps.store.finishJob(jobId, "succeeded", null, null);
+    deps.log("module_upgrade.succeeded", { tenant: tenant.id, release: context.release });
+    // NOTE what is absent and must stay absent: no setTenantStatus call. The tenant was live on the
+    // way in and is live on the way out.
+    return { ok: true, release: context.release, modules: TENANT_MODULE_CATALOG.map((m) => m.module) };
+  } catch (e) {
+    // A yield here is NOT resumable the way a provision is: there is no upgrade continuation
+    // driver, so leaving the job "running" would strand it forever. Record it as the honest failure
+    // it is, naming the mixed state and how to resolve it, and leave the tenant serving.
+    if (e instanceof ProvisionYield) {
+      const message =
+        `the upgrade ran out of its invocation budget after ${e.after}; module bytes may be mixed ` +
+        "(see steps_done) and the tenant is still serving. Re-run the upgrade to finish it, or " +
+        "re-run at from_release to go back.";
+      deps.log("module_upgrade.exhausted", { tenant: tenant.id, after: e.after, release: context.release });
+      await deps.store.finishJob(jobId, "failed", e.after, message);
+      return { ok: false, step: e.after, message };
+    }
+    const step = e instanceof ProvisionFailure ? e.step : e instanceof TenantModuleError ? e.step : inferStep(done);
+    const message =
+      e instanceof CfApiError || e instanceof ProvisionFailure || e instanceof TenantModuleError ? e.message : String(e);
+    deps.log("module_upgrade.failed", { tenant: tenant.id, step, message, release: context.release });
+    await deps.store.finishJob(jobId, "failed", step, message);
+    // Again: NO setTenantStatus. continueProvisionJob writes "failed" here, which would make a
+    // still-serving paying tenant answer 503 to its own users. That single line is the difference
+    // between a failed upgrade and an outage.
     return { ok: false, step, message };
   }
 }

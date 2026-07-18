@@ -12,7 +12,7 @@ import { MemoryStore } from "./memory-store";
 const t = (over: Partial<Tenant> = {}): Tenant => ({
   id: "ten_1", slug: "hero", account_id: "acct_1", status: "live",
   script_name: "tenant-hero-studio", d1_database_id: null, r2_bucket_name: null,
-  endpoints_json: null, r2_token_id: null, studio_release: null, studio_token_enc: null,
+  endpoints_json: null, r2_token_id: null, studio_release: null, modules_release: null, studio_token_enc: null,
   created_at: "t", live_at: null, suspended_at: null, suspended_reason: null, deleted_at: null,
   reclaim_lease_until: null, reclaim_lease_token: null,
   ...over,

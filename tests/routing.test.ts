@@ -27,6 +27,7 @@ function tenant(over: Partial<Tenant> = {}): Tenant {
     endpoints_json: null,
     r2_token_id: null,
     studio_release: "1.0.0",
+    modules_release: null,
     studio_token_enc: null,
     created_at: "2026-07-17T00:00:00Z",
     live_at: "2026-07-17T00:00:00Z",
