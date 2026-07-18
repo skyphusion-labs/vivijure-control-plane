@@ -366,6 +366,27 @@ describe("teardownTenant", () => {
     expect(calls.indexOf("deleteUserWorker")).toBeLessThan(calls.indexOf("deleteD1"));
   });
 
+  // The stored name is what was ACTUALLY created; the derivation is what we WOULD create today.
+  // Routing already treats the stored name as authoritative (tenants.ts), so teardown must too, or
+  // the two halves disagree about which script the tenant owns and a scheme change orphans a LIVE
+  // user Worker in the namespace.
+  it("deletes the STORED script_name, not the recomputed derivation", async () => {
+    const d = deps();
+    const t = await provisioned();
+    // A row created under an older naming scheme: stored and derived deliberately disagree.
+    const legacy = { ...t, script_name: "tenant-hero-studio-legacy" };
+    await teardownTenant(d, legacy, { deleteData: true });
+    expect(d.cf.deleteUserWorker).toHaveBeenCalledWith(expect.anything(), "tenant-hero-studio-legacy");
+    expect(d.cf.deleteUserWorker).not.toHaveBeenCalledWith(expect.anything(), "tenant-hero-studio");
+  });
+
+  it("falls back to the derivation when the row carries no script_name", async () => {
+    const d = deps();
+    const t = await provisioned();
+    await teardownTenant(d, { ...t, script_name: null }, { deleteData: true });
+    expect(d.cf.deleteUserWorker).toHaveBeenCalledWith(expect.anything(), "tenant-hero-studio");
+  });
+
   it("revokes the R2 token: an un-revoked token outliving its bucket is an orphaned grant", async () => {
     const d = deps();
     const res = await teardownTenant(d, await provisioned(), { deleteData: true });
