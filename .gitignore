@@ -1,0 +1,16 @@
+node_modules/
+.wrangler/
+.dev.vars
+dist/
+coverage/
+*.log
+worker-configuration.d.ts
+.DS_Store
+__pycache__/
+*.pyc
+
+# The REAL control-plane wrangler.toml is RENDERED at deploy from
+# wrangler.toml.example (account-specific D1 id + origins injected from CI secrets
+# via envsubst). Committing it would put account resource IDs in a public repo.
+# Edit the .example; render locally to work.
+/wrangler.toml

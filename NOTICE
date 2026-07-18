@@ -1,0 +1,22 @@
+Copyright (C) 2026 Conrad Rockenhaus
+
+Vivijure Control Plane is licensed under AGPL-3.0-only. See LICENSE for the full text.
+
+PROVENANCE
+----------
+This repository was extracted from skyphusion-labs/vivijure-cf at commit
+59b3fb382521cab36cc0a746f77b174635133552 (2026-07-18), per vivijure-cf issue #85.
+
+The pre-extraction history of this code remains in vivijure-cf; no history was
+rewritten in either repository. vivijure-cf stays a clean, self-hostable Studio
+with no requirement to operate a hosted service; this repository holds the
+hosted-service machinery only.
+
+The two repositories are coupled ONLY through the published Studio release
+artifact (the versioned bundle contract: {tag, manifest_sha256} pinned by the
+provisioner). There are no source-level imports across the boundary, and there
+must never be.
+
+A labor of love, given freely: use it, learn from it, self-host it, build your own
+creative visions on it. Run it as a network service and the AGPL has you share your
+changes back, so it stays a commons. It is NOT for sale, and NOT to be resold as a SaaS.

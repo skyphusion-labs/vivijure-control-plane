@@ -1,0 +1,50 @@
+name: CI
+
+# Typecheck + test on every push and PR. This workflow NEVER deploys; deploys live in
+# deploy.yml and fire only on a v* tag.
+#
+# The job id below is `ci` ON PURPOSE: the org-level `aviation-grade-main` ruleset requires
+# status check contexts named exactly `ci`, `coverage`, and `CodeQL`. Rename the job and every
+# PR in this repo becomes permanently unmergeable (the required check never reports).
+#
+# vivijure-control-plane is PUBLIC and accepts outside PRs, so CI runs on GitHub-hosted
+# ubuntu-latest (fork-safe sandbox), NOT the self-hosted fleet pool.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  # NO branches filter on pull_request, deliberately: with `branches: [main]` a STACKED PR
+  # (base = another branch) matches nothing and runs ZERO checks, which GitHub reports as
+  # "no checks reported" -- reads as fine, means unverified.
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # tsc is NOT part of the vitest run, so type errors pass tests silently. This is the gate.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
