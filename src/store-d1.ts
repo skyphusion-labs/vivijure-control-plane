@@ -200,7 +200,30 @@ export class D1Store implements ControlPlaneStore {
   async checkSlugAvailability(slug: string, accountId: string): Promise<SlugClaim> {
     // Deliberately reuses the status-BLIND lookup. Filtering deleted rows out here is what made the
     // old check say "available" for a tombstoned slug; the tier rules need to see every row.
-    return classifySlugClaim(await this.getTenantBySlug(slug), accountId);
+    const claim = classifySlugClaim(await this.getTenantBySlug(slug), accountId);
+    if (!claim.available || !claim.reclaim) return claim;
+
+    // A Tier A row can have a provision job being driven RIGHT NOW (claimJob holds a 60s lease).
+    // Reclaiming under a live driver is a genuine race: the reclaim blanks the resource columns
+    // while the provisioner is still writing ids into them, so the driver's D1 and R2 land on a
+    // row that no longer claims them and nothing ever reaps them. Refuse while the lease is live.
+    // The lease is short by design (#112), so this refusal clears itself within a minute.
+    if (await this.hasLiveProvisionLease(claim.reclaim.tenant_id)) {
+      return { available: false, reason: "that name is still being set up; try again in a minute" };
+    }
+    return claim;
+  }
+
+  /** A driver currently holds this tenant's job. Mirrors claimJob's own liveness predicate. */
+  private async hasLiveProvisionLease(tenantId: string): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        "SELECT id FROM provision_jobs WHERE tenant_id = ?1 AND status IN ('queued', 'running') " +
+          "AND lease_until IS NOT NULL AND lease_until > datetime('now') LIMIT 1",
+      )
+      .bind(tenantId)
+      .first<{ id: string }>();
+    return row !== null;
   }
 
   /**
@@ -221,7 +244,13 @@ export class D1Store implements ControlPlaneStore {
           "r2_token_id = NULL, script_name = NULL, endpoints_json = NULL, studio_release = NULL, " +
           "studio_token_enc = NULL " +
           "WHERE id = ?1 AND account_id = ?2 AND live_at IS NULL " +
-          `AND status IN (${placeholders}) RETURNING *`,
+          `AND status IN (${placeholders}) ` +
+          // The lease check lives INSIDE this statement on purpose. Checking it separately would
+          // reintroduce the exact TOCTOU this conditional UPDATE exists to close: a driver could
+          // take the lease between the check and the write.
+          "AND NOT EXISTS (SELECT 1 FROM provision_jobs j WHERE j.tenant_id = tenants.id " +
+          "AND j.status IN ('queued', 'running') AND j.lease_until IS NOT NULL " +
+          "AND j.lease_until > datetime('now')) RETURNING *",
       )
       .bind(tenantId, accountId, ...TIER_A_STATUSES)
       .first<Tenant>();
