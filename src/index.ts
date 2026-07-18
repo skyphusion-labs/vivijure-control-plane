@@ -39,6 +39,7 @@ import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
 import type { Account, Tenant, ProvisionJob } from "./store";
 import { slugRejectionMessage, tenantEndpointIds, tenantView, validateSlug } from "./tenants";
+import { CONTROL_PLANE_VERSION } from "./version";
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), {
@@ -88,6 +89,18 @@ export async function handle(
         // Projected from what is actually configured, never hardcoded. Joan renders from this.
         auth_methods: ["email", ...configuredProviders(env)],
       });
+    }
+
+    // What is actually running. src/version.ts was referenced by nothing at runtime, so confirming a
+    // release meant fetching a changed asset and reading the patched line off the wire -- archaeology,
+    // not observability (cf#114d). Its OWN route rather than a field on /api/platform/config: that
+    // route is a POLICY projection the front door renders from, with a UI contract and a different
+    // audience; deploy identity is an operator/CI fact with different cache semantics, and folding it
+    // in is how a config endpoint becomes a junk drawer. Unauthenticated, like the config route: the
+    // version of an AGPL codebase whose tags are public is not a secret, and a version you must hold
+    // a credential to read is useless to the monitoring that needs it most.
+    if (request.method === "GET" && path === "/api/platform/version") {
+      return json({ control_plane_version: CONTROL_PLANE_VERSION });
     }
 
     if (request.method === "GET" && path === "/api/aup/current") {
@@ -479,9 +492,22 @@ async function installInvokeKey(
 
   // The per-script secrets PUT (spike-proven: rotates in place, no re-upload). The key goes from
   // this request straight into the tenant worker secret; on any failure it is stored nowhere.
-  await deps.provisioner.installInvokeKey(tenant, key);
+  // Installs the key AND proves the module workers actually serve it (cf#114). A throw here leaves
+  // the tenant at awaiting_invoke_key: we do not promote a tenant to live on a credential whose
+  // propagation nothing has observed, because that is precisely the failure this closes.
+  const readiness = await deps.provisioner.installInvokeKey(tenant, key);
   await deps.store.setTenantStatus(tenant.id, "live");
-  return json({ ok: true, status: "live", verified_endpoints: verdict.inScope.length });
+  return json({
+    ok: true,
+    status: "live",
+    verified_endpoints: verdict.inScope.length,
+    // Say plainly whether every module was PROVEN ready. "unverified" is not a soft pass: it names
+    // the modules whose readiness could not be observed (an image predating GET /ready) so the fact
+    // travels to the operator instead of being swallowed by an ok:true.
+    modules_ready: readiness.unverified.length === 0,
+    modules_verified: readiness.verified,
+    ...(readiness.unverified.length ? { modules_unverified: readiness.unverified } : {}),
+  });
 }
 
 async function adminRoutes(

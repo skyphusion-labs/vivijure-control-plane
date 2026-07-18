@@ -16,7 +16,12 @@ import { createTenantEndpoints } from "./runpod";
 import type { ControlPlaneStore, Tenant } from "./store";
 import { D1Store } from "./store-d1";
 import { CfTokenMinter } from "./token-minter";
-import { TENANT_MODULE_CATALOG, tenantModuleScriptName } from "./tenant-modules";
+import {
+  TENANT_MODULE_CATALOG,
+  awaitTenantModulesReady,
+  tenantModuleScriptName,
+  type ModuleReadiness,
+} from "./tenant-modules";
 
 /** The secret name the studio reads its stored invoke key (key B) from (src/env.ts). */
 export const TENANT_RUNPOD_SECRET = "RUNPOD_API_KEY";
@@ -34,8 +39,13 @@ export interface ProvisionerWiring {
    * otherwise. `stepsDone` comes from the job row the caller already read.
    */
   resume(jobId: string, tenant: Tenant, stepsDone: readonly string[]): Promise<void>;
-  /** Install the VERIFIED invoke key as the tenant studio secret. Throws on API failure. */
-  installInvokeKey(tenant: Tenant, key: string): Promise<void>;
+  /**
+   * Install the VERIFIED invoke key as the tenant studio secret AND every tenant module script, then
+   * PROVE the modules actually serve it before the caller flips the tenant live (cf#114). Throws on
+   * API failure, and on a readiness probe that fails or times out -- the tenant then stays at
+   * awaiting_invoke_key rather than being promoted on credentials nothing has proven.
+   */
+  installInvokeKey(tenant: Tenant, key: string): Promise<ModuleReadiness>;
 }
 
 export interface ControlPlaneDeps {
@@ -131,6 +141,20 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       );
       return { status: res.status, text: await res.text() };
     },
+    // cf#114: reach ONE tenant module script over its own dispatch namespace. No bearer -- /ready is
+    // unauthenticated by design. Time-bounded like every other dispatch (#112): a hung module must
+    // not hold the invoke-key route open. An unbound namespace answers 404, which the probe reads as
+    // "cannot verify" and reports, rather than as a false pass.
+    callTenantModule: async (scriptName, path) => {
+      if (!env.TENANT_MODULE_DISPATCH) return { status: 404, text: "TENANT_MODULE_DISPATCH not bound" };
+      const stub = env.TENANT_MODULE_DISPATCH.get(scriptName);
+      const res = await stub.fetch(
+        new Request(`https://module.internal${path}`, {
+          signal: AbortSignal.timeout(TENANT_STUDIO_FETCH_TIMEOUT_MS),
+        }),
+      );
+      return { status: res.status, text: await res.text() };
+    },
     // Structured, greppable, and NEVER carries a secret (provisioner discipline).
     log: (event, fields) => console.log("provision", { event, ...fields }),
   };
@@ -144,7 +168,7 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     async resume(jobId, tenant, stepsDone) {
       await continueProvisionJob(deps, jobId, tenant, stepsDone);
     },
-    async installInvokeKey(tenant, key) {
+    async installInvokeKey(tenant, key): Promise<ModuleReadiness> {
       if (!tenant.script_name) throw new Error("tenant has no studio worker to install the key on");
       // Key B lands on the studio AND every tenant module script (cf#99): the studio reads its own
       // RUNPOD_API_KEY, and each module worker reads it to reach RunPod. Rotates in place
@@ -158,6 +182,9 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
           key,
         );
       }
+      // cf#114: the secrets PUT returning 200 does NOT mean the edge serves the key yet. Prove it on
+      // the modules before the caller promotes the tenant, or fail honestly saying we could not.
+      return await awaitTenantModulesReady(deps, tenant.id);
     },
   };
 }

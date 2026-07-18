@@ -245,3 +245,121 @@ shipped surface could not run it; the first over-HTTP run caught it, which is ex
 run exists for.)
 
 Still elsewhere: routing/domains #55, quotas #56, AUP text #57, onboarding UX #58.
+
+## Module readiness, and what `/api/platform/version` is for (cf#114)
+
+### The window this closes
+
+`installInvokeKey` writes key B to the tenant studio and to all five tenant module scripts, then the
+route flips the tenant to `live`. A `200` from the secrets PUT means the secret is stored; it does
+NOT mean the version the edge is serving can read it. In the cf#99 finale a tenant that had just
+reported `live` failed its first render citing a credential that was demonstrably present, and the
+identical payload succeeded 45 seconds later.
+
+Nothing outside the module can observe that. `getScriptSecretNames` reports the secret NAME exists,
+which was TRUE during the failure, and it cannot say which version the edge serves. So the probe has
+to be a module endpoint, which is what `GET /ready` (vivijure-cf#114) is.
+
+### The probe
+
+`awaitTenantModulesReady` (`src/tenant-modules.ts`) runs after the key-B fan-out and BEFORE
+`setTenantStatus(..., "live")`. It probes `GET /ready` on all five tenant module scripts over the
+`TENANT_MODULE_DISPATCH` binding, unauthenticated (the endpoint carries booleans, never values, and
+the plane must be able to ask before the tenant has a working credential to authenticate with).
+
+`classifyReadyResponse` is where the line between a wait and a cover-up lives, so it is a pure,
+separately tested function:
+
+| answer | verdict | behaviour |
+| --- | --- | --- |
+| `200`, both credentials `true` | `ready` | done |
+| `200`, endpoint `true`, key `false` | `not_visible_yet` | **the only retryable shape** |
+| `200`, endpoint `false` | `misconfigured` | fails IMMEDIATELY -- the endpoint id is bound at upload, so waiting cannot fix it |
+| `200`, not the contract envelope | `misconfigured` | fails immediately; a malformed body is not evidence of anything |
+| `200`, `module` echo does not match | `misconfigured` | fails immediately: we are talking to the WRONG script |
+| `404` | `unverifiable` | nothing answered: reported UNVERIFIABLE, never retried, never counted as ready |
+| anything else | `misconfigured` | fails immediately |
+
+**The `module` echo is the wrong-script defence.** Script names are tenant-prefixed and derived, so a
+naming bug would otherwise let a healthy NEIGHBOUR module answer and be read as proof about the
+module we meant to probe. The echo must match the expected module name or the answer is refused.
+
+**Budget (cf#112 / cf#113).** This runs in the invoke-key ROUTE, which a customer is waiting on.
+`MODULE_READY_PROBE_DEADLINE_MS` is 10s across ALL FIVE modules, not per module: each round probes
+the still-pending scripts concurrently, and a module that goes ready drops out of the loop. Five
+sequential deadlines would be a 50s route, which is a hang wearing a fix. It fits the budget or fails
+honestly; it never sleeps past it.
+
+**A genuinely absent credential fails LOUDLY** at the deadline, naming the modules and carrying
+attempts and elapsed. The deadline is the ONLY exit from `not_visible_yet`, which is what stops the
+retry from laundering a real misconfiguration into a success. A throw leaves the tenant at
+`awaiting_invoke_key` rather than promoting it on credentials nothing has observed.
+
+### A 404: `unverifiable`, never a false pass, and never a guess at the cause
+
+A module published before `/ready` existed cannot answer. Hard-failing would mean a tenant pinned to
+an older release can no longer install a key at all, which is worse than the defect being fixed; and
+waiting cannot make the endpoint appear. So it is neither retried nor fatal.
+
+**But we do not get to name the cause.** A 404 means "nothing answered `GET /ready` at this script
+name". That is a module image predating the endpoint, OR no module present under that name at all (a
+wrong-name or failed-upload bug). Those are INDISTINGUISHABLE from here: the `module` echo that would
+disambiguate exists only on an answering response. So the verdict is `unverifiable` rather than
+`no_ready_route`, and the reported detail states both readings instead of asserting the flattering
+one. Calling it "predates /ready" would be a confident guess dressed as a diagnosis, and a missing
+script is the more dangerous of the two to mislabel.
+
+The install succeeded and is reported as such; what could not be done is PROVING propagation:
+
+```json
+{ "ok": true, "status": "live", "verified_endpoints": 4,
+  "modules_ready": false,
+  "modules_verified": ["keyframe", "own-gpu"],
+  "modules_unverified": [
+    { "module": "finish-upscale", "reason": "unverifiable",
+      "script": "ten-abc123-finish-upscale", "detail": "..." },
+    { "module": "speech-upscale", "reason": "unverifiable",
+      "script": "ten-abc123-speech-upscale", "detail": "..." }
+  ] }
+```
+
+**Per module, never collapsed.** A mixed fleet (some modules answering, some not) names EVERY
+unproven module with its own script and its own detail, because an operator has to act per module.
+`modules_verified` is a list of plain names and `modules_unverified` a list of objects, so the two
+are structurally distinguishable and a consumer cannot conflate them by truthiness or by shape; an
+unverified module can never appear in the verified list. `modules_unverified` is OMITTED entirely
+when everything was proven, so an empty array is never ambiguous.
+
+`modules_ready` is `false` whenever anything went unverified, so an operator reading the top-level
+field alone cannot mistake "could not check" for "checked and fine". This path is transitional: it
+disappears once the pinned release carries `/ready` on every module. The same reporting covers an
+unbound `TENANT_MODULE_DISPATCH` (a deploy predating the binding), which degrades to unverified
+rather than to a false all-clear.
+
+### Verifying a deploy that carries the binding
+
+The `TENANT_MODULE_DISPATCH` dangling-binding hazard is checked, not assumed. After a CP deploy:
+
+1. `GET /api/platform/version` -> must report the version just cut. If the deploy failed on the
+   binding, there is nothing serving to answer this, so it fails visibly rather than silently.
+2. Exercise one `/ready` probe path (install a key on a tenant provisioned against a release that
+   carries `/ready`) and confirm the response comes back `modules_ready: true` with every module in
+   `modules_verified`. An unbound namespace degrades to `unverifiable` for all five, which is exactly
+   what distinguishes "binding missing" from "working".
+
+Step 2 is the one that proves the binding is real: step 1 alone passes on a plane whose module
+dispatch is not wired at all.
+
+### `GET /api/platform/version`
+
+Returns `{ "control_plane_version": "<semver>" }` from `src/version.ts`, which the existing lockstep
+test keeps equal to `package.json`. Before this, `CONTROL_PLANE_VERSION` was referenced by nothing at
+runtime: confirming which release the plane served meant fetching a changed asset and reading the
+patched line off the wire. That works, but it is archaeology, not observability.
+
+It is its OWN route rather than a field on `/api/platform/config` deliberately. That route is a
+policy projection the front door renders from -- it has a UI contract and a UI audience. Deploy
+identity is an operator/CI fact with a different audience and different cache semantics, and folding
+it in is how a config endpoint turns into a junk drawer. Unauthenticated, like the config route: the
+version of an AGPL codebase whose tags are public is not a secret, and a version you need a
+credential to read is useless to the monitoring that needs it most.

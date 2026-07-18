@@ -450,6 +450,73 @@ curl -fsS \
 (Wrap the JSON body in single quotes when you actually run it; it is shown unquoted here only to keep
 this doc free of nested-quote noise.)
 
+## Hosted tier: create the TENANT MODULE dispatch namespace  (cf#114, control plane)
+
+Sibling of the Phase 3 section above, same hazard class, different namespace and a **sharper**
+ordering rule. Applies to the HOSTED control plane (`vivijure-control-plane`), not to a self-host.
+
+**What changed.** As of cf#114 the control plane binds the tenant-module dispatch namespace
+(`TENANT_MODULE_DISPATCH` -> `${TENANT_MODULE_NAMESPACE}`, normally `vivijure-tenant-modules`). It
+needs it because the invoke-key route probes each tenant module worker at `GET /ready` to prove the
+module actually serves the key that was just installed, BEFORE the tenant is flipped live. A module
+script has no public route, so a dispatch binding is the only way to reach one.
+
+**Why the ordering rule is sharper than Phase 3.** The provisioner creates this namespace LAZILY on
+first provision, so before cf#114 nobody had to think about it. Binding the control plane to it
+**closes that bootstrap**:
+
+- `wrangler deploy` of the control plane FAILS on a binding to a namespace that does not exist; and
+- the provisioner (which would have created it) cannot run until the control plane deploys.
+
+So on a **fresh account the out-of-band create is MANDATORY**, not a convenience. Lazy creation can no
+longer dig you out. Reading the comment in `wrangler.toml.example` and concluding "the provisioner
+handles it" is exactly the trap this section exists to close.
+
+**On an account that has already provisioned a tenant, the namespace already exists.** Prod is in that
+state (confirmed present alongside `vivijure-tenants` and `vivijure-modules`), so this ordering bites
+a NEW deployment, not the current one. Verify rather than assume; the check is two commands.
+
+### Ordering (fresh account, or any account where the namespace may be absent)
+
+1. **Check** whether it exists. Do this FIRST -- `create` is not idempotent and errors if present.
+2. **Create** it only if absent.
+3. **Verify** it exists.
+4. **THEN** deploy the control plane with the `TENANT_MODULE_DISPATCH` binding present.
+
+Reverse steps 3 and 4 and the deploy trips on a namespace that is not there yet.
+
+```bash
+# 1. check (authenticated as the deploy identity for the CONTROL PLANE account)
+npx wrangler dispatch-namespace list
+
+# 2. create ONLY if the list above does not show it
+npx wrangler dispatch-namespace create "${TENANT_MODULE_NAMESPACE}"   # e.g. vivijure-tenant-modules
+
+# 3. verify
+npx wrangler dispatch-namespace get "${TENANT_MODULE_NAMESPACE}"
+
+# 4. only now:
+npx wrangler deploy
+```
+
+CF API fallback if the CLI is unavailable: identical shape to the Phase 3 fallback above, with the
+namespace name swapped.
+
+### Verify the binding actually works after deploy
+
+A green deploy proves the namespace exists. It does NOT prove the probe can reach modules, so check
+both, in this order:
+
+1. `curl -fsS https://<control-plane-host>/api/platform/version` -> reports the version just cut.
+   This catches a deploy that did not land at all.
+2. Install an invoke key on a tenant provisioned against a release that carries `/ready`, and read
+   the response: `modules_ready` must be `true` with every module listed in `modules_verified`.
+
+**Step 2 is the one that proves the binding.** Step 1 passes on a control plane whose module dispatch
+is not wired at all. If the binding is missing, step 2 returns `modules_ready: false` with every
+module `unverifiable`, and the per-module `detail` carries `TENANT_MODULE_DISPATCH not bound` -- which
+names the real defect instead of sending you to re-provision tenants.
+
 ### Do NOT, as part of the v0.3.0 cut (historical gate; Phase 3 has since shipped on Conrad's go)
 
 - Do NOT create the namespace.

@@ -4,6 +4,47 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
+## Unreleased
+
+MINOR: the plane stops promoting a tenant to live on a credential whose propagation nothing has
+observed, and finally answers "what is running" (cf#114; vivijure-control-plane#13).
+
+### Module readiness probe
+
+`installInvokeKey` writes key B to the studio and all five module scripts. A `200` from that PUT
+means the secret is STORED; it does not mean the version the edge serves can read it. A tenant that
+had just reported `live` failed its first render citing a credential that was demonstrably present,
+and the identical payload succeeded 45s later (cf#99 finale, run 5).
+
+- **New `TENANT_MODULE_DISPATCH` binding** so the plane can reach tenant module scripts, which carry
+  no public route. Typed OPTIONAL: a deploy predating it reports UNVERIFIED, never a false pass.
+  **Deploy prerequisite:** the namespace must exist before deploying with the binding present (it is
+  created lazily by the provisioner, so a fresh account may not have it yet).
+- **`awaitTenantModulesReady`** probes `GET /ready` on all five module scripts after the key-B
+  fan-out and BEFORE the tenant flips live. Retryable ONLY on the not-visible-yet shape (endpoint id
+  present, key absent); a missing endpoint id, a malformed envelope, or any other status fails
+  immediately. A genuinely absent credential fails LOUDLY at the deadline with attempts and elapsed,
+  which is what stops the retry from laundering a real misconfiguration into a success. A throw
+  leaves the tenant at `awaiting_invoke_key`.
+- **Budget-aware (cf#112 / cf#113):** one 10s deadline across ALL FIVE modules, probed concurrently
+  per round, because this runs in a route a customer is waiting on. Not five sequential deadlines.
+- **A 404 is reported `unverifiable`, not failed and not passed, and the cause is NOT guessed.**
+  Hard-failing would mean a tenant on an older pin could no longer install a key at all. But a 404
+  means "nothing answered here", which is a stale module image OR a missing script, and those are
+  indistinguishable from the control plane; the detail states both rather than asserting the
+  flattering one. The invoke-key response carries `modules_ready` / `modules_verified` /
+  `modules_unverified`, per module with its script, never collapsed into one summary.
+- **The `module` echo is checked** against the module being probed. Script names are tenant-prefixed
+  and derived, so without it a naming bug lets a healthy NEIGHBOUR answer and be read as proof about
+  the wrong module. A mismatch is a hard failure.
+
+### `GET /api/platform/version`
+
+`CONTROL_PLANE_VERSION` was referenced by nothing at runtime, so confirming which release was live
+meant reading a patched line off a fetched asset. Now a one-line answer, from the same constant the
+lockstep gate pins to `package.json`. Its own route, not a field on `/api/platform/config`: that one
+is a policy projection with a UI contract, and deploy identity does not belong in it.
+
 ## v1.0.1 -- 2026-07-18
 
 **Security PATCH.** Closes a polynomial ReDoS (CodeQL `js/polynomial-redos`, high) in the email

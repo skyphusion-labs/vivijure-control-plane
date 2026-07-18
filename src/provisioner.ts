@@ -170,6 +170,12 @@ export interface ProvisionDeps {
     scriptName: string,
     init: { method: string; path: string; studioApiToken: string; body?: string },
   ): Promise<{ status: number; text: string }>;
+  /**
+   * Dispatch a GET to one tenant MODULE script over TENANT_MODULE_DISPATCH (cf#114). Separate from
+   * callTenantStudio: module scripts live in a DIFFERENT dispatch namespace and take no bearer,
+   * because GET /ready is unauthenticated by design.
+   */
+  callTenantModule(scriptName: string, path: string): Promise<{ status: number; text: string }>;
   log(event: string, fields: Record<string, unknown>): void;
 }
 

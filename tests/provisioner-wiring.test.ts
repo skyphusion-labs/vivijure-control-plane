@@ -86,3 +86,76 @@ describe("installInvokeKey key-B fan-out", () => {
     expect(captured.join("|")).not.toContain("rpa_keyB_SECRET");
   });
 });
+
+// cf#114: the fan-out landing a 200 from the secrets PUT does NOT mean the edge serves the key. The
+// production seam must PROVE it on the modules before the caller can promote the tenant. These run
+// against the real provisionerWiring, so they cover the wiring, not a re-description of it.
+describe("installInvokeKey probes module readiness (cf#114)", () => {
+  const tenant = { id: "ten_abc123", slug: "hero", script_name: "tenant-hero-studio" } as Tenant;
+
+  const dispatch = (handler: (script: string, path: string) => Response) =>
+    ({
+      get: (script: string) => ({
+        fetch: async (req: Request) => handler(script, new URL(req.url).pathname),
+      }),
+    }) as unknown as DispatchNamespace;
+
+  it("returns every module VERIFIED when each one serves the key", async () => {
+    vi.spyOn(CfApi.prototype, "putScriptSecret").mockImplementation(async () => {});
+    const probed: string[] = [];
+    const w = provisionerWiring(
+      fullEnv({
+        TENANT_MODULE_DISPATCH: dispatch((script, path) => {
+          probed.push(`${script}${path}`);
+          // The echo must be the module this script IS, or the probe correctly refuses it as a
+          // wrong-script answer. Deriving it here keeps the fake honest to the real contract.
+          const module = TENANT_MODULE_CATALOG.map((s) => s.module).find((m) =>
+            script === tenantModuleScriptName(tenant.id, m),
+          )!;
+          return new Response(
+            JSON.stringify({ ok: true, module, credentials: { runpod_api_key: true, runpod_endpoint_id: true } }),
+            { status: 200 },
+          );
+        }),
+      }),
+      store,
+    )!;
+
+    const readiness = await w.installInvokeKey(tenant, "rpa_keyB_SECRET");
+
+    // Control: the probe actually ran (a silent no-op would make the assertion below vacuous).
+    expect(probed).toHaveLength(TENANT_MODULE_CATALOG.length);
+    expect(probed.every((p) => p.endsWith("/ready"))).toBe(true);
+    expect(readiness.verified.sort()).toEqual(TENANT_MODULE_CATALOG.map((s) => s.module).sort());
+    expect(readiness.unverified).toEqual([]);
+  });
+
+  it("THROWS on a bad module answer, so the caller cannot promote the tenant to live", async () => {
+    // The IMMEDIATE-failure shape (endpoint id missing = a provisioning defect, never a race). The
+    // production seam runs on the real clock, so the DEADLINE path is asserted against a virtual
+    // clock in module-ready-probe.test.ts rather than burning 10s of wall time here. What this test
+    // adds is that the real wiring propagates the throw at all.
+    vi.spyOn(CfApi.prototype, "putScriptSecret").mockImplementation(async () => {});
+    const w = provisionerWiring(
+      fullEnv({
+        TENANT_MODULE_DISPATCH: dispatch(() =>
+          new Response(
+            JSON.stringify({ ok: false, credentials: { runpod_api_key: false, runpod_endpoint_id: false } }),
+            { status: 200 },
+          ),
+        ),
+      }),
+      store,
+    )!;
+    await expect(w.installInvokeKey(tenant, "rpa_keyB_SECRET")).rejects.toThrow(/not retryable/);
+  });
+
+  it("an UNBOUND TENANT_MODULE_DISPATCH reports unverified -- it never reports a false pass", async () => {
+    // A deploy predating the binding must degrade to "could not verify", never to "verified".
+    vi.spyOn(CfApi.prototype, "putScriptSecret").mockImplementation(async () => {});
+    const w = provisionerWiring(fullEnv({ TENANT_MODULE_DISPATCH: undefined }), store)!;
+    const readiness = await w.installInvokeKey(tenant, "rpa_keyB_SECRET");
+    expect(readiness.verified).toEqual([]);
+    expect(readiness.unverified).toHaveLength(TENANT_MODULE_CATALOG.length);
+  });
+});

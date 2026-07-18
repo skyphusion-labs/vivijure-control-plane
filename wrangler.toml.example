@@ -70,14 +70,43 @@ migrations_dir = "migrations"
 # the same name -- ONE definition, both sides). Mirrored in src/env.ts.
 #
 # DANGLING-BINDING HAZARD: the namespace must EXIST before this Worker deploys, or `wrangler deploy`
-# FAILS. typecheck will not catch it; only a real deploy will.
-#   npx wrangler dispatch-namespace create vivijure-tenants
+# FAILS. typecheck will not catch it; only a real deploy will. CHECK FIRST -- create is NOT
+# idempotent, it errors if the namespace is already there:
+#   npx wrangler dispatch-namespace list
+#   npx wrangler dispatch-namespace create "${TENANT_DISPATCH_NAMESPACE}"   # only if absent
 # DONE on the prod account 2026-07-17 (#55): `vivijure-tenants` exists and is empty. It is NEW and
 # SEPARATE from `vivijure-modules` (the Phase-3 module namespace) -- sharing one would collide
 # script names and put a module bug inside the tenant blast radius.
 [[dispatch_namespaces]]
 binding = "TENANT_DISPATCH"
 namespace = "${TENANT_DISPATCH_NAMESPACE}"
+
+# Tenant MODULE workers (cf#99) live in their own namespace, and as of cf#114 the control plane DOES
+# dispatch to them: the invoke-key route probes each module script GET /ready to prove it actually
+# serves the key that was just installed, BEFORE the tenant is flipped live. A dispatch binding is the
+# only way to reach a script that has no public route.
+#
+# DANGLING-BINDING HAZARD, and it is SHARPER here than for TENANT_DISPATCH. `wrangler deploy` FAILS
+# on a binding to a namespace that does not exist, and binding the control plane to this one CLOSES
+# THE BOOTSTRAP the provisioner used to provide: the provisioner creates this namespace lazily on
+# first provision, but the provisioner cannot run until the control plane deploys, and the control
+# plane can no longer deploy until the namespace exists. So on a FRESH ACCOUNT the out-of-band create
+# below is MANDATORY, not a convenience -- lazy creation can no longer bootstrap you out of it.
+# CHECK FIRST; create is NOT idempotent and errors if the namespace is already there:
+#   npx wrangler dispatch-namespace list
+#   npx wrangler dispatch-namespace create "${TENANT_MODULE_NAMESPACE}"   # only if absent
+# On an account that has already provisioned a tenant it exists already (prod: confirmed present).
+# Operator procedure lives in docs/deploy-runbook.md; this comment is not where a deploy gets driven.
+#
+# src/env.ts types this binding OPTIONAL, and it is worth being exact about what that does and does
+# NOT buy. It does NOT protect a fresh-account deploy: toml validation is Cloudflare's and tsc has no
+# reach there, and since this binding ships UNCOMMENTED in this example, anyone following it deploys
+# WITH the binding. What the optional type covers is the one real case left: a deployed toml that
+# does not carry this binding at all (an older config), where the probe reports the modules
+# unverifiable -- naming the missing binding in its detail -- rather than a false pass.
+[[dispatch_namespaces]]
+binding = "TENANT_MODULE_DISPATCH"
+namespace = "${TENANT_MODULE_NAMESPACE}"
 
 # The studio release artifact mirror studio-release.yml publishes (studio-releases/<tag>/...).
 # The provisioner reads the pinned release from here; see src/bundle-r2.ts.
@@ -139,9 +168,10 @@ DISPATCH_NAMESPACE = "${TENANT_DISPATCH_NAMESPACE}"
 # DISPATCH_NAMESPACE (tenant studios): sharing one would collide script names and put a module
 # bug inside the tenant blast radius. The provisioner CREATES it if missing (idempotent), so no
 # separate dashboard/wrangler step is needed -- but it is a required var: absent -> provisioning
-# refuses 503, same as the rest of this block. NO [[dispatch_namespaces]] binding is needed for
-# it here (the control plane never dispatches to modules; each TENANT studio carries its own
-# MODULE_DISPATCH -> this namespace in its upload metadata).
+# refuses 503, same as the rest of this block. Each TENANT studio carries its own MODULE_DISPATCH ->
+# this namespace in its upload metadata. As of cf#114 the control plane ALSO binds it, as
+# TENANT_MODULE_DISPATCH above, to probe module readiness before flipping a tenant live -- the NAME
+# here and that binding must name the same namespace.
 TENANT_MODULE_NAMESPACE = "${TENANT_MODULE_NAMESPACE}"
 # The pinned studio release every new tenant gets (the golden-checkpoint pin; see the Q4 ruling).
 STUDIO_RELEASE = "${STUDIO_RELEASE}"
