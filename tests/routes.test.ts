@@ -14,6 +14,13 @@ import { SESSION_COOKIE, startSession } from "../src/auth";
 import { sha256Hex } from "../src/crypto";
 import { MemoryStore } from "./memory-store";
 import { TenantModuleError } from "../src/tenant-modules";
+// Cross-lane (authorized by the lead, control-plane#20 client fix): the CANONICAL invoke-key
+// response shapes, shared with the client suite that reads them
+// (tests/onboarding-invoke-key.test.ts). Asserting them HERE is what stops the browser client from
+// going green against a contract this route no longer serves -- the defect that shipped twice.
+// expectExactKeys is deliberately NOT toMatchObject: a subset match cannot see a field appear or
+// disappear, which is precisely the drift being guarded.
+import { LIVE_KEYS, LIVE_UNVERIFIED_KEYS, UNCONFIRMED_KEYS, expectExactKeys } from "./invoke-key-shapes";
 
 const ROOT_HOST = "studio.vivijure.com";
 const ORIGIN = `https://${ROOT_HOST}`;
@@ -531,12 +538,17 @@ describe("POST /api/tenant/:id/invoke-key", () => {
       env(), ctx, deps,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({
+    const liveBody = (await res.json()) as Record<string, unknown>;
+    expect(liveBody).toMatchObject({
       status: "live",
       verified_endpoints: 1,
       // cf#114: the response says plainly that every module was PROVEN to serve the key.
       modules_ready: true,
     });
+    // EXACT shape. The browser client branches on these keys; if one is added, renamed or removed
+    // here, that client silently misreads a live studio -- which is how a customer came to be told
+    // That key was not accepted while their tenant was already live in D1.
+    expectExactKeys(liveBody, LIVE_KEYS);
     // The install handoff carries the tenant and the key; the key is stored NOWHERE else.
     expect(wiring.installInvokeKey).toHaveBeenCalledTimes(1);
     const [tenant, key] = wiring.installInvokeKey.mock.calls[0] as [{ id: string }, string];
@@ -544,6 +556,41 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(key).toBe("rpa_good");
     expect(store.tenants.get("ten_abc123")?.status).toBe("live");
     expect(JSON.stringify([...store.tenants.values()])).not.toContain("rpa_good");
+  });
+
+  it("goes LIVE with modules_ready:false when readiness could not be PROVEN, and names them", async () => {
+    // The asymmetry that cp#20 deletes ok rather than fixing it: 200 means LIVE, modules_ready means
+    // PROVEN, and they are different facts. A module image predating GET /ready cannot report
+    // readiness, so the tenant goes live with modules_ready:false and a modules_unverified list.
+    // This is a REAL state, not a failure, and the browser client renders it as live-but-unproven
+    // (tests/onboarding-invoke-key.test.ts). Without this test the client asserts that behaviour
+    // against a shape nothing on the server side ever confirmed -- green against a fiction.
+    const { cookie } = await tenantReady(
+      JSON.stringify([{ key: "backend", label: "Render", id: "ep1", name: "vivijure-hero-backend" }]),
+    );
+    wiring.installInvokeKey.mockResolvedValueOnce({
+      verified: ["backend"], unverified: ["lipsync", "audio-upscale"], unconfirmed: [],
+      attempts: 1, elapsedMs: 120,
+    });
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    // Live, but explicitly NOT proven, and the unproven modules are NAMED so the fact travels.
+    expect(body.status).toBe("live");
+    expect(body.modules_ready).toBe(false);
+    expect(body.modules_unverified).toEqual(["lipsync", "audio-upscale"]);
+    // Second key set, per the optional-key rule: allowing one optional key inside a single set is a
+    // subset match wearing a disguise, so the with-unverified shape gets its own exact assertion.
+    expectExactKeys(body, LIVE_UNVERIFIED_KEYS);
+    expect(store.tenants.get("ten_abc123")?.status).toBe("live");
   });
 
   // cf#114: the readiness verdict has to REACH the caller. An operator reading the response must be
@@ -678,6 +725,9 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     );
     expect(res.status).toBe(202);
     const body = (await res.json()) as Record<string, unknown>;
+    // EXACT shape, same reason as the go-live body above. The 202 is the response whose WORDS the
+    // client now renders verbatim, so a change to it is a change to what a customer reads.
+    expectExactKeys(body, UNCONFIRMED_KEYS);
     expect(body.modules_ready).toBe(false);
     expect(body.modules_unconfirmed).toEqual(["keyframe", "own-gpu"]);
     // It must say the key IS stored, or the caller re-pastes credentials for a problem that is not theirs.

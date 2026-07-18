@@ -192,11 +192,16 @@
       });
     },
 
-    // As IMPLEMENTED in src/runpod-invoke-key.ts (#52):
-    //   204                        -> verified AND installed
-    //   400 invoke_key_rejected    -> { reason, message } (the honest refusal)
-    //   501 not_implemented        -> verified, but the secret install lands with #53
-    // The probe-payload shape stays supported for when #53 carries it.
+    // TRANSPORT ONLY. Returns the real HTTP status and the parsed body and
+    // decides NOTHING. The interpretation lives in checks.invokeKeyVerdict,
+    // which is pure and therefore testable against the shapes the route
+    // actually serves (tests/onboarding-invoke-key.test.ts).
+    //
+    // The version this replaces encoded a "204 verified-and-installed / 501
+    // not_implemented" contract that NO route has ever served, and it buried
+    // the decision here inside the fetch where no test could reach it. Both
+    // halves of that are the defect. The route serves 200 (live) or 202
+    // (installed, not yet confirmed); failures carry a diagnostic.
     async invokeKey(tenantId, key) {
       if (USE_MOCK) return mock.invokeKey();
       const r = await fetch(API_BASE + "/api/tenant/" + encodeURIComponent(tenantId) + "/invoke-key", {
@@ -204,16 +209,8 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ runpod_invoke_key: key }),
       });
-      if (r.status === 204) return { ok: true, installed: true };
       const body = await r.json().catch(function () { return {}; });
-      return {
-        ok: false,
-        status: r.status,
-        installed: false,
-        probe: body.probe || null,
-        reason: body.reason || body.error || null,
-        detail: body.message || null,
-      };
+      return { status: r.status, body: body };
     },
   };
 
@@ -263,12 +260,16 @@
     job() {
       return { status: "succeeded", step: "verify", steps_done: ["d1", "r2", "runpod", "studio", "verify"] };
     },
+    // Mirrors the REAL 200 go-live body. A mock that invents its own shape is
+    // how a client drifts from the contract without anyone noticing.
     invokeKey() {
       return {
-        ok: true,
-        probe: {
-          graphql_denied: true,
-          health: { abc123backend: true, abc123upscale: true, abc123lipsync: true, abc123audio: true },
+        status: 200,
+        body: {
+          status: "live",
+          verified_endpoints: 4,
+          modules_ready: true,
+          modules_verified: ["backend", "upscale", "lipsync", "audio-upscale"],
         },
       };
     },
@@ -818,7 +819,8 @@
     if (cont) { cont.hidden = false; cont.textContent = "Back to the key step"; }
   }
 
-  // Key B: verify scope LIVE, then keep it. Never keep it on a failed verdict.
+  // Key B: install it LIVE, then report what the control plane actually did.
+  // Keep it unless the KEY itself was refused -- see invokeKeyVerdict.
   async function runInvokeKeyCheck() {
     const verdictEl = $("#invoke-verdict");
     if (verdictEl) verdictEl.innerHTML = '<p class="small muted">Checking that key against your endpoints...</p>';
@@ -828,33 +830,32 @@
     let verdict;
     try {
       const res = await PlatformApi.invokeKey(state.tenantId, invokeKey);
-      if (res.installed) {
-        verdict = { ok: true, failures: [], message: "That key checks out: your studio accepted it." };
-      } else if (res.probe) {
-        // #53 may carry the probe payload; read it when it is there.
-        verdict = checks.scopeVerdict(res.probe);
-      } else if (res.status === 501) {
-        // Honest about a real, current limitation: the key passed the scope
-        // check, but nothing is installed yet, so the studio is NOT live. Do
-        // not dress a 501 up as success.
-        verdict = {
-          ok: false,
-          failures: ["Your key checks out, but we cannot finish setting up your studio yet: installing it is still being built (#53). Nothing is wrong with your key."],
-          message: "Your key checks out, but your studio is not live yet.",
-        };
-      } else {
-        const copy = checks.invokeRejectionCopy(res.reason, res.detail);
-        verdict = { ok: false, failures: [copy], message: copy };
-      }
-      if (res.studio_url) state.studioUrl = res.studio_url;
+      // ONE call, one pure decision. Every branch that used to live here (204
+      // installed, 501 not_implemented, res.probe, res.studio_url) was written
+      // against shapes no route serves; they are gone rather than left as a
+      // second copy of the trap that produced this defect.
+      verdict = checks.invokeKeyVerdict(res.status, res.body);
     } catch (err) {
-      verdict = { ok: false, failures: [err.message], message: err.message };
+      verdict = {
+        ok: false, tone: "bad", live: false, pending: false, keyStored: false,
+        // A transport failure (offline, DNS, TLS) tells us NOTHING about
+        // whether the key was stored, so we must not blank the field on a
+        // guess. Keep it and let them retry.
+        clearKey: false, message: err.message, notes: [], failures: [err.message],
+      };
     }
 
-    state.invokeVerified = verdict.ok;
-    if (!verdict.ok) {
-      // Rejected keys are not kept, here or anywhere. Clear the field so a bad
-      // key does not sit in the DOM waiting to be pasted somewhere worse.
+    // The gate opens on LIVE only. A 202 is honest progress, not a pass: the
+    // tenant is still awaiting_invoke_key server-side and must not be walked
+    // forward as though the studio were serving.
+    state.invokeVerified = verdict.live === true;
+
+    // Clear the field ONLY when the verdict says the KEY was refused. The old
+    // code cleared on every non-success, which meant a 202 -- whose whole
+    // message is "Do not re-paste your key; nothing is wrong with it" -- wiped
+    // the key out from under that sentence and invited exactly the re-paste it
+    // warns against. The UI must not contradict the words it is displaying.
+    if (verdict.clearKey) {
       clearInvokeKey();
       const input = $("#invoke-key");
       if (input) input.value = "";
@@ -863,14 +864,25 @@
     if (verdictEl) {
       verdictEl.innerHTML = "";
       const callout = document.createElement("div");
-      callout.className = "callout " + (verdict.ok ? "" : "callout-bad");
-      verdict.ok
-        ? callout.appendChild(textP(verdict.message))
-        : verdict.failures.forEach(function (f) { callout.appendChild(textP(f)); });
+      // pending reuses callout-warn: a 202 wants attention, but it is NOT a
+      // failure and must not be painted as one. Only tone "bad" gets bad.
+      callout.className = "callout" + TONE_CLASS[verdict.tone];
+      // The headline is ALWAYS rendered. The old paint showed message only on
+      // success and failures only on failure, so a 202 (ok false, failures
+      // empty) would have painted an EMPTY box -- the customer told nothing at
+      // all about a key we are holding.
+      callout.appendChild(textP(verdict.message));
+      verdict.notes.forEach(function (n) { callout.appendChild(textP(n)); });
+      verdict.failures.forEach(function (f) {
+        // Do not print the headline twice when it IS the failure copy.
+        if (f !== verdict.message) callout.appendChild(textP(f));
+      });
       verdictEl.appendChild(callout);
     }
     refreshGates();
   }
+
+  const TONE_CLASS = { good: "", warn: " callout-warn", pending: " callout-warn", bad: " callout-bad" };
 
   function textP(text) {
     const p = document.createElement("p");
