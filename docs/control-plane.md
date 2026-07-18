@@ -214,6 +214,123 @@ Naming: **"control-plane", never "platform"**. The Studio's
 There is no `src/platform/` in THIS repo, and there should not be: reusing the name across the two
 repositories would be a trap for the next reader moving between them.
 
+## Upgrading the modules of a LIVE tenant (cf#103)
+
+A tenant provisioned last month runs the module bytes that were published then. Shipping a new
+module release used to have no route to reach it: the only code path that uploads module scripts
+lived inside a provision job, so an existing tenant could receive new modules only by being
+re-provisioned, which it cannot be.
+
+`POST /api/admin/tenants/:id/upgrade-modules` is that route. It is operator-only, one tenant per
+call, and deliberately narrow: it re-runs the three MODULE steps (`modules_upload`,
+`modules_install`, `verify`) against a tenant that already completed them.
+
+### What it does NOT do, and why
+
+It does not touch the studio. The tenant keeps running the studio bytes it was provisioned with, and
+`studio_release` is not written. Moving a tenant to a new STUDIO pin means re-uploading the studio
+worker, which means re-declaring its full binding set including `R2_S3_SECRET_ACCESS_KEY` -- a value
+this system deliberately never stores (see "Key custody"). That is a different job with a different
+custody shape, and it is not this route.
+
+It does not write `tenants.status`. Not on entry, not on success, not on failure. This is the whole
+safety story rather than an implementation detail: `routingStatusFor` maps any non-`live` status to
+something `tenantRefusal` answers with a 503, so a tenant put into a "provisioning-shaped" state
+during an upgrade would serve `503 This studio is still being set up` to its own paying users for
+the duration. A live tenant stays live throughout; progress lives on the job row.
+
+It does not roll back automatically. Rolling back means issuing more writes against a tenant that
+just failed a write, on the path that is already failing. Instead the failure is recorded in full
+and the tenant keeps serving. **Rollback is re-running this same route at the previous release**,
+which the job row preserves as `from_release`.
+
+### The release is explicit and required
+
+The request body is `{ "release": "<tag>" }`. There is no default, and a missing or blank release is
+`400 release_required`.
+
+This is deliberate and worth not "fixing" later. The defect that motivated this route is that module
+bundles were always fetched at `deps.release`, i.e. the PLANE-WIDE `STUDIO_RELEASE` env var, while
+`tenants.studio_release` was a column nothing ever read. Defaulting the release here would restore
+exactly that: module bytes shipped at whatever the plane happened to be pinned to, with nobody
+having said so and nothing recording it.
+
+### Ordering: everything that can refuse, refuses before anything is written
+
+1. **Preflight (all reads, no writes).** Tenant exists and is not deleted; not suspended; status is
+   `live`; `script_name` present; `endpoints_json` covers every endpoint the module catalog needs;
+   `studio_token_enc` present and decryptable; the studio answers a non-5xx root probe.
+2. **Fetch EVERY module bundle for the target release**, still before any upload. A release missing
+   one bundle must refuse before the first upload rather than after the third -- otherwise a bad
+   release pin swaps three modules and leaves a live tenant on mixed bytes.
+3. Only then is the job row created and the work started (202 + `job_id`).
+
+A refusal at 1 or 2 has created no job, cleared no release, and uploaded no module.
+
+### The release ledger, and what NULL means
+
+`tenants.modules_release` records the release whose module bytes the tenant runs **when that is
+uniformly true**. The upgrade NULLs it before its first upload and writes the target only on full
+success. So:
+
+| `modules_release` | meaning |
+|---|---|
+| a tag | every module script is at that release |
+| `NULL` | not known to be uniformly at any one release; consult the latest `module_upgrade` job |
+
+A partial failure therefore reads NULL rather than leaving the OLD tag standing, which would assert
+a uniformity the resident scripts do not have. The previous release is not lost: the job row carries
+`from_release` and `to_release`, which is what keeps a failed upgrade rollback-able.
+
+### What a user sees during an upgrade
+
+The studio never stops serving. It is not touched, its status is not changed, and routing keeps
+dispatching to the same `script_name`.
+
+Stated honestly rather than as "seamless": module scripts are replaced by in-place PUT and Workers
+for Platforms has no atomic multi-script swap, so a module invocation inside the swap window may
+execute old or new bytes. Both are conformance-gated, so neither is broken.
+
+### Mixed module state, and the one coupled pair
+
+A partial failure can leave some modules at the new release and some at the old. Whether that is
+safe is a question about the CATALOG, not about the conformance gate (which is per-module and says
+nothing about pairs):
+
+- The five catalog modules serve four hooks: `keyframe` (keyframe), `own-gpu` (motion.backend),
+  `speech-upscale` (speech), and `finish-upscale` + `finish-lipsync` (both `finish`).
+- Modules on **different** hooks never see each other output, so a mixed state across those is not
+  expressible as an incompatibility.
+- The one coupled pair is the two `finish` modules, which **chain**: each takes
+  `FinishInput{shot_id, clip_key}` and returns `FinishOutput{clip_key}`, so the second consumes the
+  output key of the first. A mixed finish chain is two vendored copies of that contract meeting on
+  one clip.
+
+That pair is bounded by the `api: "vivijure-module/2"` version the contract carries: an incompatible
+change to the finish payload requires bumping it, and the studio install gate rejects an api it does
+not accept, so an incompatible mixed chain fails at INSTALL, leaving the old module resident and the
+tenant serving.
+
+**Known limit:** a semantic redefinition of an existing field WITHOUT an api bump is not detectable
+here. That is a release-discipline defect which would break a full re-provision just as badly.
+
+### Refusals
+
+| code | status | when |
+|---|---|---|
+| `release_required` | 400 | no release in the body, or blank |
+| `not_found` | 404 | no such tenant |
+| `tenant_deleted` | 404 | the tenant row is deleted |
+| `tenant_suspended` | 409 | suspended; an upgrade must not route around the kill switch |
+| `tenant_not_live` | 409 | not `live`. An unfinished provision is resumed through its provision job, not upgraded |
+| `tenant_has_no_studio` | 409 | no `script_name` recorded |
+| `job_in_progress` | 409 | a job for this tenant is queued or running |
+| `tenant_endpoints_incomplete` | 422 | the tenant lacks an endpoint some catalog module needs |
+| `tenant_studio_token_missing` / `tenant_studio_token_unreadable` | 422 | no usable studio token |
+| `tenant_studio_not_serving` | 422 | the studio was already 5xx BEFORE the upgrade |
+| `module_bundle_unavailable` | 422 | the release is missing a module bundle |
+| `provisioner_unconfigured` | 503 | the deploy lacks the provisioner env |
+
 ## Verifying changes
 
 ```bash

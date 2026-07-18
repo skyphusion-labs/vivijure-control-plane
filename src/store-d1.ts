@@ -368,6 +368,12 @@ export class D1Store implements ControlPlaneStore {
       .run();
   }
 
+  async setTenantModulesRelease(id: string, release: string | null): Promise<void> {
+    // Binds null straight through: clearing is a real state here (see the column comment in
+    // migration 0006), not the absence of a write.
+    await this.db.prepare("UPDATE tenants SET modules_release = ?2 WHERE id = ?1").bind(id, release).run();
+  }
+
   async setTenantStudioToken(id: string, encValue: string): Promise<void> {
     await this.db.prepare("UPDATE tenants SET studio_token_enc = ?2 WHERE id = ?1").bind(id, encValue).run();
   }
@@ -386,6 +392,23 @@ export class D1Store implements ControlPlaneStore {
       .bind(id, tenantId, kind)
       .first<ProvisionJob>();
     if (!row) throw new Error("createProvisionJob: insert returned no row");
+    return row;
+  }
+
+  async createModuleUpgradeJob(
+    id: string,
+    tenantId: string,
+    fromRelease: string | null,
+    toRelease: string,
+  ): Promise<ProvisionJob> {
+    const row = await this.db
+      .prepare(
+        "INSERT INTO provision_jobs (id, tenant_id, kind, status, from_release, to_release) " +
+          "VALUES (?1, ?2, module_upgrade, queued, ?3, ?4) RETURNING *",
+      )
+      .bind(id, tenantId, fromRelease, toRelease)
+      .first<ProvisionJob>();
+    if (!row) throw new Error("createModuleUpgradeJob: insert returned no row");
     return row;
   }
 

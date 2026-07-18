@@ -11,7 +11,16 @@ import { CfApi } from "./cf-api";
 import type { ControlPlaneEnv } from "./env";
 import type { MailSender } from "./email";
 import { posternSender } from "./email";
-import { continueProvisionJob, runProvisionJob, teardownTenant, type ProvisionDeps } from "./provisioner";
+import {
+  continueProvisionJob,
+  preflightModuleUpgrade,
+  runProvisionJob,
+  teardownTenant,
+  upgradeTenantModules,
+  type ModuleUpgradeContext,
+  type ModuleUpgradePreflight,
+  type ProvisionDeps,
+} from "./provisioner";
 import { createTenantEndpoints } from "./runpod";
 import type { ControlPlaneStore, Tenant } from "./store";
 import { D1Store } from "./store-d1";
@@ -62,6 +71,18 @@ export interface ProvisionerWiring {
     ok: boolean;
     failures: { resource: string; error: string }[];
   }>;
+  /**
+   * Check everything a module upgrade needs WITHOUT writing anything (cf#103), so the route can
+   * refuse before it creates a job. Split from upgradeModules for exactly that reason: the refusal
+   * and the work must not be the same call, or a refusal leaves a job row behind.
+   */
+  preflightUpgrade(tenant: Tenant, release: string): Promise<ModuleUpgradePreflight>;
+  /**
+   * Ship the module set to a LIVE tenant at an explicit release. Never throws (the job row is the
+   * record) and NEVER writes tenants.status -- the tenant stays live and serving throughout, which
+   * is the blast-radius gate on this whole route.
+   */
+  upgradeModules(jobId: string, tenant: Tenant, context: ModuleUpgradeContext): Promise<void>;
 }
 
 export interface ControlPlaneDeps {
@@ -204,6 +225,12 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     },
     async teardown(tenant, opts) {
       return await teardownTenant(deps, tenant, opts);
+    },
+    async preflightUpgrade(tenant, release): Promise<ModuleUpgradePreflight> {
+      return await preflightModuleUpgrade(deps, tenant, release);
+    },
+    async upgradeModules(jobId, tenant, context) {
+      await upgradeTenantModules(deps, jobId, tenant, context);
     },
   };
 }

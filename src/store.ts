@@ -51,6 +51,16 @@ export interface Tenant {
   /** The ID of the bucket-scoped R2 token, never its value. Teardown revokes by this. */
   r2_token_id: string | null;
   studio_release: string | null;
+  /**
+   * The release whose MODULE bytes this tenant runs, when that is uniformly true (cf#103).
+   *
+   * NULL IS MEANINGFUL, not merely absent: it means "not known to be uniformly at any one release;
+   * consult the latest module_upgrade job". The upgrade NULLs this before its first upload and
+   * writes the target only on full success, so a partial failure cannot leave a value here claiming
+   * a uniformity the resident scripts do not have. Distinct from studio_release on purpose -- an
+   * upgrade ships modules and never touches the studio bytes.
+   */
+  modules_release: string | null;
   /** AES-256-GCM(STUDIO_TOKEN_KEK) of the tenant STUDIO_API_TOKEN. The one stored VALUE, encrypted. */
   studio_token_enc: string | null;
   created_at: string;
@@ -97,7 +107,7 @@ export type SlugClaim =
 export interface ProvisionJob {
   id: string;
   tenant_id: string;
-  kind: "provision" | "deprovision";
+  kind: "provision" | "deprovision" | "module_upgrade";
   status: "queued" | "running" | "succeeded" | "failed";
   step: string | null;
   steps_done: string;
@@ -106,6 +116,17 @@ export interface ProvisionJob {
   attempts: number;
   /** Who is currently driving this job, expressed as when that claim expires (#112). */
   lease_until: string | null;
+  /**
+   * A module_upgrade job only: the release it moved FROM and the release it moved TO.
+   *
+   * from_release exists so a FAILED upgrade is still rollback-able. Rollback here is "re-run at the
+   * previous release", and the upgrade NULLs tenants.modules_release before touching anything, so
+   * after a failure this row is the only place the previous release still exists. Null on every
+   * other job kind, and null-able on this one because the tenant may not have had a recorded module
+   * release to move from.
+   */
+  from_release: string | null;
+  to_release: string | null;
   created_at: string;
   updated_at: string;
   finished_at: string | null;
@@ -351,11 +372,31 @@ export interface ControlPlaneStore {
   setTenantR2Token(id: string, tokenId: string): Promise<void>;
   setTenantEndpoints(id: string, endpointsJson: string): Promise<void>;
   setTenantScript(id: string, scriptName: string, release: string): Promise<void>;
+  /**
+   * Set (or deliberately CLEAR, with null) the tenant module release.
+   *
+   * Takes null rather than exposing a separate clear method because the two calls are one
+   * protocol: the upgrade clears before its first write and sets only on full success, and a
+   * clear that could not be expressed here would push callers into writing a sentinel string.
+   */
+  setTenantModulesRelease(id: string, release: string | null): Promise<void>;
   /** The encrypted per-tenant STUDIO_API_TOKEN value (dispatcher-injected auth). Value, not a hash. */
   setTenantStudioToken(id: string, encValue: string): Promise<void>;
 
   // provision jobs
   createProvisionJob(id: string, tenantId: string, kind: "provision" | "deprovision"): Promise<ProvisionJob>;
+  /**
+   * A module_upgrade job, which carries the release pair the provision kinds have no use for.
+   * Separate from createProvisionJob so the release pair is REQUIRED where it is meaningful rather
+   * than optional everywhere, and so no caller can create an upgrade job that forgot where it came
+   * from (the one fact a failed upgrade cannot be reconstructed without).
+   */
+  createModuleUpgradeJob(
+    id: string,
+    tenantId: string,
+    fromRelease: string | null,
+    toRelease: string,
+  ): Promise<ProvisionJob>;
   getLatestJobForTenant(tenantId: string): Promise<ProvisionJob | null>;
   getJob(id: string): Promise<ProvisionJob | null>;
   setJobRunning(id: string): Promise<void>;

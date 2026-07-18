@@ -192,6 +192,7 @@ export class MemoryStore implements ControlPlaneStore {
     t.script_name = null;
     t.endpoints_json = null;
     t.studio_release = null;
+    t.modules_release = null;
     t.studio_token_enc = null;
     // live_at deliberately untouched: monotonic, so the tombstone can only get stricter.
     return { ...t };
@@ -219,6 +220,7 @@ export class MemoryStore implements ControlPlaneStore {
       endpoints_json: null,
       r2_token_id: null,
       studio_release: null,
+      modules_release: null,
       studio_token_enc: null,
       created_at: new Date().toISOString(),
       live_at: null,
@@ -270,6 +272,8 @@ export class MemoryStore implements ControlPlaneStore {
       error_message: null,
       attempts: 0,
       lease_until: null,
+      from_release: null,
+      to_release: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       finished_at: null,
@@ -299,6 +303,31 @@ export class MemoryStore implements ControlPlaneStore {
       t.script_name = scriptName;
       t.studio_release = release;
     }
+  }
+  async setTenantModulesRelease(id: string, release: string | null) {
+    const t = this.tenants.get(id);
+    if (t) t.modules_release = release;
+  }
+  async createModuleUpgradeJob(id: string, tenant_id: string, fromRelease: string | null, toRelease: string) {
+    const j: ProvisionJob = {
+      id,
+      tenant_id,
+      kind: "module_upgrade",
+      status: "queued",
+      step: null,
+      steps_done: "[]",
+      error_step: null,
+      error_message: null,
+      attempts: 0,
+      lease_until: null,
+      from_release: fromRelease,
+      to_release: toRelease,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      finished_at: null,
+    };
+    this.jobs.set(id, j);
+    return j;
   }
   async setTenantStudioToken(id: string, encValue: string) {
     const t = this.tenants.get(id);

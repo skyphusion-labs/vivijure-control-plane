@@ -144,7 +144,7 @@ export async function handle(
     }
 
     // ---- admin (bearer, not session) ----
-    if (path.startsWith("/api/admin/")) return await adminRoutes(request, env, deps, path, url);
+    if (path.startsWith("/api/admin/")) return await adminRoutes(request, env, deps, path, url, ctx);
 
     // ---- everything below needs a session ----
     if (path.startsWith("/api/")) {
@@ -683,6 +683,7 @@ async function adminRoutes(
   deps: ControlPlaneDeps,
   path: string,
   url: URL,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   // Fails CLOSED when the secret is unset: no token configured means no admin surface, not an open one.
   if (!(await isAdmin(bearerFrom(request), env.CONTROL_PLANE_ADMIN_TOKEN))) {
@@ -731,6 +732,61 @@ async function adminRoutes(
       await deps.store.recordAdminAction(actor, "tenant.resume", tenant.id, null);
     }
     return new Response(null, { status: 204 });
+  }
+
+  const upgrade = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/upgrade-modules$/.exec(path);
+  if (request.method === "POST" && upgrade) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(upgrade[1]);
+    if (!tenant) return err("not_found", 404);
+
+    const body = (await readJson(request)) as { release?: unknown } | null;
+    // REQUIRED, with no fallback to STUDIO_RELEASE. A default here would not save typing, it would
+    // manufacture the exact silent skew this route was built to end: module bytes shipped at
+    // "whatever the plane happened to be pinned to" with nobody having said so. The operator names
+    // the release or gets a 400.
+    const release = typeof body?.release === "string" ? body.release.trim() : "";
+    if (!release) return err("release_required", 400);
+
+    // ONE tenant at a time, and one job at a time for that tenant. A second upgrade overlapping the
+    // first would have two drivers PUTting different bytes into the same module scripts, which is
+    // the one way to reach a mixed state that nothing recorded.
+    const latest = await deps.store.getLatestJobForTenant(tenant.id);
+    if (latest && (latest.status === "queued" || latest.status === "running")) {
+      return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
+    }
+
+    // Preflight FIRST, before any row is created. A refusal here has written nothing at all: no
+    // job, no cleared release, no uploaded module.
+    const pre = await deps.provisioner.preflightUpgrade(tenant, release);
+    if (!pre.ok) return err(pre.refusal.code, pre.refusal.status, { message: pre.refusal.message });
+
+    const job = await deps.store.createModuleUpgradeJob(
+      newId("job"),
+      tenant.id,
+      // Where it is moving FROM, captured before anything NULLs it. This is what makes a failed
+      // upgrade rollback-able.
+      tenant.modules_release,
+      release,
+    );
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.upgrade_modules",
+      tenant.id,
+      JSON.stringify({ from: tenant.modules_release, to: release, job: job.id }),
+    );
+    // upgradeModules writes its own terminal job state for every failure it can see. The rejection
+    // handler only catches something thrown OUTSIDE that, where the job would otherwise be stranded
+    // "running" forever with no record of why.
+    ctx.waitUntil(
+      deps.provisioner.upgradeModules(job.id, tenant, pre.context).catch(async (e: unknown) => {
+        console.error("module_upgrade.unhandled", { tenant: tenant.id, error: String(e) });
+        await deps.store.finishJob(job.id, "failed", null, `upgrade driver threw: ${String(e)}`);
+      }),
+    );
+    // 202 without ok:true (cp#20): this has been ACCEPTED, not completed, and a body claiming
+    // success before the work has run is the exact shape that ruling exists to forbid.
+    return json({ job_id: job.id, from_release: tenant.modules_release, to_release: release }, 202);
   }
 
   return err("not_found", 404);
