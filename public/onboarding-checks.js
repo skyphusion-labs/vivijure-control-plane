@@ -308,7 +308,7 @@
 
   // Is AUP_URL pinned to an IMMUTABLE ref?
   //
-  // Ernst's rule (docs/legal/README.md, recommendation 2): if AUP_URL
+  // Ernst's rule (docs/legal/hosted/README.md, recommendation 2): if AUP_URL
   // resolves to a moving branch, the text a tenant reads changes whenever the
   // branch does while the recorded version label stays 1.0.0, "and nothing
   // detects the drift." An acceptance record pointing at text that can change
@@ -324,7 +324,16 @@
   // tripwire under it.
   const MOVING_NAMES = ["main", "master", "head", "develop", "trunk"];
   const SHA_RE = /^[0-9a-f]{7,64}$/i;
-  const TAG_RE = /^v?\d+\.\d+\.\d+[A-Za-z0-9.-]*$/;
+  // POLYNOMIAL ReDoS, fixed: the old form was
+  //   /^v?\d+\.\d+\.\d+[A-Za-z0-9.-]*$/
+  // where the third \d+ is followed by a class that ALSO matches digits, so a
+  // long digit run can be split n ways and a failing match costs O(n^2)
+  // (measured: doubling the input quadrupled the time). Forbidding the tail to
+  // START with a digit makes the digit run maximal, which removes the
+  // ambiguity while accepting exactly the same language -- "digits then
+  // anything over T" is the same set as "maximal digits, then optionally a
+  // non-digit-led T*". Verified by differential test, not by reading it.
+  const TAG_RE = /^v?\d+\.\d+\.\d+(?:[A-Za-z.-][A-Za-z0-9.-]*)?$/;
 
   // Pull the ref out of a forge URL. Two shapes matter, and the second one is
   // the one that nearly slipped through: raw.githubusercontent.com has NO
