@@ -417,6 +417,113 @@
     return true;
   }
 
+  // ---- invoke-key: the RESPONSE the control plane actually serves -------
+  //
+  // control-plane#20 / this fix. The previous client was written against a
+  // contract that never shipped ("204 -> verified AND installed, 501 ->
+  // not_implemented", citing #52). The route serves neither. It serves 200 on
+  // go-live and 202 when the key is stored but module propagation has not been
+  // observed yet, so EVERY successful go-live fell through to the failure
+  // branch and told a live customer "That key was not accepted, and we have
+  // not stored it." That is the exact inverse of the truth, and the field was
+  // cleared underneath it, inviting the re-paste the 202 copy exists to stop.
+  //
+  // This function is PURE and takes (httpStatus, parsedBody) so a test can
+  // drive the real response shapes and assert what the customer is TOLD.
+  // Branch on the HTTP status plus `status` and `modules_ready` -- never on a
+  // summary field. There is no summary field: cp#20 removed `ok` from both
+  // success bodies precisely because it flattened the distinction below.
+  //
+  // THE SUBTLE CASE: 200 does NOT mean "all good". 200 means LIVE.
+  // modules_ready means PROVEN. A tenant goes live with modules_ready:false
+  // when a module image predates GET /ready and its readiness could not be
+  // observed. That is a real, non-failing state and it must not read to the
+  // customer as an unqualified success -- swallowing it is what cf#114 closed.
+  function invokeKeyVerdict(httpStatus, body) {
+    const b = body || {};
+    const unverified = Array.isArray(b.modules_unverified) ? b.modules_unverified : [];
+
+    if (httpStatus === 200) {
+      // Live. The only question left is whether every module PROVED ready.
+      if (b.modules_ready === false || unverified.length) {
+        return {
+          ok: true,
+          tone: "warn",
+          live: true,
+          pending: false,
+          keyStored: true,
+          clearKey: false,
+          message: "Your studio is live.",
+          notes: [
+            "We could not confirm every render module is ready" +
+              (unverified.length ? " (" + unverified.join(", ") + ")" : "") +
+              ". That usually means those modules run an older image that cannot report " +
+              "readiness, not that anything is broken. If a render fails on one of them, tell us.",
+          ],
+          failures: [],
+        };
+      }
+      return {
+        ok: true,
+        tone: "good",
+        live: true,
+        pending: false,
+        keyStored: true,
+        clearKey: false,
+        message: "Your studio is live: your key checks out and every render module is ready.",
+        notes: [],
+        failures: [],
+      };
+    }
+
+    if (httpStatus === 202) {
+      // Installed, NOT live. The server already wrote the right words for this
+      // (it knows how many times it checked and for how long); show them
+      // VERBATIM rather than inventing a second, drifting copy of them. The
+      // key stays in the field: this is the one state where blanking it would
+      // actively cause the re-paste the message is telling them not to do.
+      return {
+        ok: false,
+        tone: "pending",
+        live: false,
+        pending: true,
+        keyStored: true,
+        clearKey: false,
+        message: b.message || "Your key is installed and stored, but your studio is not live yet.",
+        notes: [],
+        failures: [],
+      };
+    }
+
+    // Everything below is a real failure, and every one of these responses
+    // carries a diagnostic -- unlike the success bodies, which is why the old
+    // client produced a blank refusal.
+    const reason = b.error || b.reason || null;
+    const copy = invokeRejectionCopy(reason, b.message || null);
+
+    // Clear the field ONLY when the KEY is what was refused. On 409, 503 and
+    // 500 the key is not at fault (and on modules_not_ready it is already
+    // stored), so blanking it just forces a needless re-paste of a credential.
+    // DELIBERATE: this branch is not a fallthrough. 503 modules_not_ready
+    // carries {step, message} and 400 invoke_key_rejected carries
+    // {reason, message}; both surface a REAL diagnostic here on purpose. Do
+    // not "simplify" this into a generic error path -- an opaque failure at
+    // this exact moment is the defect cf#114 and control-plane#17 closed.
+    const keyWasRefused = reason === "invoke_key_rejected" || reason === "invoke_key_required";
+
+    return {
+      ok: false,
+      tone: "bad",
+      live: false,
+      pending: false,
+      keyStored: false,
+      clearKey: keyWasRefused,
+      message: copy,
+      notes: [],
+      failures: [copy],
+    };
+  }
+
   return {
     STEPS: STEPS,
     KEY_PREFIX: KEY_PREFIX,
@@ -425,6 +532,7 @@
     SLUG_RESERVED: SLUG_RESERVED,
     scopeVerdict: scopeVerdict,
     invokeRejectionCopy: invokeRejectionCopy,
+    invokeKeyVerdict: invokeKeyVerdict,
     aupAcceptFailureCopy: aupAcceptFailureCopy,
     aupUrlPinning: aupUrlPinning,
     aupPinningRefusalCopy: aupPinningRefusalCopy,

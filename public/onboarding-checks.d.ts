@@ -77,6 +77,46 @@ export const SLUG_RESERVED: string[];
 export function scopeVerdict(probe: ScopeProbe | null | undefined): ScopeVerdict;
 export const REJECTION_COPY: Record<string, string>;
 
+/** What the customer is told after an invoke-key attempt, derived PURELY from
+ *  the HTTP status plus the real response body. See invokeKeyVerdict in
+ *  onboarding-checks.js for why there is no summary field to branch on. */
+export interface InvokeKeyVerdict {
+  /** The go-live COMPLETED. False on 202 (installed, not yet live) -- which is
+   *  not a failure; read `pending` to tell the two apart. */
+  ok: boolean;
+  /** good: live and fully proven. warn: live, readiness unproven. pending: 202.
+   *  bad: a real failure. Drives the callout styling only. */
+  tone: 'good' | 'warn' | 'pending' | 'bad';
+  live: boolean;
+  pending: boolean;
+  /** Whether the control plane is holding the key. True on 200 AND on 202. */
+  keyStored: boolean;
+  /** Blank the key input? True ONLY when the KEY itself was refused. Never on
+   *  202: clearing there causes the re-paste that response exists to prevent. */
+  clearKey: boolean;
+  message: string;
+  notes: string[];
+  failures: string[];
+}
+
+export interface InvokeKeyResponseBody {
+  status?: string;
+  verified_endpoints?: number;
+  modules_ready?: boolean;
+  modules_verified?: string[];
+  modules_unconfirmed?: string[];
+  modules_unverified?: string[];
+  message?: string;
+  error?: string;
+  reason?: string;
+  step?: string;
+}
+
+export function invokeKeyVerdict(
+  httpStatus: number,
+  body: InvokeKeyResponseBody | null | undefined,
+): InvokeKeyVerdict;
+
 export interface AupAcceptFailure {
   ok?: boolean;
   stale?: boolean;
