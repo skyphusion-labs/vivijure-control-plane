@@ -58,7 +58,17 @@ beforeEach(() => {
   // The wiring STUB records the handoff; it never executes a job. What the routes prove is that
   // the runner is LAUNCHED with the right job/tenant/key; the step machine itself is
   // provisioner.test.ts + the live e2e.
-  wiring = { start: vi.fn(async () => {}), installInvokeKey: vi.fn(async () => {}) };
+  // installInvokeKey now returns the cf#114 module-readiness outcome; the route reads it, so a
+  // stub that returns undefined is not a valid stand-in for the production contract.
+  wiring = {
+    start: vi.fn(async () => {}),
+    installInvokeKey: vi.fn(async () => ({
+      verified: ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale"],
+      unverified: [],
+      attempts: 1,
+      elapsedMs: 12,
+    })),
+  };
   deps = {
     store,
     mailer: { send: async (to, subject, text) => void sent.push({ to, subject, text }) },
@@ -468,7 +478,13 @@ describe("POST /api/tenant/:id/invoke-key", () => {
       env(), ctx, deps,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ ok: true, status: "live", verified_endpoints: 1 });
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      status: "live",
+      verified_endpoints: 1,
+      // cf#114: the response says plainly that every module was PROVEN to serve the key.
+      modules_ready: true,
+    });
     // The install handoff carries the tenant and the key; the key is stored NOWHERE else.
     expect(wiring.installInvokeKey).toHaveBeenCalledTimes(1);
     const [tenant, key] = wiring.installInvokeKey.mock.calls[0] as [{ id: string }, string];

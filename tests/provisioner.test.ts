@@ -115,6 +115,12 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     // A valid base64 32-byte key so token-crypto importKey(AES-GCM-256) accepts it.
     kek: btoa("0123456789abcdef0123456789abcdef"),
     spendDailyCeiling: null,
+    // cf#114: provisioning never probes /ready (key B does not exist yet at that point) -- this is
+    // here because the ProvisionDeps contract requires it. It THROWS rather than returning a benign
+    // shape: if provisioning ever starts calling it, that must surface as a failure, not a silent pass.
+    callTenantModule: vi.fn(async () => {
+      throw new Error("callTenantModule must not be used during provisioning");
+    }),
     callTenantStudio: vi.fn(async (_script: string, init: { method: string; path: string }) => {
       if (init.path === "/api/modules/install") return { status: 201, text: '{"ok":true}' };
       if (init.path === "/api/modules/installed")

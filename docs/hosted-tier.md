@@ -138,6 +138,17 @@ We tested that boundary rather than assuming it:
 So the worst case for the key we store is "someone could run renders on your four endpoints." The
 worst case is not your RunPod account. That is the entire reason setup asks you to mint twice.
 
+**And then we wait until it actually works before telling you it does.** Storing your key is not the
+same as your renderers being able to read it: the pieces of your studio pick up a new credential over
+a few seconds, and there was a window where we said "you are live" a moment before the first render
+could actually run. One person hit it, and the error blamed a credential that was perfectly fine.
+
+So after your key is stored we ask each of your renderers a direct question -- can you see your
+credentials? -- and we only mark you live once they all say yes. They answer with yes-or-no, never
+with the credential itself. If one of them cannot see the key within a few seconds, we tell you that,
+with what we tried and for how long, instead of handing you a studio that reports ready and fails on
+your first render.
+
 ---
 
 ## What a render costs

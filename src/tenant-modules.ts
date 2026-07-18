@@ -107,6 +107,11 @@ export interface TenantModuleDeps {
   moduleNamespace: string;
   moduleBundle: ModuleBundleSource;
   release: string;
+  /** Dispatch a GET to one tenant MODULE script over TENANT_MODULE_DISPATCH (cf#114). Separate from
+   *  callTenantStudio because module scripts live in a DIFFERENT dispatch namespace and take no
+   *  bearer: /ready is unauthenticated by design (it carries booleans, never values, and the control
+   *  plane must be able to ask before the tenant has a working credential to authenticate with). */
+  callTenantModule(scriptName: string, path: string): Promise<{ status: number; text: string }>;
   /** Dispatch a request to the tenant studio over TENANT_DISPATCH (the same seam probeTenantRoot uses),
    *  attaching the studio bearer so the AUTH_MODE=token gate passes. */
   callTenantStudio(
@@ -368,4 +373,171 @@ export async function teardownTenantModules(
     failures.push({ resource: "modules_census", error: String(e) });
   }
   return { ok: failures.length === 0, failures };
+}
+
+// ---------------------------------------------------------------------------
+// cf#114: module credential-readiness probe
+// ---------------------------------------------------------------------------
+
+/**
+ * BUDGET (cf#112 / cf#113). This probe runs inside the INVOKE-KEY ROUTE, not a waitUntil job, so it
+ * is bounded by a request the customer is actively waiting on. 10s across ALL FIVE modules, not 10s
+ * each: every round probes the still-pending scripts CONCURRENTLY, so the deadline is wall-clock for
+ * the whole set. Five sequential deadlines would be a 50s route, which is a hang wearing a fix.
+ *
+ * It either fits this budget or fails honestly. It never sleeps past it.
+ */
+export const MODULE_READY_PROBE_DEADLINE_MS = 10_000;
+const MODULE_READY_BACKOFF_MS = [250, 500, 1000, 2000] as const;
+
+/** The /ready envelope, as the module contract defines it (vivijure-cf#114). Booleans only. */
+interface ModuleReadyBody {
+  ok?: boolean;
+  module?: string;
+  credentials?: { runpod_api_key?: boolean; runpod_endpoint_id?: boolean };
+}
+
+/**
+ * What one /ready answer means. This classification IS the line between a wait and a cover-up, so it
+ * is a pure function with its own tests rather than inline branching.
+ *
+ *  - "ready"           both credentials readable on the version the edge serves. Done.
+ *  - "not_visible_yet" endpoint id present, key absent. THE ONLY RETRYABLE SHAPE: the endpoint id is
+ *                      bound at upload and the key is written later, so this exact combination is
+ *                      what propagation looks like and nothing else is.
+ *  - "no_ready_route"  404: a module image published before /ready existed. Not retryable (waiting
+ *                      cannot make an endpoint appear) and not a failure of the key install.
+ *  - "misconfigured"   any other shape, including the endpoint id being ABSENT. That is a real
+ *                      provisioning defect: the endpoint id is bound at upload, so if it is missing
+ *                      the upload is wrong and no amount of waiting fixes it. Fails immediately --
+ *                      spending the window on it would be pretending it might resolve.
+ */
+export type ModuleReadyVerdict = "ready" | "not_visible_yet" | "no_ready_route" | "misconfigured";
+
+export function classifyReadyResponse(status: number, text: string): ModuleReadyVerdict {
+  if (status === 404) return "no_ready_route";
+  if (status !== 200) return "misconfigured";
+  let body: ModuleReadyBody;
+  try {
+    body = JSON.parse(text) as ModuleReadyBody;
+  } catch {
+    // A 200 that is not the contract envelope is not evidence of anything. Refuse honestly rather
+    // than reading a malformed body optimistically.
+    return "misconfigured";
+  }
+  const creds = body.credentials;
+  if (!creds || typeof creds.runpod_api_key !== "boolean" || typeof creds.runpod_endpoint_id !== "boolean") {
+    return "misconfigured";
+  }
+  if (creds.runpod_api_key && creds.runpod_endpoint_id) return "ready";
+  if (creds.runpod_endpoint_id && !creds.runpod_api_key) return "not_visible_yet";
+  return "misconfigured";
+}
+
+/** One module that could not be PROVEN ready, and why. Reported, never swallowed. */
+export interface UnverifiedModule {
+  module: string;
+  reason: "no_ready_route";
+  detail: string;
+}
+
+/** The outcome the invoke-key route reports to the tenant. */
+export interface ModuleReadiness {
+  verified: string[];
+  unverified: UnverifiedModule[];
+  attempts: number;
+  elapsedMs: number;
+}
+
+/**
+ * Wait until every tenant module script SERVES its freshly-installed key (cf#114).
+ *
+ * Called after the key-B fan-out and BEFORE the tenant flips to live, which is the whole point: the
+ * window this closes is the one between "the secret was written" and "the version the edge serves
+ * can read it". A throw here leaves the tenant at awaiting_invoke_key rather than promoting it to
+ * live on credentials nothing has proven, which is the correct failure.
+ *
+ * OLD MODULE IMAGES (404). A module published before /ready existed cannot answer, and hard-failing
+ * on that would mean a tenant pinned to an older release can no longer install a key at all -- worse
+ * than the defect being fixed. It is also not something waiting can resolve. So it is neither
+ * retried nor fatal: it is recorded as UNVERIFIED and reported explicitly in the route response and
+ * the log. The install genuinely succeeded; what we cannot do is prove propagation. Saying so is
+ * honest. Silently treating it as ready would be the fake guarantee this whole design rejected.
+ * This path is transitional -- it disappears once the pinned release carries /ready everywhere.
+ */
+export async function awaitTenantModulesReady(
+  deps: TenantModuleDeps,
+  tenantId: string,
+  timing: ProbeTiming = realTiming,
+  deadlineMs: number = MODULE_READY_PROBE_DEADLINE_MS,
+): Promise<ModuleReadiness> {
+  const started = timing.now();
+  let attempts = 0;
+  const verified: string[] = [];
+  const unverified: UnverifiedModule[] = [];
+  let pending = TENANT_MODULE_CATALOG.map((spec) => spec.module);
+  let last = "";
+
+  for (;;) {
+    attempts += 1;
+    const results = await Promise.all(
+      pending.map(async (moduleName) => {
+        const scriptName = tenantModuleScriptName(tenantId, moduleName);
+        const res = await deps.callTenantModule(scriptName, "/ready");
+        return { moduleName, scriptName, res, verdict: classifyReadyResponse(res.status, res.text) };
+      }),
+    );
+    const elapsedMs = timing.now() - started;
+
+    const stillPending: string[] = [];
+    for (const r of results) {
+      if (r.verdict === "ready") {
+        verified.push(r.moduleName);
+      } else if (r.verdict === "no_ready_route") {
+        unverified.push({
+          module: r.moduleName,
+          reason: "no_ready_route",
+          detail:
+            `${r.scriptName} does not serve GET /ready (it predates cf#114), so its credential ` +
+            "propagation could not be verified; re-provision against a release that carries it",
+        });
+      } else if (r.verdict === "misconfigured") {
+        // NOT retryable. Failing now rather than spending the window pretending this might resolve
+        // is what stops the retry from laundering a real misconfiguration into a success.
+        throw new TenantModuleError(
+          "verify",
+          `module ${r.moduleName} (${r.scriptName}) /ready -> ${r.res.status}: ` +
+            `${r.res.text.slice(0, 200)} (not retryable; attempts=${attempts}, elapsed=${elapsedMs}ms)`,
+        );
+      } else {
+        stillPending.push(r.moduleName);
+        last = `${r.moduleName}: ${r.res.status} ${r.res.text.slice(0, 120)}`;
+      }
+    }
+    pending = stillPending;
+
+    if (pending.length === 0) {
+      deps.log("modules_ready", {
+        tenant: tenantId,
+        attempts,
+        elapsedMs,
+        verified: verified.length,
+        unverified: unverified.map((u) => u.module),
+      });
+      return { verified, unverified, attempts, elapsedMs };
+    }
+
+    const wait = MODULE_READY_BACKOFF_MS[Math.min(attempts - 1, MODULE_READY_BACKOFF_MS.length - 1)];
+    if (elapsedMs + wait >= deadlineMs) {
+      // LOUD, with attempts and elapsed. A credential that is genuinely absent ends up HERE, never
+      // absorbed by the retry: the deadline is the only exit from the not-visible-yet shape.
+      throw new TenantModuleError(
+        "verify",
+        `module credentials never became visible on ${pending.join(", ")} -> ${last} ` +
+          `(gave up after ${attempts} attempts, ${elapsedMs}ms; either propagation is far slower ` +
+          `than ${deadlineMs}ms or the key was never written)`,
+      );
+    }
+    await timing.sleep(wait);
+  }
 }

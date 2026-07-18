@@ -106,6 +106,7 @@ beforeAll(async () => {
     moduleNamespace: notSupplied("moduleNamespace"),
     kek: notSupplied("kek"),
     spendDailyCeiling: notSupplied("spendDailyCeiling"),
+    callTenantModule: notSupplied("callTenantModule"),
     callTenantStudio: notSupplied("callTenantStudio"),
   };
 });

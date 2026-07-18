@@ -79,6 +79,24 @@ migrations_dir = "migrations"
 binding = "TENANT_DISPATCH"
 namespace = "${TENANT_DISPATCH_NAMESPACE}"
 
+# Tenant MODULE workers (cf#99) live in their own namespace, and as of cf#114 the control plane DOES
+# dispatch to them: the invoke-key route probes each module script GET /ready to prove it actually
+# serves the key that was just installed, BEFORE the tenant is flipped live. A dispatch binding is the
+# only way to reach a script that has no public route.
+#
+# DANGLING-BINDING HAZARD, and it is SHARPER here than for TENANT_DISPATCH: this namespace is created
+# LAZILY by the provisioner (first provision), so on a fresh account it may not exist when this Worker
+# first deploys, and `wrangler deploy` FAILS on a binding to a namespace that is not there. Create it
+# before deploying with this binding present:
+#   npx wrangler dispatch-namespace create vivijure-tenant-modules
+# On an account that has already provisioned a tenant it exists already.
+#
+# src/env.ts types this binding OPTIONAL on purpose: a deploy that predates it still starts, and the
+# probe then reports the modules UNVERIFIED rather than reporting a false pass.
+[[dispatch_namespaces]]
+binding = "TENANT_MODULE_DISPATCH"
+namespace = "${TENANT_MODULE_NAMESPACE}"
+
 # The studio release artifact mirror studio-release.yml publishes (studio-releases/<tag>/...).
 # The provisioner reads the pinned release from here; see src/bundle-r2.ts.
 # PREREQ, same class as the dangling-namespace hazard above: the bucket must EXIST and the pinned
@@ -139,9 +157,10 @@ DISPATCH_NAMESPACE = "${TENANT_DISPATCH_NAMESPACE}"
 # DISPATCH_NAMESPACE (tenant studios): sharing one would collide script names and put a module
 # bug inside the tenant blast radius. The provisioner CREATES it if missing (idempotent), so no
 # separate dashboard/wrangler step is needed -- but it is a required var: absent -> provisioning
-# refuses 503, same as the rest of this block. NO [[dispatch_namespaces]] binding is needed for
-# it here (the control plane never dispatches to modules; each TENANT studio carries its own
-# MODULE_DISPATCH -> this namespace in its upload metadata).
+# refuses 503, same as the rest of this block. Each TENANT studio carries its own MODULE_DISPATCH ->
+# this namespace in its upload metadata. As of cf#114 the control plane ALSO binds it, as
+# TENANT_MODULE_DISPATCH above, to probe module readiness before flipping a tenant live -- the NAME
+# here and that binding must name the same namespace.
 TENANT_MODULE_NAMESPACE = "${TENANT_MODULE_NAMESPACE}"
 # The pinned studio release every new tenant gets (the golden-checkpoint pin; see the Q4 ruling).
 STUDIO_RELEASE = "${STUDIO_RELEASE}"

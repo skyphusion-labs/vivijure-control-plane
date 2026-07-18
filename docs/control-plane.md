@@ -245,3 +245,81 @@ shipped surface could not run it; the first over-HTTP run caught it, which is ex
 run exists for.)
 
 Still elsewhere: routing/domains #55, quotas #56, AUP text #57, onboarding UX #58.
+
+## Module readiness, and what `/api/platform/version` is for (cf#114)
+
+### The window this closes
+
+`installInvokeKey` writes key B to the tenant studio and to all five tenant module scripts, then the
+route flips the tenant to `live`. A `200` from the secrets PUT means the secret is stored; it does
+NOT mean the version the edge is serving can read it. In the cf#99 finale a tenant that had just
+reported `live` failed its first render citing a credential that was demonstrably present, and the
+identical payload succeeded 45 seconds later.
+
+Nothing outside the module can observe that. `getScriptSecretNames` reports the secret NAME exists,
+which was TRUE during the failure, and it cannot say which version the edge serves. So the probe has
+to be a module endpoint, which is what `GET /ready` (vivijure-cf#114) is.
+
+### The probe
+
+`awaitTenantModulesReady` (`src/tenant-modules.ts`) runs after the key-B fan-out and BEFORE
+`setTenantStatus(..., "live")`. It probes `GET /ready` on all five tenant module scripts over the
+`TENANT_MODULE_DISPATCH` binding, unauthenticated (the endpoint carries booleans, never values, and
+the plane must be able to ask before the tenant has a working credential to authenticate with).
+
+`classifyReadyResponse` is where the line between a wait and a cover-up lives, so it is a pure,
+separately tested function:
+
+| answer | verdict | behaviour |
+| --- | --- | --- |
+| `200`, both credentials `true` | `ready` | done |
+| `200`, endpoint `true`, key `false` | `not_visible_yet` | **the only retryable shape** |
+| `200`, endpoint `false` | `misconfigured` | fails IMMEDIATELY -- the endpoint id is bound at upload, so waiting cannot fix it |
+| `200`, not the contract envelope | `misconfigured` | fails immediately; a malformed body is not evidence of anything |
+| `404` | `no_ready_route` | module image predates `/ready`: reported UNVERIFIED, never retried, never counted as ready |
+| anything else | `misconfigured` | fails immediately |
+
+**Budget (cf#112 / cf#113).** This runs in the invoke-key ROUTE, which a customer is waiting on.
+`MODULE_READY_PROBE_DEADLINE_MS` is 10s across ALL FIVE modules, not per module: each round probes
+the still-pending scripts concurrently, and a module that goes ready drops out of the loop. Five
+sequential deadlines would be a 50s route, which is a hang wearing a fix. It fits the budget or fails
+honestly; it never sleeps past it.
+
+**A genuinely absent credential fails LOUDLY** at the deadline, naming the modules and carrying
+attempts and elapsed. The deadline is the ONLY exit from `not_visible_yet`, which is what stops the
+retry from laundering a real misconfiguration into a success. A throw leaves the tenant at
+`awaiting_invoke_key` rather than promoting it on credentials nothing has observed.
+
+### Old module images (404): unverified, never a false pass
+
+A module published before `/ready` existed cannot answer. Hard-failing would mean a tenant pinned to
+an older release can no longer install a key at all, which is worse than the defect being fixed; and
+waiting cannot make the endpoint appear. So it is neither retried nor fatal. The install succeeded
+and is reported as such; what could not be done is PROVING propagation, and the response says so:
+
+```json
+{ "ok": true, "status": "live", "verified_endpoints": 4,
+  "modules_ready": false,
+  "modules_verified": ["keyframe", "own-gpu"],
+  "modules_unverified": [{ "module": "finish-upscale", "reason": "no_ready_route", "detail": "..." }] }
+```
+
+`modules_ready` is `false` whenever anything went unverified, so an operator reading the top-level
+field alone cannot mistake "could not check" for "checked and fine". This path is transitional: it
+disappears once the pinned release carries `/ready` on every module. The same reporting covers an
+unbound `TENANT_MODULE_DISPATCH` (a deploy predating the binding), which degrades to unverified
+rather than to a false all-clear.
+
+### `GET /api/platform/version`
+
+Returns `{ "control_plane_version": "<semver>" }` from `src/version.ts`, which the existing lockstep
+test keeps equal to `package.json`. Before this, `CONTROL_PLANE_VERSION` was referenced by nothing at
+runtime: confirming which release the plane served meant fetching a changed asset and reading the
+patched line off the wire. That works, but it is archaeology, not observability.
+
+It is its OWN route rather than a field on `/api/platform/config` deliberately. That route is a
+policy projection the front door renders from -- it has a UI contract and a UI audience. Deploy
+identity is an operator/CI fact with a different audience and different cache semantics, and folding
+it in is how a config endpoint turns into a junk drawer. Unauthenticated, like the config route: the
+version of an AGPL codebase whose tags are public is not a secret, and a version you need a
+credential to read is useless to the monitoring that needs it most.
