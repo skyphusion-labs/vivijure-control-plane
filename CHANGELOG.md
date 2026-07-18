@@ -4,6 +4,96 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
+## v1.0.1 -- 2026-07-18
+
+**Security PATCH.** Closes a polynomial ReDoS (CodeQL `js/polynomial-redos`, high) in the email
+sanity check on the login door. Ships minutes behind v1.0.0 because the defect was live in the plane
+before the extraction too; v1.0.0 neither introduced nor worsened it.
+
+### The defect
+
+`looksLikeEmail` ran on **unauthenticated** input at the login-start door, and it ran **before** the
+rate limiter, so anything quadratic in it was reachable by anyone with no throttle in front of it.
+It came across from `vivijure-cf` with the extraction; the extraction is simply what first put a
+scanner on it.
+
+Measured rather than assumed. The blow-up needs a FAILING match: a trailing `@` the segment class
+cannot consume, which forces backtracking across every split of the repeated run.
+
+| input | before | after |
+| --- | --- | --- |
+| `"a@" + "b.".repeat(10000) + "@"` | ~90ms | ~1ms |
+| `"a@" + "b.".repeat(40000) + "@"` | ~1371ms | ~1ms |
+| `"a@" + "b.".repeat(80000) + "@"` | ~5517ms | ~1ms |
+
+Clean quadratic. 5.5 seconds of CPU from one request body is a denial of service on a Worker with a
+CPU budget.
+
+### Two fixes, redundant on purpose
+
+- **Ordering.** The 254-character cap was checked AFTER the regex (`RE.test(e) && e.length <= 254`).
+  `&&` short-circuits left to right, so the regex ran on UNBOUNDED input and the cap protected
+  nothing. Length is checked first now, bounding the work whatever the pattern does. This was a real
+  defect on its own, not just scanner appeasement.
+- **Ambiguity.** The domain part was `[^\s@]+\.[^\s@]+`, where `[^\s@]` also matches a dot. That
+  overlap between the segment class and the separator IS the backtracking. The segment classes now
+  exclude the dot, so every character has exactly one role and the match is linear.
+
+### Behaviour change, stated rather than slipped in
+
+The stricter domain rejects consecutive dots (`a@b..c`), which the old pattern accepted. That
+address is not deliverable, so rejecting it is correct, and the endpoint answers 202 for every
+outcome regardless (it must not become an account-enumeration oracle), so nothing user-visible
+moves. Pinned by a test.
+
+### Tests
+
+18 added; there were none. The file records what they can and cannot prove: the regex fix IS
+isolated (exercised against `EMAIL_RE` directly, on input the length cap would otherwise reject), but
+the ordering fix is NOT independently observable, because with a linear pattern the ordering makes no
+difference and the end-to-end timing test only fails if BOTH regress. Said plainly in the test rather
+than left to imply a guarantee that does not exist.
+
+### Same class, second site: the AUP tag matcher (#11)
+
+Found by Joan checking her own files after the first finding rather than assuming the scanner had
+covered them -- it had passed her earlier PRs without flagging this.
+
+`TAG_RE` in `public/onboarding-checks.js` had a `\d+` followed by a class that also matches digits,
+so a long digit run could be split many ways and a failing match cost O(n^2). Measured on
+`"v1.1." + "1".repeat(n) + "!"`: doubling n quadrupled the time (2000 -> 1.60ms, 16000 -> 99.55ms).
+Fixed by forbidding the tail to start with a digit, which makes the digit run maximal and removes the
+ambiguity. Differential-tested over 400k randomized strings: zero behaviour change.
+
+**Severity LOW, and not dressed up.** That input is the ref parsed out of `AUP_URL`, which is
+operator-set deploy config, not user input -- nobody reaches it without already controlling the
+deploy. It rides this patch because it is the same defect class and the fix is cheap and proven, not
+because it is urgent. `SHA_RE` and the slug matcher in the same file measured flat and are untouched.
+
+### The AUP_URL moving-ref guard accepted four branch refs (#12)
+
+Joan drove the REAL render script with a 16-case corpus instead of reading the glob, and found the
+guard accepting `/raw/develop/`, `/blob/trunk/`, `/blob/head/` (HEAD was covered, lowercase was not)
+and `/blob/Main/` (the glob was case-sensitive). It refused `/main/` and `/master/` correctly, which
+is exactly why it read as working.
+
+Each one is a branch ref, and a branch ref as `AUP_URL` means the policy text an account accepted can
+change afterwards while the recorded `sha256` still claims to describe it -- the precise failure the
+guard exists to prevent. Each case was reproduced as accepted BEFORE the patch, then watched flip to
+refused.
+
+This has to ride a tagged release rather than sit on main: `deploy.yml` checks out the TAG, so the
+guard only takes effect once tagged.
+
+### CI: the CodeQL language pin never applied (#10)
+
+Not a runtime change, recorded because it explains why two ReDoS defects sat unflagged. The workflow
+passed `language` (singular) to `codeql-action/init`, which takes `languages`. Actions does not fail
+on an unknown input, so the pin was silently ignored and auto-detection ran instead. It happened to
+find MORE than the pin claimed, so there was no coverage gap, no failing check, and nothing to
+notice. Now stated correctly, with `actions` and `python` declared alongside
+`javascript-typescript` rather than narrowed away.
+
 ## v1.0.0 -- 2026-07-18
 
 The hosted control plane becomes its own product, in its own repository, serving from its own
