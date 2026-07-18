@@ -12,7 +12,7 @@ You still own the GPUs. You still own your films. The only thing we do is run th
 you, so you never have to set one up.
 
 Want to install it yourself instead? That path is first-class and fully supported. Start at
-[quickstart.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md).
+[quickstart.md](quickstart.md).
 
 ---
 
@@ -242,7 +242,7 @@ sales to export" step. Your RunPod endpoints stay yours; we show you a checklist
 you want them gone, and we never touch your RunPod account beyond the setup you authorized.
 
 Taking that export and running it yourself gives you the same studio, on your own Cloudflare
-account. See [quickstart.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md).
+account. See [quickstart.md](quickstart.md).
 
 ---
 
@@ -273,14 +273,14 @@ is no version of this product where that is negotiable. Be clear that a studio w
 same as one you run yourself: on your own machine we genuinely cannot see anything, and on a studio
 we host for you, we are not blind, and reporting is the law rather than a favor we choose to do.
 
-Legal text for the self-hosted studio (the in-force documents today) is in [legal/hosted/](legal/hosted/).
+Legal text for the self-hosted studio (the in-force documents today) is in [legal/](legal/).
 
 ---
 
 ## Where the details live
 
-- [quickstart.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md) -- install your own studio instead. First-class, fully supported.
-- [constellation.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/constellation.md) -- the one-page map of how the parts fit together.
-- [DEPLOYMENT.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/DEPLOYMENT.md) -- the full self-host deployment reference.
-- [opt-in-tiers.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/opt-in-tiers.md) -- the add-ons and what each one needs.
-- [SECURITY.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/SECURITY.md) -- the security posture.
+- [quickstart.md](quickstart.md) -- install your own studio instead. First-class, fully supported.
+- [constellation.md](constellation.md) -- the one-page map of how the parts fit together.
+- [DEPLOYMENT.md](DEPLOYMENT.md) -- the full self-host deployment reference.
+- [opt-in-tiers.md](opt-in-tiers.md) -- the add-ons and what each one needs.
+- [SECURITY.md](SECURITY.md) -- the security posture.
