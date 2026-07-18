@@ -1,7 +1,7 @@
 // The hosted front door (#52 UI). Vanilla JS, no framework, no build step.
 //
 // Built against Rollins' control plane as IMPLEMENTED in PR #67
-// (src/control-plane/index.ts), not against the design comment: where the two
+// (src/index.ts), not against the design comment: where the two
 // differ, the code is the contract.
 //
 // Two calls drive the whole shell, exactly as he specced:
