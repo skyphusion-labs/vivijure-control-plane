@@ -257,7 +257,7 @@
   }
 
   // Map the control plane's invoke-key rejection REASON codes (#52, as
-  // implemented in src/control-plane/runpod-invoke-key.ts) to copy that tells
+  // implemented in src/runpod-invoke-key.ts) to copy that tells
   // the tenant which way their key is wrong. "Rejected" alone is not an honest
   // error: too-powerful and scoped-to-the-wrong-endpoints are different fixes.
   //
