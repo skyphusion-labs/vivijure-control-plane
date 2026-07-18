@@ -421,6 +421,57 @@ describe("POST /api/tenant/provision", () => {
     expect(await res.json()).toMatchObject({ error: "slug_taken" });
   });
 
+  // cf#103 items 3 and 4: the PREVIEW and the PROVISION path must agree, and neither may leak
+  // internal resource ids to a browser.
+
+  it("slug-available: an owner Tier A row reads reclaimable, and NO resource ids reach the client", async () => {
+    const { cookie, account } = await ready();
+    const t = await store.createTenant("ten_halfbuilt", "hero", account.id, "failed");
+    // A half-built row carries real cloud handles. These must never appear in a preview response.
+    await store.setTenantD1(t.id, "d1-uuid-secret");
+    await store.setTenantBucket(t.id, "bucket-name-secret");
+    await store.setTenantR2Token(t.id, "r2-token-id-secret");
+
+    const res = await handle(req("/api/tenant/slug-available?slug=hero", { headers: { cookie } }), env(), ctx, deps);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    // Tier A: never live, so the owner may retake it.
+    expect(body.available).toBe(true);
+    expect(body.reclaimable).toBe(true);
+    // The projection: the handle itself never crosses the wire.
+    expect("reclaim" in body).toBe(false);
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain("d1-uuid-secret");
+    expect(raw).not.toContain("bucket-name-secret");
+    expect(raw).not.toContain("r2-token-id-secret");
+  });
+
+  it("slug-available: a STRANGER row gives the generic reason, never the tier", async () => {
+    await store.createTenant("ten_other", "hero", "acct_other", "live");
+    const { cookie } = await ready();
+    const res = await handle(req("/api/tenant/slug-available?slug=hero", { headers: { cookie } }), env(), ctx, deps);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.available).toBe(false);
+    expect(body.reason).toBe("that name is taken");
+  });
+
+  it("provision REFUSES a reclaimable slug honestly rather than dying on the UNIQUE constraint", async () => {
+    const { cookie, account } = await ready();
+    await store.createTenant("ten_halfbuilt", "hero", account.id, "failed");
+    const res = await handle(
+      jsonReq("/api/tenant/provision", { slug: "hero", runpod_api_key: "rpa_x" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    // 409 with a real reason. Before the check, createTenant would have hit tenants.slug UNIQUE and
+    // surfaced as a 500 -- an internal error for a situation the customer can actually act on.
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("slug_reclaim_required");
+    expect(String(body.message)).toMatch(/unfinished studio/i);
+    // And nothing was created for the second attempt.
+    expect(store.tenants.size).toBe(1);
+  });
+
   it("404s another account's tenant rather than 403 (no existence oracle)", async () => {
     await store.createTenant("ten_someoneelse", "theirs", "acct_other", "live");
     const { cookie } = await ready();
