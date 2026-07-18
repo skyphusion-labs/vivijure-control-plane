@@ -298,10 +298,10 @@ describe("aupAcceptFailureCopy (a consent gate must not lie about consent)", () 
   });
 });
 
-describe("aupUrlPinning (Ernst's immutable-ref rule, docs/legal/README.md)", () => {
+describe("aupUrlPinning (Ernst's immutable-ref rule, docs/legal/hosted/README.md)", () => {
   it("spots the moving forge refs, which is the mistake that actually gets made", () => {
     const moving = [
-      "https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/legal/aup/1.0.0.md",
+      "https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/legal/hosted/aup/1.0.0.md",
       "https://github.com/o/r/blob/master/aup.md",
       "https://raw.githubusercontent.com/o/r/main/aup.md",
       "https://github.com/o/r/tree/HEAD/aup.md",
@@ -311,7 +311,7 @@ describe("aupUrlPinning (Ernst's immutable-ref rule, docs/legal/README.md)", () 
       "https://example.com/refs/heads/policy-v1/aup.md",
       // The one that nearly slipped through: raw.githubusercontent.com has no
       // /blob/ segment, and is probably the likeliest way to get this wrong.
-      "https://raw.githubusercontent.com/skyphusion-labs/vivijure-control-plane/main/docs/legal/aup/1.0.0.md",
+      "https://raw.githubusercontent.com/skyphusion-labs/vivijure-control-plane/main/docs/legal/hosted/aup/1.0.0.md",
       "https://raw.githubusercontent.com/o/r/master/aup.md",
     ];
     for (const url of moving) {
@@ -354,6 +354,48 @@ describe("aupUrlPinning (Ernst's immutable-ref rule, docs/legal/README.md)", () 
   it("does not mistake a branch NAME inside a pinned path for a moving ref", () => {
     // "main" appearing as a directory is not the ref slot.
     expect(aupUrlPinning("https://github.com/o/r/blob/v1.0.0/main/aup.md").state).toBe("pinned");
+  });
+
+  // The tag matcher used to be /^v?\d+\.\d+\.\d+[A-Za-z0-9.-]*$/, where the
+  // third \d+ is followed by a class that also matches digits. A long digit run
+  // could be split n ways, so a FAILING match cost O(n^2) (js/polynomial-redos,
+  // the same class CodeQL found in the login door).
+  //
+  // The cases below are not decoration. Two of them are the exact inputs that
+  // caught wrong fixes of mine that looked obviously correct while reading them:
+  // one silently WIDENED what was accepted, the other silently NARROWED it.
+  // Neither was found by inspection; both were found by differential testing.
+  describe("the tag matcher accepts exactly what it always did (ReDoS fix)", () => {
+    const pinnedRef = (ref: string) => aupUrlPinning(`https://github.com/o/r/blob/${ref}/aup.md`).state;
+
+    it("still accepts a suffix with NO separator", () => {
+      // The fix that REQUIRED a separator broke these two. Guard against it.
+      expect(pinnedRef("v1.0.0rc1")).toBe("pinned");
+      expect(pinnedRef("1.0.0alpha")).toBe("pinned");
+    });
+
+    it("still accepts a separated suffix, and a trailing dot segment", () => {
+      expect(pinnedRef("1.0.0-rc1")).toBe("pinned");
+      expect(pinnedRef("v1.0.0-rc.1")).toBe("pinned");
+      expect(pinnedRef("v1.0.0.4")).toBe("pinned");
+    });
+
+    it("still REFUSES a build-metadata plus, which it never accepted", () => {
+      // The fix that added "+" to a character class silently started accepting
+      // this. It is not a tag shape this ever recognised, so it must stay
+      // unverifiable rather than quietly becoming "pinned".
+      expect(pinnedRef("v1.0.0+build.5")).toBe("unverifiable");
+    });
+
+    it("matches a pathological digit run in linear time, not quadratic", () => {
+      // The old pattern took ~100ms at n=16000 and quadrupled per doubling, so
+      // n=200000 would have been minutes. A generous ceiling: this is a
+      // regression guard against reintroducing the ambiguity, not a benchmark.
+      const hostile = `https://github.com/o/r/blob/v1.1.${"1".repeat(200000)}!/aup.md`;
+      const started = Date.now();
+      aupUrlPinning(hostile);
+      expect(Date.now() - started).toBeLessThan(1000);
+    });
   });
 });
 
