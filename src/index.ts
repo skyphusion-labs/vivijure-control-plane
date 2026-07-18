@@ -39,6 +39,7 @@ import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
 import type { Account, Tenant, ProvisionJob } from "./store";
 import { slugRejectionMessage, tenantEndpointIds, tenantView, validateSlug } from "./tenants";
+import { TenantModuleError, type ModuleReadiness } from "./tenant-modules";
 import { CONTROL_PLANE_VERSION } from "./version";
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -495,7 +496,51 @@ async function installInvokeKey(
   // Installs the key AND proves the module workers actually serve it (cf#114). A throw here leaves
   // the tenant at awaiting_invoke_key: we do not promote a tenant to live on a credential whose
   // propagation nothing has observed, because that is precisely the failure this closes.
-  const readiness = await deps.provisioner.installInvokeKey(tenant, key);
+  //
+  // control-plane#17: a TenantModuleError carries the REAL diagnostic (which module, which script,
+  // retryable or not, attempts, elapsed). Letting it reach the top-level catch turned all of that
+  // into a bare 500 internal_error -- an opaque error at the exact moment cf#114 exists to make
+  // errors honest. Catch it here and surface it.
+  let readiness: ModuleReadiness;
+  try {
+    readiness = await deps.provisioner.installInvokeKey(tenant, key);
+  } catch (e) {
+    if (e instanceof TenantModuleError) {
+      // 503, not 500: the key is stored and the tenant is intact; what failed is our verification of
+      // a downstream module. Retryable by the caller, and the message says what to look at.
+      return err("modules_not_ready", 503, { step: e.step, message: e.message });
+    }
+    throw e; // a non-module failure is not a readiness problem; do not dress it up as one.
+  }
+
+  // Propagation not finished inside the probe budget. The key IS installed and this resolves itself,
+  // so answer softly and actionably (202) rather than failing -- but do NOT flip the tenant live,
+  // because an unconfirmed module is the exact state a customer must not be able to render against.
+  if (readiness.unconfirmed.length) {
+    // Deliberately NO status write. The tenant genuinely remains awaiting_invoke_key: the operation
+    // has not completed and must be retried. Inventing an "awaiting_readiness" lifecycle value to
+    // make this response prettier would be a schema and UI decision smuggled into an error-handling
+    // fix, and it would make the reported status a thing no store ever holds. The response reports
+    // the TRUE stored state and explains the rest in words.
+    return json(
+      {
+        ok: true,
+        status: tenant.status,
+        verified_endpoints: verdict.inScope.length,
+        modules_ready: false,
+        modules_verified: readiness.verified,
+        modules_unconfirmed: readiness.unconfirmed,
+        ...(readiness.unverified.length ? { modules_unverified: readiness.unverified } : {}),
+        message:
+          "your key is installed and stored. Your render modules have not finished picking it up yet " +
+          `(checked ${readiness.attempts} times over ${readiness.elapsedMs}ms). This usually clears in ` +
+          "under a minute: retry this request to finish going live. Do not re-paste your key; nothing " +
+          "is wrong with it.",
+      },
+      202,
+    );
+  }
+
   await deps.store.setTenantStatus(tenant.id, "live");
   return json({
     ok: true,

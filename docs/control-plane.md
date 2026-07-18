@@ -290,10 +290,20 @@ the still-pending scripts concurrently, and a module that goes ready drops out o
 sequential deadlines would be a 50s route, which is a hang wearing a fix. It fits the budget or fails
 honestly; it never sleeps past it.
 
-**A genuinely absent credential fails LOUDLY** at the deadline, naming the modules and carrying
-attempts and elapsed. The deadline is the ONLY exit from `not_visible_yet`, which is what stops the
-retry from laundering a real misconfiguration into a success. A throw leaves the tenant at
-`awaiting_invoke_key` rather than promoting it on credentials nothing has observed.
+**At the deadline with everything still `not_visible_yet`, the probe answers SOFTLY** (control-plane#17).
+This is not a weakening: a key that is not visible yet is INDISTINGUISHABLE from one that was never
+written -- both answer endpoint-present/key-absent -- so calling it a failure would be asserting more
+than we know. Measured live on 2026-07-18: a first-ever key write to five fresh module scripts
+exceeded the 10s deadline and passed about a minute later.
+
+The route therefore returns **`202`** with the modules named in `modules_unconfirmed` and a message
+saying the key IS stored and the caller should retry (never re-paste the key). The tenant is **NOT**
+promoted, so an unconfirmed module can never be rendered against -- which is the safety property, and
+it is what stops a never-written key from reaching a customer even though it is answered softly.
+
+**Every `misconfigured` verdict still fails HARD and immediately**, before any waiting: absent
+endpoint id, non-200, malformed envelope, echo mismatch. That line is what keeps the soft path from
+becoming laundering, and it is mutation-tested in both directions.
 
 ### A 404: `unverifiable`, never a false pass, and never a guess at the cause
 
@@ -331,7 +341,22 @@ unverified module can never appear in the verified list. `modules_unverified` is
 when everything was proven, so an empty array is never ambiguous.
 
 `modules_ready` is `false` whenever anything went unverified, so an operator reading the top-level
-field alone cannot mistake "could not check" for "checked and fine". This path is transitional: it
+field alone cannot mistake "could not check" for "checked and fine".
+
+### What the CALLER receives, per outcome
+
+The table below is the contract, and it is asserted at the ROUTE level in `tests/routes.test.ts`.
+That assertion class exists because its absence shipped control-plane#17: every test asserted what
+the probe threw or returned, none asserted what a customer got, and a `TenantModuleError` carrying
+module, script, attempts and elapsed was reaching the caller as a bare `{"error":"internal_error"}`.
+
+| outcome | status | body | tenant |
+|---|---|---|---|
+| all verified | `200` | `modules_ready: true`, `modules_verified` | promoted to `live` |
+| some unverifiable (404) | `200` | `modules_ready: false`, `modules_unverified` with per-module detail | promoted to `live` |
+| unconfirmed at deadline | `202` | `modules_ready: false`, `modules_unconfirmed`, retry message | NOT promoted |
+| misconfigured | `503` `modules_not_ready` | the real diagnostic: module, script, retryability, attempts, elapsed | NOT promoted |
+| non-module failure | `500` `internal_error` | opaque by design; it is not a readiness problem | NOT promoted | This path is transitional: it
 disappears once the pinned release carries `/ready` on every module. The same reporting covers an
 unbound `TENANT_MODULE_DISPATCH` (a deploy predating the binding), which degrades to unverified
 rather than to a false all-clear.
