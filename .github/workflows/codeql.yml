@@ -27,15 +27,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ["javascript-typescript"]
+        # The three languages auto-detection actually finds in this repo. Declared rather than
+        # left implicit so that what gets scanned is a decision on the page, not a side effect:
+        #   javascript-typescript -- src/, tests/, AND public/ (the front-door pages)
+        #   actions               -- the workflows themselves, which carry deploy credentials
+        #   python                -- tests/workflow-guards.test.py
+        language: ["javascript-typescript", "actions", "python"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # `languages`, PLURAL. The input is `languages`; `language` is silently IGNORED -- the
+      # action logs "Unexpected input(s) language" as a WARNING and carries on with
+      # auto-detection, so the workflow stays green while the pin it appears to declare does
+      # nothing. That was the state here until 2026-07-18: three languages were being scanned by
+      # accident rather than the one this file claimed to select. It happened to be MORE coverage,
+      # not less, which is exactly why nobody noticed.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          language: ${{ matrix.language }}
+          languages: ${{ matrix.language }}
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
