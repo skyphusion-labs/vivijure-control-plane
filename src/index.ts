@@ -324,8 +324,21 @@ async function tenantRoutes(
     const slug = (url.searchParams.get("slug") ?? "").toLowerCase();
     const valid = validateSlug(slug);
     if (!valid.ok) return json({ available: false, reason: slugRejectionMessage(valid.reason) });
-    const taken = await deps.store.getTenantBySlug(slug);
-    return json(taken ? { available: false, reason: "that name is taken" } : { available: true });
+    // Same classifier the provision path consults (cf#103). This route used to run its own
+    // getTenantBySlug plus a hand-written reason, which under the slug tiers would have DISAGREED
+    // with what provision actually does: the preview would say "taken" to an owner whose own Tier A
+    // row is reclaimable, and say "available" for shapes provision refuses. A surface that claims
+    // something the system will not honour is the cf#114 shape, so there is exactly ONE rule.
+    const claim = await deps.store.checkSlugAvailability(slug, account.id);
+    // PROJECTED, never returned raw. SlugClaim.reclaim carries live cloud resource ids
+    // (d1_database_id, r2_bucket_name, r2_token_id, script_name). Those are internal handles of the
+    // control plane and a browser has no use for them. The preview answers exactly two questions:
+    // can I take this name, and if so is it fresh or my own unfinished studio.
+    return json(
+      claim.available
+        ? { available: true, reclaimable: claim.reclaim !== null }
+        : { available: false, reason: claim.reason },
+    );
   }
 
   if (request.method === "POST" && path === "/api/tenant/provision") {
@@ -437,7 +450,25 @@ async function provision(
   // The toggle aims at the front door, not at people already inside it: an existing, AUP-accepted
   // account mid-onboarding is never stranded by the admin closing signups. Provisioning therefore
   // gates on session + accepted AUP ONLY (both enforced upstream of this route).
-  if (await deps.store.getTenantBySlug(slug)) return err("slug_taken", 409);
+  // cf#103. This check is ADVISORY and says so out loud: check-then-create is two steps, so two
+  // concurrent provisions can both pass it. The UNIQUE constraint on tenants.slug is what actually
+  // serializes them and createTenant below is the real gate. What the check buys is a LEGIBLE
+  // refusal (which tier, in words the owner can act on) instead of a bare constraint violation.
+  const claim = await deps.store.checkSlugAvailability(slug, account.id);
+  if (!claim.available) return err("slug_taken", 409, { message: claim.reason });
+  // A GRANTED RECLAIM CANNOT GO THROUGH THIS ROUTE, and that refusal is deliberate rather than a
+  // gap. tenants.slug is UNIQUE, so createTenant on a reclaimable row is guaranteed to hit the
+  // constraint; and the row can still carry a half-built D1, bucket, and R2 token that must be torn
+  // down BEFORE the reclaim commits (the teardown-before-reclaim ruling), or we orphan cloud
+  // resources nothing will ever reap. Both facts make reclaim a DIFFERENT operation from provision,
+  // not a branch inside it. Until that path exists, refuse honestly and name the real situation.
+  if (claim.reclaim) {
+    return err("slug_reclaim_required", 409, {
+      message:
+        "you already have an unfinished studio at that name. It has to be cleared before the name " +
+        "can be used again, and that is not something this request can do for you yet.",
+    });
+  }
   if (await deps.store.getTenantForAccount(account.id)) return err("tenant_exists", 409);
 
   // The provisioning key is transient by ruling: it exists in this request and nowhere else. It is
