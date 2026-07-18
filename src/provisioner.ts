@@ -722,7 +722,19 @@ export async function teardownTenant(
     }
   };
 
-  await attempt("worker", () => deps.cf.deleteUserWorker(deps.namespace, deps.tenantScriptName(tenant.slug)));
+  // Delete the worker by its STORED name, falling back to the derivation only when the row has none.
+  //
+  // These are not the same fact. script_name records what was ACTUALLY created; tenantScriptName(slug)
+  // recomputes what we WOULD create today. They agree only while the naming scheme is unchanged, and
+  // tenants.ts already states that routing dispatches to the STORED name because it is authoritative
+  // at request time. Teardown reading the derivation instead meant the two halves disagreed about
+  // which script a tenant owns: the moment a release changes the scheme, teardown deletes the name it
+  // would use now and ORPHANS the one that actually exists -- a live user Worker left serving in the
+  // namespace, which for a tenant being torn down is the single worst leftover.
+  // Latent today (both derive from the same immutable slug), which is exactly why it is worth fixing
+  // before something makes it live. Caught by Strummer during the reclaim-lease seam review.
+  const scriptToDelete = tenant.script_name ?? deps.tenantScriptName(tenant.slug);
+  await attempt("worker", () => deps.cf.deleteUserWorker(deps.namespace, scriptToDelete));
   // Module scripts next (cf#99): the studio (discovery) is already gone, so sweeping the tenant's
   // module scripts cannot tear a /poll out from under a live studio. Prefix sweep + census; every
   // failure is surfaced (a live-configured module worker is exactly what must not be left behind).
