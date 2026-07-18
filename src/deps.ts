@@ -11,7 +11,7 @@ import { CfApi } from "./cf-api";
 import type { ControlPlaneEnv } from "./env";
 import type { MailSender } from "./email";
 import { posternSender } from "./email";
-import { continueProvisionJob, runProvisionJob, type ProvisionDeps } from "./provisioner";
+import { continueProvisionJob, runProvisionJob, teardownTenant, type ProvisionDeps } from "./provisioner";
 import { createTenantEndpoints } from "./runpod";
 import type { ControlPlaneStore, Tenant } from "./store";
 import { D1Store } from "./store-d1";
@@ -46,6 +46,22 @@ export interface ProvisionerWiring {
    * awaiting_invoke_key rather than being promoted on credentials nothing has proven.
    */
   installInvokeKey(tenant: Tenant, key: string): Promise<ModuleReadiness>;
+  /**
+   * Reap the cloud resources a HALF-BUILT tenant left behind, for the reclaim path (cf#103).
+   *
+   * Never throws: teardownTenant collects every failure and reports them, because a teardown that
+   * stops at the first error leaves the most dangerous leftovers behind. The caller decides what a
+   * partial failure means -- for reclaim it means DO NOT complete, since the row is the only record
+   * of what still needs reaping.
+   *
+   * Only ever called by the winner of claimReclaim. Teardown is the destructive half and every
+   * tenant resource name derives from the SLUG rather than the attempt, so two callers issuing
+   * these deletes concurrently would delete each other resources.
+   */
+  teardown(tenant: Tenant, opts: { deleteData: boolean }): Promise<{
+    ok: boolean;
+    failures: { resource: string; error: string }[];
+  }>;
 }
 
 export interface ControlPlaneDeps {
@@ -185,6 +201,9 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       // cf#114: the secrets PUT returning 200 does NOT mean the edge serves the key yet. Prove it on
       // the modules before the caller promotes the tenant, or fail honestly saying we could not.
       return await awaitTenantModulesReady(deps, tenant.id);
+    },
+    async teardown(tenant, opts) {
+      return await teardownTenant(deps, tenant, opts);
     },
   };
 }

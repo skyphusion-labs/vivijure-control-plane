@@ -13,6 +13,7 @@ import type { ControlPlaneEnv } from "../src/env";
 import { SESSION_COOKIE, startSession } from "../src/auth";
 import { sha256Hex } from "../src/crypto";
 import { MemoryStore } from "./memory-store";
+import type { Tenant } from "../src/store";
 import { TenantModuleError } from "../src/tenant-modules";
 // Cross-lane (authorized by the lead, control-plane#20 client fix): the CANONICAL invoke-key
 // response shapes, shared with the client suite that reads them
@@ -31,7 +32,11 @@ const AUP_TEXT = "No CSAM. Ever. This is the acceptable use policy text.";
 let store: MemoryStore;
 let sent: { to: string; subject: string; text: string }[];
 let deps: ControlPlaneDeps;
-let wiring: { start: ReturnType<typeof vi.fn>; installInvokeKey: ReturnType<typeof vi.fn> };
+let wiring: {
+  start: ReturnType<typeof vi.fn>;
+  installInvokeKey: ReturnType<typeof vi.fn>;
+  teardown: ReturnType<typeof vi.fn>;
+};
 
 const env = (over: Partial<ControlPlaneEnv> = {}): ControlPlaneEnv =>
   ({
@@ -77,6 +82,8 @@ beforeEach(() => {
       attempts: 1,
       elapsedMs: 12,
     })),
+    // Reclaim reaps through this. Default is a clean teardown; the failure cases override it.
+    teardown: vi.fn(async () => ({ ok: true, failures: [] })),
   };
   deps = {
     store,
@@ -462,21 +469,134 @@ describe("POST /api/tenant/provision", () => {
     expect(body.reason).toBe("that name is taken");
   });
 
-  it("provision REFUSES a reclaimable slug honestly rather than dying on the UNIQUE constraint", async () => {
+  // ---- RECLAIM EXECUTION (cf#103, closes control-plane#18) ------------------------------------
+  //
+  // The ordering claim -> teardown -> reclaimSlug is the design, so most of these assert what did
+  // NOT happen. Teardown is the destructive step and every tenant resource name derives from the
+  // SLUG rather than the attempt, so a teardown that runs when it should not deletes resources
+  // belonging to whoever legitimately holds the row.
+
+  async function halfBuilt(accountId: string) {
+    const t = await store.createTenant("ten_halfbuilt", "hero", accountId, "failed");
+    await store.setTenantD1(t.id, "db-old");
+    await store.setTenantBucket(t.id, "vivijure-tenant-hero");
+    await store.setTenantR2Token(t.id, "tok-old");
+    return (await store.getTenantById(t.id))!;
+  }
+
+  it("reclaims a Tier A slug: claim, reap, blank, then provision the SAME row", async () => {
     const { cookie, account } = await ready();
-    await store.createTenant("ten_halfbuilt", "hero", account.id, "failed");
+    await halfBuilt(account.id);
+
     const res = await handle(
       jsonReq("/api/tenant/provision", { slug: "hero", runpod_api_key: "rpa_x" }, { headers: { cookie } }),
       env(), ctx, deps,
     );
-    // 409 with a real reason. Before the check, createTenant would have hit tenants.slug UNIQUE and
-    // surfaced as a 500 -- an internal error for a situation the customer can actually act on.
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.reclaimed).toBe(true);
+    // The SAME row, not a second one: tenants.slug is UNIQUE, so a new row is impossible and a
+    // duplicate would orphan the first.
+    expect(body.tenant_id).toBe("ten_halfbuilt");
+    expect(store.tenants.size).toBe(1);
+
+    // Reaped from the row the CLAIM returned, with its ids still populated.
+    expect(wiring.teardown).toHaveBeenCalledTimes(1);
+    const [reaped, opts] = wiring.teardown.mock.calls[0] as [Tenant, { deleteData: boolean }];
+    expect(reaped.d1_database_id).toBe("db-old");
+    expect(reaped.r2_token_id).toBe("tok-old");
+    expect(opts.deleteData).toBe(true);
+
+    // Blanked and back at pending, and provisioning started on it.
+    const after = await store.getTenantById("ten_halfbuilt");
+    expect(after?.status).toBe("pending");
+    expect(after?.d1_database_id).toBeNull();
+    expect(wiring.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("LOST the claim: destroys NOTHING and says the name is being reset", async () => {
+    const { cookie, account } = await ready();
+    await halfBuilt(account.id);
+    // Somebody else holds the row.
+    store.claimReclaim = (async () => null) as typeof store.claimReclaim;
+
+    const res = await handle(
+      jsonReq("/api/tenant/provision", { slug: "hero", runpod_api_key: "rpa_x" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+
+    expect(res.status).toBe(409);
+    expect((await res.json() as Record<string, unknown>).error).toBe("slug_reclaim_in_progress");
+    // THE ASSERTION THIS TEST EXISTS FOR: the loser never reaches teardown. If it did, it would
+    // delete resources the winner is using, because the names derive from the slug.
+    expect(wiring.teardown).not.toHaveBeenCalled();
+    expect(wiring.start).not.toHaveBeenCalled();
+  });
+
+  it("PARTIAL teardown failure: does NOT complete the reclaim, and surfaces the real errors", async () => {
+    const { cookie, account } = await ready();
+    await halfBuilt(account.id);
+    wiring.teardown = vi.fn(async () => ({
+      ok: false,
+      failures: [{ resource: "r2_bucket", error: "bucket is not empty" }],
+    }));
+    deps.provisioner = wiring as unknown as ProvisionerWiring;
+
+    const res = await handle(
+      jsonReq("/api/tenant/provision", { slug: "hero", runpod_api_key: "rpa_x" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+
     expect(res.status).toBe(409);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.error).toBe("slug_reclaim_required");
-    expect(String(body.message)).toMatch(/unfinished studio/i);
-    // And nothing was created for the second attempt.
-    expect(store.tenants.size).toBe(1);
+    expect(body.error).toBe("reclaim_teardown_failed");
+    expect(body.failures).toEqual([{ resource: "r2_bucket", error: "bucket is not empty" }]);
+    // THE ASSERTION THIS TEST EXISTS FOR: reclaimSlug blanks the resource columns, so completing
+    // here would erase the only record of what we failed to delete. The row keeps its ids.
+    const after = await store.getTenantById("ten_halfbuilt");
+    expect(after?.r2_bucket_name).toBe("vivijure-tenant-hero");
+    expect(after?.status).toBe("failed");
+    expect(wiring.start).not.toHaveBeenCalled();
+  });
+
+  it("TEARDOWN OVERRUN: completion refused after a real teardown is loud, not silent", async () => {
+    const { cookie, account } = await ready();
+    await halfBuilt(account.id);
+    // The lease expired while teardown ran: token still matches, reclaimSlug refuses anyway.
+    store.reclaimSlug = (async () => null) as typeof store.reclaimSlug;
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => void errors.push(a));
+
+    const res = await handle(
+      jsonReq("/api/tenant/provision", { slug: "hero", runpod_api_key: "rpa_x" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+
+    expect(res.status).toBe(409);
+    expect((await res.json() as Record<string, unknown>).error).toBe("slug_reclaim_in_progress");
+    // Teardown DID run, so this is the one path where we did destructive work we cannot record.
+    expect(wiring.teardown).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(errors)).toContain("reclaim.completion_refused");
+    expect(wiring.start).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("refuses a MISSING KEY before destroying anything (cheap refusals precede teardown)", async () => {
+    const { cookie, account } = await ready();
+    await halfBuilt(account.id);
+
+    const res = await handle(
+      jsonReq("/api/tenant/provision", { slug: "hero" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as Record<string, unknown>).error).toBe("runpod_key_required");
+    // The point: a customer who forgot to paste a key must not lose their half-built studio for it.
+    expect(wiring.teardown).not.toHaveBeenCalled();
+    const after = await store.getTenantById("ten_halfbuilt");
+    expect(after?.d1_database_id).toBe("db-old");
   });
 
   it("404s another account's tenant rather than 403 (no existence oracle)", async () => {
