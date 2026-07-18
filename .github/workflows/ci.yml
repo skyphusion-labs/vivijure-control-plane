@@ -48,3 +48,10 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # The front-door pages are classic scripts that tsc never sees and vitest never loads
+      # (the suites test the pure helpers, not the DOM path). This catches a call to a function
+      # nobody defines, which is a defect all three gates above pass silently. It is a heuristic
+      # and says so; a clean run proves nobody deleted a function out from under its callers.
+      - name: Resolve guard (front-door pages)
+        run: npm run guard:resolve
