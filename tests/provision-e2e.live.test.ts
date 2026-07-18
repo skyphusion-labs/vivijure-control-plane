@@ -37,7 +37,23 @@ const CF_TOKEN = process.env.CF_PROVISIONER_TOKEN;
 const ACCOUNT = process.env.CF_ACCOUNT_ID;
 const RUNPOD_KEY = process.env.RUNPOD_API_KEY;
 const DIR = process.env.STUDIO_RELEASE_DIR;
-const LIVE = Boolean(CF_TOKEN && ACCOUNT && RUNPOD_KEY && DIR && process.env.PROVISION_E2E);
+// QUARANTINED (cf#85 extraction). This suite CANNOT run as written: its ProvisionDeps literal is
+// missing five fields that ProvisionDeps has since grown -- moduleBundle, moduleNamespace, kek,
+// spendDailyCeiling and callTenantStudio. It rotted silently because it is LIVE-gated, so CI never
+// compiled it, and vivijure-cf never typechecked tests/ at all (cf#107).
+//
+// The five values are NOT invented here, deliberately. This test provisions REAL tenant
+// infrastructure across two cloud accounts; a guessed kek or a guessed moduleNamespace does not fail
+// safe, it provisions something wrong and bills for it. The intended values get supplied when we run
+// the first live e2e against the extracted control plane (post-v1.0.0), tracked in the issue below.
+//
+// LIVE is forced false so the gate can never open by environment alone, and the suite is skipped with
+// a reason rather than deleted, because the recipe in the header is the thing worth keeping.
+const QUARANTINE_ISSUE = "vivijure-control-plane#4: restore the live provision e2e";
+const LIVE = false as boolean;
+void CF_TOKEN;
+void RUNPOD_KEY;
+void DIR;
 
 const PROD_TELL = "t9wcvlxh8rc5la";
 const slug = `rollins-e2e-${Date.now().toString(36).slice(-6)}`;
@@ -53,6 +69,17 @@ const migrations = LIVE
   ? readdirSync("migrations").filter((f) => f.endsWith(".sql")).sort()
       .map((f) => ({ name: f, sql: readFileSync(join("migrations", f), "utf8") }))
   : [];
+
+/**
+ * A placeholder that refuses to be a value. Returns `never` at the type level so it satisfies any
+ * field, and throws the moment anything reads it, so an accidental un-quarantine fails LOUD at the
+ * first use rather than provisioning against a silently wrong default.
+ */
+function notSupplied(field: string): never {
+  throw new Error(
+    `provision-e2e is quarantined: ProvisionDeps.${field} was never supplied. See ${QUARANTINE_ISSUE}.`,
+  );
+}
 
 beforeAll(async () => {
   if (!LIVE) return;
@@ -72,6 +99,14 @@ beforeAll(async () => {
     release: tag,
     tenantScriptName: (s: string) => `tenant-${s}-studio`,
     log: (event, fields) => console.log(`  [${event}]`, JSON.stringify(fields).slice(0, 200)),
+    // The five fields this suite predates. They THROW rather than hold a plausible default: an
+    // invented value here provisions real infrastructure incorrectly instead of failing. Supplying
+    // them for real is the work tracked in QUARANTINE_ISSUE.
+    moduleBundle: notSupplied("moduleBundle"),
+    moduleNamespace: notSupplied("moduleNamespace"),
+    kek: notSupplied("kek"),
+    spendDailyCeiling: notSupplied("spendDailyCeiling"),
+    callTenantStudio: notSupplied("callTenantStudio"),
   };
 });
 
