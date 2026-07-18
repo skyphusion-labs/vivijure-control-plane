@@ -4,7 +4,7 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
-## Unreleased
+## v1.1.0 -- 2026-07-18
 
 MINOR: the plane stops promoting a tenant to live on a credential whose propagation nothing has
 observed, and finally answers "what is running" (cf#114; vivijure-control-plane#13).
