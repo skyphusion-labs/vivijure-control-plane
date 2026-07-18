@@ -37,6 +37,7 @@ import { publicOrigin, tenantDomainSuffix } from "./env";
 import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "./oauth";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
+import { RECLAIM_LEASE_SECONDS } from "./store";
 import type { Account, Tenant, ProvisionJob } from "./store";
 import { slugRejectionMessage, tenantEndpointIds, tenantView, validateSlug } from "./tenants";
 import { TenantModuleError, type ModuleReadiness } from "./tenant-modules";
@@ -456,30 +457,101 @@ async function provision(
   // refusal (which tier, in words the owner can act on) instead of a bare constraint violation.
   const claim = await deps.store.checkSlugAvailability(slug, account.id);
   if (!claim.available) return err("slug_taken", 409, { message: claim.reason });
+
+  // EVERY CHEAP REFUSAL HAPPENS BEFORE ANYTHING DESTRUCTIVE. These two used to sit below, which was
+  // harmless while provision only ever CREATED. The reclaim path below DELETES a customer half-built
+  // studio, so discovering a missing key or an unconfigured provisioner after the teardown would
+  // leave them strictly worse off than before they asked: resources gone, nothing provisioned, and
+  // the refusal they should have got for free up front. Order is load-bearing, not stylistic.
+  if (!body?.runpod_api_key) return err("runpod_key_required", 400);
+  if (!deps.provisioner) return err("provisioner_unconfigured", 503);
   // A GRANTED RECLAIM CANNOT GO THROUGH THIS ROUTE, and that refusal is deliberate rather than a
   // gap. tenants.slug is UNIQUE, so createTenant on a reclaimable row is guaranteed to hit the
   // constraint; and the row can still carry a half-built D1, bucket, and R2 token that must be torn
   // down BEFORE the reclaim commits (the teardown-before-reclaim ruling), or we orphan cloud
   // resources nothing will ever reap. Both facts make reclaim a DIFFERENT operation from provision,
   // not a branch inside it. Until that path exists, refuse honestly and name the real situation.
+  // ---- RECLAIM EXECUTION (cf#103, closes control-plane#18) --------------------------------------
+  //
+  // Retaking a Tier A row: never-live, owned by this account, half-built. It cannot go through
+  // createTenant (tenants.slug is UNIQUE), and its leftover D1, bucket, token and worker must be
+  // reaped or nothing ever will.
+  //
+  // THE ORDER IS THE WHOLE DESIGN, and it is not the obvious one:
+  //   claimReclaim  -> teardown -> reclaimSlug
+  //   (exclusivity)    (destroy)   (blank the columns)
+  // Every tenant resource name derives from the SLUG, not from the attempt, so two concurrent
+  // reclaims issue the SAME delete calls. Without the claim, attempt A teardown lands after attempt
+  // B has provisioned fresh resources under those names and deletes them, silently, while B is
+  // mid-provision. Serializing on the claim WRITE is what makes it safe to start deleting at all --
+  // the loser never reaches teardown, so a lost race destroys nothing.
   if (claim.reclaim) {
-    return err("slug_reclaim_required", 409, {
-      message:
-        "you already have an unfinished studio at that name. It has to be cleared before the name " +
-        "can be used again, and that is not something this request can do for you yet.",
-    });
+    const claimed = await deps.store.claimReclaim(claim.reclaim.tenant_id, account.id, RECLAIM_LEASE_SECONDS);
+    if (!claimed) {
+      // We LOST, or the row stopped qualifying between the check and the write. Nothing has been
+      // destroyed: this is the whole point of claiming before reaping.
+      return err("slug_reclaim_in_progress", 409, {
+        message:
+          "that name is being reset right now. Give it a moment and try again; nothing has been " +
+          "lost.",
+      });
+    }
+
+    // Reap from the row the CLAIM returned, not from the earlier check handle. The claim is the
+    // serialization point, so these are the authoritative ids; the check ran before we held
+    // anything and its handle can already be stale.
+    const reaped = await deps.provisioner.teardown(claimed.tenant, { deleteData: true });
+    if (!reaped.ok) {
+      // DO NOT COMPLETE. reclaimSlug blanks the resource columns, so completing now would erase the
+      // only record of the resources we just failed to delete and nothing would ever reap them. The
+      // row stays claimed until the lease expires, and the customer gets the real errors rather than
+      // a cheerful retry prompt. An orphan we cannot see is worse than an error they can act on.
+      console.error("reclaim.teardown_failed", {
+        tenant: claimed.tenant.id,
+        failures: reaped.failures,
+      });
+      return err("reclaim_teardown_failed", 409, {
+        message:
+          "some of the old studio pieces could not be removed, so the name has not been freed. " +
+          "Nothing has been lost. Try again in a few minutes.",
+        failures: reaped.failures,
+      });
+    }
+
+    const reclaimed = await deps.store.reclaimSlug(claim.reclaim.tenant_id, account.id, claimed.lease_token);
+    if (!reclaimed) {
+      // THE TEARDOWN-OVERRUN BRANCH, and it is real rather than theoretical. reclaimSlug requires a
+      // LIVE lease as well as the token, so a teardown that ran past RECLAIM_LEASE_SECONDS is
+      // refused here even though our token still matches. That refusal is CORRECT: by now another
+      // attempt may hold the row and be reaping it, and completing would blank the row underneath
+      // them. We have already destroyed the old resources, so this must be loud -- it is the one
+      // path where we did real work and cannot record it.
+      console.error("reclaim.completion_refused", {
+        tenant: claim.reclaim.tenant_id,
+        reason: "lease expired or no longer held; teardown DID run",
+      });
+      return err("slug_reclaim_in_progress", 409, {
+        message:
+          "that name is being reset right now. Give it a moment and try again; nothing has been " +
+          "lost.",
+      });
+    }
+
+    // The row is ours, blanked, and back at pending -- same id, same slug. Provision continues on
+    // THIS row: createTenant would hit the UNIQUE constraint, and a second row would orphan the
+    // first. No getTenantForAccount check here: the reclaimed row IS this account tenant.
+    const job = await deps.store.createProvisionJob(newId("job"), reclaimed.id, "provision");
+    ctx.waitUntil(deps.provisioner.start(job.id, reclaimed, body.runpod_api_key));
+    return json({ tenant_id: reclaimed.id, job_id: job.id, reclaimed: true }, 202);
   }
+
   if (await deps.store.getTenantForAccount(account.id)) return err("tenant_exists", 409);
 
   // The provisioning key is transient by ruling: it exists in this request and nowhere else. It is
-  // never written to D1, never logged, and never held past the job. The runner consumes it from
-  // the request that carries it; a failure IN the RunPod steps therefore cannot self-resume, and
-  // the tenant re-pastes. That is the honest cost of never storing it.
-  if (!body?.runpod_api_key) return err("runpod_key_required", 400);
-
-  // Refuse BEFORE creating rows: a tenant parked on a job nothing will ever run is a lie with a
-  // status page. Absence of the wiring is a deploy-config fact, and 503 is its honest shape.
-  if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+  // never written to D1, never logged, and never held past the job. The runner consumes it from the
+  // request that carries it; a failure IN the RunPod steps therefore cannot self-resume, and the
+  // tenant re-pastes. Both this and the provisioner-configured refusal are asserted ABOVE, before
+  // the reclaim path can destroy anything.
 
   const tenant = await deps.store.createTenant(newId("ten"), slug, account.id, "pending");
   const job = await deps.store.createProvisionJob(newId("job"), tenant.id, "provision");
