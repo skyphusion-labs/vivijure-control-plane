@@ -688,8 +688,17 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     const { cookie } = await tenantReady(
       JSON.stringify([{ key: "backend", label: "Render", id: "ep1", name: "vivijure-hero-backend" }]),
     );
+    // UnverifiedModule OBJECTS, which is what installInvokeKey actually resolves to.
+    // This mock returned bare strings, a shape the real function never produces, and the
+    // assertion below was written to match the mock. Both sides agreed with each other and
+    // neither agreed with the code, so the client shipped "[object Object]" to a customer.
     wiring.installInvokeKey.mockResolvedValueOnce({
-      verified: ["backend"], unverified: ["lipsync", "audio-upscale"], unconfirmed: [],
+      verified: ["backend"],
+      unverified: [
+        { module: "lipsync", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-lipsync" },
+        { module: "audio-upscale", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-audio" },
+      ],
+      unconfirmed: [],
       attempts: 1, elapsedMs: 120,
     });
     deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
@@ -706,7 +715,10 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     // Live, but explicitly NOT proven, and the unproven modules are NAMED so the fact travels.
     expect(body.status).toBe("live");
     expect(body.modules_ready).toBe(false);
-    expect(body.modules_unverified).toEqual(["lipsync", "audio-upscale"]);
+    expect((body.modules_unverified as { module: string }[]).map((u) => u.module)).toEqual([
+      "lipsync",
+      "audio-upscale",
+    ]);
     // Second key set, per the optional-key rule: allowing one optional key inside a single set is a
     // subset match wearing a disguise, so the with-unverified shape gets its own exact assertion.
     expectExactKeys(body, LIVE_UNVERIFIED_KEYS);

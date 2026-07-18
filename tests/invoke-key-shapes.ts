@@ -60,7 +60,15 @@ export const LIVE_UNVERIFIED = {
   verified_endpoints: 4,
   modules_ready: false,
   modules_verified: ["backend", "upscale"],
-  modules_unverified: ["lipsync", "audio-upscale"],
+  // OBJECTS, matching what the route actually spreads (ModuleReadiness.unverified
+  // is UnverifiedModule[]). This fixture carried strings until the click-through
+  // caught the client rendering "[object Object]" -- the key SET was identical
+  // either way, which is exactly why exact-key-set equality could not see it.
+  // A fixture is only as honest as its value types.
+  modules_unverified: [
+    { module: "lipsync", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-lipsync" },
+    { module: "audio-upscale", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-audio" },
+  ],
 };
 
 // 202: key IS installed and stored, propagation not yet observed, NOT live.
