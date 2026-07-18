@@ -81,12 +81,35 @@ Repository **variables**:
 
 Worker **secrets** (`wrangler secret put`, never in Actions): `POSTERN_SEND_TOKEN`,
 `GOOGLE_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `APPLE_PRIVATE_KEY`,
-`CONTROL_PLANE_ADMIN_TOKEN`, `CF_PROVISIONER_TOKEN`.
+`CONTROL_PLANE_ADMIN_TOKEN`, `CF_PROVISIONER_TOKEN`, `STUDIO_TOKEN_KEK`.
 
-The render step **fails closed** on any of the Actions values being missing or empty. The D1 id is
-checked by *shape* (a uuid), not merely non-emptiness, because a wrong-but-present id would migrate
-somebody else database. Those guards are negative-tested in `tests/render-wrangler.test.sh` and run
-on every PR.
+These are `secret_text` bindings on the worker and they **persist across `wrangler deploy`**, so the
+pipeline does not carry them and a deploy does not need them staged in Actions. They are set once,
+out of band. A deploy will not clear them; equally, a deploy cannot repair one that was never set.
+
+### Empty is a value, but only for four of them
+
+`scripts/render-wrangler.sh` treats **everything as required unless it is on an explicit
+allowlist**, and the direction matters. `envsubst` turns an unset variable into an empty string, so
+"empty", "misspelled the variable name", and "forgot to set it" all render identically and all look
+fine. Guarding a hand-picked few leaves every other value silently defaultable to empty.
+
+`ALLOW_EMPTY` is exactly four names:
+
+`GOOGLE_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_SERVICES_ID`
+
+Each is half of an SSO provider pair, and a provider is offered only when both halves are present,
+so an unconfigured provider is *absent* rather than broken. Empty is how that is expressed. They are
+additionally **absent** as repository variables rather than empty, because the GitHub API rejects an
+empty variable value with a 422 -- the workflow cannot set them to the empty string it wants.
+
+Do not extend that list to silence a failing deploy. Adding a name to it asserts that empty is
+correct for that value, which for everything else here is false.
+
+The D1 id is checked by *shape* (a uuid), not merely non-emptiness, because a wrong-but-present id
+would migrate somebody else database -- the one mistake here with no undo. All of it is
+negative-tested in `tests/render-wrangler.test.sh` (every required value, unset and empty, plus both
+directions of the allowlist) and runs in CI on every PR.
 
 ## Prerequisites a deploy cannot create for itself
 
