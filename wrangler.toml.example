@@ -79,18 +79,18 @@ migrations_dir = "migrations"
 binding = "TENANT_DISPATCH"
 namespace = "${TENANT_DISPATCH_NAMESPACE}"
 
-# Studio migrations ride the bundle as Text modules (src/studio-migrations.ts): the
-# provisioner applies them to each fresh tenant D1 and a Worker cannot read a directory at runtime.
-[[rules]]
-type = "Text"
-globs = ["**/*.sql"]
-fallthrough = true
-
 # The studio release artifact mirror studio-release.yml publishes (studio-releases/<tag>/...).
 # The provisioner reads the pinned release from here; see src/bundle-r2.ts.
 # PREREQ, same class as the dangling-namespace hazard above: the bucket must EXIST and the pinned
-# tag's artifact must have been published INTO it (run the studio-release workflow) before a
-# provision can succeed. An empty mirror fails a provision honestly at wfp_upload, not silently.
+# tag artifact must have been published INTO it (run the studio-release workflow) before a provision
+# can succeed. An empty mirror fails at the bundle_fetch PRECONDITION, before any tenant resource is
+# created, not half way through, and never silently.
+#
+# The mirror also carries the tenant D1 SCHEMA and the studio env var contract as of the pinned
+# release (manifest migrations + required_vars, v1.3.1 and later). That is why there is no .sql
+# Text-module rule here any more: nothing in this repo imports .sql at build time. The schema is
+# fetched and hash-verified at provision time instead, so a tenant can never be built from a schema
+# this repo happened to be carrying.
 [[r2_buckets]]
 binding = "STUDIO_RELEASES"
 bucket_name = "${STUDIO_RELEASES_BUCKET}"
