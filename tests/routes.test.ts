@@ -481,7 +481,6 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
-      ok: true,
       status: "live",
       verified_endpoints: 1,
       // cf#114: the response says plainly that every module was PROVEN to serve the key.
@@ -534,6 +533,54 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(body.modules_ready).toBe(false);
     expect(body.modules_verified).toEqual(["keyframe", "own-gpu"]);
     expect(body.modules_unverified.map((u) => u.module)).toEqual(["finish-upscale", "speech-upscale"]);
+  });
+
+  // cp#20: NEITHER invoke-key outcome may carry a summary `ok`. The 202 is the dangerous one (a
+  // caller branching on ok:true would treat a NOT-LIVE tenant as ready, which is the cf#114 lie one
+  // layer up), but the 200 is asserted too: if `ok` survived on success only, its ABSENCE would
+  // silently become the failure signal and callers would still be reading a summary instead of the
+  // state. These assert a field is MISSING, which toMatchObject structurally cannot do.
+  it("cp#20: no `ok` field on the LIVE 200 -- callers branch on status/modules_ready", async () => {
+    const { cookie } = await tenantReady(
+      JSON.stringify([{ key: "backend", label: "Render", id: "ep1", name: "vivijure-hero-backend" }]),
+    );
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect("ok" in body).toBe(false);
+    // The facts a caller must branch on instead are both present.
+    expect(body.status).toBe("live");
+    expect(typeof body.modules_ready).toBe("boolean");
+  });
+
+  it("cp#20: no `ok` field on the UNCONFIRMED 202 -- the not-live case cannot read as success", async () => {
+    const { cookie } = await tenantReady(JSON.stringify(["ep1"]));
+    wiring.installInvokeKey.mockResolvedValueOnce({
+      verified: [], unverified: [], unconfirmed: ["keyframe"], attempts: 6, elapsedMs: 9800,
+    });
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect("ok" in body).toBe(false);
+    expect(body.modules_ready).toBe(false);
+    // And the tenant really is NOT live, which is what ok:true used to paper over.
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
   });
 
   it("omits modules_unverified entirely when everything was PROVEN (no empty-array ambiguity)", async () => {
