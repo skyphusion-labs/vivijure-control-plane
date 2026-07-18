@@ -524,7 +524,22 @@ async function installInvokeKey(
     // the TRUE stored state and explains the rest in words.
     return json(
       {
-        ok: true,
+        // cp#20: NO `ok` field, deliberately, and this is the whole point of the fix.
+        //
+        // This response used to carry ok:true. It is a 202: the key is installed but the tenant is
+        // NOT live and must not be rendered against. A caller branching on `ok` therefore got a
+        // cheerful yes for a studio that is not serving -- the cf#114 lie ("a stored fact the
+        // running system does not honour") re-introduced one layer up, in the very route cf#114
+        // exists to make honest.
+        //
+        // The fix is not ok:false. Nothing FAILED here: the key is stored, the tenant is intact,
+        // and the message explicitly tells the customer not to re-paste it. ok:false would push a
+        // UI toward an error path and invite exactly the re-paste we are telling them to skip.
+        //
+        // So the summary boolean is REMOVED rather than corrected, and callers must branch on the
+        // facts that are actually true: the HTTP status (202 vs 200) and `modules_ready`. Both are
+        // present in both responses, so this asks callers to read a field that already existed
+        // rather than learn new vocabulary.
         status: tenant.status,
         verified_endpoints: verdict.inScope.length,
         modules_ready: false,
@@ -543,7 +558,11 @@ async function installInvokeKey(
 
   await deps.store.setTenantStatus(tenant.id, "live");
   return json({
-    ok: true,
+    // No `ok` here either (cp#20). Dropping it from the 202 alone would leave `ok` meaning
+    // "present on success, absent on incomplete", so absence would become the success signal by
+    // accident and every caller would still be branching on a summary rather than on the state.
+    // One shape, both outcomes: `status` says where the tenant IS, `modules_ready` says whether
+    // its modules were PROVEN serving.
     status: "live",
     verified_endpoints: verdict.inScope.length,
     // Say plainly whether every module was PROVEN ready. "unverified" is not a soft pass: it names
