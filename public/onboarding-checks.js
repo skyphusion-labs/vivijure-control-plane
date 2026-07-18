@@ -439,6 +439,31 @@
   // when a module image predates GET /ready and its readiness could not be
   // observed. That is a real, non-failing state and it must not read to the
   // customer as an unqualified success -- swallowing it is what cf#114 closed.
+  /**
+   * The NAMES out of modules_unverified, which is an array of OBJECTS.
+   *
+   * The route spreads `readiness.unverified` straight into the body, and that is
+   * UnverifiedModule[] -- {module, reason, detail, script} -- never a string[].
+   * Joining the raw array rendered "([object Object], [object Object])" to the
+   * customer, in the ONE state the cp#20 work existed to make legible.
+   *
+   * It survived a green suite because the route test mocked installInvokeKey
+   * returning strings: the mock encoded our assumption instead of the function's
+   * real contract, so nothing on either side ever saw the shipped shape. Same
+   * defect as the MemoryStore UNIQUE(slug) stub, one file over.
+   *
+   * Strings are still tolerated because a projection that throws on the wrong
+   * shape would trade a cosmetic bug for a broken page, and this runs at the
+   * moment a customer is handing us a credential.
+   */
+  function unverifiedNames(list) {
+    return list
+      .map(function (u) {
+        return u && typeof u === "object" ? u.module : u;
+      })
+      .filter(Boolean);
+  }
+
   function invokeKeyVerdict(httpStatus, body) {
     const b = body || {};
     const unverified = Array.isArray(b.modules_unverified) ? b.modules_unverified : [];
@@ -456,7 +481,7 @@
           message: "Your studio is live.",
           notes: [
             "We could not confirm every render module is ready" +
-              (unverified.length ? " (" + unverified.join(", ") + ")" : "") +
+              (unverified.length ? " (" + unverifiedNames(unverified).join(", ") + ")" : "") +
               ". That usually means those modules run an older image that cannot report " +
               "readiness, not that anything is broken. If a render fails on one of them, tell us.",
           ],

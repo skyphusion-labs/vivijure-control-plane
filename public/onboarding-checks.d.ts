@@ -105,7 +105,12 @@ export interface InvokeKeyResponseBody {
   modules_ready?: boolean;
   modules_verified?: string[];
   modules_unconfirmed?: string[];
-  modules_unverified?: string[];
+  /**
+   * OBJECTS, not strings. The route spreads ModuleReadiness.unverified verbatim,
+   * which is UnverifiedModule[] (src/tenant-modules.ts). Typing this as string[]
+   * is what let `.join(", ")` ship "[object Object]" to a customer.
+   */
+  modules_unverified?: { module: string; reason?: string; detail?: string; script?: string }[];
   message?: string;
   error?: string;
   reason?: string;
