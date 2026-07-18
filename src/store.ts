@@ -292,23 +292,6 @@ export interface ControlPlaneStore {
    */
   checkSlugAvailability(slug: string, accountId: string): Promise<SlugClaim>;
   /**
-   * Take over an existing Tier A row, atomically. Returns null if it is not yours or no longer
-   * qualifies.
-   *
-   * This is the ENFORCEMENT point, not checkSlugAvailability. Check-then-create is two steps and
-   * two concurrent provisions of the same slug both pass the check; for a fresh slug the UNIQUE
-   * constraint arbitrates, but for a reclaim nothing does unless the write itself re-tests the
-   * tier predicate and the owner. So the tier rules are repeated in this UPDATE's WHERE clause on
-   * purpose. The check exists to produce a legible reason, not to authorize.
-   *
-   * ORDERING REQUIREMENT: this blanks the resource columns. Reap the resources named in the
-   * ReclaimHandle FIRST; after this returns, the row no longer knows they existed.
-   *
-   * REQUIRES YOUR OWN LIVE LEASE. Holding the token is what proves you are the attempt that won
-   * claimReclaim and did the teardown, rather than the one that lost and would otherwise blank the
-   * row out from under the winner. Clears the lease on success.
-   */
-  /**
    * Claim the EXCLUSIVE right to tear this row down and reuse its slug (cf#103).
    *
    * WHY THIS EXISTS AT ALL: every tenant resource name derives from the SLUG, not the attempt, so
@@ -321,12 +304,38 @@ export interface ControlPlaneStore {
    *
    * TEAR DOWN FROM THE RETURNED ROW, not from an earlier checkSlugAvailability handle: this write
    * is the serialization point, so these are the authoritative ids.
+   *
+   * MINTS the lease token. It is returned once, here, and nowhere else: pass it to reclaimSlug to
+   * complete. A timestamp alone would be advisory, proving somebody holds the lease but never that
+   * it is you, which would leave the losing attempt free to blank the row mid-teardown.
    */
   claimReclaim(
     tenantId: string,
     accountId: string,
     leaseSeconds: number,
   ): Promise<{ tenant: Tenant; lease_token: string } | null>;
+  /**
+   * Take over an existing Tier A row, atomically. Returns null if it is not yours or no longer
+   * qualifies.
+   *
+   * This is the ENFORCEMENT point, not checkSlugAvailability. Check-then-create is two steps and
+   * two concurrent provisions of the same slug both pass the check; for a fresh slug the UNIQUE
+   * constraint arbitrates, but for a reclaim nothing does unless the write itself re-tests the
+   * tier predicate and the owner. So the tier rules are repeated in this UPDATE's WHERE clause on
+   * purpose. The check exists to produce a legible reason, not to authorize.
+   *
+   * ORDERING REQUIREMENT: this blanks the resource columns. Reap the resources named on the row
+   * claimReclaim RETURNED first; after this returns, the row no longer knows they existed. Use the
+   * claim's row rather than an earlier checkSlugAvailability handle -- the claim is the
+   * serialization point, so a handle read before it can already be stale.
+   *
+   * REQUIRES YOUR OWN LIVE LEASE, and refuses without one in EITHER direction: a token that is not
+   * yours, or a token that is yours but whose lease has EXPIRED. Holding a live token is what
+   * proves you are the attempt that won claimReclaim and did the teardown, rather than the one
+   * that lost and would otherwise blank the row out from under the winner. The expiry half matters
+   * on a teardown that overruns its lease: by then another attempt may have claimed the row, so
+   * null here means re-run from claimReclaim, never retry this call. Clears the lease on success.
+   */
   reclaimSlug(tenantId: string, accountId: string, leaseToken: string): Promise<Tenant | null>;
   createTenant(id: string, slug: string, accountId: string, status: TenantLifecycle): Promise<Tenant>;
   /** Moves the LIFECYCLE only. Never touches suspension. */
