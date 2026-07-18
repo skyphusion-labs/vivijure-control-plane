@@ -1,7 +1,7 @@
 # The platform control plane
 
 The hosted door for vivijure studio (epic #40, skeleton #52). A **separate Worker** from the studio
-that deploys independently, exactly like the MCP Worker: `npm run deploy:control-plane`.
+that deploys independently, exactly like the MCP Worker: `npm run deploy`.
 
 It owns accounts, auth, the AUP gate, tenant records, and the admin switches. It owns **no tenant
 studio data**.
@@ -35,8 +35,8 @@ The control-plane D1 holds `accounts`, `account_identities`, `login_tokens`, `se
 `oauth_states`, `tenants`, `aup_acceptances`, `provision_jobs`, `platform_settings`, `admin_audit`.
 
 Tenant studio data (projects, storyboards, renders, cast, spend) lives in the **tenant's own D1**
-and never here. `tests/control-plane/schema-guard.test.ts` fails the build if a studio table ever
-appears in `migrations-control-plane/`, so the boundary is a test rather than a sentence.
+and never here. `tests/schema-guard.test.ts` fails the build if a studio table ever
+appears in `migrations/`, so the boundary is a test rather than a sentence.
 
 **Every stored credential is a SHA-256 hash**, never a plaintext (the `api_tokens` rule, #445): a
 dump of this database yields no usable credential. The schema guard also fails on any
@@ -137,15 +137,15 @@ a reason is refused, because the kill switch must stay attributable.
   **Provisioning is exempt by product ruling (2026-07-17): the toggle aims at the front door, not at
   people already inside it.** An existing, AUP-accepted account mid-onboarding provisions normally
   with signups off; provisioning gates on session + accepted AUP only. Pinned in
-  `tests/control-plane/routes.test.ts` (both halves: new signup refused, existing account served).
+  `tests/routes.test.ts` (both halves: new signup refused, existing account served).
 
 ## Config
 
-Bindings live in `wrangler.control-plane.toml.example` and are mirrored by hand in
-`src/control-plane/env.ts` (the standing rule). `account_id` is never hardcoded. The rendered
-`wrangler.control-plane.toml` is gitignored, like every other rendered config in this repo.
+Bindings live in `wrangler.toml.example` and are mirrored by hand in
+`src/env.ts` (the standing rule). `account_id` is never hardcoded. The rendered
+`wrangler.toml` is gitignored, like every other rendered config in this repo.
 
-**Provisioner wiring** (`src/control-plane/deps.ts` `provisionerWiring()`): the provision and
+**Provisioner wiring** (`src/deps.ts` `provisionerWiring()`): the provision and
 invoke-key routes are OFFERED only when every piece below is configured, and refuse with
 `503 provisioner_unconfigured` otherwise -- the same absence-fails-closed rule as the admin gate,
 because a tenant parked on a job nothing will ever run is a lie with a status page.
@@ -177,7 +177,7 @@ The provisioner closes it the SAME way self-host does (Phase-3 dynamic dispatch)
    `finish-upscale`, `finish-lipsync`, `speech-upscale`) upload into ONE shared dispatch namespace
    (`TENANT_MODULE_NAMESPACE`, e.g. `vivijure-tenant-modules`), script names prefixed with the
    TENANT ID (stable across renames; teardown is a prefix sweep). Each carries only its own
-   endpoint id (`RUNPOD_ENDPOINT_ID`, plain_text). The catalog (`src/control-plane/tenant-modules.ts`,
+   endpoint id (`RUNPOD_ENDPOINT_ID`, plain_text). The catalog (`src/tenant-modules.ts`,
    `TENANT_MODULE_CATALOG`) maps module -> endpoint as DATA; extending the tier is a row there plus
    the matching endpoint in `runpod.ts` (bare-skeleton doctrine).
 2. **`MODULE_DISPATCH` on the studio.** The tenant studio's WfP upload carries a
@@ -209,18 +209,20 @@ in-job gate); a render past discovery + moving pixels needs key B and is the out
 gate. Teardown pulls the studio worker first (discovery goes dark), then prefix-sweeps the tenant's
 module scripts and censuses that zero remain; the `installed_modules` rows die with the tenant D1.
 
-Naming: **"control-plane", never "platform"**. `src/platform/` is already the host-neutral Platform
-ICD, and colliding with it would be a trap for the next reader.
+Naming: **"control-plane", never "platform"**. The Studio's
+[`vivijure-cf src/platform/`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/src/platform/) is already the host-neutral Platform ICD.
+There is no `src/platform/` in THIS repo, and there should not be: reusing the name across the two
+repositories would be a trap for the next reader moving between them.
 
 ## Verifying changes
 
 ```bash
 npm run typecheck                 # the CI gate
-npm test                          # includes tests/control-plane
-npm run dev:control-plane         # live, against a real local D1
+npm test                          # the whole suite
+npm run dev         # live, against a real local D1
 ```
 
-The in-memory store in `tests/control-plane/memory-store.ts` proves **decision paths only**. It is
+The in-memory store in `tests/memory-store.ts` proves **decision paths only**. It is
 not evidence about the shipped artifact: it encodes assumptions about our own SQL and would happily
 agree with a bug in it. `store-d1.ts` is the one un-stubbable seam and is verified against a **real
 D1** via `wrangler dev`. Both halves are required; the live pass is what caught the suspend defect

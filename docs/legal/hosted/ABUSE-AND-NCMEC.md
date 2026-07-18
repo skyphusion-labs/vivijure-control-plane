@@ -19,7 +19,7 @@ construction*, without anyone having to police anything:
 | Surface | Why the bright line holds today |
 |---|---|
 | `vivijure.skyphusion.org` (Conrad's private instance) | Not open to strangers. Conrad and the crew, token-gated. The people generating are known. |
-| `demo.vivijure.com` (public demo) | **It renders nothing.** Every state-changing request is refused and the AI/GPU integrations are not connected. The catalog is curator-vetted and seeded. The code says so in as many words: the bright line is "satisfied BY CONSTRUCTION" (`src/demo-render.ts`). |
+| `demo.vivijure.com` (public demo) | **It renders nothing.** Every state-changing request is refused and the AI/GPU integrations are not connected. The catalog is curator-vetted and seeded. The code says so in as many words: the bright line is "satisfied BY CONSTRUCTION" ([`vivijure-cf src/demo-render.ts`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/src/demo-render.ts)). |
 | Self-hosted instances | Not ours. The operator is responsible, and we architecturally cannot see them. |
 
 **The hosted studio is the first surface Skyphusion Labs operates where strangers can generate.**
