@@ -55,6 +55,15 @@ jobs:
       - name: Config render guards
         run: bash tests/render-wrangler.test.sh
 
+      # Structural guards on deploy.yml. The dry run was once a STEP calling `exit 0`, which ends
+      # the step and NOT the job, so a dry_run dispatch ran on into migrate + deploy. No code test
+      # would have caught it -- the defect lived in the workflow shape. These assert every write to
+      # the live plane sits inside the job carrying the dry-run condition.
+      - name: Workflow structure guards
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+          python3 tests/workflow-guards.test.py
+
       # The front-door pages are classic scripts that tsc never sees and vitest never loads
       # (the suites test the pure helpers, not the DOM path). This catches a call to a function
       # nobody defines, which is a defect all three gates above pass silently. It is a heuristic

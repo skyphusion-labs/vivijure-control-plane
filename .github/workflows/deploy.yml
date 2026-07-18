@@ -17,7 +17,16 @@ name: Deploy control plane
 #   is NO hand-applied schema, ever. Schema reaches the live database through this job or not at all.
 #
 # The repo schema-guard test cannot catch this class: it checks code against migrations, never
-# against the DEPLOYED database. Only this job does.
+# against the DEPLOYED database. Only this workflow does.
+#
+# WHY TWO JOBS, and do not collapse them back into one:
+#   The dry run used to be a step that ran `exit 0`. That ends the STEP, not the JOB -- so a
+#   dry_run dispatch sailed straight on into migrate + deploy, doing the exact thing it was asked
+#   not to do. The guard read as safe and was not.
+#   Per-step `if:` conditions would fix today and rot tomorrow: the next person to add a step after
+#   the guard has to remember to repeat the condition, and forgetting is silent and destructive.
+#   A separate job carries the condition ONCE, at the job, so every step inside it inherits the
+#   guard by construction and a newly-added step cannot escape it.
 on:
   push:
     tags: ["v*"]
@@ -39,9 +48,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # ------------------------------------------------------------------------------------------
+  # PREFLIGHT -- always runs, never writes anything. Gates, renders config, and REPORTS what a
+  # deploy would do. This is the entirety of a dry run.
+  # ------------------------------------------------------------------------------------------
+  preflight:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -79,16 +92,9 @@ jobs:
           fi
           echo "tag ${GITHUB_REF_NAME} matches declared version ${pkg}."
 
-      # Render the real wrangler.toml from the committed example, injecting account-specific values
-      # from encrypted Actions secrets. The rendered file is gitignored: committing it would put the
-      # account id, D1 id, and resource ids in a PUBLIC repo.
-      #
-      # MUST run BEFORE the migration step: wrangler d1 reads the rendered wrangler.toml to find the
-      # CP_DB binding, its database_id, and migrations_dir.
-      #
-      # The render + its fail-closed guards live in scripts/render-wrangler.sh, NOT inline here, so
-      # that tests/render-wrangler.test.sh exercises the exact code this deploy runs. Inlining it
-      # would leave the test proving a copy correct while the shipped path stayed unverified.
+      # Render here too, even though the release job renders again: a dry run must prove the
+      # Actions secrets and variables are correctly populated, and the render guards are where
+      # that gets proven. See scripts/render-wrangler.sh.
       - name: Render wrangler.toml
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -108,19 +114,67 @@ jobs:
           APPLE_SERVICES_ID: ${{ vars.APPLE_SERVICES_ID }}
         run: scripts/render-wrangler.sh wrangler.toml
 
-      # Show what is ABOUT to happen, before it happens. On a clean deploy this prints the no-op
-      # line; anything else here is the cue that this tag carries schema change.
+      # Show what a deploy WOULD do. On a clean release this prints the no-op line; anything else
+      # is the cue that this tag carries schema change. Read-only: list, never apply.
       - name: Report pending migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler d1 migrations list CP_DB --remote
 
-      - name: Stop here (dry run)
+      - name: Dry run stops here
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: |
-          echo "::notice::dry_run requested -- config rendered and pending migrations reported. Nothing was migrated or deployed."
-          exit 0
+          {
+            echo "### Dry run -- nothing was migrated or deployed"
+            echo ""
+            echo "Config rendered and validated, pending migrations reported above."
+            echo "The \`release\` job is SKIPPED by design; confirm that in the run view."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::dry run complete -- the release job is skipped, nothing was migrated or deployed."
+
+  # ------------------------------------------------------------------------------------------
+  # RELEASE -- everything that WRITES. Guarded ONCE, at the job. A dry_run dispatch skips this
+  # entire job, which is visible as SKIPPED in the run view rather than inferred from a log line.
+  # ------------------------------------------------------------------------------------------
+  release:
+    needs: preflight
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # Rendered again rather than carried from preflight as an artifact. The rendered file holds
+      # the account id and D1 id, and an artifact is downloadable from the run page by anyone who
+      # can see the repo -- which is everyone, this repo is public. Re-rendering costs seconds.
+      - name: Render wrangler.toml
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CONTROL_PLANE_D1_ID: ${{ secrets.CONTROL_PLANE_D1_ID }}
+          TENANT_DISPATCH_NAMESPACE: ${{ vars.TENANT_DISPATCH_NAMESPACE }}
+          TENANT_MODULE_NAMESPACE: ${{ vars.TENANT_MODULE_NAMESPACE }}
+          STUDIO_RELEASES_BUCKET: ${{ vars.STUDIO_RELEASES_BUCKET }}
+          STUDIO_RELEASE: ${{ vars.STUDIO_RELEASE }}
+          CONTROL_PLANE_HOST: ${{ vars.CONTROL_PLANE_HOST }}
+          CONTROL_PLANE_ZONE_NAME: ${{ vars.CONTROL_PLANE_ZONE_NAME }}
+          AUP_VERSION: ${{ vars.AUP_VERSION }}
+          AUP_URL: ${{ vars.AUP_URL }}
+          POSTERN_SEND_URL: ${{ vars.POSTERN_SEND_URL }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ vars.GOOGLE_OAUTH_CLIENT_ID }}
+          GITHUB_OAUTH_CLIENT_ID: ${{ vars.GITHUB_OAUTH_CLIENT_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_SERVICES_ID: ${{ vars.APPLE_SERVICES_ID }}
+        run: scripts/render-wrangler.sh wrangler.toml
 
       # MIGRATE BEFORE DEPLOY, deliberately. This ordering is load-bearing.
       #
@@ -132,7 +186,7 @@ jobs:
       #
       # If a migration is ever NOT additive (a drop, a rename, a narrowing), this ordering is WRONG
       # and the change needs a two-tag expand/contract instead. Do not silently reorder this step;
-      # change the migration.
+      # change the migration. See CONTRIBUTING.md.
       - name: Apply D1 migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
