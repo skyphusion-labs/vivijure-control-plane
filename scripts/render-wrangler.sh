@@ -40,5 +40,22 @@ grep -Eq "database_id = \"[0-9a-f-]{36}\"" "$out" || {
 grep -Eq "AUP_VERSION = \".+\"" "$out" || { echo "::error::AUP_VERSION empty after render" >&2; exit 1; }
 grep -Eq "CONTROL_PLANE_HOST = \".+\"" "$out" || { echo "::error::CONTROL_PLANE_HOST empty after render" >&2; exit 1; }
 grep -Eq "STUDIO_RELEASE = \".+\"" "$out" || { echo "::error::STUDIO_RELEASE empty after render -- provisioning would refuse 503 provisioner_unconfigured" >&2; exit 1; }
+grep -Eq "AUP_URL = \".+\"" "$out" || { echo "::error::AUP_URL empty after render" >&2; exit 1; }
+
+# AUP_URL must pin an IMMUTABLE ref (Ernst standing rule). An account accepts a SPECIFIC text and
+# the plane records the sha256 it served; a URL that can change out from under an acceptance turns
+# that record into an unverifiable claim.
+#
+# This refuses the unambiguously-moving refs rather than prescribing WHERE the AUP lives -- anyone
+# running their own hosted plane hosts their own policy text, and a rule like "must be
+# raw.githubusercontent with a 40-hex sha" would refuse legitimate deployments while catching no
+# extra failure. A branch ref in the path is the actual defect.
+aup_url="$(grep -E "^AUP_URL = " "$out" | head -1 | sed -E "s/^AUP_URL = \"(.*)\"$/\1/")"
+case "$aup_url" in
+  */main/*|*/master/*|*/refs/heads/*|*/HEAD/*)
+    echo "::error::AUP_URL points at a MOVING ref ($aup_url) -- it must pin an immutable ref (commit SHA or tag), or an accepted policy text can change after acceptance" >&2
+    exit 1
+    ;;
+esac
 
 echo "$out rendered and validated."

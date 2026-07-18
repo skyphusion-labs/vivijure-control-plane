@@ -106,6 +106,35 @@ Typecheck will not catch any of these; only a real deploy will.
 migrations, then stops. Nothing is migrated, nothing is deployed. Use it to confirm the Actions
 secrets and variables are correctly populated before cutting a real tag.
 
+## AUP_URL must pin an immutable ref
+
+`AUP_URL` is deploy-injected and **must** point at an immutable ref -- a full commit SHA or a tag,
+never `main`, never a moving path. This is Ernst standing rule and it is load-bearing for a legal
+reason, not a tidiness one: an account accepts a SPECIFIC text, the plane records the sha256 of what
+it served, and that record has to stay checkable. A URL that can change out from under an
+acceptance turns the record into a claim nobody can verify.
+
+Verified live on 2026-07-18, at the point of extraction:
+
+```
+GET https://studio.vivijure.com/api/aup/current
+{"version":"1.0.0",
+ "url":"https://raw.githubusercontent.com/skyphusion-labs/vivijure-cf/8a5d96b.../docs/legal/hosted/aup/1.0.0.md",
+ "sha256":"1072c78238a141dfcade920ff93de110f282b4b621c72f788ed0a3f51778b4ed"}
+```
+
+Full 40-character commit SHA, resolves 200, and the served bytes hash to exactly the advertised
+sha256. The rule was already being honoured.
+
+**Consequence for the cf#85 extraction:** the pin resolves against vivijure-cf *history*, not its
+`main`, so removing the hosted legal set from vivijure-cf in phase 4 does **not** 404 the text any
+existing tenant already accepted. No fix is required before phase 4. The one thing that would break
+it is vivijure-cf being deleted or made private -- it stays public, so this holds.
+
+**Going forward:** new AUP versions published from THIS repo pin to a commit SHA in THIS repo, by
+the same rule. Bumping `AUP_VERSION` re-gates every account on their next request by construction,
+so a new version and a new immutable URL travel together.
+
 ## Zone security
 
 `zone-security/` holds the vivijure.com WAF as code. It is **not** part of this deploy job; it is

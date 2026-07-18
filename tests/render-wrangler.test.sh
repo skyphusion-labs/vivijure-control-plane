@@ -76,6 +76,26 @@ check "empty CONTROL_PLANE_HOST is refused" fail
 set_full_env; export STUDIO_RELEASE=""
 check "empty STUDIO_RELEASE is refused" fail
 
+# AUP_URL immutable-ref guard (Ernst standing rule). The live value at extraction time was
+# SHA-pinned and verified byte-identical to its advertised sha256; this keeps it that way.
+set_full_env; export AUP_URL=""
+check "empty AUP_URL is refused" fail
+
+set_full_env; export AUP_URL="https://raw.githubusercontent.com/skyphusion-labs/vivijure-control-plane/main/docs/legal/aup/1.0.0.md"
+check "AUP_URL on a moving ref (/main/) is refused" fail
+
+set_full_env; export AUP_URL="https://raw.githubusercontent.com/o/r/refs/heads/release/aup.md"
+check "AUP_URL on a moving ref (/refs/heads/) is refused" fail
+
+# ...and the shapes that MUST still be allowed, or the guard is just breaking deployments. A
+# self-hoster runs their own plane and hosts their own policy text wherever they like; the rule is
+# immutability, not a prescribed host.
+set_full_env; export AUP_URL="https://raw.githubusercontent.com/skyphusion-labs/vivijure-cf/8a5d96b4225d6154dceb3906d45d2ad0fb1a1841/docs/legal/hosted/aup/1.0.0.md"
+check "SHA-pinned AUP_URL is allowed (the live value)" pass
+
+set_full_env; export AUP_URL="https://example.com/policies/aup-1.0.0.md"
+check "a self-hosted immutable AUP_URL is allowed" pass
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ] || exit 1

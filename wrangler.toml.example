@@ -98,6 +98,10 @@ bucket_name = "${STUDIO_RELEASES_BUCKET}"
 [vars]
 # Bumping AUP_VERSION re-gates every account on their next request, by construction.
 AUP_VERSION = "${AUP_VERSION}"
+# MUST pin an IMMUTABLE ref: a commit SHA or a tag, never main and never a moving path (the
+# standing rule from Ernst). An account accepts a SPECIFIC text and the plane records the sha256
+# it served; a URL that can change after the fact makes that record unverifiable.
+# scripts/render-wrangler.sh refuses a moving ref at deploy time. See docs/deploy.md.
 AUP_URL = "${AUP_URL}"
 # THE single injected hostname (the vars ruling). The front-door origin and the tenant domain
 # suffix are DERIVED from it in src/env.ts (publicOrigin/tenantDomainSuffix), and the
