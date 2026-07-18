@@ -227,8 +227,13 @@ There is no cap on the number of tenants. Storage spend is the meter that matter
 
 ### The knobs (configuration)
 
-Everything below lives in `wrangler.control-plane.toml.example` and is mirrored by hand in the
-Worker's `Env` interface. The account id is never hardcoded.
+Everything below is declared in `wrangler.toml.example` and mirrored by hand in the Worker's
+`Env` interface. The account id is never hardcoded.
+
+You do not edit those values into a file by hand for a real deploy. The rendered `wrangler.toml` is
+built at deploy time from repository variables and secrets, so the live configuration lives in one
+place instead of in somebody's working copy. See [`docs/deploy.md`](docs/deploy.md) for which name
+is a variable, which is a secret, and which are allowed to be empty.
 
 | Setting | Kind | What it is |
 |---|---|---|
@@ -242,7 +247,7 @@ Worker's `Env` interface. The account id is never hardcoded.
 | `CF_ACCOUNT_ID` | var | Needed at runtime, because a Worker cannot read its own account id |
 | `DISPATCH_NAMESPACE` | var | Name of the tenant-studio namespace. Must match the binding |
 | `TENANT_MODULE_NAMESPACE` | var | Name of the shared tenant-module namespace. Created if missing, but required |
-| `STUDIO_RELEASE` | var | **The pinned studio release every new tenant gets** |
+| `STUDIO_RELEASE` | var | **The pinned studio release every new tenant gets.** Floor is `v1.3.1`; earlier artifacts are refused (see below) |
 | `CP_DB` | D1 | Platform data only |
 | `TENANT_DISPATCH` | dispatch namespace | Where tenant studios live |
 | `STUDIO_RELEASES` | R2 | The release-artifact mirror |
@@ -280,6 +285,11 @@ The manifest is the contract, and it carries everything needed to stand a tenant
 | the **modules** | One tag, one artifact, so a studio and its modules are never a mismatched pair |
 | the studio **migrations** | The schema belongs to whoever owns the tables. We apply them; we do not author them |
 | **`required_vars`** | The studio declares what it needs. We read that list rather than keeping our own copy that silently drifts |
+
+**The pin has a floor: `v1.3.1`.** Migrations and `required_vars` only started riding the manifest
+at that release, so an earlier artifact cannot describe a tenant fully enough to build one. The
+control plane refuses a pre-`v1.3.1` artifact outright rather than provisioning a studio it cannot
+finish. (The live plane currently pins `v1.2.0`; the bump to `v1.3.1` rides the `v1.0.0` cutover.)
 
 That last row is the important one. If this repo kept its own idea of what a tenant studio needs,
 the two lists would drift apart the first time the studio gained a setting, and the failure would
@@ -319,34 +329,93 @@ meant to:
 - a `v*` tag **here** deploys the control plane
 - a `v*` tag in `vivijure-cf` deploys the Studio panel
 
-That split is deliberate. Before the extraction one tag did both jobs, which meant a Studio release
-and a control-plane release could not happen independently even when they had nothing to do with
-each other.
+That split is deliberate. Before the extraction one tag did both jobs, so a Studio release and a
+control-plane release could not happen independently even when they had nothing to do with each
+other.
 
-A `v*` tag on this repository deploys the control-plane Worker **and** applies control-plane D1
-migrations with `wrangler d1 migrations apply`, tracked, against the live database.
+### Cutting a release
 
-**Schema is never applied by hand here.** This repo is born with that rule, and it is worth saying
-why: the previous control-plane database was hand-built, ended up with no migration tracking table
-at all, and caused two live provisioning failures before anyone noticed. A tracked migration that
-reports "no migrations to apply" is a fact. A hand-applied one is a guess.
-
-> **Status note (extraction in progress, cf#85).** The tag-driven deploy workflow is landing as
-> part of this extraction and is tracked as a definition-of-done item. Until `deploy.yml` exists
-> here, the commands below are the real, current path. This section gets rewritten to the workflow
-> the moment it lands. Documented honestly rather than aspirationally.
+The control plane deploys from a **SemVer tag, and only from a tag**. There is no deploy-from-main
+path, and no deploy-from-a-laptop path.
 
 ```bash
-npm install
-cp wrangler.control-plane.toml.example wrangler.control-plane.toml   # then fill in the values
-npx wrangler d1 migrations apply vivijure-control-plane --remote     # tracked migrations, always
-npm run deploy
+# bump BOTH; the pipeline refuses if they disagree
+#   package.json    "version"
+#   src/version.ts  CONTROL_PLANE_VERSION
+git commit -am "chore(release): v1.2.3"
+git tag -a v1.2.3 -m "control plane v1.2.3"
+git push origin main --follow-tags
 ```
 
-**Two things must exist before the first deploy**, or the deploy itself fails:
+`.github/workflows/deploy.yml` then runs. It is **two jobs with a gate between them**, which is the
+point: everything that can refuse the release happens before anything writes.
 
-- the tenant-studio dispatch namespace (`npx wrangler dispatch-namespace create <name>`)
-- the R2 mirror bucket, with the pinned studio release already published into it
+**`preflight`** (reads and checks only, writes nothing):
+
+1. install, typecheck, tests, config-render guards
+2. **tag and version must agree**, or it refuses
+3. render `wrangler.toml` from `wrangler.toml.example`
+4. **report pending migrations**
+5. a dry run stops here
+
+**`release`** (the writes):
+
+6. **apply the D1 migrations**
+7. **verify nothing is still pending**, and fail the deploy if it is
+8. **deploy the Worker**
+
+The config is rendered in both jobs rather than passed between them. A rendered `wrangler.toml`
+contains live configuration, and handing it between jobs as an artifact would put that on the
+workflow's storage for anyone with read access to the run.
+
+### Why migrations run before the deploy, not after
+
+Deploying first leaves a window where the new Worker code is running against the old schema, which
+is exactly how this system broke before. Migrating first is safe here **because control-plane
+migrations are additive**: old code tolerates a column it does not know about, whereas new code
+cannot tolerate a column that is missing.
+
+That reasoning is the whole justification, so it has a limit worth stating. **If a migration is ever
+non-additive** (a drop, a rename, a narrowing), this ordering becomes wrong and the change needs a
+two-tag expand-then-contract instead. Change the migration, not the ordering.
+
+Step 6 exists because step 5 exiting cleanly only proves it did not error; it does not prove the
+ledger now matches. A partial apply must never reach the deploy wearing a green checkmark.
+
+### Schema is never applied by hand
+
+**No hand-applied schema, ever.** Schema reaches the live database through step 5 or it does not
+reach it at all.
+
+This is not a style preference. The previous control-plane database was built by hand, so one
+migration went in raw, one was skipped, one was applied after the fact, and there was no ledger to
+notice any of it. Two live provisioning failures came out of that single gap. The repository's own
+schema-guard test cannot catch this class, because it compares code against `migrations/` and never
+against the *deployed* database. Only the deploy job can.
+
+On a release with no schema change, steps 4 to 6 print `No migrations to apply`. That line is not
+noise; it is the evidence that the ledger and `migrations/` agree.
+
+### Dry run
+
+Dispatch the workflow manually with `dry_run: true` (the default) to render the config and report
+pending migrations, then stop. Nothing is migrated and nothing is deployed. Use it to confirm the
+repository variables and secrets are populated **before** cutting a real tag, because a tag is a
+public act and a failed one is awkward to take back.
+
+### Things a deploy cannot create for itself
+
+Typecheck will not catch any of these. Only a real deploy will.
+
+- the **tenant dispatch namespace** must already exist, or the binding is dangling and the deploy
+  fails outright
+- the **studio-releases R2 bucket** must exist *and* hold the artifact for the pinned
+  `STUDIO_RELEASE`, or provisioning later fails at the upload step
+- the **wildcard tenant leg** needs a proxied wildcard DNS record and a certificate pack covering
+  `*.<CONTROL_PLANE_HOST>`
+
+Full mechanics, including every required variable and secret and why exactly four of them are
+allowed to be empty: [`docs/deploy.md`](docs/deploy.md).
 
 ## Working on it
 
