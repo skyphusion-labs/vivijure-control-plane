@@ -1,0 +1,191 @@
+# Vivijure CONTROL PLANE -- wrangler config.
+#
+# THE TEMPLATE, not the config. The real wrangler.toml is RENDERED from this file at deploy time
+# (.github/workflows/deploy.yml, envsubst) and is gitignored: this repo is PUBLIC, and the rendered
+# file carries the account id, the D1 id, and the zone facts. Edit THIS file; render locally to work.
+#
+# Deployed by a v* tag on THIS repository (cf#85 split the tag semantics: a v* tag here deploys the
+# control plane, a v* tag in vivijure-cf deploys the Studio panel). The old manual
+# `npm run deploy:control-plane` path is retired -- hand-deploying is how the D1 ledger drifted in
+# the first place (cf#80).
+#
+# account_id is NOT hardcoded; it is read from CLOUDFLARE_ACCOUNT_ID (.dev.vars locally, injected
+# in CI). Mirror every binding change in src/env.ts (the hand-authored Env).
+#
+# NAMING: "control-plane", never "platform". src/platform/ is already the host-neutral Platform ICD
+# (cf-platform.ts, cf-r2-store.ts, ...), and colliding with it would be a trap for the next reader.
+#
+# PARITY: this control plane is AGPL in this public repo like everything else it provisions. It
+# deploys the PUBLISHED studio release unmodified, so there is no hosted fork to drift from
+# self-host. Anyone may run a competing hosted vivijure from exactly this source.
+#
+# NAMING NOTE, now obsolete but kept for readers coming from vivijure-cf: the old config warned
+# against calling this Worker "platform" because src/platform/ in THAT repo is the host-neutral
+# Platform ICD. That collision does not exist here; the name stays control-plane regardless.
+
+name = "vivijure-control-plane"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+# No preview URLs, and no workers.dev: the front door is studio.vivijure.com. A *.workers.dev
+# hostname would be a second, unrouted way into signup and the admin surface.
+preview_urls = false
+workers_dev = false
+
+# The front-door UI (Joan, #58). Deliberately a SEPARATE bundle from public/ (the studio frontend
+# that ships to every self-hoster): the hosted door is ours, the studio is everyone's.
+#
+# run_worker_first = true is LOAD-BEARING, and not for the reason the core needs it.
+#
+# Without it, Workers Assets serves matching paths STRAIGHT FROM THE EDGE, bypassing the Worker --
+# so on this Worker every tenant hostname served the front-door HTML at `/` and at every asset path,
+# and the #55 tenant routing never ran. Three consequences, all found on the real deploy (2026-07-17)
+# and none catchable by the unit suite, which never sees the asset layer:
+#   1. A SUSPENDED tenant's `/` returned the front door instead of the 403. The kill switch was
+#      bypassed for exactly the paths a human visits.
+#   2. A live tenant's studio root would serve the CONTROL PLANE's front door instead of that
+#      tenant's studio. The hosted product would be broken at its most-used URL.
+#   3. The dark deploy was not dark: signup UI was reachable at any-hostname.studio.vivijure.com/
+#      even with the front-door Custom Domain deliberately unpublished.
+# The core hit the same class and documents it in wrangler.toml.example ("the post-v0.7.4 finding").
+# This is that lesson, re-learned on a second Worker.
+#
+# Safe here because the router already ends in `env.ASSETS.fetch(request)` (src/index.ts),
+# which is the same worker-serves-assets pattern the core runs in production. html_handling is left at
+# the default deliberately: the core needs "none" because it maps pretty URLs itself, whereas this
+# Worker wants the default `/` -> index.html behavior.
+assets = { directory = "./public", binding = "ASSETS", run_worker_first = true }
+
+# Control-plane D1. PLATFORM data only (accounts, tenants, aup_acceptances, provision_jobs).
+# Tenant studio data lives in each tenant's OWN D1 and never here; the schema-guard test enforces it.
+[[d1_databases]]
+binding = "CP_DB"
+database_name = "vivijure-control-plane"
+database_id = "${CONTROL_PLANE_D1_ID}"
+migrations_dir = "migrations"
+
+# Tenant studios: the Workers-for-Platforms dispatch namespace (#55). Each tenant is a user Worker
+# in it, named tenant-<slug>-studio (tenants.ts tenantScriptName(); the provisioner creates under
+# the same name -- ONE definition, both sides). Mirrored in src/env.ts.
+#
+# DANGLING-BINDING HAZARD: the namespace must EXIST before this Worker deploys, or `wrangler deploy`
+# FAILS. typecheck will not catch it; only a real deploy will.
+#   npx wrangler dispatch-namespace create vivijure-tenants
+# DONE on the prod account 2026-07-17 (#55): `vivijure-tenants` exists and is empty. It is NEW and
+# SEPARATE from `vivijure-modules` (the Phase-3 module namespace) -- sharing one would collide
+# script names and put a module bug inside the tenant blast radius.
+[[dispatch_namespaces]]
+binding = "TENANT_DISPATCH"
+namespace = "${TENANT_DISPATCH_NAMESPACE}"
+
+# Studio migrations ride the bundle as Text modules (src/studio-migrations.ts): the
+# provisioner applies them to each fresh tenant D1 and a Worker cannot read a directory at runtime.
+[[rules]]
+type = "Text"
+globs = ["**/*.sql"]
+fallthrough = true
+
+# The studio release artifact mirror studio-release.yml publishes (studio-releases/<tag>/...).
+# The provisioner reads the pinned release from here; see src/bundle-r2.ts.
+# PREREQ, same class as the dangling-namespace hazard above: the bucket must EXIST and the pinned
+# tag's artifact must have been published INTO it (run the studio-release workflow) before a
+# provision can succeed. An empty mirror fails a provision honestly at wfp_upload, not silently.
+[[r2_buckets]]
+binding = "STUDIO_RELEASES"
+bucket_name = "${STUDIO_RELEASES_BUCKET}"
+
+[vars]
+# Bumping AUP_VERSION re-gates every account on their next request, by construction.
+AUP_VERSION = "${AUP_VERSION}"
+AUP_URL = "${AUP_URL}"
+# THE single injected hostname (the vars ruling). The front-door origin and the tenant domain
+# suffix are DERIVED from it in src/env.ts (publicOrigin/tenantDomainSuffix), and the
+# routes below derive from the same placeholder, so there is exactly ONE hostname fact in the whole
+# deployment. Strummer's reasoning stands and is why this went further: two independently-injected
+# hostnames WILL diverge, and the failure is nasty (magic links pointing at a host this Worker is
+# not routed on). Deriving the SUFFIX too closes the last gap -- it was still independently
+# settable, which is the same bug wearing a different name.
+#
+# The coupling this accepts, stated plainly: tenant hostnames must be CHILDREN of the front-door
+# host (<tenant>.studio.<root> under studio.<root>). That is the ruled shape and holds for any
+# self-host (<tenant>.panel.example.com under panel.example.com). A deployment wanting tenants on
+# an unrelated domain would need the suffix injected again; nobody has asked for that, and the
+# drift class it reopens is worse than the flexibility it buys.
+CONTROL_PLANE_HOST = "${CONTROL_PLANE_HOST}"
+# postern's send door (POST /api/send). A URL, not a secret.
+POSTERN_SEND_URL = "${POSTERN_SEND_URL}"
+# SSO client identifiers are public; their secrets are wrangler secrets (below). A provider is
+# OFFERED only when both halves are present, so an unconfigured provider is absent, not broken.
+GOOGLE_OAUTH_CLIENT_ID = "${GOOGLE_OAUTH_CLIENT_ID}"
+GITHUB_OAUTH_CLIENT_ID = "${GITHUB_OAUTH_CLIENT_ID}"
+# Apple seam: PARKED until Conrad stages Team ID + Services ID + .p8. Empty = Apple is not offered.
+APPLE_TEAM_ID = "${APPLE_TEAM_ID}"
+APPLE_SERVICES_ID = "${APPLE_SERVICES_ID}"
+# Provisioner wiring (src/deps.ts provisionerWiring). ALL of CF_ACCOUNT_ID,
+# DISPATCH_NAMESPACE, STUDIO_RELEASE (+ the STUDIO_RELEASES binding + the CF_PROVISIONER_TOKEN
+# secret) must be present or provisioning refuses with 503 provisioner_unconfigured.
+# CF_ACCOUNT_ID is the same account fact wrangler itself deploys with; it is a var here because the
+# Worker needs it at runtime (CfApi paths + the tenant R2 S3 endpoint) and a Worker cannot read its
+# own account id. DISPATCH_NAMESPACE is the same namespace TENANT_DISPATCH binds; the binding
+# serves dispatch, the NAME serves the upload API, and they must agree.
+CF_ACCOUNT_ID = "${CLOUDFLARE_ACCOUNT_ID}"
+DISPATCH_NAMESPACE = "${TENANT_DISPATCH_NAMESPACE}"
+# The shared dispatch namespace tenant MODULE workers are uploaded into (cf#99), distinct from
+# DISPATCH_NAMESPACE (tenant studios): sharing one would collide script names and put a module
+# bug inside the tenant blast radius. The provisioner CREATES it if missing (idempotent), so no
+# separate dashboard/wrangler step is needed -- but it is a required var: absent -> provisioning
+# refuses 503, same as the rest of this block. NO [[dispatch_namespaces]] binding is needed for
+# it here (the control plane never dispatches to modules; each TENANT studio carries its own
+# MODULE_DISPATCH -> this namespace in its upload metadata).
+TENANT_MODULE_NAMESPACE = "${TENANT_MODULE_NAMESPACE}"
+# The pinned studio release every new tenant gets (the golden-checkpoint pin; see the Q4 ruling).
+STUDIO_RELEASE = "${STUDIO_RELEASE}"
+
+# Throttles the outbound-email amplifier (/api/auth/email/start).
+[[unsafe.bindings]]
+name = "CP_RATE_LIMIT"
+type = "ratelimit"
+namespace_id = "2001"
+simple = { limit = 5, period = 60 }
+
+# SECRETS (wrangler secret put, never in this file):
+#   POSTERN_SEND_TOKEN          -- bearer for postern's send door; the sender identity is BOUND to
+#                                  this token by postern's registry, so we never pass a From.
+#   GOOGLE_OAUTH_CLIENT_SECRET
+#   GITHUB_OAUTH_CLIENT_SECRET
+#   APPLE_PRIVATE_KEY           -- the .p8; parked with the rest of the Apple seam.
+#   CONTROL_PLANE_ADMIN_TOKEN   -- the admin gate. Unset = no admin surface (fails closed).
+#   CF_PROVISIONER_TOKEN        -- mints tenant D1 + R2 + scoped creds. Consumed by #53, not #52.
+
+# --- Routing (#55) ---
+#
+# The front door: a Custom Domain (CF manages its DNS record + certificate), the same pattern the
+# core and the MCP Worker use. It needs no ACM pack -- the zone's existing vivijure.com +
+# *.vivijure.com advanced pack already covers a FIRST-level host like studio.vivijure.com.
+[[routes]]
+pattern = "${CONTROL_PLANE_HOST}"
+custom_domain = true
+
+# The tenant leg: a WILDCARD route. It canNOT be a custom domain -- Workers Custom Domains do not
+# support wildcards (spike-confirmed) -- so it needs BOTH of these live on the zone or it does not
+# serve at all:
+#   (a) a PROXIED wildcard DNS record for *.<CONTROL_PLANE_HOST>; a Worker route only fires on
+#       proxied DNS. House style on this zone is `AAAA -> 100::`, proxied (confirmed against every
+#       existing Worker hostname there).
+#   (b) a certificate covering *.<CONTROL_PLANE_HOST>. That is a SECOND-level wildcard, which
+#       Universal SSL does NOT cover, so it needs an Advanced Certificate Manager pack.
+#
+# *** BLOCKED as of 2026-07-17 (#55): ACM is NOT currently entitled on the vivijure.com zone. The
+# cert-pack quota reads allocated:0/used:6 and ordering returns 1450. The spike's "ACM already
+# active, zero new spend" reading was inferred from the EXISTENCE of five wildcard packs, which
+# proves they were ordered once, not that the subscription is live. Awaiting a spend/domain-shape
+# decision from Conrad. Everything here is correct for the ruled <tenant>.studio.<root> shape and
+# changes with it. ***
+#
+# NOTE the asymmetry with the certificate: this pattern's `*` matches ACROSS dots, so a.b.<suffix>
+# reaches this Worker while sitting OUTSIDE the one-label wildcard cert. classifyHost() refuses
+# multi-label hosts explicitly rather than letting them fall through to a confusing dispatch miss.
+[[routes]]
+pattern = "*.${CONTROL_PLANE_HOST}/*"
+zone_name = "${CONTROL_PLANE_ZONE_NAME}"

@@ -48,3 +48,9 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # The deploy config render is shell, so vitest never sees it. Its fail-closed guards are
+      # what stand between a missing Actions secret and a deploy pointed at the wrong database,
+      # so they are gated here, negative-tested, on every PR.
+      - name: Config render guards
+        run: bash tests/render-wrangler.test.sh
