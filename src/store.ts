@@ -58,6 +58,10 @@ export interface Tenant {
   suspended_at: string | null;
   suspended_reason: string | null;
   deleted_at: string | null;
+  /** Somebody is tearing this row down RIGHT NOW, until this time. Expires, so a dead reclaim heals. */
+  reclaim_lease_until: string | null;
+  /** Proves WHICH caller holds the reclaim lease. A timestamp cannot. */
+  reclaim_lease_token: string | null;
 }
 
 /**
@@ -145,6 +149,34 @@ export const TIER_A_STATUSES: readonly TenantLifecycle[] = [
   "failed",
 ];
 
+/**
+ * How long one reclaim attempt owns a row (cf#103). SIZED, not copied from JOB_LEASE_SECONDS.
+ *
+ * A teardown is ~11 SEQUENTIAL CF API calls: worker delete, module list + up to five module script
+ * deletes + census list, R2 token revoke, D1 delete, R2 bucket delete. At normal CF latency that
+ * runs to tens of seconds, so claimJob's 60s sits INSIDE the plausible duration of a SUCCEEDING
+ * teardown. An undersized lease is not a small error here: it expires mid-flight and hands the row
+ * to a second attempt while the first is still deleting, which is the exact race this closes.
+ *
+ * The asymmetry sets the direction. Too SHORT silently destroys a customer's newly provisioned
+ * bucket and is unrecoverable; too LONG makes an owner wait, bounded, self-healing, with a legible
+ * reason. So: several times the realistic worst case, and still half of MAX_JOB_STALE_MS, keeping
+ * one coherent hierarchy -- provision claim 60s < reclaim lease 300s < job declared lost 600s.
+ */
+export const RECLAIM_LEASE_SECONDS = 300;
+
+/**
+ * Is a lease still held? Shared by the reclaim lease here and mirrored by the store's SQL.
+ *
+ * An ABSENT lease and an EXPIRED lease both read as free, and that is the self-healing half: a
+ * reclaim whose driver died must not lock the owner out of their own slug forever.
+ */
+export function leaseIsLive(leaseUntil: string | null, nowMs: number): boolean {
+  if (leaseUntil === null) return false;
+  const t = Date.parse(`${leaseUntil.replace(" ", "T")}Z`);
+  return Number.isFinite(t) && t > nowMs;
+}
+
 /** The generic refusal. Every tier gives a stranger THIS string and nothing more (enumeration). */
 export const SLUG_TAKEN_REASON = "that name is taken";
 
@@ -154,7 +186,7 @@ export const SLUG_TAKEN_REASON = "that name is taken";
  * This function only ever produces a REASON. It never authorizes anything -- reclaimSlug's
  * conditional UPDATE does that, and it re-tests these same rules against the row it is writing.
  */
-export function classifySlugClaim(row: Tenant | null, accountId: string): SlugClaim {
+export function classifySlugClaim(row: Tenant | null, accountId: string, nowMs: number = Date.now()): SlugClaim {
   if (!row) return { available: true, reclaim: null };
 
   // A stranger learns only that the name is unavailable, never which tier it is in.
@@ -164,6 +196,11 @@ export function classifySlugClaim(row: Tenant | null, accountId: string): SlugCl
 
   // Tier A: never served anyone, so there is no hostname history to inherit. The owner may retake it.
   if (neverLive && TIER_A_STATUSES.includes(row.status)) {
+    // ...unless another attempt is already tearing it down. Reported here so the customer gets a
+    // reason instead of a write that silently refuses. Self-clearing: the lease expires.
+    if (leaseIsLive(row.reclaim_lease_until, nowMs)) {
+      return { available: false, reason: "that name is being reset right now; try again in a few minutes" };
+    }
     return {
       available: true,
       reclaim: {
@@ -266,8 +303,31 @@ export interface ControlPlaneStore {
    *
    * ORDERING REQUIREMENT: this blanks the resource columns. Reap the resources named in the
    * ReclaimHandle FIRST; after this returns, the row no longer knows they existed.
+   *
+   * REQUIRES YOUR OWN LIVE LEASE. Holding the token is what proves you are the attempt that won
+   * claimReclaim and did the teardown, rather than the one that lost and would otherwise blank the
+   * row out from under the winner. Clears the lease on success.
    */
-  reclaimSlug(tenantId: string, accountId: string): Promise<Tenant | null>;
+  /**
+   * Claim the EXCLUSIVE right to tear this row down and reuse its slug (cf#103).
+   *
+   * WHY THIS EXISTS AT ALL: every tenant resource name derives from the SLUG, not the attempt, so
+   * two concurrent reclaims by the same owner issue the SAME delete calls. Attempt A's teardown
+   * lands after attempt B has already provisioned fresh resources under those names, and deletes
+   * them. Serializing on this write is what makes teardown safe to start.
+   *
+   * Guarded on the full Tier A predicate plus no live provision lease plus no live reclaim lease.
+   * The winner gets the row AND a token; only the token holder may complete the reclaim.
+   *
+   * TEAR DOWN FROM THE RETURNED ROW, not from an earlier checkSlugAvailability handle: this write
+   * is the serialization point, so these are the authoritative ids.
+   */
+  claimReclaim(
+    tenantId: string,
+    accountId: string,
+    leaseSeconds: number,
+  ): Promise<{ tenant: Tenant; lease_token: string } | null>;
+  reclaimSlug(tenantId: string, accountId: string, leaseToken: string): Promise<Tenant | null>;
   createTenant(id: string, slug: string, accountId: string, status: TenantLifecycle): Promise<Tenant>;
   /** Moves the LIFECYCLE only. Never touches suspension. */
   setTenantStatus(id: string, status: TenantLifecycle): Promise<void>;

@@ -21,6 +21,8 @@ const tenant = (over: Partial<Tenant> = {}): Tenant => ({
   suspended_at: null,
   suspended_reason: null,
   deleted_at: null,
+  reclaim_lease_until: null,
+  reclaim_lease_token: null,
   ...over,
 });
 
