@@ -93,11 +93,25 @@ grep -Eq "database_id = \"[0-9a-f-]{36}\"" "$out" || {
 # raw.githubusercontent with a 40-hex sha" would refuse legitimate deployments while catching no
 # extra failure. A branch ref in the path is the actual defect.
 aup_url="$(grep -E "^AUP_URL = " "$out" | head -1 | sed -E "s/^AUP_URL = \"(.*)\"$/\1/")"
+# nocasematch because branch refs are not case-sensitive in practice: /blob/Main/ and /blob/HEAD/
+# are the same moving ref as /blob/main/, and a case-sensitive glob waves them straight through.
+# Found by driving this script with a 16-case corpus rather than reading the glob (Joan, 2026-07-18),
+# which is the only way this class of gap surfaces -- every one of these LOOKED covered.
+shopt -s nocasematch
 case "$aup_url" in
-  */main/*|*/master/*|*/refs/heads/*|*/HEAD/*)
+  */main/*|*/master/*|*/head/*|*/develop/*|*/trunk/*|*/refs/heads/*)
+    shopt -u nocasematch
     echo "::error::AUP_URL points at a MOVING ref ($aup_url) -- it must pin an immutable ref (commit SHA or tag), or an accepted policy text can change after acceptance" >&2
     exit 1
     ;;
 esac
+shopt -u nocasematch
+
+# KNOWN AND ACCEPTED LIMITATION: a directory literally NAMED after a branch, sitting under an
+# otherwise-pinned ref (.../<sha>/develop/aup.md), is refused too. That is a false positive and it
+# fails CLOSED and LOUDLY -- the operator sees the error and renames the path. Refusing a safe URL
+# is recoverable in seconds; accepting a moving one silently rewrites what an account agreed to.
+# Not fixed, deliberately: distinguishing the two needs URL-shape parsing per forge, which is more
+# machinery and more ways to be wrong than the case it would rescue.
 
 echo "$out rendered and validated."
