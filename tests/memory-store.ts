@@ -126,7 +126,22 @@ export class MemoryStore implements ControlPlaneStore {
     return null;
   }
   async checkSlugAvailability(slug: string, account_id: string): Promise<SlugClaim> {
-    return classifySlugClaim(await this.getTenantBySlug(slug), account_id);
+    const claim = classifySlugClaim(await this.getTenantBySlug(slug), account_id);
+    if (!claim.available || !claim.reclaim) return claim;
+    if (this.hasLiveProvisionLease(claim.reclaim.tenant_id)) {
+      return { available: false, reason: "that name is still being set up; try again in a minute" };
+    }
+    return claim;
+  }
+
+  /** Mirrors the D1 predicate, including WHICH job states count and that an EXPIRED lease does not. */
+  private hasLiveProvisionLease(tenantId: string): boolean {
+    for (const j of this.jobs.values()) {
+      if (j.tenant_id !== tenantId) continue;
+      if (j.status !== "queued" && j.status !== "running") continue;
+      if (j.lease_until !== null && Date.parse(`${j.lease_until.replace(" ", "T")}Z`) > Date.now()) return true;
+    }
+    return false;
   }
 
   /**
@@ -139,6 +154,8 @@ export class MemoryStore implements ControlPlaneStore {
     if (t.account_id !== accountId) return null;
     if (t.live_at !== null) return null;
     if (!TIER_A_STATUSES.includes(t.status)) return null;
+    // Refuse under a live driver, same as the D1 statement's NOT EXISTS clause.
+    if (this.hasLiveProvisionLease(tenantId)) return null;
     t.status = "pending";
     t.d1_database_id = null;
     t.r2_bucket_name = null;

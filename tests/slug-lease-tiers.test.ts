@@ -216,6 +216,56 @@ describe("reclaimSlug is the ENFORCEMENT point, not the check", () => {
   });
 });
 
+describe("the provision-lease race (cf#103)", () => {
+  // A Tier A row can have a job being driven RIGHT NOW. Reclaiming under a live driver blanks the
+  // resource columns while the provisioner is still writing ids into them: the driver's D1 and R2
+  // land on a row that no longer claims them, and nothing ever reaps them. Refuse while leased.
+
+  async function seedLeased(leaseUntil: string | null, jobStatus: "queued" | "running" | "succeeded") {
+    const store = new MemoryStore();
+    const t = row({ status: "failed" });
+    store.tenants.set(t.id, t);
+    await store.createProvisionJob("job_1", t.id, "provision");
+    const j = store.jobs.get("job_1")!;
+    j.status = jobStatus;
+    j.lease_until = leaseUntil;
+    return store;
+  }
+
+  const future = new Date(Date.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
+  const past = new Date(Date.now() - 60_000).toISOString().replace("T", " ").slice(0, 19);
+
+  it("REFUSES a reclaim while a driver holds a live lease", async () => {
+    const store = await seedLeased(future, "running");
+    expect(await store.reclaimSlug("ten_1", OWNER)).toBeNull();
+  });
+
+  it("the CHECK says so legibly rather than silently failing the write", async () => {
+    const store = await seedLeased(future, "running");
+    const claim = await store.checkSlugAvailability("studio", OWNER);
+    expect(claim.available).toBe(false);
+    if (claim.available) throw new Error("unreachable");
+    expect(claim.reason).toMatch(/still being set up/);
+  });
+
+  it("POSITIVE CONTROL: an EXPIRED lease does not block -- the refusal clears itself", async () => {
+    // Without this, "refuse while leased" is indistinguishable from "refuse always", and a tenant
+    // whose driver died would be locked out of their own half-built slug forever.
+    const store = await seedLeased(past, "running");
+    expect(await store.reclaimSlug("ten_1", OWNER)).not.toBeNull();
+  });
+
+  it("a TERMINAL job does not block, however recent its lease", async () => {
+    const store = await seedLeased(future, "succeeded");
+    expect(await store.reclaimSlug("ten_1", OWNER)).not.toBeNull();
+  });
+
+  it("a job with no lease at all does not block", async () => {
+    const store = await seedLeased(null, "queued");
+    expect(await store.reclaimSlug("ten_1", OWNER)).not.toBeNull();
+  });
+});
+
 describe("the MemoryStore stub carries the database's own rule", () => {
   it("rejects a duplicate slug, exactly as UNIQUE(slug) does in D1", async () => {
     // POSITIVE CONTROL for the stub fix itself. Without this the constraint could silently stop
