@@ -74,6 +74,11 @@ Repository **variables**:
 
 - `CONTROL_PLANE_HOST`, `CONTROL_PLANE_ZONE_NAME`
 - `TENANT_DISPATCH_NAMESPACE`, `TENANT_MODULE_NAMESPACE`
+  - **Both namespaces must EXIST before a deploy that binds them**, or `wrangler deploy`
+    fails. `TENANT_MODULE_NAMESPACE` is the sharp one: the control plane binds it as of
+    cf#114, which closes the provisioner's lazy-create bootstrap, so on a fresh account it
+    must be created out of band FIRST. Procedure (check -> create -> verify -> deploy) and
+    the post-deploy binding check are in `deploy-runbook.md`.
 - `STUDIO_RELEASES_BUCKET`, `STUDIO_RELEASE`
 - `AUP_VERSION`, `AUP_URL`, `POSTERN_SEND_URL`
 - `GOOGLE_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_ID`

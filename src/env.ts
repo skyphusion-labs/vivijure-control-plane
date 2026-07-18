@@ -29,12 +29,19 @@ export interface ControlPlaneEnv {
 
   // Tenant MODULE workers (cf#99) live in a SEPARATE dispatch namespace. Bound here as of cf#114:
   // the invoke-key route probes each module script GET /ready before flipping a tenant live, and a
-  // dispatch binding is the only way to reach a script that has no public route. Optional so a
-  // deploy that predates the binding still starts; the probe then reports UNVERIFIED rather than
-  // pretending, exactly as it does for a module image that predates /ready.
-  // DANGLING-BINDING HAZARD, and it is REAL here: unlike TENANT_DISPATCH, this namespace is created
-  // lazily by the provisioner, so on a fresh account it may not exist when this Worker first
-  // deploys. Create it before deploying with the binding present.
+  // dispatch binding is the only way to reach a script that has no public route.
+  //
+  // OPTIONAL, and precisely about what that buys: it does NOT make a fresh-account deploy safe. A
+  // binding to a namespace that does not exist fails in Cloudflare's toml validation, where this
+  // type has no reach at all, and the shipped wrangler example carries the binding uncommented. The
+  // case it DOES cover is a deployed config that omits the binding entirely (an older toml): the
+  // probe then reports the modules unverifiable, with the missing binding named in the detail,
+  // instead of silently reporting a false pass.
+  //
+  // DEPLOY ORDER (the runbook is authoritative, docs/deploy-runbook.md): binding the control plane
+  // to this namespace closes the bootstrap the provisioner used to provide -- it creates the
+  // namespace lazily, but it cannot run until the plane deploys, and the plane cannot deploy until
+  // the namespace exists. On a fresh account the namespace must be created out of band FIRST.
   TENANT_MODULE_DISPATCH?: DispatchNamespace;
 
   // ---- vars (public identifiers, not secrets) ----

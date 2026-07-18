@@ -520,16 +520,27 @@ export async function awaitTenantModulesReady(
           module: r.moduleName,
           reason: "unverifiable",
           script: r.scriptName,
-          // HONEST about the ambiguity: a 404 is "nothing answered /ready here". That is a module
-          // image predating the endpoint, OR a script that is not present under this name at all
-          // (a wrong-name or failed-upload bug). Nothing at this layer can tell the two apart -- the
-          // module echo that WOULD disambiguate only exists on an answering response -- so the
-          // detail must not assert the flattering reading.
+          // HONEST about the ambiguity: a 404 here is "nothing answered GET /ready", and it has at
+          // least three causes we CANNOT tell apart from this layer:
+          //   1. the module image predates the endpoint (a stale release pin);
+          //   2. no module is present under this script name (wrong name / failed upload);
+          //   3. the probe never left the control plane at all -- callTenantModule returns a
+          //      SYNTHETIC 404 when TENANT_MODULE_DISPATCH is unbound, which is a CP deploy defect
+          //      and has nothing to do with the tenant or the release.
+          // The module echo that would disambiguate only exists on an ANSWERING response, so naming
+          // any one of these as THE cause would send an operator chasing the wrong system -- cause 3
+          // pointed at a release pin is exactly the wrong-system trap. Hence the disjunction, plus
+          // the raw response text, which is where the "TENANT_MODULE_DISPATCH not bound" sentinel
+          // actually distinguishes cause 3 for whoever reads it.
           detail:
-            `${r.scriptName} did not answer GET /ready (404): either the module image predates the ` +
-            "endpoint, or no module is reachable under that script name. Credential propagation " +
-            "could not be verified either way; re-provision against a release that carries /ready, " +
-            "and if it still 404s the script is missing, not stale",
+            `${r.scriptName} did not answer GET /ready (404): either the module image predates ` +
+            "/ready, or the probe could not reach it (no module under that script name, or the " +
+            "control plane cannot dispatch to the module namespace). Credential propagation could " +
+            "not be verified either way. Response: " +
+            `${r.res.text.slice(0, 200) || "(empty)"}. ` +
+            "Check that response first: if it names a missing binding the defect is in the control " +
+            "plane deploy, not the tenant; otherwise re-provision against a release that carries " +
+            "/ready, and if it still 404s the script is missing, not stale",
         });
       } else if (r.verdict === "misconfigured") {
         // NOT retryable. Failing now rather than spending the window pretending this might resolve

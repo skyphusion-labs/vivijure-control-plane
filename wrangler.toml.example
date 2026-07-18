@@ -70,8 +70,10 @@ migrations_dir = "migrations"
 # the same name -- ONE definition, both sides). Mirrored in src/env.ts.
 #
 # DANGLING-BINDING HAZARD: the namespace must EXIST before this Worker deploys, or `wrangler deploy`
-# FAILS. typecheck will not catch it; only a real deploy will.
-#   npx wrangler dispatch-namespace create vivijure-tenants
+# FAILS. typecheck will not catch it; only a real deploy will. CHECK FIRST -- create is NOT
+# idempotent, it errors if the namespace is already there:
+#   npx wrangler dispatch-namespace list
+#   npx wrangler dispatch-namespace create "${TENANT_DISPATCH_NAMESPACE}"   # only if absent
 # DONE on the prod account 2026-07-17 (#55): `vivijure-tenants` exists and is empty. It is NEW and
 # SEPARATE from `vivijure-modules` (the Phase-3 module namespace) -- sharing one would collide
 # script names and put a module bug inside the tenant blast radius.
@@ -84,15 +86,24 @@ namespace = "${TENANT_DISPATCH_NAMESPACE}"
 # serves the key that was just installed, BEFORE the tenant is flipped live. A dispatch binding is the
 # only way to reach a script that has no public route.
 #
-# DANGLING-BINDING HAZARD, and it is SHARPER here than for TENANT_DISPATCH: this namespace is created
-# LAZILY by the provisioner (first provision), so on a fresh account it may not exist when this Worker
-# first deploys, and `wrangler deploy` FAILS on a binding to a namespace that is not there. Create it
-# before deploying with this binding present:
-#   npx wrangler dispatch-namespace create vivijure-tenant-modules
-# On an account that has already provisioned a tenant it exists already.
+# DANGLING-BINDING HAZARD, and it is SHARPER here than for TENANT_DISPATCH. `wrangler deploy` FAILS
+# on a binding to a namespace that does not exist, and binding the control plane to this one CLOSES
+# THE BOOTSTRAP the provisioner used to provide: the provisioner creates this namespace lazily on
+# first provision, but the provisioner cannot run until the control plane deploys, and the control
+# plane can no longer deploy until the namespace exists. So on a FRESH ACCOUNT the out-of-band create
+# below is MANDATORY, not a convenience -- lazy creation can no longer bootstrap you out of it.
+# CHECK FIRST; create is NOT idempotent and errors if the namespace is already there:
+#   npx wrangler dispatch-namespace list
+#   npx wrangler dispatch-namespace create "${TENANT_MODULE_NAMESPACE}"   # only if absent
+# On an account that has already provisioned a tenant it exists already (prod: confirmed present).
+# Operator procedure lives in docs/deploy-runbook.md; this comment is not where a deploy gets driven.
 #
-# src/env.ts types this binding OPTIONAL on purpose: a deploy that predates it still starts, and the
-# probe then reports the modules UNVERIFIED rather than reporting a false pass.
+# src/env.ts types this binding OPTIONAL, and it is worth being exact about what that does and does
+# NOT buy. It does NOT protect a fresh-account deploy: toml validation is Cloudflare's and tsc has no
+# reach there, and since this binding ships UNCOMMENTED in this example, anyone following it deploys
+# WITH the binding. What the optional type covers is the one real case left: a deployed toml that
+# does not carry this binding at all (an older config), where the probe reports the modules
+# unverifiable -- naming the missing binding in its detail -- rather than a false pass.
 [[dispatch_namespaces]]
 binding = "TENANT_MODULE_DISPATCH"
 namespace = "${TENANT_MODULE_NAMESPACE}"

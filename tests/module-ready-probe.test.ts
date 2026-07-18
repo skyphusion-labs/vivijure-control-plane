@@ -269,20 +269,58 @@ describe("mixed fleets: every unproven module is named individually", () => {
     expect(new Set(r.unverified.map((u) => u.detail)).size).toBe(silent.length);
   });
 
-  it("is HONEST that a 404 could be a missing script, not only a stale image", async () => {
-    // The wording is load-bearing. We cannot distinguish "predates /ready" from "no such script"
-    // from here, so the detail must not assert the flattering one.
+  it("is HONEST that a 404 has several indistinguishable causes, and asserts none of them", async () => {
+    // The wording is load-bearing. From here we cannot tell "predates /ready" from "no such script"
+    // from "the probe never left the control plane", so the detail must not assert any one of them.
     const { deps } = fleet(() => ({ status: 404, text: "not found" }));
     const { timing } = fakeTiming();
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
     for (const u of r.unverified) {
       expect(u.reason).toBe("unverifiable");
-      expect(u.detail).toMatch(/predates the endpoint/);
-      expect(u.detail).toMatch(/no module is reachable under that script name/);
+      expect(u.detail).toMatch(/predates \/ready/);
+      expect(u.detail).toMatch(/the probe could not reach it/);
+      expect(u.detail).toMatch(/control plane cannot dispatch to the module namespace/);
       // The detail must also tell the operator what to DO, and what a PERSISTENT 404 then means --
-      // naming both causes without saying how to tell them apart leaves the diagnosis unfinished.
+      // naming the causes without saying how to tell them apart leaves the diagnosis unfinished.
       expect(u.detail).toMatch(/re-provision against a release that carries \/ready/);
       expect(u.detail).toMatch(/if it still 404s the script is missing, not stale/);
+    }
+  });
+
+  // THE CASE THAT WOULD HAVE MISLED. deps.callTenantModule synthesises a 404 carrying
+  // "TENANT_MODULE_DISPATCH not bound" when the control plane has no module dispatch binding. The
+  // verdict is correctly unverifiable, but if the detail asserts a release-pin cause, the operator
+  // goes and re-provisions tenants while the real defect sits in the CP deploy. So the raw response
+  // has to SURVIVE classification and reach the report.
+  it("surfaces the raw response, so an unbound-binding 404 names ITSELF instead of blaming the pin", async () => {
+    const { deps } = fleet(() => ({ status: 404, text: "TENANT_MODULE_DISPATCH not bound" }));
+    const { timing } = fakeTiming();
+    const r = await awaitTenantModulesReady(deps, TENANT, timing);
+
+    expect(r.unverified).toHaveLength(ALL.length);
+    for (const u of r.unverified) {
+      expect(u.detail).toContain("TENANT_MODULE_DISPATCH not bound");
+      // And it must still point the operator at the response rather than at a re-provision.
+      expect(u.detail).toMatch(/if it names a missing binding the defect is in the control plane deploy/);
+    }
+  });
+
+  it("carries the response text for ANY 404 cause, and says (empty) rather than nothing", async () => {
+    const { deps } = fleet(() => ({ status: 404, text: "" }));
+    const { timing } = fakeTiming();
+    const r = await awaitTenantModulesReady(deps, TENANT, timing);
+    for (const u of r.unverified) {
+      expect(u.detail).toContain("Response: (empty)");
+    }
+  });
+
+  it("caps the carried response text so a huge body cannot bloat the report", async () => {
+    const { deps } = fleet(() => ({ status: 404, text: "x".repeat(5000) }));
+    const { timing } = fakeTiming();
+    const r = await awaitTenantModulesReady(deps, TENANT, timing);
+    for (const u of r.unverified) {
+      expect(u.detail).toContain("x".repeat(200));
+      expect(u.detail).not.toContain("x".repeat(201));
     }
   });
 });
