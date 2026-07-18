@@ -1,7 +1,7 @@
 # Privacy delta: what changes when we host
 
 > **Status: DRAFT, not in force.** Takes effect when the hosted studio opens. The in-force policy is
-> `../PRIVACY.md`, which is correct today.
+> [`vivijure-cf docs/legal/PRIVACY.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/PRIVACY.md), which is correct today.
 
 > **Not legal advice.** Written by Ernst, who is named after a lawyer and is not one. The
 > controller/processor characterization below is a reasoned starting position, not a legal
@@ -12,7 +12,7 @@
 
 ## BLUF
 
-`../PRIVACY.md` currently rests on a single load-bearing fact: **there is no hosted service, so
+[`vivijure-cf docs/legal/PRIVACY.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/PRIVACY.md) currently rests on a single load-bearing fact: **there is no hosted service, so
 there is nothing for us to hold.** The hosted tier makes that false. It does not soften it or
 qualify it; it inverts it.
 
@@ -51,7 +51,7 @@ the spec, and it is the reason a control-plane breach does not spill anyone's cr
 
 ### 1.2 Tenant studio data (yours; we are the CUSTODIAN, and see Section 2)
 
-Each tenant studio holds exactly what a self-hosted studio holds (`../PRIVACY.md` Section 3 is the
+Each tenant studio holds exactly what a self-hosted studio holds ([`vivijure-cf docs/legal/PRIVACY.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/PRIVACY.md) Section 3 is the
 complete list and stays accurate): storyboards and projects, cast and character bibles, portraits
 and reference images, trained LoRA models, uploads, render job state, generated outputs, the
 `api_tokens` name+hash table, and the studio's secrets.
@@ -204,7 +204,7 @@ deletion would be false.
 
 ## 6. The EU question, which is a decision and not a detail
 
-`../PRIVACY.md` currently says Conrad determined GDPR does not apply, because the instance is run
+[`vivijure-cf docs/legal/PRIVACY.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/PRIVACY.md) currently says Conrad determined GDPR does not apply, because the instance is run
 from the United States for himself and the crew and is **not offered to the public**. **Opening
 public signups removes the reasoning that sentence rests on.**
 
@@ -230,7 +230,7 @@ default into Option B by simply not thinking about it.**
 Specified here so the launch-gate flip is mechanical rather than a rewrite under time pressure.
 **None of these may land before the hosted studio actually opens.**
 
-### `../PRIVACY.md`
+### `vivijure-cf docs/legal/PRIVACY.md`
 | Location | Current text | Required change |
 |---|---|---|
 | BLUF | "there is no Vivijure service that we operate to hold your content" | Rewrite. Now there is one. Keep the self-host promise intact and clearly separated. |
@@ -244,7 +244,7 @@ Specified here so the launch-gate flip is mechanical rather than a rewrite under
 | Section 7 | retention | Add the hosted table from Section 5 above, including the acceptance-record and preservation carve-outs. |
 | Section 9 | children | Add: on the hosted surface, reporting is a statutory duty under 2258A, not only a moral one. |
 
-### `../TERMS.md`
+### `vivijure-cf docs/legal/TERMS.md`
 | Location | Current text | Required change |
 |---|---|---|
 | BLUF | "These Terms are **not a hosted-service agreement**" | **Inverted.** The hosted studio needs actual service terms. Counsel item T1-6. |
@@ -253,7 +253,7 @@ Specified here so the launch-gate flip is mechanical rather than a rewrite under
 | Section 10 | "the project is not an online hosting provider and there is no provider takedown role here" | **False at launch.** We will host content at the direction of users. This is the DMCA agent item (T1-2). |
 | Section 11 | termination | Add the hosted levers: suspend, terminate, and the honest limit that we cannot touch their RunPod account. |
 
-### `../ACCEPTABLE-USE.md` (the pointer file) and `../README.md`
+### `vivijure docs/legal/ACCEPTABLE-USE.md` (hub-canonical) and `vivijure-cf docs/legal/README.md`
 Both state that Skyphusion Labs does not host instances for other people. Update the framing and
 index the hosted AUP.
 

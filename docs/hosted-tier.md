@@ -12,7 +12,7 @@ You still own the GPUs. You still own your films. The only thing we do is run th
 you, so you never have to set one up.
 
 Want to install it yourself instead? That path is first-class and fully supported. Start at
-[quickstart.md](quickstart.md).
+[quickstart.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md).
 
 ---
 
@@ -242,20 +242,20 @@ sales to export" step. Your RunPod endpoints stay yours; we show you a checklist
 you want them gone, and we never touch your RunPod account beyond the setup you authorized.
 
 Taking that export and running it yourself gives you the same studio, on your own Cloudflare
-account. See [quickstart.md](quickstart.md).
+account. See [quickstart.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md).
 
 ---
 
 ## The rules
 
 The acceptable-use policy for the hosted studio is written and is what the signup gate serves:
-[the hosted AUP](legal/aup/1.0.0.md). It is versioned and self-contained, and setup asks you
+[the hosted AUP](legal/hosted/aup/1.0.0.md). It is versioned and self-contained, and setup asks you
 to accept it before anything is created. What you accept is recorded with the exact version, so we
 can always say what you agreed to and when.
 
 It is still a **draft** until the hosted studio opens; it takes effect at launch, and it goes to a
 real lawyer before then. The full legal scaffolding, including what changes about privacy when we
-hold your account and your studio's data, is in [legal/](legal/).
+hold your account and your studio's data, is in [legal/hosted/](legal/hosted/).
 
 Three things about that gate, because a consent record is worthless if you cannot trust it:
 
@@ -273,14 +273,14 @@ is no version of this product where that is negotiable. Be clear that a studio w
 same as one you run yourself: on your own machine we genuinely cannot see anything, and on a studio
 we host for you, we are not blind, and reporting is the law rather than a favor we choose to do.
 
-Legal text for the self-hosted studio (the in-force documents today) is in [legal/](legal/).
+Legal text for the self-hosted studio (the in-force documents today) is in [legal/hosted/](legal/hosted/).
 
 ---
 
 ## Where the details live
 
-- [quickstart.md](quickstart.md) -- install your own studio instead. First-class, fully supported.
-- [constellation.md](constellation.md) -- the one-page map of how the parts fit together.
-- [DEPLOYMENT.md](DEPLOYMENT.md) -- the full self-host deployment reference.
-- [opt-in-tiers.md](opt-in-tiers.md) -- the add-ons and what each one needs.
-- [SECURITY.md](SECURITY.md) -- the security posture.
+- [quickstart.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md) -- install your own studio instead. First-class, fully supported.
+- [constellation.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/constellation.md) -- the one-page map of how the parts fit together.
+- [DEPLOYMENT.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/DEPLOYMENT.md) -- the full self-host deployment reference.
+- [opt-in-tiers.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/opt-in-tiers.md) -- the add-ons and what each one needs.
+- [SECURITY.md](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/SECURITY.md) -- the security posture.

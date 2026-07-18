@@ -286,8 +286,6 @@ the two lists would drift apart the first time the studio gained a setting, and 
 show up as a broken tenant rather than a failed build. Reading the declaration means a studio that
 needs something new says so, and provisioning refuses honestly when it cannot supply it.
 
-One tag means one artifact, so a tenant's studio and its modules are never a mismatched pair.
-
 **A prerequisite worth stating plainly:** the mirror bucket must exist and the pinned tag's
 artifact must already have been published into it before any provision can succeed. If it has not,
 the provision fails honestly at the upload step rather than half-working.
@@ -370,7 +368,7 @@ suspension bug described above.
 ## The rules text
 
 The Acceptable Use Policy, the privacy details, and the rest of the hosted legal scaffolding live
-in [`docs/legal/`](docs/legal/).
+in [`docs/legal/hosted/`](docs/legal/hosted/).
 
 **The one red line is absolute:** Vivijure is not used to create child sexual abuse material or
 nonconsensual intimate imagery. Synthetic and AI-generated content is explicitly included, with no

@@ -78,7 +78,7 @@ it is not in any current sub-issue. **It would be new scope for the epic, and it
 ### T1-2. DMCA: we become a hosting provider and we have no agent
 **Question:** Do we need a registered DMCA agent and a repeat-infringer policy before launch?
 
-**Why it is live:** `../TERMS.md` Section 10 currently says "the project is not an online hosting
+**Why it is live:** [`vivijure-cf docs/legal/TERMS.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/TERMS.md) Section 10 currently says "the project is not an online hosting
 provider and there is no provider takedown role here." At launch we store content at the direction
 of users, which is exactly what 17 U.S.C. 512(c) addresses. Safe harbor under 512(c) is conditioned
 on, among other things, **designating an agent with the Copyright Office**, publishing the agent's
@@ -118,7 +118,7 @@ we keep the IP and user-agent attached to it?
 the IP/user-agent fields.
 
 ### T1-6. The hosted service terms themselves
-**Question:** `../TERMS.md` opens by saying it is expressly **not** a hosted-service agreement. At
+**Question:** [`vivijure-cf docs/legal/TERMS.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/TERMS.md) opens by saying it is expressly **not** a hosted-service agreement. At
 launch it has to be one. Does the hosted studio get its own terms, or does TERMS.md get rewritten to
 cover both shapes?
 
@@ -179,7 +179,7 @@ whether insurance (tech E&O / media liability) is warranted once strangers gener
 **Question:** Does the hosted studio trigger state age-verification laws, and does permitting adult
 content (AUP Section 2.5) survive contact with them?
 
-**Why it is live:** our governing law is **Texas** (`../TERMS.md` Section 13) and Conrad is in Texas.
+**Why it is live:** our governing law is **Texas** ([`vivijure-cf docs/legal/TERMS.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/TERMS.md) Section 13) and Conrad is in Texas.
 Texas HB 1181 imposes age-verification duties on sites with a threshold proportion of sexual
 material harmful to minors, and the Supreme Court upheld it against a First Amendment challenge in
 *Free Speech Coalition v. Paxton* (2025). Louisiana, Utah, and a growing list have comparable
@@ -218,7 +218,7 @@ story is gone. This should inform whether tier 2 happens at all, which is a stra
 therefore Conrad's, once counsel has told him the shape of it.
 
 ### T2-3. Liability cap, once money changes hands
-**Question:** `../TERMS.md` Section 8 caps aggregate liability at **$0**, reasoned explicitly from
+**Question:** [`vivijure-cf docs/legal/TERMS.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/TERMS.md) Section 8 caps aggregate liability at **$0**, reasoned explicitly from
 "the amount you paid for the software, which is zero." Tier 1 is free, so the reasoning survives.
 **Tier 2 is not free and the reasoning collapses.** What is the right cap, and does it hold in the
 consumer jurisdictions where users will actually be?

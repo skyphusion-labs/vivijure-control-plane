@@ -2,7 +2,7 @@
 
 > **Status: DRAFT. Nothing in this directory is in force.** These documents take effect when the
 > hosted studio opens to signups. Until then the in-force documents are the ones in the parent
-> directory (`../PRIVACY.md`, `../TERMS.md`, `../ACCEPTABLE-USE.md`), and they are correct as
+> directory ([`vivijure-cf docs/legal/PRIVACY.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/PRIVACY.md), [`vivijure-cf docs/legal/TERMS.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/TERMS.md), [`vivijure docs/legal/ACCEPTABLE-USE.md`](https://github.com/skyphusion-labs/vivijure/blob/main/docs/legal/ACCEPTABLE-USE.md)), and they are correct as
 > written, because today there is no hosted service.
 
 > **Not legal advice.** Written by Ernst (Conrad's legal-affairs helper, who is named after a lawyer
@@ -20,10 +20,11 @@ reason: **the in-force documents are true today and must stay true until launch.
 | File | What it is |
 |---|---|
 | [`aup/1.0.0.md`](aup/1.0.0.md) | **The AUP text the signup gate serves.** Versioned, immutable, self-contained. This is the exact text a tenant accepts. |
-| [`PRIVACY-DELTA.md`](PRIVACY-DELTA.md) | What changes about privacy when we hold accounts and tenant studio data. Draws the controller/processor boundary, including where RunPod sits. Specifies the edits the in-force `../PRIVACY.md` needs at launch. |
+| [`PRIVACY-DELTA.md`](PRIVACY-DELTA.md) | What changes about privacy when we hold accounts and tenant studio data. Draws the controller/processor boundary, including where RunPod sits. Specifies the edits the in-force [`vivijure-cf docs/legal/PRIVACY.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/PRIVACY.md) needs at launch. |
 | [`ABUSE-AND-NCMEC.md`](ABUSE-AND-NCMEC.md) | Abuse-handling posture for a hosted generative surface: who reports, what is preserved, what we scan for (and do not), and the operational runbook. |
 | [`COUNSEL-REVIEW-CHECKLIST.md`](COUNSEL-REVIEW-CHECKLIST.md) | The specific questions a real, practicing lawyer must answer. Split into what blocks tier 1 and what blocks tier 2. |
-| [`PARITY-COMMITMENT.md`](PARITY-COMMITMENT.md) | The anti-rug-pull parity wording for the public docs, plus the over-promise review of it. |
+| [`PARITY-COMMITMENT.md`](PARITY-COMMITMENT.md) | **A pointer, not the text.** The parity commitment is constellation-wide and canonical at the hub ([`vivijure docs/legal/PARITY-COMMITMENT.md`](https://github.com/skyphusion-labs/vivijure/blob/main/docs/legal/PARITY-COMMITMENT.md)); this file exists so the two cannot drift. |
+| [`LAUNCH-GATE-PROCEDURE.md`](LAUNCH-GATE-PROCEDURE.md) | **How the in-force documents get flipped on launch day**, across all THREE repositories. Owner, preconditions, the window and its ordering, parity preservation, the verification census, and rollback. |
 | [`ART-50-SCOPING.md`](ART-50-SCOPING.md) | **SCOPING ONLY, not scheduled.** What EU AI Act Art 50 output-marking would require if counsel (T1-1) ever says it applies. Parked so a "yes" starts an epic instead of starting research. |
 
 ## The AUP versioning + acceptance contract (build to this)
@@ -165,11 +166,18 @@ record as deliberate.
 
 ## Launch-gate: flipping the in-force documents
 
-The in-force `../PRIVACY.md`, `../TERMS.md`, `../ACCEPTABLE-USE.md`, and `../README.md` all state,
-correctly and repeatedly, that Skyphusion Labs does **not** run a hosted multi-tenant service and
-holds no user data. **The day the hosted studio opens, those statements become false.**
+The in-force documents in the other two repositories state, correctly and repeatedly, that
+Skyphusion Labs does **not** run a hosted multi-tenant service and holds no user data. **The day the
+hosted studio opens, those statements become false.** They must not be edited before that day
+either, because that makes the in-force policy false in the other direction, which is the same
+defect.
 
-They must not be edited before launch (that would make the in-force policy false in the other
-direction, which is the same defect). The exact required edits are specified in
-`PRIVACY-DELTA.md`, Section 7. **Flipping them is a launch-gate item, not a follow-up**, and it
-belongs on the launch checklist next to the golden-checkpoint release pin.
+So the flip is a narrow window, not a migration, and after the cf#85 extraction it spans **three**
+repositories rather than one. That is exactly why it now has a written procedure with a named owner
+instead of a warning paragraph:
+
+**See [`LAUNCH-GATE-PROCEDURE.md`](LAUNCH-GATE-PROCEDURE.md).** It owns the ordering, the
+preconditions, the verification census, and the rollback. The accountable owner is Conrad; nobody
+else merges a flip PR.
+
+The exact document edits remain specified in [`PRIVACY-DELTA.md`](PRIVACY-DELTA.md), Section 7.

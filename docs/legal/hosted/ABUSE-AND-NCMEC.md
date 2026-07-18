@@ -168,7 +168,7 @@ a real decision, and tier 1 is the cheap moment to make it deliberately rather t
 |---|---|---|
 | NCII / non-consensual deepfake of a real person | Suspend, remove, terminate. Report where required or warranted. | Fast-moving law, varies by state and country. T2-1. |
 | Targeted harassment | Suspend or terminate, proportionate. | |
-| Copyright / DMCA notice | Takedown of the specific content; repeat-infringer policy. | **We have no DMCA agent and no repeat-infringer policy today**, and `../TERMS.md` Section 10 currently says we are not a hosting provider. That stops being true at launch. T1-2. |
+| Copyright / DMCA notice | Takedown of the specific content; repeat-infringer policy. | **We have no DMCA agent and no repeat-infringer policy today**, and [`vivijure-cf docs/legal/TERMS.md`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/legal/TERMS.md) Section 10 currently says we are not a hosting provider. That stops being true at launch. T1-2. |
 | Platform abuse (quota evasion, attacking the control plane, cross-tenant probing) | Suspend, terminate. | Cross-tenant access attempts are a security event, not just an AUP matter. |
 | RunPod-side abuse | **Not our lever.** Their account, their terms. | We can terminate their hosted studio; we cannot touch their endpoints. |
 
