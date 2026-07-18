@@ -84,3 +84,53 @@ describe("control-plane schema boundary", () => {
     expect(suspicious).toEqual(["runpod_api_key", "session_token"]);
   });
 });
+
+// ---- The Tier B tombstone control (cf#103) ----
+//
+// Tier B says a slug that was ever LIVE stays bound to its account forever, so a stranger can never
+// claim a hostname that used to serve someone else's studio. That rule holds for exactly one
+// reason: tenant deletion is SOFT, so the row -- and with it the slug's account binding -- survives.
+//
+// Nothing enforced that. It was true only because no one had written a hard delete yet, and an
+// accident is not a control. A `DELETE FROM tenants` anywhere would silently free every tombstoned
+// hostname for re-registration, and no test in this repo would have noticed. This is that test.
+
+const SRC = join(__dirname, "../src");
+
+function sourceFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...sourceFiles(full));
+    else if (entry.name.endsWith(".ts")) out.push(full);
+  }
+  return out;
+}
+
+describe("the tenants row is never hard-deleted", () => {
+  it("no DELETE FROM tenants in src/", () => {
+    const offenders: string[] = [];
+    for (const file of sourceFiles(SRC)) {
+      const text = readFileSync(file, "utf8");
+      if (/DELETE\s+FROM\s+tenants\b/i.test(text)) offenders.push(file);
+    }
+    expect(
+      offenders,
+      "a hard delete of a tenant row frees its slug for re-registration and breaks the Tier B " +
+        "tombstone (cf#103). Soft-delete instead: set status='deleted' and deleted_at.",
+    ).toEqual([]);
+  });
+
+  it("no destructive statement against tenants in migrations/", () => {
+    const sql = controlPlaneSql();
+    expect(/DELETE\s+FROM\s+tenants\b/i.test(sql), "migration hard-deletes tenant rows").toBe(false);
+    expect(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?tenants\b/i.test(sql), "migration drops tenants").toBe(false);
+  });
+
+  it("POSITIVE CONTROL: the detector actually fires on the thing it forbids", () => {
+    // Without this, the two assertions above are satisfied by a regex that matches nothing --
+    // which is exactly how a guard test passes forever while guarding nothing.
+    expect(/DELETE\s+FROM\s+tenants\b/i.test("await db.prepare('DELETE FROM tenants WHERE id = ?1')")).toBe(true);
+    expect(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?tenants\b/i.test("DROP TABLE IF EXISTS tenants;")).toBe(true);
+  });
+});

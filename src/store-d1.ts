@@ -12,9 +12,11 @@ import type {
   OAuthState,
   ProvisionJob,
   Session,
+  SlugClaim,
   Tenant,
   TenantLifecycle,
 } from "./store";
+import { classifySlugClaim, TIER_A_STATUSES } from "./store";
 
 /**
  * How long one driver holds a job (#112). Sized to a single invocation, not to a whole provision:
@@ -192,6 +194,36 @@ export class D1Store implements ControlPlaneStore {
         "SELECT * FROM tenants WHERE account_id = ?1 AND status != 'deleted' ORDER BY created_at DESC LIMIT 1",
       )
       .bind(accountId)
+      .first<Tenant>();
+  }
+
+  async checkSlugAvailability(slug: string, accountId: string): Promise<SlugClaim> {
+    // Deliberately reuses the status-BLIND lookup. Filtering deleted rows out here is what made the
+    // old check say "available" for a tombstoned slug; the tier rules need to see every row.
+    return classifySlugClaim(await this.getTenantBySlug(slug), accountId);
+  }
+
+  /**
+   * The conditional UPDATE that actually authorizes a reclaim. Every Tier A condition is repeated
+   * in the WHERE clause -- ownership, never-live, and the lifecycle set -- so a row that stopped
+   * qualifying between the check and this write is refused rather than taken.
+   *
+   * The resource columns are blanked because the row is being reused for a NEW provision and stale
+   * ids would make it lie about what it owns. live_at is deliberately NOT cleared: it is the
+   * "this hostname ever served someone" high-water mark, and keeping it monotonic means a slug's
+   * tombstone can only ever get stricter, never looser.
+   */
+  async reclaimSlug(tenantId: string, accountId: string): Promise<Tenant | null> {
+    const placeholders = TIER_A_STATUSES.map((_, i) => `?${i + 3}`).join(", ");
+    return await this.db
+      .prepare(
+        "UPDATE tenants SET status = 'pending', d1_database_id = NULL, r2_bucket_name = NULL, " +
+          "r2_token_id = NULL, script_name = NULL, endpoints_json = NULL, studio_release = NULL, " +
+          "studio_token_enc = NULL " +
+          "WHERE id = ?1 AND account_id = ?2 AND live_at IS NULL " +
+          `AND status IN (${placeholders}) RETURNING *`,
+      )
+      .bind(tenantId, accountId, ...TIER_A_STATUSES)
       .first<Tenant>();
   }
 

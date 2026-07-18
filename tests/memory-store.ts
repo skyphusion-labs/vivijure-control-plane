@@ -18,7 +18,9 @@ import type {
   Session,
   Tenant,
   TenantLifecycle,
+  SlugClaim,
 } from "../src/store";
+import { classifySlugClaim, TIER_A_STATUSES } from "../src/store";
 
 export class MemoryStore implements ControlPlaneStore {
   accounts = new Map<string, Account>();
@@ -123,7 +125,43 @@ export class MemoryStore implements ControlPlaneStore {
     for (const t of this.tenants.values()) if (t.account_id === account_id && t.status !== "deleted") return t;
     return null;
   }
+  async checkSlugAvailability(slug: string, account_id: string): Promise<SlugClaim> {
+    return classifySlugClaim(await this.getTenantBySlug(slug), account_id);
+  }
+
+  /**
+   * Mirrors D1Store.reclaimSlug's WHERE clause, including the parts that REFUSE. A stub that only
+   * models the success path would let a not-yours reclaim pass in CI and fail on real D1.
+   */
+  async reclaimSlug(tenantId: string, accountId: string): Promise<Tenant | null> {
+    const t = this.tenants.get(tenantId);
+    if (!t) return null;
+    if (t.account_id !== accountId) return null;
+    if (t.live_at !== null) return null;
+    if (!TIER_A_STATUSES.includes(t.status)) return null;
+    t.status = "pending";
+    t.d1_database_id = null;
+    t.r2_bucket_name = null;
+    t.r2_token_id = null;
+    t.script_name = null;
+    t.endpoints_json = null;
+    t.studio_release = null;
+    t.studio_token_enc = null;
+    // live_at deliberately untouched: monotonic, so the tombstone can only get stricter.
+    return { ...t };
+  }
+
   async createTenant(id: string, slug: string, account_id: string, status: TenantLifecycle) {
+    // The UNIQUE(slug) constraint from migrations/0001_init.sql, enforced here on purpose.
+    // Without it this stub encodes OUR assumption instead of the database rule, and a slug-reclaim
+    // path goes green in CI then violates the constraint the first time it touches real D1.
+    // store.ts says it plainly: a stubbed store proves a DECISION PATH, never the shipped artifact.
+    // The one rule this stub MUST carry is the one the creation path is arbitrated by.
+    for (const existing of this.tenants.values()) {
+      if (existing.slug === slug) {
+        throw new Error(`UNIQUE constraint failed: tenants.slug (${slug})`);
+      }
+    }
     const t: Tenant = {
       id,
       slug,
