@@ -112,6 +112,7 @@ describe("awaitTenantModulesReady: happy path", () => {
 
     expect(r.verified.sort()).toEqual([...ALL].sort());
     expect(r.unverified).toEqual([]);
+    expect(r.unconfirmed).toEqual([]);
     expect(r.attempts).toBe(1);
     expect(calls).toHaveLength(ALL.length);
     expect(calls.every((c) => c.path === "/ready")).toBe(true);
@@ -148,20 +149,36 @@ describe("awaitTenantModulesReady: happy path", () => {
 });
 
 describe("awaitTenantModulesReady: TRUE NEGATIVES (the retry must never launder a real defect)", () => {
-  it("a key that is NEVER written fails LOUDLY at the deadline, with attempts and elapsed", async () => {
-    // The exact misconfiguration the retry could hide. It must reach the deadline and then SHOUT.
+  // control-plane#17 CHANGED THIS CONTRACT, deliberately. A key that is not visible yet is
+  // INDISTINGUISHABLE from a key that was never written -- both answer endpoint-present/key-absent --
+  // so the probe cannot honestly call it a failure. It now returns a SOFT unconfirmed outcome.
+  //
+  // The SAFETY property is unchanged and is what these tests now pin: an unconfirmed module is NEVER
+  // reported verified, so the caller can never flip the tenant live on it. A never-written key
+  // therefore still cannot reach a customer render; it just gets an honest "retry" instead of an
+  // opaque failure.
+  it("a key that is NEVER written returns UNCONFIRMED, never verified", async () => {
     const { deps } = fleet((m) => ({ status: 200, text: readyBody(m, false) }));
     const { timing } = fakeTiming();
-    await expect(awaitTenantModulesReady(deps, TENANT, timing)).rejects.toThrow(
-      /never became visible.*gave up after \d+ attempts, \d+ms/s,
-    );
+    const r = await awaitTenantModulesReady(deps, TENANT, timing);
+
+    expect(r.unconfirmed.sort()).toEqual([...ALL].sort());
+    // THE LINE THAT MATTERS: nothing was laundered into verified.
+    expect(r.verified).toEqual([]);
+    expect(r.unverified).toEqual([]);
+    expect(r.attempts).toBeGreaterThan(1);
+    expect(r.elapsedMs).toBeGreaterThan(0);
   });
 
-  it("the deadline failure names the modules that never came up", async () => {
+  it("names exactly the modules that never came up, leaving the others verified", async () => {
     const stuck = ALL[1];
     const { deps } = fleet((m) => ({ status: 200, text: readyBody(m, m !== stuck) }));
     const { timing } = fakeTiming();
-    await expect(awaitTenantModulesReady(deps, TENANT, timing)).rejects.toThrow(new RegExp(stuck));
+    const r = await awaitTenantModulesReady(deps, TENANT, timing);
+
+    expect(r.unconfirmed).toEqual([stuck]);
+    expect(r.verified.sort()).toEqual(ALL.filter((m) => m !== stuck).sort());
+    expect(r.verified).not.toContain(stuck);
   });
 
   it("a MISSING endpoint id fails IMMEDIATELY -- it is a provisioning defect, not a race", async () => {
@@ -182,15 +199,30 @@ describe("awaitTenantModulesReady: TRUE NEGATIVES (the retry must never launder 
   it("stays INSIDE its budget: it never sleeps past the deadline", async () => {
     const { deps } = fleet((m) => ({ status: 200, text: readyBody(m, false) }));
     const { timing, sleeps } = fakeTiming();
-    await expect(awaitTenantModulesReady(deps, TENANT, timing)).rejects.toThrow();
+    await awaitTenantModulesReady(deps, TENANT, timing);
     const slept = sleeps.reduce((a, b) => a + b, 0);
     expect(slept).toBeLessThan(MODULE_READY_PROBE_DEADLINE_MS);
   });
 
-  it("a module that answers ready only AFTER the deadline still fails (no late pass)", async () => {
+  it("a module that goes ready only AFTER the deadline is NOT counted (no late pass)", async () => {
     const { deps } = fleet((m, attempt) => ({ status: 200, text: readyBody(m, attempt > 50) }));
     const { timing } = fakeTiming();
-    await expect(awaitTenantModulesReady(deps, TENANT, timing)).rejects.toThrow(/never became visible/);
+    const r = await awaitTenantModulesReady(deps, TENANT, timing);
+    expect(r.verified).toEqual([]);
+    expect(r.unconfirmed.sort()).toEqual([...ALL].sort());
+  });
+
+  // The soft path must NOT swallow a real misconfiguration. This is the boundary control: the same
+  // deadline machinery, but one module misconfigured -> still a hard throw, no soft outcome.
+  it("BOUNDARY: a misconfigured module still THROWS even while others are merely not-visible-yet", async () => {
+    const bad = ALL[2];
+    const { deps } = fleet((m) =>
+      m === bad
+        ? { status: 200, text: readyBody(m, false, false) } // endpoint id absent = real defect
+        : { status: 200, text: readyBody(m, false) },       // benign propagation
+    );
+    const { timing } = fakeTiming();
+    await expect(awaitTenantModulesReady(deps, TENANT, timing)).rejects.toThrow(/not retryable/);
   });
 });
 

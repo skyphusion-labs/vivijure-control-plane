@@ -13,6 +13,7 @@ import type { ControlPlaneEnv } from "../src/env";
 import { SESSION_COOKIE, startSession } from "../src/auth";
 import { sha256Hex } from "../src/crypto";
 import { MemoryStore } from "./memory-store";
+import { TenantModuleError } from "../src/tenant-modules";
 
 const ROOT_HOST = "studio.vivijure.com";
 const ORIGIN = `https://${ROOT_HOST}`;
@@ -65,6 +66,7 @@ beforeEach(() => {
     installInvokeKey: vi.fn(async () => ({
       verified: ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale"],
       unverified: [],
+      unconfirmed: [],
       attempts: 1,
       elapsedMs: 12,
     })),
@@ -506,6 +508,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         { module: "finish-upscale", reason: "unverifiable", script: "ten-abc123-finish-upscale", detail: "d1" },
         { module: "speech-upscale", reason: "unverifiable", script: "ten-abc123-speech-upscale", detail: "d2" },
       ],
+      unconfirmed: [],
       attempts: 1,
       elapsedMs: 30,
     });
@@ -549,6 +552,89 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.modules_ready).toBe(true);
     expect("modules_unverified" in body).toBe(false);
+  });
+
+  // ---- cf#114 follow-up (control-plane#17): WHAT THE CALLER RECEIVES on each readiness outcome.
+  //
+  // These exist because their absence shipped a defect. Every other test asserts what
+  // awaitTenantModulesReady throws or returns; none asserted what this ROUTE hands back. So a
+  // TenantModuleError carrying modules, attempts and elapsed propagated into the top-level catch and
+  // reached the customer as a bare {"error":"internal_error"} 500 -- with the suite green. The cf#114
+  // PR claimed that path "fails LOUDLY with attempts and elapsed": true of the function, false of the
+  // product. For any path a customer can hit, assert the RESPONSE, not the internal.
+
+  it("UNCONFIRMED (deadline, key installed but not yet visible) -> 202, and NOT live", async () => {
+    const { cookie } = await tenantReady('["ep1"]');
+    wiring.installInvokeKey.mockResolvedValueOnce({
+      verified: [], unverified: [], unconfirmed: ["keyframe", "own-gpu"], attempts: 6, elapsedMs: 9800,
+    });
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.modules_ready).toBe(false);
+    expect(body.modules_unconfirmed).toEqual(["keyframe", "own-gpu"]);
+    // It must say the key IS stored, or the caller re-pastes credentials for a problem that is not theirs.
+    expect(String(body.message)).toMatch(/installed/i);
+    expect(String(body.message)).toMatch(/retry/i);
+    // The reported status is the TRUE stored one, not an invented label.
+    expect(body.status).toBe("awaiting_invoke_key");
+    // SAFETY: unconfirmed is never live. This is the entire point of the gate.
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+  });
+
+  it("MISCONFIGURED -> 503 carrying the REAL diagnostic, never a bare internal_error", async () => {
+    const { cookie } = await tenantReady('["ep1"]');
+    wiring.installInvokeKey.mockRejectedValueOnce(
+      new TenantModuleError(
+        "verify",
+        "module keyframe (ten-abc123-keyframe) /ready -> 200: endpoint id absent (not retryable; attempts=1, elapsed=120ms)",
+      ),
+    );
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("modules_not_ready");
+    expect(body.error).not.toBe("internal_error");
+    // The diagnostic IS the deliverable: which module, which script, retryability, attempts.
+    expect(String(body.message)).toContain("ten-abc123-keyframe");
+    expect(String(body.message)).toContain("not retryable");
+    expect(String(body.message)).toContain("attempts=1");
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+  });
+
+  it("a NON-module install failure is still internal_error 500, not dressed up as a readiness problem", async () => {
+    const { cookie } = await tenantReady('["ep1"]');
+    wiring.installInvokeKey.mockRejectedValueOnce(new Error("secrets PUT exploded"));
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({ error: "internal_error" });
   });
 
   it("REFUSES (409 not_provisioned) when endpoints exist but the studio upload never completed", async () => {

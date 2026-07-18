@@ -4,6 +4,30 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
+## Unreleased
+
+PATCH: the readiness probe stops failing customers for a benign propagation delay, and its diagnostic
+actually reaches them (control-plane#17). Both defects were found by the cf#114 live verification.
+
+- **A deadline with every module still `not_visible_yet` is now a SOFT outcome**, not a failure. The
+  key is installed and the condition self-resolves, so the route answers `202` naming
+  `modules_unconfirmed` and telling the caller to retry without re-pasting the key. The tenant is
+  **not** promoted, so an unconfirmed module can never be rendered against. Measured cause: a
+  first-ever key write to five fresh module scripts exceeded the 10s deadline and passed a minute
+  later. The deadline was validated only against a virtual clock, which cannot measure the edge.
+- **Every `misconfigured` verdict still fails HARD and immediately** (absent endpoint id, non-200,
+  malformed envelope, echo mismatch). The soft path is deliberately narrow; widening it would be the
+  laundering this design refuses. Mutation-tested in both directions.
+- **`TenantModuleError` now surfaces as `503 modules_not_ready` carrying the real message** (module,
+  script, retryability, attempts, elapsed) instead of falling into the top-level catch and reaching
+  the caller as a bare `500 internal_error`. cf#114 exists because a misleading error fired at the
+  worst possible moment; it shipped with an opaque one at that same moment.
+- **Route-level tests asserting what the CALLER receives on every outcome.** This is the actual fix:
+  every prior test asserted what the probe threw or returned, and none asserted the response, which
+  is exactly how the opaque 500 shipped green.
+- No invented lifecycle value: the unconfirmed response reports the tenant's TRUE stored status
+  rather than a label no store ever holds.
+
 ## v1.1.0 -- 2026-07-18
 
 MINOR: the plane stops promoting a tenant to live on a credential whose propagation nothing has

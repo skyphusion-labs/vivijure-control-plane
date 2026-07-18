@@ -467,6 +467,18 @@ export interface UnverifiedModule {
 export interface ModuleReadiness {
   verified: string[];
   unverified: UnverifiedModule[];
+  /**
+   * Modules still in the not_visible_yet shape when the deadline expired (control-plane#17).
+   *
+   * DISTINCT FROM `unverified` on purpose. `unverified` means we could not observe the module at
+   * all (nothing answered). `unconfirmed` means the module answered honestly that it cannot see the
+   * key YET -- the key install genuinely succeeded, the condition is benign, and it resolves itself.
+   * That deserves a soft, actionable answer rather than a failure.
+   *
+   * It does NOT deserve a live flip: an unconfirmed module is exactly the run-5 state this whole
+   * design exists to keep customers out of. Soft response, tenant stays gated.
+   */
+  unconfirmed: string[];
   attempts: number;
   elapsedMs: number;
 }
@@ -565,19 +577,31 @@ export async function awaitTenantModulesReady(
         verified: verified.length,
         unverified: unverified.map((u) => u.module),
       });
-      return { verified, unverified, attempts, elapsedMs };
+      return { verified, unverified, unconfirmed: [], attempts, elapsedMs };
     }
 
     const wait = MODULE_READY_BACKOFF_MS[Math.min(attempts - 1, MODULE_READY_BACKOFF_MS.length - 1)];
     if (elapsedMs + wait >= deadlineMs) {
-      // LOUD, with attempts and elapsed. A credential that is genuinely absent ends up HERE, never
-      // absorbed by the retry: the deadline is the only exit from the not-visible-yet shape.
-      throw new TenantModuleError(
-        "verify",
-        `module credentials never became visible on ${pending.join(", ")} -> ${last} ` +
-          `(gave up after ${attempts} attempts, ${elapsedMs}ms; either propagation is far slower ` +
-          `than ${deadlineMs}ms or the key was never written)`,
-      );
+      // DEADLINE with everything still in the not_visible_yet shape (control-plane#17).
+      //
+      // This is NOT a failure and must not be reported as one. Every module here answered /ready
+      // honestly saying the endpoint id is bound and the key is not readable YET; the secrets PUT
+      // already succeeded; the condition is propagation and it resolves on its own. Measured live on
+      // 2026-07-18: a first-ever key write to five fresh module scripts exceeded a 10s deadline and
+      // passed about a minute later. Failing that customer -- worse, failing them opaquely -- was the
+      // defect, not the propagation.
+      //
+      // The line this must never cross: ONLY this shape gets the soft outcome. Every `misconfigured`
+      // verdict already threw above, immediately, before any waiting. Widening this to cover a real
+      // misconfiguration would be exactly the laundering the design refuses.
+      deps.log("modules_unconfirmed", {
+        tenant: tenantId,
+        attempts,
+        elapsedMs,
+        unconfirmed: pending,
+        last,
+      });
+      return { verified, unverified, unconfirmed: [...pending], attempts, elapsedMs };
     }
     await timing.sleep(wait);
   }
