@@ -4,7 +4,7 @@ How a request reaches a tenant studio on the hosted door (epic #40, issue #55). 
 `docs/DEPLOYMENT.md` (core deploy) and `docs/module-dispatch.md` (the Phase-3 module namespace).
 
 This document is reproducible-from-docs by intent: everything below is either in
-`wrangler.control-plane.toml.example`, `src/control-plane/routing.ts`, or a named zone change.
+`wrangler.toml.example`, `src/routing.ts`, or a named zone change.
 
 ## The shape
 
@@ -94,9 +94,9 @@ door) and the reserved-label list (`www`, `api`, `admin`, ...).
 2. **Control-plane D1** created + migrated (#52 / #53).
 3. **Certificate + wildcard DNS record live on the zone** before the wildcard route serves
    traffic. **Currently BLOCKED** -- see the TLS section above.
-4. Then deploy the control-plane Worker (`npm run deploy:control-plane`).
+4. Then deploy the control-plane Worker (`npm run deploy`).
 
-A tenant studio does NOT deploy through `wrangler.control-plane.toml`: the provisioner (#53) uploads it
+A tenant studio does NOT deploy through `wrangler.toml`: the provisioner (#53) uploads it
 into the namespace via the WfP API at signup.
 
 ## The error-1042 rule

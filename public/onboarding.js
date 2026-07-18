@@ -192,7 +192,7 @@
       });
     },
 
-    // As IMPLEMENTED in src/control-plane/runpod-invoke-key.ts (#52):
+    // As IMPLEMENTED in src/runpod-invoke-key.ts (#52):
     //   204                        -> verified AND installed
     //   400 invoke_key_rejected    -> { reason, message } (the honest refusal)
     //   501 not_implemented        -> verified, but the secret install lands with #53

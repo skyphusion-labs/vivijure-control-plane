@@ -155,7 +155,7 @@ raises and does not answer.
 ## 5. Where it would land architecturally (naming the seam, not designing it)
 
 **The seam is `src/vivijure_backend/assemble.py` in `vivijure-backend`.** That is where the final
-artifact is produced. `vivijure-cf` only orchestrates and observes it (`src/index.ts` reads
+artifact is produced. `vivijure-cf` only orchestrates and observes it ([`vivijure-cf src/index.ts`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/src/index.ts) reads
 `u?.at === "assemble"`); the core is the wrong place for this.
 
 **The one engineering constraint worth capturing now, because it dictates the shape:**

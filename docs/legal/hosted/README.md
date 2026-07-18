@@ -62,8 +62,8 @@ D1, per spec section 2) should carry at minimum:
 | `ip_hash` | From where, **hashed, never raw**. Proves who accepted what and when without turning the acceptance log into a location dataset. |
 | `user_agent` | Context for the same. |
 
-**As built (#52), verified against `migrations-control-plane/0001_init.sql` and
-`src/control-plane/aup.ts`:** the gate pins `AUP_VERSION` in config (never resolves "latest"),
+**As built (#52), verified against `migrations/0001_init.sql` and
+`src/aup.ts`:** the gate pins `AUP_VERSION` in config (never resolves "latest"),
 rejects a stale submitted version rather than honoring it, is blocking and fail-closed in front of
 provisioning, and **hashes the IP rather than storing it raw. That last one is better than this
 document originally specified**, and the spec has been corrected to match the code rather than the
