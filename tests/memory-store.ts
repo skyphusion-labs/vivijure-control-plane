@@ -20,7 +20,7 @@ import type {
   TenantLifecycle,
   SlugClaim,
 } from "../src/store";
-import { classifySlugClaim, TIER_A_STATUSES } from "../src/store";
+import { classifySlugClaim, leaseIsLive, TIER_A_STATUSES } from "../src/store";
 
 export class MemoryStore implements ControlPlaneStore {
   accounts = new Map<string, Account>();
@@ -148,7 +148,31 @@ export class MemoryStore implements ControlPlaneStore {
    * Mirrors D1Store.reclaimSlug's WHERE clause, including the parts that REFUSE. A stub that only
    * models the success path would let a not-yours reclaim pass in CI and fail on real D1.
    */
-  async reclaimSlug(tenantId: string, accountId: string): Promise<Tenant | null> {
+  async claimReclaim(
+    tenantId: string,
+    accountId: string,
+    leaseSeconds: number,
+  ): Promise<{ tenant: Tenant; lease_token: string } | null> {
+    const t = this.tenants.get(tenantId);
+    if (!t) return null;
+    if (t.account_id !== accountId) return null;
+    if (t.live_at !== null) return null;
+    if (!TIER_A_STATUSES.includes(t.status)) return null;
+    if (this.hasLiveProvisionLease(tenantId)) return null;
+    // An expired or absent lease is free, same as the D1 statement. Self-healing.
+    if (leaseIsLive(t.reclaim_lease_until, Date.now())) return null;
+    const token = `tok_${this.leaseSeq++}`;
+    t.reclaim_lease_token = token;
+    t.reclaim_lease_until = new Date(Date.now() + leaseSeconds * 1000)
+      .toISOString()
+      .replace("T", " ")
+      .slice(0, 19);
+    return { tenant: { ...t }, lease_token: token };
+  }
+
+  private leaseSeq = 1;
+
+  async reclaimSlug(tenantId: string, accountId: string, leaseToken: string): Promise<Tenant | null> {
     const t = this.tenants.get(tenantId);
     if (!t) return null;
     if (t.account_id !== accountId) return null;
@@ -156,6 +180,11 @@ export class MemoryStore implements ControlPlaneStore {
     if (!TIER_A_STATUSES.includes(t.status)) return null;
     // Refuse under a live driver, same as the D1 statement's NOT EXISTS clause.
     if (this.hasLiveProvisionLease(tenantId)) return null;
+    // Must hold YOUR OWN live lease: the loser of the claim must not blank the winner's row.
+    if (t.reclaim_lease_token !== leaseToken) return null;
+    if (!leaseIsLive(t.reclaim_lease_until, Date.now())) return null;
+    t.reclaim_lease_until = null;
+    t.reclaim_lease_token = null;
     t.status = "pending";
     t.d1_database_id = null;
     t.r2_bucket_name = null;
@@ -196,6 +225,8 @@ export class MemoryStore implements ControlPlaneStore {
       suspended_at: null,
       suspended_reason: null,
       deleted_at: null,
+      reclaim_lease_until: null,
+      reclaim_lease_token: null,
     };
     this.tenants.set(id, t);
     return t;

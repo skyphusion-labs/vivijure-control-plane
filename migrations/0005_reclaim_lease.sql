@@ -1,0 +1,23 @@
+-- Serialize reclaim execution, so two attempts on one slug cannot destroy each other (cf#103).
+--
+-- WHY THIS EXISTS: every tenant resource name derives from the SLUG, not from the attempt
+-- (vivijure-tenant-<slug> for D1 and bucket, tenant-<slug>-studio for the worker). So with two
+-- concurrent reclaims by the same owner -- two tabs, or a retry after a timeout -- attempt A can
+-- still be tearing down while attempt B has already provisioned FRESH resources under the exact
+-- same names. A's teardown then deletes B's brand-new bucket and worker, silently, because
+-- "tear down the old" and "delete the new" are the same API calls.
+--
+-- WHY A LEASE AND NOT A STATUS: claiming by moving status to 'deleting' strands the row on any
+-- mid-flight failure. status='deleting' with live_at IS NULL is in no slug tier, and there is no
+-- delete route to clear it, so a transient error would cost the owner that name permanently. A
+-- lease EXPIRES, so a dead reclaim self-heals. Same shape as provision_jobs.lease_until, so this
+-- codebase has ONE concept for "somebody is working on this row right now".
+--
+-- WHY A TOKEN AND NOT JUST A TIMESTAMP: the timestamp proves somebody holds the lease; it cannot
+-- prove it is the caller. Without the token, the attempt that LOST the claim can still call the
+-- reclaim write, blank the row, and provision under the same names while the winner tears down --
+-- the same race through the back door. The winner alone knows the token.
+--
+-- Additive and nullable: existing rows read as "no reclaim in flight", which is correct for them.
+ALTER TABLE tenants ADD COLUMN reclaim_lease_until TEXT;
+ALTER TABLE tenants ADD COLUMN reclaim_lease_token TEXT;

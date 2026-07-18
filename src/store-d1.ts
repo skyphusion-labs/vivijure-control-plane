@@ -236,14 +236,43 @@ export class D1Store implements ControlPlaneStore {
    * "this hostname ever served someone" high-water mark, and keeping it monotonic means a slug's
    * tombstone can only ever get stricter, never looser.
    */
-  async reclaimSlug(tenantId: string, accountId: string): Promise<Tenant | null> {
-    const placeholders = TIER_A_STATUSES.map((_, i) => `?${i + 3}`).join(", ");
+  async claimReclaim(
+    tenantId: string,
+    accountId: string,
+    leaseSeconds: number,
+  ): Promise<{ tenant: Tenant; lease_token: string } | null> {
+    const token = crypto.randomUUID();
+    const placeholders = TIER_A_STATUSES.map((_, i) => `?${i + 5}`).join(", ");
+    const tenant = await this.db
+      .prepare(
+        "UPDATE tenants SET reclaim_lease_until = datetime('now', '+' || ?3 || ' seconds'), " +
+          "reclaim_lease_token = ?4 " +
+          "WHERE id = ?1 AND account_id = ?2 AND live_at IS NULL " +
+          `AND status IN (${placeholders}) ` +
+          // An expired or absent lease is FREE, exactly as claimJob treats its own. That is the
+          // self-healing half: a reclaim whose driver died must not lock the owner out forever.
+          "AND (reclaim_lease_until IS NULL OR reclaim_lease_until < datetime('now')) " +
+          "AND NOT EXISTS (SELECT 1 FROM provision_jobs j WHERE j.tenant_id = tenants.id " +
+          "AND j.status IN ('queued', 'running') AND j.lease_until IS NOT NULL " +
+          "AND j.lease_until > datetime('now')) RETURNING *",
+      )
+      .bind(tenantId, accountId, leaseSeconds, token, ...TIER_A_STATUSES)
+      .first<Tenant>();
+    return tenant ? { tenant, lease_token: token } : null;
+  }
+
+  async reclaimSlug(tenantId: string, accountId: string, leaseToken: string): Promise<Tenant | null> {
+    const placeholders = TIER_A_STATUSES.map((_, i) => `?${i + 4}`).join(", ");
     return await this.db
       .prepare(
         "UPDATE tenants SET status = 'pending', d1_database_id = NULL, r2_bucket_name = NULL, " +
           "r2_token_id = NULL, script_name = NULL, endpoints_json = NULL, studio_release = NULL, " +
-          "studio_token_enc = NULL " +
+          "studio_token_enc = NULL, reclaim_lease_until = NULL, reclaim_lease_token = NULL " +
           "WHERE id = ?1 AND account_id = ?2 AND live_at IS NULL " +
+          // Holding the TOKEN is what proves this caller won claimReclaim and did the teardown.
+          // Without it the attempt that LOST the claim could blank the row out from under the
+          // winner and provision under the same slug-derived names: the race, through the back door.
+          "AND reclaim_lease_token = ?3 AND reclaim_lease_until > datetime('now') " +
           `AND status IN (${placeholders}) ` +
           // The lease check lives INSIDE this statement on purpose. Checking it separately would
           // reintroduce the exact TOCTOU this conditional UPDATE exists to close: a driver could
@@ -252,7 +281,7 @@ export class D1Store implements ControlPlaneStore {
           "AND j.status IN ('queued', 'running') AND j.lease_until IS NOT NULL " +
           "AND j.lease_until > datetime('now')) RETURNING *",
       )
-      .bind(tenantId, accountId, ...TIER_A_STATUSES)
+      .bind(tenantId, accountId, leaseToken, ...TIER_A_STATUSES)
       .first<Tenant>();
   }
 

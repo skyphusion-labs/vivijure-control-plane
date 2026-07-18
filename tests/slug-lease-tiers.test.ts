@@ -34,6 +34,8 @@ function row(over: Partial<Tenant>): Tenant {
     suspended_at: null,
     suspended_reason: null,
     deleted_at: null,
+    reclaim_lease_until: null,
+    reclaim_lease_token: null,
     ...over,
   };
 }
@@ -165,7 +167,9 @@ describe("reclaimSlug is the ENFORCEMENT point, not the check", () => {
 
   it("takes over a Tier A row for its owner and blanks the stale resource columns", async () => {
     const store = await seed({ status: "failed", d1_database_id: "db_1", r2_bucket_name: "buck_1", script_name: "scr_1" });
-    const out = await store.reclaimSlug("ten_1", OWNER);
+    const claimed = await store.claimReclaim("ten_1", OWNER, 300);
+    expect(claimed).not.toBeNull();
+    const out = await store.reclaimSlug("ten_1", OWNER, claimed!.lease_token);
     expect(out).not.toBeNull();
     expect(out?.status).toBe("pending");
     expect(out?.d1_database_id).toBeNull();
@@ -178,31 +182,34 @@ describe("reclaimSlug is the ENFORCEMENT point, not the check", () => {
     // thing standing between a stranger and someone else's row were a caller remembering to call
     // the check first, this would be a hole.
     const store = await seed({ status: "failed" });
-    expect(await store.reclaimSlug("ten_1", STRANGER)).toBeNull();
+    expect(await store.claimReclaim("ten_1", STRANGER, 300)).toBeNull();
+    expect(await store.reclaimSlug("ten_1", STRANGER, "tok_1")).toBeNull();
   });
 
   it("REFUSES a reclaim of a Tier B row", async () => {
     const store = await seed({ status: "deleted", live_at: "2026-07-01 00:00:00" });
-    expect(await store.reclaimSlug("ten_1", OWNER)).toBeNull();
+    expect(await store.claimReclaim("ten_1", OWNER, 300)).toBeNull();
+    expect(await store.reclaimSlug("ten_1", OWNER, "tok_1")).toBeNull();
   });
 
   it("REFUSES a reclaim of a live row", async () => {
     const store = await seed({ status: "live", live_at: "2026-07-01 00:00:00" });
-    expect(await store.reclaimSlug("ten_1", OWNER)).toBeNull();
+    expect(await store.claimReclaim("ten_1", OWNER, 300)).toBeNull();
+    expect(await store.reclaimSlug("ten_1", OWNER, "tok_1")).toBeNull();
   });
 
   it("REFUSES a row that was live but sits in a Tier A status", async () => {
     // Isolates the live_at guard in the WRITE. The status check cannot save this row: 'failed' is
     // a Tier A status, so live_at is the only thing refusing.
     const store = await seed({ status: "failed", live_at: "2026-07-01 00:00:00" });
-    expect(await store.reclaimSlug("ten_1", OWNER)).toBeNull();
+    expect(await store.claimReclaim("ten_1", OWNER, 300)).toBeNull();
   });
 
   it("REFUSES a never-live row in a non-Tier-A status", async () => {
     // Isolates the lifecycle-set guard in the WRITE: live_at is null, so only the status set refuses.
     for (const status of ["live", "deleting", "deleted"] as const) {
       const store = await seed({ status, live_at: null });
-      expect(await store.reclaimSlug("ten_1", OWNER), status).toBeNull();
+      expect(await store.claimReclaim("ten_1", OWNER, 300), status).toBeNull();
     }
   });
 
@@ -211,7 +218,8 @@ describe("reclaimSlug is the ENFORCEMENT point, not the check", () => {
     // the field must survive any write reclaimSlug performs. If it were cleared, a Tier B row could
     // be demoted back to Tier A and the tombstone would get LOOSER over time.
     const store = await seed({ status: "failed", live_at: null });
-    await store.reclaimSlug("ten_1", OWNER);
+    const c = await store.claimReclaim("ten_1", OWNER, 300);
+    await store.reclaimSlug("ten_1", OWNER, c!.lease_token);
     expect(store.tenants.get("ten_1")?.live_at).toBeNull();
   });
 });
@@ -237,7 +245,7 @@ describe("the provision-lease race (cf#103)", () => {
 
   it("REFUSES a reclaim while a driver holds a live lease", async () => {
     const store = await seedLeased(future, "running");
-    expect(await store.reclaimSlug("ten_1", OWNER)).toBeNull();
+    expect(await store.claimReclaim("ten_1", OWNER, 300)).toBeNull();
   });
 
   it("the CHECK says so legibly rather than silently failing the write", async () => {
@@ -252,17 +260,127 @@ describe("the provision-lease race (cf#103)", () => {
     // Without this, "refuse while leased" is indistinguishable from "refuse always", and a tenant
     // whose driver died would be locked out of their own half-built slug forever.
     const store = await seedLeased(past, "running");
-    expect(await store.reclaimSlug("ten_1", OWNER)).not.toBeNull();
+    expect(await store.claimReclaim("ten_1", OWNER, 300)).not.toBeNull();
   });
 
   it("a TERMINAL job does not block, however recent its lease", async () => {
     const store = await seedLeased(future, "succeeded");
-    expect(await store.reclaimSlug("ten_1", OWNER)).not.toBeNull();
+    expect(await store.claimReclaim("ten_1", OWNER, 300)).not.toBeNull();
   });
 
   it("a job with no lease at all does not block", async () => {
     const store = await seedLeased(null, "queued");
-    expect(await store.reclaimSlug("ten_1", OWNER)).not.toBeNull();
+    expect(await store.claimReclaim("ten_1", OWNER, 300)).not.toBeNull();
+  });
+});
+
+describe("the reclaim lease: serializing two attempts on one slug (cf#103)", () => {
+  // THE RACE THIS CLOSES: every tenant resource name derives from the SLUG, not the attempt, so two
+  // concurrent reclaims by the same owner issue the SAME delete calls. Attempt A tears down while
+  // attempt B has already provisioned fresh resources under those names, and A deletes B's. The
+  // claim is the serialization point: only its winner may tear anything down.
+
+  async function seedA(): Promise<MemoryStore> {
+    const store = new MemoryStore();
+    const t = row({ status: "failed", d1_database_id: "db_1", r2_bucket_name: "buck_1" });
+    store.tenants.set(t.id, t);
+    return store;
+  }
+
+  it("EXACTLY ONE of two concurrent attempts wins the claim", async () => {
+    const store = await seedA();
+    const [a, b] = await Promise.all([
+      store.claimReclaim("ten_1", OWNER, 300),
+      store.claimReclaim("ten_1", OWNER, 300),
+    ]);
+    expect([a, b].filter((x) => x !== null)).toHaveLength(1);
+  });
+
+  it("the LOSER cannot complete the reclaim, even though it is the legitimate owner", async () => {
+    // The whole point of the token. Same account, same row, correct tier: the ONLY thing refusing
+    // the loser is that it does not hold the lease. Without this the loser blanks the row and
+    // provisions under the same slug-derived names while the winner is still tearing down.
+    const store = await seedA();
+    const winner = await store.claimReclaim("ten_1", OWNER, 300);
+    expect(winner).not.toBeNull();
+    const loser = await store.claimReclaim("ten_1", OWNER, 300);
+    expect(loser).toBeNull();
+    expect(await store.reclaimSlug("ten_1", OWNER, "tok_not_mine")).toBeNull();
+  });
+
+  it("the WINNER completes the reclaim and the lease is released", async () => {
+    const store = await seedA();
+    const w = await store.claimReclaim("ten_1", OWNER, 300);
+    const out = await store.reclaimSlug("ten_1", OWNER, w!.lease_token);
+    expect(out).not.toBeNull();
+    expect(out?.status).toBe("pending");
+    expect(out?.d1_database_id).toBeNull();
+    // Released, not merely expired: the next attempt must not have to wait out the lease.
+    expect(store.tenants.get("ten_1")?.reclaim_lease_until).toBeNull();
+    expect(store.tenants.get("ten_1")?.reclaim_lease_token).toBeNull();
+  });
+
+  it("the claim returns the row's CURRENT ids, which is what teardown must use", async () => {
+    // The claim, not the earlier check, is the serialization point, so these are the authoritative
+    // ids. A handle read before the claim can be stale by the time teardown runs.
+    const store = await seedA();
+    const w = await store.claimReclaim("ten_1", OWNER, 300);
+    expect(w?.tenant.d1_database_id).toBe("db_1");
+    expect(w?.tenant.r2_bucket_name).toBe("buck_1");
+  });
+
+  it("REFUSES the winner's own token once its lease has EXPIRED", async () => {
+    // The overrun case, and it is reachable: a teardown slower than the lease leaves the winner
+    // holding a token that still matches but a lease that no longer proves exclusivity. By then
+    // another attempt may have claimed and be mid-teardown, so completing here would blank the row
+    // under it. The winner must re-claim, not coast on a stale token.
+    // Found by mutation: removing this guard changed nothing until this test existed.
+    const store = await seedA();
+    const w = await store.claimReclaim("ten_1", OWNER, 300);
+    expect(w).not.toBeNull();
+    const t = store.tenants.get("ten_1")!;
+    t.reclaim_lease_until = new Date(Date.now() - 1000).toISOString().replace("T", " ").slice(0, 19);
+    expect(await store.reclaimSlug("ten_1", OWNER, w!.lease_token)).toBeNull();
+  });
+
+  it("POSITIVE CONTROL: an EXPIRED reclaim lease frees the row -- a dead reclaim SELF-HEALS", async () => {
+    // The half that stops a customer being locked out of their own slug forever when a driver dies
+    // mid-teardown. Without expiry this feature would trade a rare race for a permanent lockout.
+    const store = await seedA();
+    const t = store.tenants.get("ten_1")!;
+    t.reclaim_lease_token = "tok_dead";
+    t.reclaim_lease_until = new Date(Date.now() - 1000).toISOString().replace("T", " ").slice(0, 19);
+    const retry = await store.claimReclaim("ten_1", OWNER, 300);
+    expect(retry).not.toBeNull();
+    expect(retry?.lease_token).not.toBe("tok_dead");
+  });
+
+  it("a LIVE reclaim lease is reported by the check, legibly and self-clearingly", async () => {
+    const store = await seedA();
+    await store.claimReclaim("ten_1", OWNER, 300);
+    const claim = await store.checkSlugAvailability("studio", OWNER);
+    expect(claim.available).toBe(false);
+    if (claim.available) throw new Error("unreachable");
+    expect(claim.reason).toMatch(/being reset/);
+  });
+
+  it("a STRANGER still gets the generic refusal while a reclaim is in flight", async () => {
+    // The lease must not become an enumeration oracle: a stranger learns nothing about why.
+    const store = await seedA();
+    await store.claimReclaim("ten_1", OWNER, 300);
+    const claim = await store.checkSlugAvailability("studio", STRANGER);
+    expect(claim.available).toBe(false);
+    if (claim.available) throw new Error("unreachable");
+    expect(claim.reason).toBe(SLUG_TAKEN_REASON);
+  });
+
+  it("a reclaim cannot be claimed while a PROVISION driver holds its own lease", async () => {
+    const store = await seedA();
+    await store.createProvisionJob("job_1", "ten_1", "provision");
+    const j = store.jobs.get("job_1")!;
+    j.status = "running";
+    j.lease_until = new Date(Date.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
+    expect(await store.claimReclaim("ten_1", OWNER, 300)).toBeNull();
   });
 });
 
