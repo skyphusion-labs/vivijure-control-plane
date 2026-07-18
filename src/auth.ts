@@ -23,9 +23,31 @@ export function normalizeEmail(email: string): string {
 
 // Deliberately conservative: one @, no whitespace, a dot in the domain. This is a sanity check to
 // keep junk out of the send door, NOT an RFC5322 parser; postern is the authority on deliverability.
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+//
+// TWO ReDoS FIXES HERE, both real rather than theoretical (js/polynomial-redos, CodeQL high).
+// This runs on UNAUTHENTICATED input at the login-start door (index.ts), and it runs BEFORE the
+// rate limiter, so anything quadratic here is reachable by anyone with no throttle in front of it.
+//
+// 1. ORDER. The length cap used to be checked AFTER the regex (`RE.test(e) && e.length <= 254`),
+//    and && short-circuits left to right, so the regex ran on unbounded input and the cap never
+//    protected it. Checking length FIRST bounds the work to 254 characters no matter what.
+// 2. AMBIGUITY. The old domain part was `[^\s@]+\.[^\s@]+`, where `[^\s@]` also matches a dot.
+//    That overlap between the segment class and the separator is what makes backtracking blow up
+//    on inputs like `a@` + `b.` repeated. The segment classes now EXCLUDE the dot, so each
+//    character has exactly one role and the match is linear.
+//
+// Either fix alone closes the DoS; both are applied because the ordering bug was a real defect on
+// its own and the ambiguous pattern would be a trap for whoever edits this next.
+//
+// DELIBERATE BEHAVIOUR CHANGE, called out rather than slipped in: the stricter domain now rejects
+// consecutive dots (`a@b..c`), which the old pattern accepted. That address is not deliverable, so
+// rejecting it is correct, and the endpoint answers 202 either way (it must not become an
+// account-enumeration oracle), meaning nothing user-visible changes.
+export const EMAIL_RE = /^[^\s@.]+(?:\.[^\s@.]+)*@[^\s@.]+(?:\.[^\s@.]+)+$/;
+const EMAIL_MAX_LENGTH = 254;
 export function looksLikeEmail(email: string): boolean {
-  return EMAIL_RE.test(email) && email.length <= 254;
+  // Length FIRST. Do not reorder these; see (1) above.
+  return email.length <= EMAIL_MAX_LENGTH && EMAIL_RE.test(email);
 }
 
 /**
