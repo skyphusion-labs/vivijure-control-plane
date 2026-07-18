@@ -1,0 +1,12 @@
+-- #52 follow-up (Ernst's first-serve immutability rule, via #40): record the SHA-256 of the AUP
+-- BYTES that were served, alongside the version label.
+--
+-- Why both: the label proves what we CALLED the text; the hash proves what it SAID. A version
+-- string is an assertion by us, and if the bytes behind AUP_URL ever change without a version bump
+-- -- a mutable ref, an edited page, a CDN mishap -- then every acceptance row silently attests to
+-- text nobody agreed to, and there is no way after the fact to tell which. The hash is the only
+-- thing in the record that cannot be retconned.
+--
+-- Nullable on purpose: existing rows predate the column and backfilling them would be inventing
+-- evidence about what someone was shown. An unknown hash must read as unknown, not as a guess.
+ALTER TABLE aup_acceptances ADD COLUMN aup_sha256 TEXT;
