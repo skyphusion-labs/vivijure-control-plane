@@ -722,6 +722,23 @@ export async function teardownTenant(
     }
   };
 
+  // LOAD-BEARING DERIVATION, and the next person to touch script naming needs to read this.
+  //
+  // This deletes the worker at the name the SLUG implies, while tenant.script_name records the name
+  // that was ACTUALLY created, and tenants.ts states that ROUTING dispatches to that stored name
+  // because it is authoritative at request time. So teardown and routing consult two different facts.
+  // They agree only because both derive from the same immutable slug under the current scheme.
+  //
+  // The moment script naming changes across releases they diverge, and this call deletes the name it
+  // would use TODAY while ORPHANING the one that exists: a live user Worker left serving for a tenant
+  // we just reported as torn down. It fails SILENTLY, because deleting a name that does not exist
+  // succeeds, so the teardown reports ok.
+  //
+  // The fix is to prefer tenant.script_name and fall back to this derivation (written and tested in
+  // PR #28, held deliberately). It is not applied here yet because it changes which resource a
+  // DESTRUCTIVE path targets and there is no live teardown test to verify it against a real
+  // namespace; a mocked cf proves the decision path, never the shipped artifact. Land it behind a
+  // live teardown rehearsal, not on unit tests alone.
   await attempt("worker", () => deps.cf.deleteUserWorker(deps.namespace, deps.tenantScriptName(tenant.slug)));
   // Module scripts next (cf#99): the studio (discovery) is already gone, so sweeping the tenant's
   // module scripts cannot tear a /poll out from under a live studio. Prefix sweep + census; every
