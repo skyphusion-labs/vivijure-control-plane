@@ -151,7 +151,7 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
     const tenant = await store.createTenant("ten_e2e", slug, account.id, "pending");
     const job = await store.createProvisionJob("job_e2e", tenant.id, "provision");
 
-    const result = await runProvisionJob(deps, job.id, tenant, RUNPOD_KEY!, migrations);
+    const result = await runProvisionJob(deps, job.id, tenant, RUNPOD_KEY!);
     if (!result.ok) {
       const fail = expectProvisionFailure(result);
       throw new Error(`provision failed at ${fail.step}: ${fail.message}`);

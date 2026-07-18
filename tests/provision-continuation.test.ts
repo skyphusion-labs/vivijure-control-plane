@@ -80,7 +80,15 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),
       revoke: vi.fn(async () => undefined),
     },
-    bundle: { fetch: vi.fn(async () => ({ mainModule: "i.js", moduleText: "export default {}", compatibilityDate: "2026-06-01" })) },
+    bundle: {
+      fetch: vi.fn(async () => ({
+        mainModule: "i.js",
+        moduleText: "export default {}",
+        compatibilityDate: "2026-06-01",
+        migrations: MIGRATIONS,
+        requiredVars: [],
+      })),
+    },
     moduleBundle: { fetch: vi.fn(async () => ({ mainModule: "i.js", moduleText: "export default {}", compatibilityDate: "2026-06-01" })) },
     moduleNamespace: "vivijure-tenant-modules",
     r2Endpoint: "https://acct.r2.cloudflarestorage.com",
@@ -162,7 +170,7 @@ describe("runProvisionJob budget yielding", () => {
     const t = await seedTenant(store);
     const job = await store.createProvisionJob("job_1", t.id, "provision");
     // Clock jumps a full budget per reading, so the first mark() is already over.
-    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", MIGRATIONS, fakeClock(20_000), 15_000);
+    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(20_000), 15_000);
 
     expect(res).toMatchObject({ ok: false, yielded: true });
     const after = store.jobs.get("job_1")!;
@@ -176,7 +184,7 @@ describe("runProvisionJob budget yielding", () => {
     const t = await seedTenant(store);
     const job = await store.createProvisionJob("job_1", t.id, "provision");
 
-    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", MIGRATIONS, fakeClock(0), 15_000);
+    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(0), 15_000);
 
     expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
     expect(store.jobs.get("job_1")!.status).toBe("succeeded");

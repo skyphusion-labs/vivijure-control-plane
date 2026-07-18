@@ -14,7 +14,7 @@
 // "we bound it".
 
 import { describe, it, expect, vi } from "vitest";
-import { ORCHESTRATOR_VAR_KEYS } from "../../src/platform/cf-platform";
+import { assertDispositionCoversContract } from "../src/tenant-studio-env";
 import {
   REQUIRED_TENANT_STUDIO_VARS,
   TENANT_STUDIO_VAR_DISPOSITION,
@@ -64,7 +64,15 @@ function recordingDeps() {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),
       revoke: vi.fn(async () => undefined),
     },
-    bundle: { fetch: vi.fn(async () => ({ mainModule: "i.js", moduleText: "export default {}", compatibilityDate: "2026-06-01" })) },
+    bundle: {
+      fetch: vi.fn(async () => ({
+        mainModule: "i.js",
+        moduleText: "export default {}",
+        compatibilityDate: "2026-06-01",
+        migrations: MIGRATIONS,
+        requiredVars: Object.keys(TENANT_STUDIO_VAR_DISPOSITION),
+      })),
+    },
     moduleBundle: { fetch: vi.fn(async () => ({ mainModule: "i.js", moduleText: "export default {}", compatibilityDate: "2026-06-01" })) },
     moduleNamespace: "vivijure-tenant-modules",
     r2Endpoint: R2_ENDPOINT,
@@ -91,7 +99,7 @@ async function provisionAndCaptureStudioBindings() {
   const tenant = await store.createTenant("ten_1", "hero", "acct_1", "pending");
   const job = await store.createProvisionJob("job_1", tenant.id, "provision");
 
-  const res = await runProvisionJob(deps, job.id, tenant, "rpa_keyA", MIGRATIONS);
+  const res = await runProvisionJob(deps, job.id, tenant, "rpa_keyA");
   expect(res, "provision should succeed in the fake").toMatchObject({ ok: true });
 
   const studio = uploads.find((u) => u.scriptName === "tenant-hero-studio");
@@ -100,20 +108,31 @@ async function provisionAndCaptureStudioBindings() {
 }
 
 describe("the tenant studio platform-env contract (#116)", () => {
-  it("EXHAUSTIVE: every var the studio reads has a deliberate disposition", () => {
-    // Adding a var to ORCHESTRATOR_VAR_KEYS fails here until someone decides what a tenant does with
-    // it. That decision is the whole point: "looks optional" is what produced #116.
-    for (const key of ORCHESTRATOR_VAR_KEYS) {
-      expect(TENANT_STUDIO_VAR_DISPOSITION[key], `no disposition recorded for ${key}`).toBeTruthy();
-      expect(TENANT_STUDIO_VAR_DISPOSITION[key].why.length, `${key} has no reason`).toBeGreaterThan(10);
+  it("every recorded disposition carries a real reason, not a placeholder", () => {
+    for (const [key, entry] of Object.entries(TENANT_STUDIO_VAR_DISPOSITION)) {
+      expect(entry.why.length, `${key} has no reason`).toBeGreaterThan(10);
     }
   });
 
-  it("EXHAUSTIVE the other way: no disposition names a var the studio does not read", () => {
-    // Guards the reverse drift -- a stale entry left behind after core drops a var.
-    for (const key of Object.keys(TENANT_STUDIO_VAR_DISPOSITION)) {
-      expect([...ORCHESTRATOR_VAR_KEYS], `${key} is not in the core contract`).toContain(key);
-    }
+  it("EXHAUSTIVE: a var the pinned release declares with no disposition is REFUSED", () => {
+    // This is the #116 guard, relocated (cf#85). It used to compare against ORCHESTRATOR_VAR_KEYS
+    // imported from the studio SOURCE tree; that import crossed the repo seam the extraction removes,
+    // so the check now runs against what the pinned ARTIFACT declares in manifest.required_vars.
+    //
+    // The purpose is identical and must stay identical: a new studio var gets a deliberate decision
+    // instead of being silently unbound. "Looks optional" is what produced #116.
+    const undecided = "SOME_BRAND_NEW_STUDIO_VAR";
+    expect(TENANT_STUDIO_VAR_DISPOSITION[undecided]).toBeUndefined();
+    expect(() => assertDispositionCoversContract([undecided])).toThrow(/no disposition/);
+    // and it names the offender, so the fix is obvious from the failure alone
+    expect(() => assertDispositionCoversContract([undecided])).toThrow(new RegExp(undecided));
+  });
+
+  it("POSITIVE CONTROL: a contract of vars we HAVE decided passes", () => {
+    // Without this, the refusal above would also pass if the assertion rejected everything.
+    const decided = Object.keys(TENANT_STUDIO_VAR_DISPOSITION);
+    expect(decided.length).toBeGreaterThan(0);
+    expect(() => assertDispositionCoversContract(decided)).not.toThrow();
   });
 
   it("THE #116 GATE: every `provisioned` var is really in the studio upload", async () => {

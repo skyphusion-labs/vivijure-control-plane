@@ -15,7 +15,6 @@ import { continueProvisionJob, runProvisionJob, type ProvisionDeps } from "./pro
 import { createTenantEndpoints } from "./runpod";
 import type { ControlPlaneStore, Tenant } from "./store";
 import { D1Store } from "./store-d1";
-import { STUDIO_MIGRATION_SET } from "./studio-migrations";
 import { CfTokenMinter } from "./token-minter";
 import { TENANT_MODULE_CATALOG, tenantModuleScriptName } from "./tenant-modules";
 
@@ -140,7 +139,7 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     async start(jobId, tenant, runpodApiKey) {
       // runProvisionJob records every outcome on the job row; the return value is the same fact.
       // A "yielded" outcome is normal under #112: progress is persisted and the next poll resumes.
-      await runProvisionJob(deps, jobId, tenant, runpodApiKey, STUDIO_MIGRATION_SET);
+      await runProvisionJob(deps, jobId, tenant, runpodApiKey);
     },
     async resume(jobId, tenant, stepsDone) {
       await continueProvisionJob(deps, jobId, tenant, stepsDone);

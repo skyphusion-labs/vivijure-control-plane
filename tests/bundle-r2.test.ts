@@ -23,6 +23,8 @@ function fakeBucket(objects: Record<string, string | Uint8Array>): R2Bucket {
   } as unknown as R2Bucket;
 }
 
+const MIGRATION_SQL = "CREATE TABLE IF NOT EXISTS projects (id TEXT);";
+
 async function mirror(tag: string, over: Partial<Record<string, unknown>> = {}) {
   const manifest = {
     tag,
@@ -32,12 +34,16 @@ async function mirror(tag: string, over: Partial<Record<string, unknown>> = {}) 
     worker: { path: "worker.js", sha256: await sha256Hex(WORKER_TEXT), size: WORKER_TEXT.length },
     assets_config: { html_handling: "none", run_worker_first: true },
     assets: [{ path: "/app.js", hash: "abc123", size: 2, content_type: "text/javascript" }],
+    // v1.3.1+ manifest shape (cf#85): the tenant schema and the studio var contract ride the release.
+    migrations: [{ name: "0001_init.sql", sha256: await sha256Hex(MIGRATION_SQL), size: MIGRATION_SQL.length }],
+    required_vars: ["AUTH_MODE", "R2_S3_ENDPOINT"],
     ...over,
   };
   return {
     [`studio-releases/${tag}/manifest.json`]: JSON.stringify(manifest),
     [`studio-releases/${tag}/worker.js`]: WORKER_TEXT,
     [`studio-releases/${tag}/assets/abc123`]: "hi",
+    [`studio-releases/${tag}/migrations/0001_init.sql`]: MIGRATION_SQL,
   };
 }
 
@@ -78,5 +84,43 @@ describe("r2StudioBundleSource", () => {
     delete objects["studio-releases/v1.0.1/assets/abc123"];
     const src = r2StudioBundleSource(fakeBucket(objects));
     await expect(src.fetch("v1.0.1")).rejects.toThrow(/missing from the mirror/);
+  });
+});
+
+describe("the v1.3.1 pin floor and migration integrity (cf#85)", () => {
+  it("returns the migrations and the var contract from the artifact", async () => {
+    const src = r2StudioBundleSource(fakeBucket(await mirror("v1.3.1")));
+    const built = await src.fetch("v1.3.1");
+    expect(built.migrations.map((m) => m.name)).toEqual(["0001_init.sql"]);
+    expect(built.migrations[0].sql).toBe(MIGRATION_SQL);
+    expect(built.requiredVars).toEqual(["AUTH_MODE", "R2_S3_ENDPOINT"]);
+  });
+
+  it("REFUSES a pre-floor artifact carrying no migrations, naming the floor", async () => {
+    // No fallback to a baked-in copy, deliberately: that would silently provision tenants from a
+    // stale in-repo schema, which is the drift this whole change exists to make impossible.
+    const src = r2StudioBundleSource(fakeBucket(await mirror("v1.2.5", { migrations: undefined })));
+    await expect(src.fetch("v1.2.5")).rejects.toThrow(/carries no migrations.*v1\.3\.1 or later/);
+  });
+
+  it("REFUSES an artifact carrying no required_vars", async () => {
+    const src = r2StudioBundleSource(fakeBucket(await mirror("v1.2.5", { required_vars: undefined })));
+    await expect(src.fetch("v1.2.5")).rejects.toThrow(/carries no required_vars.*v1\.3\.1 or later/);
+  });
+
+  it("REFUSES a migration whose bytes do not match its manifest hash", async () => {
+    // A corrupted migration does not fail the provision on its own; it silently gives a tenant the
+    // WRONG SCHEMA. That is why this is verified rather than trusted.
+    const objects = await mirror("v1.3.1");
+    objects["studio-releases/v1.3.1/migrations/0001_init.sql"] = "DROP TABLE projects;";
+    const src = r2StudioBundleSource(fakeBucket(objects));
+    await expect(src.fetch("v1.3.1")).rejects.toThrow(/migration integrity failure for 0001_init\.sql/);
+  });
+
+  it("REFUSES a migration that is missing from the mirror entirely", async () => {
+    const objects = await mirror("v1.3.1");
+    delete objects["studio-releases/v1.3.1/migrations/0001_init.sql"];
+    const src = r2StudioBundleSource(fakeBucket(objects));
+    await expect(src.fetch("v1.3.1")).rejects.toThrow(/missing from the mirror/);
   });
 });

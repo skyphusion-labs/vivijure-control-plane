@@ -1,21 +1,27 @@
 // The tenant studio's platform-env contract (#116).
 //
-// WHY THIS FILE EXISTS: the studio reads its configuration through ORCHESTRATOR_VAR_KEYS
-// (src/platform/cf-platform.ts). The provisioner binds a hand-written set of vars onto each tenant
-// studio. Those were two independent lists with no link between them, so they drifted, and the drift
-// was invisible until a tenant's FIRST RENDER: R2_S3_ENDPOINT was never bound, presign threw its
-// required-vars error, and the film poll 500'd forever with the keyframe already rendered and
-// sitting in R2.
+// WHY THIS FILE EXISTS: the studio reads its configuration through a contract it declares
+// (ORCHESTRATOR_VAR_KEYS in the studio source). The provisioner binds a hand-written set of vars
+// onto each tenant studio. Those were two independent lists with no link between them, so they
+// drifted, and the drift was invisible until a tenant FIRST RENDER: R2_S3_ENDPOINT was never bound,
+// presign threw its required-vars error, and the film poll kept 500ing with the keyframe already
+// rendered and sitting in R2.
 //
-// The lists are linked here. Every key in the platform contract needs an explicit disposition below,
-// and a test asserts both that the map is exhaustive (a new core var fails CI) and that everything
-// marked `provisioned` is actually present in what the provisioner uploads.
+// HOW THE LINK WORKS NOW (cf#85): the studio contract arrives in the PINNED RELEASE MANIFEST as
+// `required_vars`, not as a source import. This file used to import ORCHESTRATOR_VAR_KEYS directly
+// out of the studio tree, which is precisely the cross-repo coupling the extraction removes. The
+// guarantee moved from compile time to provision time and did NOT weaken:
+// assertDispositionCoversContract() runs against the artifact we actually pinned, BEFORE any tenant
+// resource is created, so a studio var with no disposition here refuses the provision by name.
+//
+// Every key the release declares needs an explicit disposition below, and the tests assert both that
+// an undecided var is refused (with a positive control, so the refusal cannot pass vacuously) and
+// that everything marked `provisioned` is really present in what the provisioner uploads.
 //
 // "Looks optional" is exactly the assumption that produced that outage, so each entry carries the
 // REASON, and every "absent is fine" claim below was verified against the reading code rather than
 // assumed from the name.
 
-import { ORCHESTRATOR_VAR_KEYS } from "../platform/cf-platform";
 
 /**
  * - `provisioned`: the provisioner MUST bind it, always; the test asserts it appears in the upload
@@ -30,7 +36,7 @@ import { ORCHESTRATOR_VAR_KEYS } from "../platform/cf-platform";
  */
 export type VarDisposition = "provisioned" | "conditional" | "default" | "not-hosted";
 
-export const TENANT_STUDIO_VAR_DISPOSITION: Record<(typeof ORCHESTRATOR_VAR_KEYS)[number], { disposition: VarDisposition; why: string }> = {
+export const TENANT_STUDIO_VAR_DISPOSITION: Record<string, { disposition: VarDisposition; why: string }> = {
   // ---- provisioned ---------------------------------------------------------------------------
   AUTH_MODE: {
     disposition: "provisioned",
@@ -98,3 +104,30 @@ export const REQUIRED_TENANT_STUDIO_VARS: string[] = Object.entries(TENANT_STUDI
  * minted or stored: it is an identifier, not a credential.
  */
 export const r2S3Endpoint = (accountId: string): string => `https://${accountId}.r2.cloudflarestorage.com`;
+
+/**
+ * Assert this map has a deliberate disposition for every var the PINNED RELEASE declares (cf#85).
+ *
+ * THIS REPLACES A COMPILE-TIME GUARANTEE, and the swap is the point. The map used to be keyed by
+ * `(typeof ORCHESTRATOR_VAR_KEYS)[number]`, imported from the studio source tree, so adding a studio
+ * var broke OUR build. That import crossed the repo seam the extraction removes, so the check moves
+ * from "the type of a constant we import" to "the required_vars the artifact we pinned declares".
+ *
+ * The PURPOSE is unchanged and must stay unchanged: a new studio var gets a deliberate decision here
+ * instead of being silently unbound. That is the #116 defect class, where the studio contract and the
+ * provisioner bind list drifted with nothing connecting them, and it surfaced only at a tenant FIRST
+ * RENDER as an opaque 500.
+ *
+ * Called at provision time against `built.requiredVars`, so an unknown var fails the provision
+ * loudly rather than producing a studio that is quietly missing something it reads.
+ */
+export function assertDispositionCoversContract(requiredVars: readonly string[]): void {
+  const undecided = requiredVars.filter((k) => !(k in TENANT_STUDIO_VAR_DISPOSITION));
+  if (undecided.length > 0) {
+    throw new Error(
+      `the pinned studio release declares ${undecided.length} var(s) with no disposition in ` +
+        `tenant-studio-env.ts: ${undecided.join(", ")}. Add each one with its reason ` +
+        `(provisioned / conditional / default / not-hosted) rather than leaving it unbound.`,
+    );
+  }
+}

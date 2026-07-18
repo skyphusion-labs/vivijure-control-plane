@@ -9,7 +9,14 @@
 import { describe, it, expect, vi } from "vitest";
 import { applyStudioMigrations, type StudioMigration } from "../src/migrate";
 import type { CfApi } from "../src/cf-api";
-import { STUDIO_MIGRATION_SET } from "../src/studio-migrations";
+// The studio migration set now rides the release artifact, so there is no module to import (cf#85).
+// This is a LOCAL fixture: applyStudioMigrations is what is under test here, and it cares about the
+// shape and the ordering, not about which specific schema it is handed.
+const STUDIO_MIGRATION_SET: readonly StudioMigration[] = [
+  { name: "0001_init.sql", sql: "CREATE TABLE IF NOT EXISTS projects (id TEXT);" },
+  { name: "0002_user_prefs.sql", sql: "CREATE TABLE IF NOT EXISTS user_prefs (k TEXT);" },
+  { name: "0003_cast_voice.sql", sql: "ALTER TABLE cast_members ADD COLUMN voice TEXT;" },
+];
 
 /**
  * A D1 fake that tracks which columns exist and REFUSES a duplicate ADD COLUMN, exactly as SQLite
@@ -124,7 +131,7 @@ describe("applyStudioMigrations", () => {
     // The bundled set is the thing that actually broke; run it, not just a miniature.
     const d1 = fakeD1();
     const first = await applyStudioMigrations(d1.cf, "db", STUDIO_MIGRATION_SET);
-    expect(first.applied).toEqual(STUDIO_MIGRATION_SET.map((m) => m.name));
+    expect(first.applied).toEqual(STUDIO_MIGRATION_SET.map((m: StudioMigration) => m.name));
 
     const second = await applyStudioMigrations(d1.cf, "db", STUDIO_MIGRATION_SET);
     expect(second.applied).toEqual([]);

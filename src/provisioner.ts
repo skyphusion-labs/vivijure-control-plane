@@ -21,7 +21,7 @@ import { randomToken } from "./crypto";
 import type { TenantR2Creds } from "./runpod";
 import type { ControlPlaneStore, Tenant } from "./store";
 import { decryptStudioToken, encryptStudioToken } from "./token-crypto";
-import { REQUIRED_TENANT_STUDIO_VARS } from "./tenant-studio-env";
+import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
 import type { TokenMinter } from "./token-minter";
 import type { ModuleBundleSource } from "./tenant-modules";
 import {
@@ -44,7 +44,25 @@ export const PROVISION_STEPS = [
   "modules_install",
   "verify",
 ] as const;
-export type ProvisionStep = (typeof PROVISION_STEPS)[number];
+/**
+ * PRECONDITIONS: named so a failure is attributable, but NOT members of PROVISION_STEPS.
+ *
+ * They create nothing, are never marked done, and are never resumed. Keeping them OUT of
+ * PROVISION_STEPS is load-bearing rather than tidy: `inferStep` maps `done.length` to a step BY
+ * INDEX, so inserting a precondition into that array would shift every inference by one and quietly
+ * mislabel every later failure. This was caught by the step-order test, which is exactly what it is
+ * there for.
+ *
+ * `bundle_fetch` exists because without it a bad release pin surfaced as `step: "d1_create"` (the
+ * inferStep default for an empty progress list), sending an operator to look at D1 quota when the
+ * real cause was the pinned tag or an empty mirror slot.
+ */
+export const PROVISION_PRECONDITIONS = ["bundle_fetch"] as const;
+
+export type ProvisionStep = (typeof PROVISION_STEPS)[number] | (typeof PROVISION_PRECONDITIONS)[number];
+
+/** The steps a job can actually RECORD as done. Preconditions are excluded by construction. */
+export type MarkableProvisionStep = (typeof PROVISION_STEPS)[number];
 
 /** One of the tenant's 4 RunPod endpoints, as Joan's screens render them. */
 export interface TenantEndpoint {
@@ -98,6 +116,24 @@ export interface StudioBundleSource {
      */
     assetsConfig?: Record<string, unknown>;
     assets?: { path: string; base64: string; contentType: string; hash: string; size: number }[];
+    /**
+     * The tenant D1 schema, carried BY the release (cf#85, manifest v1.3.1+).
+     *
+     * These used to be imported out of the vivijure-cf source tree at the control plane build time,
+     * which meant a tenant could get its SCHEMA from the control plane deploy commit and its WORKER
+     * from a pinned release tag: two different versions of the studio in one tenant. Sourcing both
+     * from the same pinned artifact makes that skew impossible.
+     *
+     * Apply order IS array order, and `name` is the tracking key recorded in the tenant
+     * schema_migrations table, so neither is cosmetic.
+     */
+    migrations: StudioMigration[];
+    /**
+     * The studio env var contract as of this release (ORCHESTRATOR_VAR_KEYS, manifest v1.3.1+).
+     * The provisioner binds these onto the tenant studio; deriving the census from the pinned
+     * artifact is what stops it drifting from what the studio actually reads.
+     */
+    requiredVars: string[];
   }>;
 }
 
@@ -213,12 +249,11 @@ export async function runProvisionJob(
   jobId: string,
   tenant: Tenant,
   runpodApiKey: string | null,
-  studioMigrations: readonly StudioMigration[],
   clock: ProvisionClock = realClock,
   budgetMs: number = PROVISION_INVOCATION_BUDGET_MS,
 ): Promise<ProvisionOutcome> {
   const startedAt = clock.now();
-  const done: ProvisionStep[] = [];
+  const done: MarkableProvisionStep[] = [];
 
   /**
    * Record a completed step, then YIELD if this invocation is out of budget (#112).
@@ -228,7 +263,7 @@ export async function runProvisionJob(
    * throw is caught below and turned into an honest "yielded", NOT a failure -- nothing is wrong,
    * we simply ran out of invocation.
    */
-  const mark = async (step: ProvisionStep) => {
+  const mark = async (step: MarkableProvisionStep) => {
     done.push(step);
     await deps.store.updateJobProgress(jobId, step, JSON.stringify(done));
     if (clock.now() - startedAt >= budgetMs) throw new ProvisionYield(step);
@@ -237,6 +272,44 @@ export async function runProvisionJob(
   try {
     await deps.store.setJobRunning(jobId);
     await deps.store.setTenantStatus(tenant.id, "provisioning");
+
+    // 0. The pinned release, fetched BEFORE anything is created (cf#85).
+    //
+    // It is a PRECONDITION, not a resumable step: read-only, creates nothing, and sits ahead of the
+    // point of no return with the other preconditions. Fetching it first means a bad or missing pin
+    // (wrong tag, empty mirror slot, a pre-v1.3.1 manifest with no migrations) fails with ZERO
+    // tenant resources created, instead of stranding a half-provisioned tenant with a live D1 that
+    // someone has to find and clean up by hand.
+    //
+    // It is also where the tenant D1 SCHEMA now comes from. It used to be imported out of the
+    // vivijure-cf source tree at OUR build time, so a tenant could take its schema from the control
+    // plane deploy commit and its worker from the pinned release: two studio versions in one tenant.
+    // Both now come from this one artifact, so that skew cannot exist.
+    //
+    // BUDGET: this read is not marked as a step, deliberately. If a slow mirror eats the invocation
+    // budget, the very next thing that runs is d1_create followed by its mark(), so the yield lands
+    // on a recorded boundary and the continuation story stays clean. There is no window where we
+    // burn the budget having marked nothing.
+    let built: Awaited<ReturnType<StudioBundleSource["fetch"]>>;
+    try {
+      built = await deps.bundle.fetch(deps.release);
+    } catch (e) {
+      // Name the real cause. The message is the source error verbatim (a tag mismatch, a missing
+      // manifest, a migration hash failure, a pre-v1.3.1 artifact), so the tenant-facing text says
+      // what is actually wrong with the pin instead of blaming the next thing that would have run.
+      throw new ProvisionFailure("bundle_fetch", String(e instanceof Error ? e.message : e));
+    }
+
+    // Every var the pinned release declares must have a deliberate disposition here. This is the
+    // #116 drift guard, relocated: it used to be a compile-time check against an imported studio
+    // constant, which is exactly the cross-repo import the extraction removes. Now it runs against
+    // the artifact we actually pinned, and it runs BEFORE anything is created, so an unknown var is
+    // a clean refusal rather than a tenant quietly missing something its studio reads.
+    try {
+      assertDispositionCoversContract(built.requiredVars);
+    } catch (e) {
+      throw new ProvisionFailure("bundle_fetch", String(e instanceof Error ? e.message : e));
+    }
 
     // 1. D1. Adopt-on-exists makes a re-run safe.
     const db = await deps.cf.createD1(tenantD1Name(tenant.slug));
@@ -247,7 +320,7 @@ export async function runProvisionJob(
     //    recorded per-migration in the schema_migrations table of the tenant D1 (#105). This step
     //    MUST tolerate an adopted, already-migrated D1: the previous unconditional replay assumed
     //    the files were all CREATE TABLE IF NOT EXISTS, and died on the first ALTER TABLE.
-    const migrated = await applyStudioMigrations(deps.cf, db.uuid, studioMigrations);
+    const migrated = await applyStudioMigrations(deps.cf, db.uuid, built.migrations);
     deps.log("d1.migrate", {
       tenant: tenant.id,
       applied: migrated.applied,
@@ -297,7 +370,8 @@ export async function runProvisionJob(
     await mark("runpod_endpoints");
 
     // 6. Upload the PUBLISHED studio release, unmodified. No hosted fork exists to drift.
-    const built = await deps.bundle.fetch(deps.release);
+    //    Already fetched at step 0; reused here rather than re-read, so the worker we upload and the
+    //    schema we applied are provably the same artifact and not two reads that could differ.
     let assetsJwt: string | undefined;
     if (built.assets?.length) assetsJwt = await uploadAssets(deps, tenant.slug, built.assets);
 
@@ -509,7 +583,7 @@ export async function continueProvisionJob(
 ): Promise<ProvisionOutcome> {
   const startedAt = clock.now();
   const done: ProvisionStep[] = PROVISION_STEPS.filter((s) => stepsDone.includes(s));
-  const mark = async (step: ProvisionStep) => {
+  const mark = async (step: MarkableProvisionStep) => {
     done.push(step);
     await deps.store.updateJobProgress(jobId, step, JSON.stringify(done));
     if (clock.now() - startedAt >= budgetMs) throw new ProvisionYield(step);

@@ -26,6 +26,8 @@ interface ReleaseManifest {
   worker: { path: string; sha256: string; size: number };
   assets_config?: Record<string, unknown>;
   assets: { path: string; hash: string; size: number; content_type: string }[];
+  migrations?: { name: string; sha256: string; size: number }[];
+  required_vars?: string[];
 }
 
 export function localStudioBundleSource(dir: string): StudioBundleSource {
@@ -47,6 +49,23 @@ export function localStudioBundleSource(dir: string): StudioBundleSource {
         throw new Error(`bundle integrity failure: sha256 ${sha} != manifest ${manifest.worker.sha256}`);
       }
 
+      // Mirrors the shipping r2StudioBundleSource checks (cf#85): refuse a pre-v1.3.1 artifact rather
+      // than provisioning a tenant with no schema, and verify each migration against its own hash.
+      if (!Array.isArray(manifest.migrations) || manifest.migrations.length === 0) {
+        throw new Error(`release ${release} carries no migrations; the control plane needs v1.3.1 or later`);
+      }
+      if (!Array.isArray(manifest.required_vars) || manifest.required_vars.length === 0) {
+        throw new Error(`release ${release} carries no required_vars; the control plane needs v1.3.1 or later`);
+      }
+      const migrations = manifest.migrations.map((m) => {
+        const mb = readFileSync(join(dir, "migrations", m.name));
+        const mSha = createHash("sha256").update(mb).digest("hex");
+        if (mSha !== m.sha256) {
+          throw new Error(`migration integrity failure for ${m.name}: sha256 ${mSha} != manifest ${m.sha256}`);
+        }
+        return { name: m.name, sql: mb.toString("utf8") };
+      });
+
       return {
         mainModule: manifest.main_module,
         moduleText: bytes.toString("utf8"),
@@ -62,6 +81,8 @@ export function localStudioBundleSource(dir: string): StudioBundleSource {
           hash: a.hash,
           size: a.size,
         })),
+        migrations,
+        requiredVars: manifest.required_vars,
       };
     },
   };

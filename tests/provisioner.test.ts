@@ -20,6 +20,11 @@ import { decryptStudioToken } from "../src/token-crypto";
 import { MemoryStore, recordingStore } from "./memory-store";
 import { expectProvisionFailure } from "./provision-assert";
 
+// The var contract the pinned release declares (cf#85). Every entry must have a disposition in
+// tenant-studio-env.ts or the provision refuses, so this fixture doubles as a check that the two
+// stay in step.
+const REQUIRED_VARS = ["AUTH_MODE", "R2_S3_ENDPOINT", "R2_S3_BUCKET"];
+
 const MIGRATIONS = [
   { name: "0001_init.sql", sql: "CREATE TABLE IF NOT EXISTS projects (id TEXT);" },
 ];
@@ -90,6 +95,8 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
         mainModule: "index.js",
         moduleText: "export default {}",
         compatibilityDate: "2026-06-01",
+        migrations: MIGRATIONS,
+        requiredVars: REQUIRED_VARS,
       })),
     },
     moduleBundle: {
@@ -146,7 +153,7 @@ describe("runProvisionJob", () => {
   it("runs the steps in order and parks at awaiting_invoke_key, not live", async () => {
     const t = await tenant();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    const res = await runProvisionJob(deps(), job.id, t, "rpa_keyA", MIGRATIONS);
+    const res = await runProvisionJob(deps(), job.id, t, "rpa_keyA");
 
     expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
     // NOT live: the studio exists but cannot render until key B lands.
@@ -162,7 +169,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res.ok).toBe(true);
 
     const createEndpoints = d.runpod.createEndpoints as ReturnType<typeof vi.fn>;
@@ -191,7 +198,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res.ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
@@ -227,7 +234,7 @@ describe("runProvisionJob", () => {
       }),
     });
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res).toMatchObject({ ok: false, step: "verify" });
     expect(store.tenants.get(t.id)?.status).toBe("failed");
   });
@@ -240,7 +247,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const rec = recordingStore(store);
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    await runProvisionJob(deps({ store: rec.store }), job.id, t, "rpa_KEY_A_MUST_NOT_PERSIST", MIGRATIONS);
+    await runProvisionJob(deps({ store: rec.store }), job.id, t, "rpa_KEY_A_MUST_NOT_PERSIST");
 
     expect(rec.journal.join("\n")).not.toContain("rpa_KEY_A_MUST_NOT_PERSIST");
     expect(JSON.stringify(logs)).not.toContain("rpa_KEY_A_MUST_NOT_PERSIST");
@@ -251,7 +258,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const rec = recordingStore(store);
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    await runProvisionJob(deps({ store: rec.store }), job.id, t, "rpa_keyA", MIGRATIONS);
+    await runProvisionJob(deps({ store: rec.store }), job.id, t, "rpa_keyA");
 
     expect(store.tenants.get(t.id)?.r2_token_id).toBe("tok-1"); // the id IS kept: teardown revokes by it
     expect(rec.journal.join("\n")).not.toContain("TOKEN_VALUE_SECRET");
@@ -262,7 +269,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     const upload = (d.cf.uploadUserWorker as unknown as { mock: { calls: [{ bindings: { name: string; bucket_name?: string }[] }][] } }).mock.calls[0][0];
     const r2 = upload.bindings.filter((b) => b.bucket_name);
@@ -274,7 +281,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    const res = await runProvisionJob(d, job.id, t, null, MIGRATIONS);
+    const res = await runProvisionJob(d, job.id, t, null);
 
     expect(res).toEqual({ ok: false, step: "runpod_endpoints", message: "runpod_key_required" });
     expect(d.runpod.createEndpoints).not.toHaveBeenCalled();
@@ -286,7 +293,7 @@ describe("runProvisionJob", () => {
     const quotaError = new CfApiError("d1.create", 400, [{ message: "workers.api.error.d1_quota_exceeded" }]);
     const d = deps({ cf: fakeCf({ createD1: vi.fn(async () => { throw quotaError; }) }) });
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     expect(res.ok).toBe(false);
     {
@@ -304,7 +311,7 @@ describe("runProvisionJob", () => {
     // is exactly the reads-safe-but-isn't trap; we ask the API what it actually built.
     const d = deps({ cf: fakeCf({ getScriptBindings: vi.fn(async () => [{ type: "d1", name: "DB" }]) }) });
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     expect(res.ok).toBe(false);
     {
@@ -321,7 +328,7 @@ describe("runProvisionJob", () => {
     const fresh = (await store.getTenantById(t.id))!;
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    await runProvisionJob(d, job.id, fresh, "rpa_keyA", MIGRATIONS);
+    await runProvisionJob(d, job.id, fresh, "rpa_keyA");
 
     expect(d.tokenMinter.revoke).toHaveBeenCalledWith("tok-old");
     expect(calls.indexOf("revokeToken")).toBeLessThan(calls.indexOf("mintR2Token"));
@@ -331,7 +338,7 @@ describe("runProvisionJob", () => {
   it("uses deterministic per-tenant resource names (idempotency depends on it)", async () => {
     const t = await tenant();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    await runProvisionJob(deps(), job.id, t, "rpa_keyA", MIGRATIONS);
+    await runProvisionJob(deps(), job.id, t, "rpa_keyA");
     expect(calls).toContain(`createD1:${tenantD1Name("hero")}`);
     expect(calls).toContain(`createR2:${tenantBucketName("hero")}`);
   });
@@ -415,6 +422,8 @@ describe("assets_config (the hosted-only parity defect, #77/#78)", () => {
           mainModule: "worker.js",
           moduleText: "export default {}",
           compatibilityDate: "2026-06-01",
+          migrations: MIGRATIONS,
+          requiredVars: REQUIRED_VARS,
           assetsConfig,
           assets: [{ path: "/index.html", base64: "eA==", contentType: "text/html", hash: "h1", size: 1 }],
         })),
@@ -432,7 +441,7 @@ describe("assets_config (the hosted-only parity defect, #77/#78)", () => {
     const t = await tenant();
     const d = withBundle({ html_handling: "none", run_worker_first: true });
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(uploadArg(d).assetsConfig).toEqual({ html_handling: "none", run_worker_first: true });
   });
 
@@ -443,7 +452,7 @@ describe("assets_config (the hosted-only parity defect, #77/#78)", () => {
     const t = await tenant();
     const d = withBundle({});
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(uploadArg(d).assetsConfig).toEqual({});
   });
 
@@ -451,7 +460,7 @@ describe("assets_config (the hosted-only parity defect, #77/#78)", () => {
     const t = await tenant();
     const d = withBundle(undefined);
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(uploadArg(d).assetsConfig).toBeUndefined();
   });
 });
@@ -470,7 +479,7 @@ describe("cf#99 tenant module bridge", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     const moduleUploads = uploads(d).filter((u) => u.namespace === "vivijure-tenant-modules");
     expect(moduleUploads.map((u) => u.scriptName).sort()).toEqual(
@@ -490,7 +499,7 @@ describe("cf#99 tenant module bridge", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     const byScript = new Map(
       uploads(d)
@@ -516,7 +525,7 @@ describe("cf#99 tenant module bridge", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     const studio = uploads(d).find((u) => u.namespace === "vivijure-tenants")!;
     const md = studio.bindings.find((b) => b.name === "MODULE_DISPATCH") as
@@ -530,7 +539,7 @@ describe("cf#99 tenant module bridge", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res.ok).toBe(true);
 
     const studioCalls = (d.callTenantStudio as ReturnType<typeof vi.fn>).mock.calls.map(
@@ -559,7 +568,7 @@ describe("cf#99 tenant module bridge", () => {
       }),
     });
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res).toMatchObject({ ok: false, step: "modules_install" });
     expect(expectProvisionFailure(res).message).toContain("conformance failed");
     expect(store.tenants.get(t.id)?.status).toBe("failed");
@@ -575,7 +584,7 @@ describe("cf#99 tenant module bridge", () => {
       }),
     });
     const job = await store.createProvisionJob("job_1", t.id, "provision");
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA", MIGRATIONS);
+    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res).toMatchObject({ ok: false, step: "verify" });
     expect(expectProvisionFailure(res).message).toContain("zero installed modules");
   });
