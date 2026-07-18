@@ -149,6 +149,19 @@ GET https://studio.vivijure.com/api/aup/current
 Full 40-character commit SHA, resolves 200, and the served bytes hash to exactly the advertised
 sha256. The rule was already being honoured.
 
+**Which refs count as moving:** `main`, `master`, `head`, `develop`, `trunk`, and any
+`refs/heads/` path -- matched case-insensitively, because `/blob/Main/` is the same moving ref as
+`/blob/main/`. That list is wider than the obvious two because a 16-case corpus driven through the
+real script found `develop`, `trunk`, and every case variant sailing through a glob that looked
+correct to two readers (2026-07-18).
+
+**Known, accepted limitation:** a directory literally *named* after a branch, under an otherwise
+pinned ref (`.../<sha>/develop/aup.md`), is refused as well. That is a false positive, and it fails
+closed and loudly -- the operator sees the error and renames the path. Refusing a safe URL costs
+seconds; accepting a moving one silently rewrites what an account agreed to. Distinguishing the two
+would need per-forge URL parsing, which is more machinery and more ways to be wrong than the case
+it rescues.
+
 **Consequence for the cf#85 extraction:** the pin resolves against vivijure-cf *history*, not its
 `main`, so removing the hosted legal set from vivijure-cf in phase 4 does **not** 404 the text any
 existing tenant already accepted. No fix is required before phase 4. The one thing that would break

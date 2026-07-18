@@ -82,11 +82,40 @@ check "AUP_URL on a moving ref (/main/) is refused" fail
 set_full_env; export AUP_URL="https://raw.githubusercontent.com/o/r/refs/heads/release/aup.md"
 check "AUP_URL on a moving ref (/refs/heads/) is refused" fail
 
+# The gaps a 16-case corpus found that reading the glob did not (Joan, 2026-07-18). Every one of
+# these was ACCEPTED by the first version of the guard, which looked correct to two readers.
+# Reproduced against the real script before patching, and watched flip from accepted to refused.
+set_full_env; export AUP_URL="https://raw.githubusercontent.com/o/r/raw/develop/aup.md"
+check "AUP_URL on a moving ref (/develop/) is refused" fail
+
+set_full_env; export AUP_URL="https://github.com/o/r/blob/trunk/aup.md"
+check "AUP_URL on a moving ref (/trunk/) is refused" fail
+
+set_full_env; export AUP_URL="https://github.com/o/r/blob/head/aup.md"
+check "AUP_URL on a moving ref (lowercase /head/) is refused" fail
+
+# Case variants: a branch ref is the same moving ref whatever its casing, and the original glob
+# was case-sensitive, so /Main/ and /HEAD/ sailed through while /main/ was caught.
+set_full_env; export AUP_URL="https://github.com/o/r/blob/Main/aup.md"
+check "AUP_URL case variant (/Main/) is refused" fail
+
+set_full_env; export AUP_URL="https://github.com/o/r/blob/HEAD/aup.md"
+check "AUP_URL case variant (/HEAD/) is refused" fail
+
 # ...and the shapes that MUST still be allowed, or the guard is just breaking deployments. A
 # self-hoster runs their own plane and hosts their own policy text wherever they like; the rule is
 # immutability, not a prescribed host.
 set_full_env; export AUP_URL="https://example.com/policies/aup-1.0.0.md"
 check "a self-hosted immutable AUP_URL is allowed" pass
+
+# The widened glob must not have started eating legitimate pins. Allow-side control for the
+# develop/trunk/head additions specifically: a guard that refuses everything passes every refusal
+# case above and is worthless.
+set_full_env; export AUP_URL="https://github.com/o/r/blob/v1.2.3/docs/aup.md"
+check "a TAG-pinned AUP_URL is allowed" pass
+
+set_full_env; export AUP_URL="https://raw.githubusercontent.com/o/r/8a5d96b4225d6154dceb3906d45d2ad0fb1a1841/docs/legal/hosted/aup/1.0.0.md"
+check "the live SHA-pinned AUP_URL is still allowed" pass
 
 # THE ALLOWLIST, both directions. These four are the ONLY values where empty is correct.
 set_full_env; export GOOGLE_OAUTH_CLIENT_ID="" GITHUB_OAUTH_CLIENT_ID="" APPLE_TEAM_ID="" APPLE_SERVICES_ID=""
