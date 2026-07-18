@@ -412,10 +412,22 @@ interface ModuleReadyBody {
  *                      the upload is wrong and no amount of waiting fixes it. Fails immediately --
  *                      spending the window on it would be pretending it might resolve.
  */
-export type ModuleReadyVerdict = "ready" | "not_visible_yet" | "no_ready_route" | "misconfigured";
+export type ModuleReadyVerdict = "ready" | "not_visible_yet" | "unverifiable" | "misconfigured";
 
-export function classifyReadyResponse(status: number, text: string): ModuleReadyVerdict {
-  if (status === 404) return "no_ready_route";
+/**
+ * `expectedModule` is checked against the manifest name the module ECHOES back. That echo is the
+ * only defence on the answering path against probing the WRONG script: script names are
+ * tenant-prefixed and derived, so a naming bug would otherwise read a healthy neighbour as proof
+ * that THIS module is ready. A mismatch is a hard failure, never a wait.
+ *
+ * On the 404 path there is no echo to check, and that is a limit worth stating plainly rather than
+ * papering over: a 404 means "no module answered GET /ready at this script name", which is a module
+ * image predating the endpoint OR a script that is not there at all. The two are INDISTINGUISHABLE
+ * from here, so the verdict is named `unverifiable` (not `no_ready_route`, which would assert the
+ * first reading) and the reported detail says both.
+ */
+export function classifyReadyResponse(status: number, text: string, expectedModule: string): ModuleReadyVerdict {
+  if (status === 404) return "unverifiable";
   if (status !== 200) return "misconfigured";
   let body: ModuleReadyBody;
   try {
@@ -425,6 +437,9 @@ export function classifyReadyResponse(status: number, text: string): ModuleReady
     // than reading a malformed body optimistically.
     return "misconfigured";
   }
+  // The echo has to MATCH. A module that answers as something else means we are talking to the wrong
+  // script, and treating its credentials as this module's would be a false pass of the worst kind.
+  if (typeof body.module !== "string" || body.module !== expectedModule) return "misconfigured";
   const creds = body.credentials;
   if (!creds || typeof creds.runpod_api_key !== "boolean" || typeof creds.runpod_endpoint_id !== "boolean") {
     return "misconfigured";
@@ -434,11 +449,18 @@ export function classifyReadyResponse(status: number, text: string): ModuleReady
   return "misconfigured";
 }
 
-/** One module that could not be PROVEN ready, and why. Reported, never swallowed. */
+/**
+ * One module that could not be PROVEN ready, and why. Reported per module, never swallowed and never
+ * collapsed into a single summary string: a mixed fleet (some modules answering, some not) has to
+ * name EVERY module that went unproven or the operator cannot act on it.
+ */
 export interface UnverifiedModule {
   module: string;
-  reason: "no_ready_route";
+  /** Deliberately not "no_ready_route": from a 404 we cannot tell WHICH cause it was. */
+  reason: "unverifiable";
   detail: string;
+  /** The script actually probed. Named so a wrong-script bug is diagnosable from the report alone. */
+  script: string;
 }
 
 /** The outcome the invoke-key route reports to the tenant. */
@@ -484,7 +506,7 @@ export async function awaitTenantModulesReady(
       pending.map(async (moduleName) => {
         const scriptName = tenantModuleScriptName(tenantId, moduleName);
         const res = await deps.callTenantModule(scriptName, "/ready");
-        return { moduleName, scriptName, res, verdict: classifyReadyResponse(res.status, res.text) };
+        return { moduleName, scriptName, res, verdict: classifyReadyResponse(res.status, res.text, moduleName) };
       }),
     );
     const elapsedMs = timing.now() - started;
@@ -493,13 +515,21 @@ export async function awaitTenantModulesReady(
     for (const r of results) {
       if (r.verdict === "ready") {
         verified.push(r.moduleName);
-      } else if (r.verdict === "no_ready_route") {
+      } else if (r.verdict === "unverifiable") {
         unverified.push({
           module: r.moduleName,
-          reason: "no_ready_route",
+          reason: "unverifiable",
+          script: r.scriptName,
+          // HONEST about the ambiguity: a 404 is "nothing answered /ready here". That is a module
+          // image predating the endpoint, OR a script that is not present under this name at all
+          // (a wrong-name or failed-upload bug). Nothing at this layer can tell the two apart -- the
+          // module echo that WOULD disambiguate only exists on an answering response -- so the
+          // detail must not assert the flattering reading.
           detail:
-            `${r.scriptName} does not serve GET /ready (it predates cf#114), so its credential ` +
-            "propagation could not be verified; re-provision against a release that carries it",
+            `${r.scriptName} did not answer GET /ready (404): either the module image predates the ` +
+            "endpoint, or no module is reachable under that script name. Credential propagation " +
+            "could not be verified either way; re-provision against a release that carries /ready, " +
+            "and if it still 404s the script is missing, not stale",
         });
       } else if (r.verdict === "misconfigured") {
         // NOT retryable. Failing now rather than spending the window pretending this might resolve

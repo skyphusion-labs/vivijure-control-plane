@@ -62,47 +62,51 @@ function fleet(answer: (module: string, attempt: number) => { status: number; te
 
 describe("classifyReadyResponse: the retryable shape, and ONLY it", () => {
   it("both credentials visible -> ready", () => {
-    expect(classifyReadyResponse(200, readyBody("keyframe", true, true))).toBe("ready");
+    expect(classifyReadyResponse(200, readyBody("keyframe", true, true), "keyframe")).toBe("ready");
   });
 
   it("endpoint present + key absent -> not_visible_yet (the ONE propagation shape)", () => {
-    expect(classifyReadyResponse(200, readyBody("keyframe", false, true))).toBe("not_visible_yet");
+    expect(classifyReadyResponse(200, readyBody("keyframe", false, true), "keyframe")).toBe("not_visible_yet");
   });
 
   it("endpoint ABSENT is a real defect, never a wait: the endpoint id is bound at UPLOAD", () => {
     // This is the case a lazy implementation would lump in with propagation and retry. It cannot
     // resolve by waiting -- if the endpoint id is missing the upload was wrong.
-    expect(classifyReadyResponse(200, readyBody("keyframe", false, false))).toBe("misconfigured");
-    expect(classifyReadyResponse(200, readyBody("keyframe", true, false))).toBe("misconfigured");
+    expect(classifyReadyResponse(200, readyBody("keyframe", false, false), "keyframe")).toBe("misconfigured");
+    expect(classifyReadyResponse(200, readyBody("keyframe", true, false), "keyframe")).toBe("misconfigured");
   });
 
-  it("404 -> no_ready_route (a module image that predates /ready), not a wait and not a pass", () => {
-    expect(classifyReadyResponse(404, "not found")).toBe("no_ready_route");
+  it("404 -> unverifiable: nothing answered, and we do NOT get to guess which reason", () => {
+    expect(classifyReadyResponse(404, "not found", "keyframe")).toBe("unverifiable");
   });
 
   it("any other status is a hard failure, not a race", () => {
     for (const status of [400, 401, 403, 429, 500, 502, 503]) {
-      expect(classifyReadyResponse(status, "boom")).toBe("misconfigured");
+      expect(classifyReadyResponse(status, "boom", "keyframe")).toBe("misconfigured");
     }
   });
 
   it("a 200 that is not the contract envelope is refused, never read optimistically", () => {
-    expect(classifyReadyResponse(200, "not json")).toBe("misconfigured");
-    expect(classifyReadyResponse(200, "{}")).toBe("misconfigured");
-    expect(classifyReadyResponse(200, JSON.stringify({ ok: true }))).toBe("misconfigured");
+    expect(classifyReadyResponse(200, "not json", "keyframe")).toBe("misconfigured");
+    expect(classifyReadyResponse(200, "{}", "keyframe")).toBe("misconfigured");
+    expect(classifyReadyResponse(200, JSON.stringify({ ok: true }), "keyframe")).toBe("misconfigured");
     // ok:true with no credentials block must NOT be believed: a module could claim ready without
     // reporting what it actually read.
-    expect(classifyReadyResponse(200, JSON.stringify({ ok: true, credentials: {} }))).toBe("misconfigured");
+    expect(classifyReadyResponse(200, JSON.stringify({ ok: true, module: "keyframe", credentials: {} }), "keyframe")).toBe("misconfigured");
     // Non-boolean credential fields (a truthy string) must not slip through as "true".
     expect(
-      classifyReadyResponse(200, JSON.stringify({ credentials: { runpod_api_key: "yes", runpod_endpoint_id: "yes" } })),
+      classifyReadyResponse(
+        200,
+        JSON.stringify({ module: "keyframe", credentials: { runpod_api_key: "yes", runpod_endpoint_id: "yes" } }),
+        "keyframe",
+      ),
     ).toBe("misconfigured");
   });
 });
 
 describe("awaitTenantModulesReady: happy path", () => {
   it("returns verified once every module reports both credentials, probing /ready on each script", async () => {
-    const { deps, calls } = fleet(() => ({ status: 200, text: readyBody("m", true) }));
+    const { deps, calls } = fleet((m) => ({ status: 200, text: readyBody(m, true) }));
     const { timing } = fakeTiming();
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
 
@@ -190,8 +194,8 @@ describe("awaitTenantModulesReady: TRUE NEGATIVES (the retry must never launder 
   });
 });
 
-describe("awaitTenantModulesReady: a module image that predates /ready (404)", () => {
-  it("does not hang and does not retry: it reports UNVERIFIED, honestly and by name", async () => {
+describe("awaitTenantModulesReady: nothing answers /ready at a script (404)", () => {
+  it("does not hang and does not retry: it reports UNVERIFIABLE, honestly and by name", async () => {
     const old = ALL[2];
     const { deps, calls } = fleet((m) =>
       m === old ? { status: 404, text: "not found" } : { status: 200, text: readyBody(m, true) },
@@ -203,7 +207,12 @@ describe("awaitTenantModulesReady: a module image that predates /ready (404)", (
     expect(calls).toHaveLength(ALL.length);
     expect(r.verified).not.toContain(old);
     expect(r.unverified).toEqual([
-      { module: old, reason: "no_ready_route", detail: expect.stringContaining("predates cf#114") },
+      {
+        module: old,
+        reason: "unverifiable",
+        script: tenantModuleScriptName(TENANT, old),
+        detail: expect.stringContaining("did not answer GET /ready"),
+      },
     ]);
     // The honest part: it is NOT reported as verified, so the caller cannot mistake it for proven.
     expect(r.verified.sort()).toEqual(ALL.filter((m) => m !== old).sort());
@@ -215,5 +224,97 @@ describe("awaitTenantModulesReady: a module image that predates /ready (404)", (
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
     expect(r.verified).toEqual([]);
     expect(r.unverified.map((u) => u.module).sort()).toEqual([...ALL].sort());
+  });
+});
+
+// The module ECHO is the only thing standing between "this module is ready" and "SOME module is
+// ready". Script names are tenant-prefixed and derived, so a naming bug reads a healthy neighbour as
+// proof about the wrong module unless the echo is checked.
+describe("classifyReadyResponse: the module echo must MATCH (wrong-script defence)", () => {
+  it("a perfectly healthy answer from the WRONG module is a hard failure, not a pass", () => {
+    expect(classifyReadyResponse(200, readyBody("own-gpu", true, true), "keyframe")).toBe("misconfigured");
+  });
+
+  it("a missing or non-string echo is refused rather than assumed to be the right module", () => {
+    expect(
+      classifyReadyResponse(200, JSON.stringify({ credentials: { runpod_api_key: true, runpod_endpoint_id: true } }), "keyframe"),
+    ).toBe("misconfigured");
+    expect(
+      classifyReadyResponse(200, JSON.stringify({ module: 7, credentials: { runpod_api_key: true, runpod_endpoint_id: true } }), "keyframe"),
+    ).toBe("misconfigured");
+  });
+
+  it("POSITIVE CONTROL: the same body with the RIGHT echo passes, so the check is not vacuous", () => {
+    expect(classifyReadyResponse(200, readyBody("keyframe", true, true), "keyframe")).toBe("ready");
+  });
+});
+
+describe("mixed fleets: every unproven module is named individually", () => {
+  it("names EACH unverified module, not a single summary, when several do not answer", async () => {
+    const silent = [ALL[1], ALL[3]];
+    const { deps } = fleet((m) =>
+      silent.includes(m) ? { status: 404, text: "not found" } : { status: 200, text: readyBody(m, true) },
+    );
+    const { timing } = fakeTiming();
+    const r = await awaitTenantModulesReady(deps, TENANT, timing);
+
+    expect(r.unverified.map((u) => u.module).sort()).toEqual([...silent].sort());
+    expect(r.verified.sort()).toEqual(ALL.filter((m) => !silent.includes(m)).sort());
+    // Each entry carries its OWN module, its OWN script, and its own detail naming that script --
+    // an operator has to be able to act per module, not on a collapsed summary string.
+    for (const u of r.unverified) {
+      expect(u.script).toBe(tenantModuleScriptName(TENANT, u.module));
+      expect(u.detail).toContain(u.script);
+    }
+    expect(new Set(r.unverified.map((u) => u.detail)).size).toBe(silent.length);
+  });
+
+  it("is HONEST that a 404 could be a missing script, not only a stale image", async () => {
+    // The wording is load-bearing. We cannot distinguish "predates /ready" from "no such script"
+    // from here, so the detail must not assert the flattering one.
+    const { deps } = fleet(() => ({ status: 404, text: "not found" }));
+    const { timing } = fakeTiming();
+    const r = await awaitTenantModulesReady(deps, TENANT, timing);
+    for (const u of r.unverified) {
+      expect(u.reason).toBe("unverifiable");
+      expect(u.detail).toMatch(/predates the endpoint/);
+      expect(u.detail).toMatch(/no module is reachable under that script name/);
+      // The detail must also tell the operator what to DO, and what a PERSISTENT 404 then means --
+      // naming both causes without saying how to tell them apart leaves the diagnosis unfinished.
+      expect(u.detail).toMatch(/re-provision against a release that carries \/ready/);
+      expect(u.detail).toMatch(/if it still 404s the script is missing, not stale/);
+    }
+  });
+});
+
+describe("unverified is STRUCTURALLY distinguishable from verified", () => {
+  it("no consumer can conflate the two by truthiness or by shape", async () => {
+    const old = ALL[0];
+    const { deps } = fleet((m) =>
+      m === old ? { status: 404, text: "not found" } : { status: 200, text: readyBody(m, true) },
+    );
+    const { timing } = fakeTiming();
+    const r = await awaitTenantModulesReady(deps, TENANT, timing);
+
+    // Different containers, different element TYPES. verified is a list of plain module names;
+    // unverified is a list of objects. A consumer cannot accidentally treat one as the other, and
+    // an unverified module can never appear in the verified list.
+    expect(r.verified.every((v) => typeof v === "string")).toBe(true);
+    expect(r.unverified.every((u) => typeof u === "object" && u !== null)).toBe(true);
+    expect(r.verified).not.toContain(old);
+    expect(r.verified.some((v) => r.unverified.some((u) => u.module === v))).toBe(false);
+
+    // And the truthiness trap specifically: a non-empty unverified list is TRUTHY, so any consumer
+    // testing "did anything go unproven" gets the right answer without inspecting elements.
+    expect(Boolean(r.unverified.length)).toBe(true);
+    expect(r.verified.length + r.unverified.length).toBe(ALL.length);
+  });
+
+  it("a fully-proven fleet reports an EMPTY unverified list, never a placeholder entry", async () => {
+    const { deps } = fleet((m) => ({ status: 200, text: readyBody(m, true) }));
+    const { timing } = fakeTiming();
+    const r = await awaitTenantModulesReady(deps, TENANT, timing);
+    expect(r.unverified).toEqual([]);
+    expect(Boolean(r.unverified.length)).toBe(false);
   });
 });

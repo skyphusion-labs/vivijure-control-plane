@@ -107,8 +107,13 @@ describe("installInvokeKey probes module readiness (cf#114)", () => {
       fullEnv({
         TENANT_MODULE_DISPATCH: dispatch((script, path) => {
           probed.push(`${script}${path}`);
+          // The echo must be the module this script IS, or the probe correctly refuses it as a
+          // wrong-script answer. Deriving it here keeps the fake honest to the real contract.
+          const module = TENANT_MODULE_CATALOG.map((s) => s.module).find((m) =>
+            script === tenantModuleScriptName(tenant.id, m),
+          )!;
           return new Response(
-            JSON.stringify({ ok: true, credentials: { runpod_api_key: true, runpod_endpoint_id: true } }),
+            JSON.stringify({ ok: true, module, credentials: { runpod_api_key: true, runpod_endpoint_id: true } }),
             { status: 200 },
           );
         }),

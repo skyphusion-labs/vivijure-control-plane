@@ -494,6 +494,63 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(JSON.stringify([...store.tenants.values()])).not.toContain("rpa_good");
   });
 
+  // cf#114: the readiness verdict has to REACH the caller. An operator reading the response must be
+  // able to tell "checked and fine" from "could not check" without inspecting nested fields.
+  it("surfaces a MIXED fleet honestly: modules_ready false, every unproven module named", async () => {
+    const { cookie } = await tenantReady(
+      JSON.stringify([{ key: "backend", label: "Render", id: "ep1", name: "vivijure-hero-backend" }]),
+    );
+    wiring.installInvokeKey.mockResolvedValueOnce({
+      verified: ["keyframe", "own-gpu"],
+      unverified: [
+        { module: "finish-upscale", reason: "unverifiable", script: "ten-abc123-finish-upscale", detail: "d1" },
+        { module: "speech-upscale", reason: "unverifiable", script: "ten-abc123-speech-upscale", detail: "d2" },
+      ],
+      attempts: 1,
+      elapsedMs: 30,
+    });
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    const body = (await res.json()) as {
+      modules_ready: boolean;
+      modules_verified: string[];
+      modules_unverified: { module: string }[];
+    };
+
+    expect(res.status).toBe(200);
+    // The key install genuinely succeeded, so the tenant IS live -- but readiness is not claimed.
+    expect(store.tenants.get("ten_abc123")?.status).toBe("live");
+    expect(body.modules_ready).toBe(false);
+    expect(body.modules_verified).toEqual(["keyframe", "own-gpu"]);
+    expect(body.modules_unverified.map((u) => u.module)).toEqual(["finish-upscale", "speech-upscale"]);
+  });
+
+  it("omits modules_unverified entirely when everything was PROVEN (no empty-array ambiguity)", async () => {
+    const { cookie } = await tenantReady(
+      JSON.stringify([{ key: "backend", label: "Render", id: "ep1", name: "vivijure-hero-backend" }]),
+    );
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.modules_ready).toBe(true);
+    expect("modules_unverified" in body).toBe(false);
+  });
+
   it("REFUSES (409 not_provisioned) when endpoints exist but the studio upload never completed", async () => {
     const { cookie } = await tenantReady('["ep1"]', null);
     const res = await handle(

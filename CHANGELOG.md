@@ -28,9 +28,15 @@ and the identical payload succeeded 45s later (cf#99 finale, run 5).
   leaves the tenant at `awaiting_invoke_key`.
 - **Budget-aware (cf#112 / cf#113):** one 10s deadline across ALL FIVE modules, probed concurrently
   per round, because this runs in a route a customer is waiting on. Not five sequential deadlines.
-- **A module image predating `/ready` (404) is reported UNVERIFIED, not failed and not passed.**
-  Hard-failing would mean a tenant on an older pin could no longer install a key at all. The invoke-
-  key response now carries `modules_ready` / `modules_verified` / `modules_unverified`.
+- **A 404 is reported `unverifiable`, not failed and not passed, and the cause is NOT guessed.**
+  Hard-failing would mean a tenant on an older pin could no longer install a key at all. But a 404
+  means "nothing answered here", which is a stale module image OR a missing script, and those are
+  indistinguishable from the control plane; the detail states both rather than asserting the
+  flattering one. The invoke-key response carries `modules_ready` / `modules_verified` /
+  `modules_unverified`, per module with its script, never collapsed into one summary.
+- **The `module` echo is checked** against the module being probed. Script names are tenant-prefixed
+  and derived, so without it a naming bug lets a healthy NEIGHBOUR answer and be read as proof about
+  the wrong module. A mismatch is a hard failure.
 
 ### `GET /api/platform/version`
 
