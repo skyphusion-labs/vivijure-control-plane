@@ -1,0 +1,146 @@
+/* Vivijure hosted front door (#58). Vanilla CSS, no preprocessor, no build step.
+ *
+ * The tokens below are copied deliberately from public/styles.css rather than
+ * imported: the hosted control plane is a SEPARATE worker with its own asset
+ * bundle and cannot reach the studio worker's stylesheet. Copying ~12 custom
+ * properties beats shipping 1300 lines of studio CSS to a signup page. If the
+ * studio palette moves, move these with it. */
+:root {
+  --bg: #0d0f14;
+  --panel: #151922;
+  --panel-2: #1b2130;
+  --line: #28303f;
+  --ink: #e7ecf4;
+  --muted: #8b95a7;
+  --accent: #4fd6c7;
+  --accent-2: #7c8cff;
+  --on: #3ddc97;
+  --warn: #f2c14e;
+  --bad: #ff6b6b;
+  --off: #4a5366;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: radial-gradient(1200px 600px at 80% -10%, #1a2030 0%, var(--bg) 55%);
+  color: var(--ink);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 22px; border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: baseline; gap: 10px; text-decoration: none; color: var(--ink); }
+.brand-name { font-weight: 800; letter-spacing: 0.16em; font-size: 16px; }
+.brand-mark {
+  width: 10px; height: 10px; border-radius: 3px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+.tag { color: var(--muted); text-transform: uppercase; letter-spacing: 0.22em; font-size: 11px; }
+.topbar-spacer { flex: 1; }
+
+.shell { max-width: 880px; margin: 0 auto; padding: 28px 22px 80px; display: grid; gap: 20px; }
+.panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; padding: 20px 22px;
+}
+h1 { font-size: 24px; margin: 0 0 6px; }
+h2 { font-size: 18px; margin: 0 0 10px; }
+h3 { font-size: 15px; margin: 18px 0 6px; }
+p { margin: 0 0 12px; }
+.lede { color: var(--muted); max-width: 66ch; line-height: 1.6; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+a { color: var(--accent); }
+
+/* Stepper: rendered from onboardingChecks.STEPS, never hand-listed. */
+.stepper { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.stepper li {
+  font-size: 12px; color: var(--off);
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 4px 11px; background: var(--panel-2);
+}
+.stepper li[data-state="current"] { color: var(--ink); border-color: var(--accent); }
+.stepper li[data-state="done"] { color: var(--on); border-color: var(--on); }
+
+.rows { display: grid; gap: 10px; margin: 0 0 14px; }
+.row {
+  border: 1px solid var(--line); border-radius: 11px;
+  padding: 12px 14px; background: var(--panel-2);
+}
+.row-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.row-name { font-weight: 700; font-size: 14px; }
+.row-meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.row-why { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+.row-image { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--off); }
+
+.callout {
+  border-left: 3px solid var(--accent); background: var(--panel-2);
+  border-radius: 0 10px 10px 0; padding: 12px 14px; margin: 0 0 14px;
+}
+.callout-warn { border-left-color: var(--warn); }
+.callout-bad { border-left-color: var(--bad); }
+.callout p:last-child { margin-bottom: 0; }
+.callout strong { color: var(--ink); }
+
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+button {
+  font: inherit; border-radius: 10px; padding: 9px 16px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--ink);
+}
+button.primary {
+  border-color: transparent; font-weight: 700; color: #06121a;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 6px; }
+input[type="password"], input[type="text"] {
+  width: 100%; font: inherit; color: var(--ink);
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+}
+.field-row { display: flex; gap: 8px; align-items: flex-start; }
+.field-row input { flex: 1; }
+.checkbox-row { display: flex; gap: 10px; align-items: flex-start; margin: 14px 0 0; }
+.checkbox-row input { margin-top: 3px; }
+.checkbox-row label { color: var(--ink); margin: 0; font-size: 14px; }
+
+.hint { font-size: 13px; margin: 8px 0 0; min-height: 1.2em; }
+.hint[data-level="ok"] { color: var(--on); }
+.hint[data-level="warn"] { color: var(--warn); }
+.hint[data-level="bad"] { color: var(--bad); }
+
+.progress { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.progress li {
+  display: flex; align-items: baseline; gap: 10px;
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; background: var(--panel-2); font-size: 14px;
+}
+.progress .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); flex: 0 0 auto; }
+.progress li[data-status="running"] .dot { background: var(--accent); }
+.progress li[data-status="done"] .dot { background: var(--on); }
+.progress li[data-status="failed"] .dot { background: var(--bad); }
+.progress .step-error {
+  display: block; margin-top: 4px; color: var(--bad); font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere;
+}
+
+.aup-embed { border: 1px solid var(--line); border-radius: 10px; padding: 14px; background: var(--panel-2); max-height: 260px; overflow-y: auto; }
+.placeholder-seam { border-style: dashed; border-color: var(--warn); }
+
+.mock-banner {
+  background: var(--warn); color: #1a1204; font-weight: 700; font-size: 13px;
+  padding: 8px 22px; text-align: center;
+}
+
+@media (max-width: 640px) {
+  .shell { padding: 18px 14px 60px; }
+  .panel { padding: 16px; }
+}

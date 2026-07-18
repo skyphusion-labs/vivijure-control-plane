@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Set up your studio -- Vivijure</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="favicon-16.png" type="image/png" sizes="16x16" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" sizes="180x180" />
+    <meta name="theme-color" content="#0E1730" />
+    <link rel="stylesheet" href="platform.css" />
+  </head>
+  <body>
+    <!-- Shown only when the page is running on mocked contract data (no control
+         plane wired yet). onboarding.js hides it the moment a real API base is
+         configured. Better a loud banner than a demo that quietly looks live. -->
+    <div class="mock-banner" id="mock-banner" hidden>
+      Preview: contract-mocked data, no control plane wired yet (#52 / #54).
+    </div>
+
+    <div class="mock-banner" id="signups-off" hidden>
+      Signups are closed right now. Nothing on this page will go through.
+    </div>
+
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Vivijure">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Vivijure</span>
+      </a>
+      <span class="tag">hosted studio</span>
+      <span class="topbar-spacer"></span>
+      <span class="muted small" id="account-email"></span>
+    </header>
+
+    <main class="shell">
+      <nav aria-label="Setup progress">
+        <ol class="stepper" id="stepper"></ol>
+      </nav>
+
+      <!-- STEP 1: what you get ------------------------------------------->
+      <section class="panel" data-step="what">
+        <h1>Your own studio, in about five minutes</h1>
+        <p class="lede">
+          We set up a complete Vivijure studio for you: you write a storyboard, and it renders to
+          video on real GPUs. You never install anything.
+        </p>
+
+        <div class="callout">
+          <p><strong>The GPUs are yours, not ours.</strong> We create four render endpoints on your
+          own RunPod account. You pay RunPod for the seconds you render, directly. We take no cut,
+          and there is no vivijure bill in this tier.</p>
+        </div>
+
+        <h3>What gets created on your RunPod account</h3>
+        <p class="small muted">
+          Nothing is created until you say go. You will see this exact list again, with your real
+          numbers, before anything happens.
+        </p>
+        <div class="rows" id="plan-preview" aria-live="polite">loading...</div>
+
+        <div class="callout">
+          <p><strong>Idle costs you $0.</strong> Every endpoint is scale-to-zero: when nothing is
+          rendering, nothing is running, and nothing is billed. Not "a few cents." Zero.</p>
+          <p class="small muted" id="cost-example">loading a real example...</p>
+        </div>
+
+        <div class="callout">
+          <p><strong>Hosted and self-host ship the same studio. Features never gate on payment.</strong></p>
+          <p class="small">You are not signing up for a limited edition. There is no paid tier with
+          more features, because there is no paid tier. The hosted door itself is open source, so
+          you can read exactly what we run, or run it yourself.
+          <a href="https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md">Install it yourself instead.</a></p>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="primary" data-next="what">Start setup</button>
+        </div>
+      </section>
+
+      <!-- STEP 2: the rules (AUP gate) ----------------------------------->
+      <section class="panel" data-step="rules" hidden>
+        <h2>The rules</h2>
+        <p class="lede">Short version: make films, do not make the things on the list.</p>
+
+        <!-- The AUP text is Ernst's and lives in ONE place: the control plane serves
+             { version, url } from GET /api/aup/current, pinned by AUP_VERSION, and the
+             acceptance records that exact version (#57, landed). This page never writes policy
+             prose and never resolves "latest". If the policy cannot be read, the gate below stays
+             shut: you should not be able to accept what you cannot read. -->
+        <div class="aup-embed" id="aup-text">
+          <p class="muted">Loading the policy...</p>
+        </div>
+
+        <div class="checkbox-row">
+          <input type="checkbox" id="accept-aup" />
+          <label for="accept-aup">I have read and accept the acceptable-use policy.</label>
+        </div>
+        <p class="hint" id="aup-error" data-level="bad" aria-live="assertive" hidden></p>
+
+        <div class="actions">
+          <button type="button" data-back="rules">Back</button>
+          <button type="button" class="primary" data-next="rules" disabled>Continue</button>
+        </div>
+      </section>
+
+      <!-- STEP 3: name it (the slug) -------------------------------------->
+      <section class="panel" data-step="name" hidden>
+        <h2>Name your studio</h2>
+        <p class="lede">
+          This becomes your studio's web address. Pick something you will not mind typing.
+        </p>
+
+        <label for="slug">Studio name</label>
+        <div class="field-row">
+          <input type="text" id="slug" autocomplete="off" spellcheck="false"
+                 placeholder="my-studio" aria-describedby="slug-hint" />
+        </div>
+        <p class="small muted" id="slug-preview" aria-live="polite"></p>
+        <p class="hint" id="slug-hint" data-level="" aria-live="polite"></p>
+        <p class="small muted">
+          Lowercase letters, numbers, and dashes. A few names are reserved for us.
+        </p>
+
+        <div class="actions">
+          <button type="button" data-back="name">Back</button>
+          <button type="button" class="primary" data-next="name" disabled>Continue</button>
+        </div>
+      </section>
+
+      <!-- STEP 4: the key ------------------------------------------------>
+      <section class="panel" data-step="key" hidden>
+        <h2>Your RunPod key</h2>
+        <p class="lede">
+          We need one key, once, to build your four endpoints. Then we are done with it and you can
+          delete it.
+        </p>
+
+        <h3>Make the key</h3>
+        <p>In your RunPod console, create an API key with the <strong>Restricted</strong> setting:</p>
+        <div class="rows">
+          <div class="row">
+            <div class="row-head"><span class="row-name">api.runpod.io/graphql</span>
+              <span class="row-meta">set to Read/Write</span></div>
+          </div>
+          <div class="row">
+            <div class="row-head"><span class="row-name">api.runpod.ai</span>
+              <span class="row-meta">leave at None</span></div>
+            <p class="row-why">This is the invoke surface. Setup does not need it.</p>
+          </div>
+        </div>
+        <p class="small">
+          <a href="https://console.runpod.io/user/settings" target="_blank" rel="noopener noreferrer">Open your RunPod key settings</a>
+          -- that is the smallest key that can still create endpoints. We checked it against the
+          real API rather than trusting the docs.
+        </p>
+
+        <div class="callout callout-warn">
+          <p><strong>Being straight with you: this key is powerful while it exists.</strong> RunPod
+          has no "may only create endpoints" permission, so a key that can create your four
+          endpoints can also create pods anywhere on your account. RunPod calls this level of
+          access "extremely powerful" themselves. There is no smaller key that does the job.</p>
+          <p class="small">So: we use it once, we hold it in memory only while we build, we never
+          store it, and the last screen walks you through deleting it. What your studio keeps
+          afterwards is a much weaker key that can only run jobs on your four endpoints (a 403 on
+          anything else, and it cannot change your settings at all).</p>
+        </div>
+
+        <label for="runpod-key">Paste your RunPod API key</label>
+        <div class="field-row">
+          <input type="password" id="runpod-key" autocomplete="off" spellcheck="false"
+                 placeholder="rpa_..." aria-describedby="key-hint" />
+          <button type="button" id="key-reveal" aria-pressed="false">Show</button>
+        </div>
+        <p class="hint" id="key-hint" data-level="" aria-live="polite"></p>
+
+        <div class="actions">
+          <button type="button" data-back="key">Back</button>
+          <button type="button" class="primary" data-next="key" disabled>Check my account</button>
+        </div>
+      </section>
+
+      <!-- STEP 4: capacity ----------------------------------------------->
+      <section class="panel" data-step="capacity" hidden>
+        <h2>Your account's real capacity</h2>
+        <p class="lede">
+          RunPod caps how many workers you can run at once, across your whole account. We read your
+          real number from RunPod instead of guessing it from their published balance chart, because
+          we have seen that chart be wrong.
+        </p>
+        <div id="capacity-result" aria-live="polite">checking with RunPod...</div>
+
+        <div class="actions">
+          <button type="button" data-back="capacity">Back</button>
+          <button type="button" class="primary" data-next="capacity" disabled>Continue</button>
+        </div>
+      </section>
+
+      <!-- STEP 5: review ------------------------------------------------->
+      <section class="panel" data-step="review" hidden>
+        <h2>Review, then we build</h2>
+        <p class="lede">This is everything we will create on your RunPod account. Last stop before
+          anything happens.</p>
+        <div class="rows" id="plan-review"></div>
+        <p class="small muted" id="plan-total"></p>
+
+        <div class="callout">
+          <p class="small">We pin the worker count on each endpoint ourselves rather than taking
+          RunPod's default of 3 each. Four endpoints at that default would ask for 12 workers and
+          fail on most accounts.</p>
+        </div>
+
+        <div class="checkbox-row">
+          <input type="checkbox" id="confirm-create" />
+          <label for="confirm-create">Create these endpoints on my RunPod account.</label>
+        </div>
+
+        <div class="actions">
+          <button type="button" data-back="review">Back</button>
+          <button type="button" class="primary" data-next="review" disabled>Build my studio</button>
+        </div>
+      </section>
+
+      <!-- STEP 6: build -------------------------------------------------->
+      <section class="panel" data-step="build" hidden>
+        <h2>Building your studio</h2>
+        <p class="lede">This takes a few minutes. If a step fails you get the real error, not a
+          shrug.</p>
+        <ol class="progress" id="build-progress"></ol>
+        <div class="actions">
+          <button type="button" class="primary" data-next="build" hidden id="build-continue">Continue</button>
+        </div>
+      </section>
+
+      <!-- STEP 7: the render key (key B) --------------------------------->
+      <section class="panel" data-step="invoke" hidden>
+        <h2>One more key, and this is the last one</h2>
+        <p class="lede">
+          Your four endpoints exist now. This second key is the one your studio keeps, and it can
+          only do one thing: run jobs on these four endpoints. Nothing else on your account.
+        </p>
+
+        <div class="callout">
+          <p><strong>Why twice?</strong> RunPod only lets you create keys in their console, and a
+          key can only be locked to endpoints that already exist. So the first key had to come
+          first to build them, and this one can only be made now. We would have merged these two
+          screens if RunPod let us.</p>
+        </div>
+
+        <h3>These are the four we just created</h3>
+        <p class="small muted">
+          Tick exactly these in the console, and set each to Read/Write. The names are here so you
+          can match them instead of guessing.
+        </p>
+        <div class="rows" id="created-endpoints" aria-live="polite">loading...</div>
+
+        <h3>The click path</h3>
+        <ol class="small muted" id="invoke-steps">
+          <li>Open your <a href="https://console.runpod.io/user/settings" target="_blank" rel="noopener noreferrer">RunPod key settings</a> and create a new API key.</li>
+          <li>Choose <strong>Restricted</strong>.</li>
+          <li>Set <strong>api.runpod.io/graphql</strong> to <strong>None</strong>. This is the part that matters: it is what stops this key from touching the rest of your account.</li>
+          <li>Set <strong>api.runpod.ai</strong> to <strong>Restricted</strong>, then give <strong>Read/Write</strong> to the four endpoints listed above, and nothing else.</li>
+          <li>Create it, and paste it below.</li>
+        </ol>
+
+        <label for="invoke-key">Paste your render key</label>
+        <div class="field-row">
+          <input type="password" id="invoke-key" autocomplete="off" spellcheck="false"
+                 placeholder="rpa_..." aria-describedby="invoke-hint" />
+          <button type="button" id="invoke-reveal" aria-pressed="false">Show</button>
+        </div>
+        <p class="hint" id="invoke-hint" data-level="" aria-live="polite"></p>
+        <div id="invoke-verdict" aria-live="polite"></div>
+
+        <div class="callout callout-warn">
+          <p class="small"><strong>We check this key before we keep it.</strong> We try your four
+          endpoints with it, and we try an account-level call that should fail. If it turns out to
+          be more powerful than it needs to be, we tell you and we do not store it.</p>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="invoke-check" class="primary">Check this key</button>
+          <button type="button" class="primary" data-next="invoke" disabled>Go live</button>
+        </div>
+      </section>
+
+      <!-- STEP 8: done --------------------------------------------------->
+      <section class="panel" data-step="done" hidden>
+        <h2>Your studio is live</h2>
+        <p class="lede">Go make something.</p>
+        <p><a id="studio-link" href="#" class="row-name">Open my studio</a></p>
+
+        <div class="callout callout-warn">
+          <p><strong>One last thing: delete the setup key.</strong> That is the first key you
+          pasted, the powerful one. We never stored it, and we are done with it. Delete it or
+          rotate it whenever you like; nothing here breaks, because your studio does not have it.</p>
+          <p class="small"><a href="https://console.runpod.io/user/settings" target="_blank" rel="noopener noreferrer">Delete it in your RunPod console</a>.</p>
+        </div>
+
+        <div class="callout">
+          <p><strong>What we keep, in full:</strong> your render key, and nothing else. It can start
+          and check jobs on your four endpoints. It cannot create anything, cannot touch the rest of
+          your RunPod account, and cannot even change those four endpoints' settings. If it leaked
+          tomorrow, the worst anyone could do is render films on your four endpoints.</p>
+        </div>
+
+        <div class="callout">
+          <p><strong>If you ever want out.</strong> Your storyboards and render history live in your
+          own database, and your films live in your own storage bucket. Delete your studio and we
+          offer you the export first: a SQL file and your files, yours to take. Your RunPod
+          endpoints were always yours.</p>
+          <p class="small"><a href="https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/hosted-tier.md">The full story: costs, keys, and how to leave</a></p>
+        </div>
+
+        <div class="callout callout-warn">
+          <p><strong>If you do not render for a week, RunPod puts your endpoints to sleep.</strong>
+          After 7 idle days it sets them to 0 max workers and leaves them there. Nothing is lost;
+          the number just needs raising. Your studio will spot this and tell you how to fix it
+          rather than failing a render with a confusing error.</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="onboarding-checks.js"></script>
+    <script src="onboarding.js"></script>
+  </body>
+</html>

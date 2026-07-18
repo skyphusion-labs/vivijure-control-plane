@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Vivijure Studio, hosted</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="favicon-16.png" type="image/png" sizes="16x16" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" sizes="180x180" />
+    <meta name="theme-color" content="#0E1730" />
+    <link rel="stylesheet" href="platform.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Vivijure">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Vivijure</span>
+      </a>
+      <span class="tag">hosted studio</span>
+      <span class="topbar-spacer"></span>
+      <span class="muted small" id="account-email"></span>
+      <button type="button" id="logout" class="icon-btn" hidden>Sign out</button>
+    </header>
+
+    <main class="shell">
+      <div id="auth-error" class="callout callout-bad" hidden>
+        <p id="auth-error-text"></p>
+      </div>
+
+      <!-- loading: never claim a state we have not read yet -->
+      <section class="panel" data-shell="loading">
+        <p class="muted">Loading...</p>
+      </section>
+
+      <!-- signed out -->
+      <section class="panel" data-shell="auth" hidden>
+        <h1>Your own AI film studio, without installing anything</h1>
+        <p class="lede">
+          Write a storyboard, render it to video on real GPUs. The GPUs are yours; we just run the
+          control panel. Sign in to start, or sign up: it is the same button.
+        </p>
+
+        <div class="callout">
+          <p><strong>Hosted and self-host ship the same studio. Features never gate on payment.</strong></p>
+          <p class="small">There is no paid tier, no credits, and no card. You bring a RunPod key and
+          pay RunPod for the seconds you render.
+          <a href="https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/hosted-tier.md">What this costs, exactly</a>
+          -- or <a href="https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md">install it yourself instead</a>.</p>
+        </div>
+
+        <div id="auth-methods" class="rows" aria-live="polite">
+          <p class="muted small">Loading sign-in options...</p>
+        </div>
+      </section>
+
+      <!-- magic-link sent: deliberately says the SAME thing for every address -->
+      <section class="panel" data-shell="link-sent" hidden>
+        <h2>Check your email</h2>
+        <p class="lede" id="link-sent-text">
+          If that address can sign in, a link is on its way. It works once and expires in 15 minutes.
+        </p>
+        <p class="small muted">
+          Nothing arrived? Check the spelling and the spam folder, then ask for another. We say the
+          same thing whether or not an account exists, so nobody can use this page to find out who
+          has one.
+        </p>
+        <div class="actions">
+          <button type="button" id="link-again">Use a different address</button>
+        </div>
+      </section>
+
+      <section class="panel" data-shell="signups-closed" hidden>
+        <h2>Signups are closed right now</h2>
+        <p class="lede">We are not taking new studios at the moment. Nothing you do on this page
+          will go through until that changes.</p>
+        <p class="small muted">
+          You can always
+          <a href="https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md">run
+          the whole thing yourself</a>: same studio, same features, no waiting on us. That is not a
+          consolation prize, it is the actual product.
+        </p>
+      </section>
+
+      <section class="panel" data-shell="aup" hidden>
+        <h2>One thing before you start</h2>
+        <p class="lede">You need to accept the acceptable-use policy before you can set up a studio.</p>
+        <div class="actions">
+          <a class="row-name" href="onboarding.html">Read it and continue</a>
+        </div>
+      </section>
+
+      <section class="panel" data-shell="onboarding" hidden>
+        <h2>Let's build your studio</h2>
+        <p class="lede">About five minutes. You will need a RunPod account with a payment method on
+          it, because the GPUs bill to you, not to us.</p>
+        <div class="actions">
+          <a class="row-name" href="onboarding.html">Start setup</a>
+        </div>
+      </section>
+
+      <section class="panel" data-shell="resume-key" hidden>
+        <h2>Almost there: one more key</h2>
+        <p class="lede">Your endpoints are built. Your studio needs its render key before it can go
+          live, and that key can only be made now that the endpoints exist.</p>
+        <div class="actions">
+          <a class="row-name" href="onboarding.html">Finish setup</a>
+        </div>
+      </section>
+
+      <section class="panel" data-shell="building" hidden>
+        <h2>We are building your studio</h2>
+        <p class="lede">This takes a few minutes. You can leave this page; it keeps going.</p>
+        <div class="actions">
+          <a class="row-name" href="onboarding.html">Watch the progress</a>
+        </div>
+      </section>
+
+      <section class="panel" data-shell="failed" hidden>
+        <h2>Setup did not finish</h2>
+        <p class="lede">Your studio is not live. We would rather tell you that plainly than show you
+          a dashboard that does not work.</p>
+        <div class="actions">
+          <a class="row-name" href="onboarding.html">See what happened</a>
+        </div>
+      </section>
+
+      <section class="panel" data-shell="studio" hidden>
+        <h2>Your studio is live</h2>
+        <p class="lede">Go make something.</p>
+        <p><a id="studio-link" class="row-name" href="#">Open my studio</a></p>
+        <div class="callout">
+          <p class="small">Your films and storyboards are yours, and leaving is a supported path.
+          <a href="https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/hosted-tier.md">How
+          the export works</a>.</p>
+        </div>
+      </section>
+
+      <section class="panel" data-shell="suspended" hidden>
+        <h2>Your studio is suspended</h2>
+        <p class="lede" id="suspended-reason">Your studio is not serving right now.</p>
+        <p class="small muted">Your data is not deleted. If you think this is a mistake, get in touch.</p>
+      </section>
+
+      <section class="panel" data-shell="deleted" hidden>
+        <h2>Your studio is gone</h2>
+        <p class="lede">This studio has been deleted, or is on its way out.</p>
+      </section>
+
+      <!-- A state we do not recognize is NEVER dressed up as a working one. -->
+      <section class="panel" data-shell="unknown" hidden>
+        <h2>We are not sure what state your studio is in</h2>
+        <p class="lede" id="unknown-detail">
+          Your studio reports a status we do not recognize, so we are not going to guess. Please tell
+          us about this rather than retrying.
+        </p>
+      </section>
+    </main>
+
+    <script src="front-door-checks.js"></script>
+    <script src="front-door.js"></script>
+  </body>
+</html>
