@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { invokeKeyVerdict } from "../public/onboarding-checks.js";
 import {
@@ -183,46 +183,17 @@ describe("CONTROL: the defect this replaced", () => {
   });
 });
 
-// The TRANSPORT seam. invokeKey() in onboarding.js is an IIFE and cannot be
-// imported, so this reimplements its three lines against a stubbed fetch to
-// prove the request shape and the status-plus-body handoff. It is a MIRROR, not
-// the shipped function: see the coverage note in the PR. What it genuinely
-// catches is a response the client cannot parse at all.
-describe("invoke-key transport: status and body reach the verdict intact", () => {
-  afterEach(() => vi.unstubAllGlobals());
-
-  const transport = async (tenantId: string, key: string) => {
-    const r = await fetch("https://cp.example/api/tenant/" + encodeURIComponent(tenantId) + "/invoke-key", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ runpod_invoke_key: key }),
-    });
-    const body = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-    return { status: r.status, body };
-  };
-
-  it("POSTs the key under the name the route reads, and hands 202 through unflattened", async () => {
-    const spy = vi.fn(async () => new Response(JSON.stringify(UNCONFIRMED), { status: 202 }));
-    vi.stubGlobal("fetch", spy);
-
-    const res = await transport("ten_abc123", "rpa_secret");
-    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toContain("/api/tenant/ten_abc123/invoke-key");
-    expect(init.method).toBe("POST");
-    // The route reads body.runpod_invoke_key; any other name is a silent 400.
-    expect(JSON.parse(String(init.body))).toEqual({ runpod_invoke_key: "rpa_secret" });
-
-    expect(res.status).toBe(202);
-    const v = invokeKeyVerdict(res.status, res.body);
-    expect(v.pending).toBe(true);
-    expect(v.clearKey).toBe(false);
-  });
-
-  it("a non-JSON body degrades to an honest failure, not a crash", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>502 Bad Gateway</html>", { status: 502 })));
-    const res = await transport("ten_abc123", "rpa_secret");
-    const v = invokeKeyVerdict(res.status, res.body);
-    expect(v.ok).toBe(false);
-    expect(v.message.length).toBeGreaterThan(0);
-  });
-});
+// The TRANSPORT seam used to be MIRRORED here: a reimplementation of the three
+// lines in invokeKey(), tested against a stubbed fetch, because onboarding.js
+// was one IIFE and the shipped function could not be imported. That mirror
+// asserted a copy of the code rather than the code, so it would have stayed
+// green while the shipped function drifted away from it.
+//
+// control-plane#31 moved the transport into public/onboarding-api.js behind the
+// same UMD wrapper this file already uses, and tests/onboarding-transport.test.ts
+// now drives the REAL invokeKey() with only fetch replaced. The mirror is gone
+// rather than kept alongside: two copies of the same assertion is how the
+// weaker one survives.
+//
+// This file keeps what it is actually good at: the PURE interpretation of every
+// response shape, which is where the customer-facing copy is decided.
