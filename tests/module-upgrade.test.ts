@@ -406,3 +406,29 @@ describe("upgradeTenantModules", () => {
     expect(calls).toEqual([]);
   });
 });
+
+// ---- per-step timing on the upgrade path (cp#18) ------------------------------------------------
+//
+// The instrumentation was added to all three drivers so the log shape is uniform. cp#18 is about
+// the PROVISION path, so this is deliberately one test: enough to prove the upgrade path emits the
+// same record under its own phase label, not a second full timing suite.
+describe("per-step timing on a module upgrade (cp#18)", () => {
+  it("emits provision.step under the module_upgrade phase", async () => {
+    const store = new MemoryStore();
+    const tenant = await seedLiveTenant(store);
+    const logs: { event: string; fields: Record<string, unknown> }[] = [];
+    const d = deps(store, { log: (event, fields) => void logs.push({ event, fields }) });
+    const job = await store.createModuleUpgradeJob("job_up", tenant.id, OLD_RELEASE, NEW_RELEASE);
+
+    const out = await upgradeTenantModules(d, job.id, tenant, await contextFor(d, tenant));
+
+    expect(out.ok).toBe(true);
+    const steps = logs.filter((l) => l.event === "provision.step");
+    expect(steps.length).toBeGreaterThan(0);
+    for (const s of steps) {
+      expect(s.fields.phase).toBe("module_upgrade");
+      expect(typeof s.fields.stepMs).toBe("number");
+      expect(typeof s.fields.elapsedMs).toBe("number");
+    }
+  });
+});
