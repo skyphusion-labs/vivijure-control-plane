@@ -112,4 +112,121 @@ describe("store-d1 statements execute against real SQLite", () => {
     const t = await store.getTenantBySlug("rehearsal");
     expect(t?.id).toBe("ten_1");
   });
+
+  // ---- the operator smoke-render spend guard (cp#45) --------------------------------------------
+  //
+  // THIS IS WHERE THE GUARD IS ACTUALLY TESTED. openSmokeRender is one conditional INSERT whose
+  // whole job is to refuse; a MemoryStore mirroring it proves only that I wrote the same rule twice.
+  // These drive the shipped statements against a real SQL engine, which is the only thing that can
+  // catch a predicate that parses but does not mean what it reads like.
+
+  const BOUNDS = { cooldownSeconds: 1800, dailyCap: 20, inFlightSeconds: 1200 };
+  /** Backdate a row so the time-based predicates are reachable without waiting. */
+  const backdate = (id: string, seconds: number) =>
+    db.prepare("UPDATE smoke_renders SET created_at = datetime('now', '-' || ?2 || ' seconds') WHERE id = ?1").run(id, seconds);
+
+  it("openSmokeRender inserts a real row (the INSERT ... SELECT ... WHERE ... RETURNING parses)", async () => {
+    const row = await store.openSmokeRender("smk_1", "ten_1", "v1.5.0", BOUNDS);
+    expect(row).toMatchObject({ id: "smk_1", tenant_id: "ten_1", status: "running", modules_release: "v1.5.0" });
+
+    // Read back through SQL, not through RETURNING: a statement that fabricated a row without
+    // committing would still fail here.
+    const back = db.prepare("SELECT status, artifact_sha256 FROM smoke_renders WHERE id = ?1").get("smk_1");
+    expect(back).toEqual({ status: "running", artifact_sha256: null });
+  });
+
+  it("REFUSES a second open while one is in flight, and writes nothing", async () => {
+    await store.openSmokeRender("smk_1", "ten_1", null, BOUNDS);
+    expect(await store.openSmokeRender("smk_2", "ten_1", null, BOUNDS)).toBeNull();
+    const n = db.prepare("SELECT COUNT(*) AS n FROM smoke_renders").get() as { n: number };
+    expect(n.n).toBe(1);
+  });
+
+  it("REFUSES inside the cooldown even once the first render is terminal", async () => {
+    await store.openSmokeRender("smk_1", "ten_1", null, BOUNDS);
+    await store.finishSmokeRender("smk_1", { status: "failed", error: "x" });
+    expect(await store.openSmokeRender("smk_2", "ten_1", null, BOUNDS)).toBeNull();
+  });
+
+  it("ALLOWS a new render once the cooldown has elapsed (the bound is a delay, not a lockout)", async () => {
+    await store.openSmokeRender("smk_1", "ten_1", null, BOUNDS);
+    await store.finishSmokeRender("smk_1", { status: "failed", error: "x" });
+    backdate("smk_1", BOUNDS.cooldownSeconds + 60);
+    expect(await store.openSmokeRender("smk_2", "ten_1", null, BOUNDS)).not.toBeNull();
+  });
+
+  it("stops blocking on an in-flight row that outlived the in-flight window", async () => {
+    await store.openSmokeRender("smk_1", "ten_1", null, BOUNDS);
+    // Still 'running', but old enough that it can no longer wedge the route for this tenant.
+    backdate("smk_1", BOUNDS.inFlightSeconds + BOUNDS.cooldownSeconds + 60);
+    expect(await store.openSmokeRender("smk_2", "ten_1", null, BOUNDS)).not.toBeNull();
+  });
+
+  it("enforces the PLATFORM-WIDE daily cap across different tenants", async () => {
+    await store.createTenant("ten_2", "other", "acct_1", "live");
+    const open = { cooldownSeconds: 0, dailyCap: 2, inFlightSeconds: 0 };
+    expect(await store.openSmokeRender("smk_1", "ten_1", null, open)).not.toBeNull();
+    expect(await store.openSmokeRender("smk_2", "ten_2", null, open)).not.toBeNull();
+    expect(await store.openSmokeRender("smk_3", "ten_2", null, open)).toBeNull();
+
+    // And a row older than the window stops counting against the cap.
+    backdate("smk_1", 86_400 + 60);
+    expect(await store.openSmokeRender("smk_4", "ten_2", null, open)).not.toBeNull();
+  });
+
+  it("names WHICH bound was hit, and says nothing when none was", async () => {
+    expect(await store.describeSmokeRenderRefusal("ten_1", BOUNDS)).toBeNull();
+
+    await store.openSmokeRender("smk_1", "ten_1", null, BOUNDS);
+    expect(await store.describeSmokeRenderRefusal("ten_1", BOUNDS)).toContain("already running");
+
+    await store.finishSmokeRender("smk_1", { status: "failed", error: "x" });
+    expect(await store.describeSmokeRenderRefusal("ten_1", BOUNDS)).toContain("cooldown");
+
+    backdate("smk_1", BOUNDS.cooldownSeconds + 60);
+    expect(await store.describeSmokeRenderRefusal("ten_1", { ...BOUNDS, dailyCap: 1 })).toContain("cap of 1");
+  });
+
+  it("records the submitted studio ids", async () => {
+    await store.openSmokeRender("smk_1", "ten_1", null, BOUNDS);
+    await store.setSmokeRenderSubmitted("smk_1", "film-123", "bundles/smoke.tar.gz");
+    expect(await store.getSmokeRender("smk_1")).toMatchObject({
+      studio_job_id: "film-123",
+      bundle_key: "bundles/smoke.tar.gz",
+    });
+  });
+
+  it("writes the whole artifact record on success, and finishes write-once", async () => {
+    await store.openSmokeRender("smk_1", "ten_1", null, BOUNDS);
+    await store.finishSmokeRender("smk_1", {
+      status: "succeeded",
+      artifact: { key: "clips/smoke1_keyframe.png", bytes: 12, sha256: "abc123", contentType: "image/png" },
+    });
+    expect(await store.getSmokeRender("smk_1")).toMatchObject({
+      status: "succeeded",
+      artifact_key: "clips/smoke1_keyframe.png",
+      artifact_bytes: 12,
+      artifact_sha256: "abc123",
+      artifact_content_type: "image/png",
+    });
+
+    // A late poll must not overwrite an outcome already recorded: the UPDATE is guarded on running.
+    await store.finishSmokeRender("smk_1", { status: "failed", error: "a later poll disagreeing" });
+    expect(await store.getSmokeRender("smk_1")).toMatchObject({ status: "succeeded", error_message: null });
+  });
+
+  it("records a failure with its reason", async () => {
+    await store.openSmokeRender("smk_1", "ten_1", null, BOUNDS);
+    await store.finishSmokeRender("smk_1", { status: "failed", error: "CUDA out of memory" });
+    expect(await store.getSmokeRender("smk_1")).toMatchObject({
+      status: "failed",
+      error_message: "CUDA out of memory",
+      artifact_sha256: null,
+    });
+  });
+
+  it("the smoke_renders table is really there and empty to start (control)", async () => {
+    const n = db.prepare("SELECT COUNT(*) AS n FROM smoke_renders").get() as { n: number };
+    expect(n.n).toBe(0);
+  });
 });

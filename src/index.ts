@@ -38,7 +38,14 @@ import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
 import { RECLAIM_LEASE_SECONDS } from "./store";
-import type { Account, Tenant, ProvisionJob } from "./store";
+import type { Account, Tenant, ProvisionJob, SmokeRender } from "./store";
+import {
+  advanceSmokeRender,
+  resolveSmokeRenderBounds,
+  sha256Hex,
+  SMOKE_RENDER_COVERAGE,
+  startSmokeRender,
+} from "./smoke-render";
 import { slugRejectionMessage, tenantEndpointIds, tenantView, validateSlug } from "./tenants";
 import { TenantModuleError, type ModuleReadiness } from "./tenant-modules";
 import { CONTROL_PLANE_VERSION } from "./version";
@@ -789,6 +796,131 @@ async function adminRoutes(
     return json({ job_id: job.id, from_release: tenant.modules_release, to_release: release }, 202);
   }
 
+  // ---- operator verification (cp#45) ------------------------------------------------------------
+  //
+  // WHY THESE ROUTES EXIST: our release standard is that nothing is verified until someone has
+  // looked at the actual output, and for a hosted tenant nobody could -- the only credential that
+  // drives a tenant studio is decryptable only inside this worker. Conrad ruled option (b): the
+  // plane submits a canonical smoke render on an operator request and hands back the ARTIFACT. No
+  // credential leaves the worker, and the render goes through THIS tenant's own door or not at all.
+  const smokeArtifact = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/smoke-render\/(smk_[a-f0-9]+)\/artifact$/.exec(path);
+  const smokeOne = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/smoke-render\/(smk_[a-f0-9]+)$/.exec(path);
+  const smokeStart = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/smoke-render$/.exec(path);
+
+  if (request.method === "POST" && smokeStart) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(smokeStart[1]);
+    if (!tenant) return err("not_found", 404);
+
+    // EVERY CHEAP REFUSAL BEFORE ANYTHING THAT COSTS GPU. A tenant that cannot render must be told
+    // so for free, not discovered halfway through a paid render.
+    if (tenant.suspended_at !== null) {
+      return err("tenant_suspended", 409, { message: "this tenant is suspended; nothing may be rendered on it" });
+    }
+    if (tenant.status !== "live") {
+      return err("tenant_not_live", 409, {
+        status: tenant.status,
+        message: "only a live tenant can render; a tenant that never finished provisioning has nothing to verify",
+      });
+    }
+    if (!tenant.script_name || !tenant.studio_token_enc) {
+      return err("tenant_not_addressable", 409, {
+        message: "this tenant has no studio script or no stored studio token, so it cannot be driven",
+      });
+    }
+
+    const smokeDeps = {
+      store: deps.store,
+      studio: deps.provisioner.smokeClient,
+      bounds: resolveSmokeRenderBounds(env),
+      log: (event: string, fields: Record<string, unknown>) => console.log("control-plane", { event, ...fields }),
+    };
+    const started = await startSmokeRender(smokeDeps, tenant, newId("smk"));
+
+    if (!started.ok && started.code === "spend_guard") {
+      // 429, not 403: this is a RATE decision, it is temporary, and the message names which bound
+      // was hit so the operator can decide whether to wait or to raise it deliberately.
+      return err("smoke_render_rate_limited", 429, { message: started.message, bounds: smokeDeps.bounds });
+    }
+    if (!started.ok) {
+      await deps.store.recordAdminAction(actor, "tenant.smoke_render_refused", tenant.id, started.message);
+      // 502: the refusal came from the tenant studio, not from us. The row is already recorded
+      // FAILED carrying the studio's own words.
+      return err("studio_refused", 502, {
+        smoke_render_id: started.smoke.id,
+        message: started.message,
+        coverage: SMOKE_RENDER_COVERAGE,
+      });
+    }
+
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.smoke_render",
+      tenant.id,
+      JSON.stringify({ smoke: started.smoke.id, studio_job: started.smoke.studio_job_id, modules_release: tenant.modules_release }),
+    );
+    // 202 without ok:true (cp#20): this has been ACCEPTED. Nothing is verified until the poll route
+    // has fetched the artifact, and a body claiming otherwise would be the exact lie cp#45 closes.
+    return json(smokeRenderView(started.smoke), 202);
+  }
+
+  if (request.method === "GET" && smokeOne) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const found = await loadSmokeRender(deps, smokeOne[1], smokeOne[2]);
+    if (!found) return err("not_found", 404);
+    const smokeDeps = {
+      store: deps.store,
+      studio: deps.provisioner.smokeClient,
+      bounds: resolveSmokeRenderBounds(env),
+      log: (event: string, fields: Record<string, unknown>) => console.log("control-plane", { event, ...fields }),
+    };
+    // The poll IS the engine here, same as the provision poll (#112): it drives the render forward,
+    // and it is the step that FETCHES the artifact rather than trusting a status field.
+    const advanced = await advanceSmokeRender(smokeDeps, found.tenant, found.smoke);
+    return json(smokeRenderView(advanced));
+  }
+
+  if (request.method === "GET" && smokeArtifact) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const found = await loadSmokeRender(deps, smokeArtifact[1], smokeArtifact[2]);
+    if (!found) return err("not_found", 404);
+    const { smoke, tenant } = found;
+    if (smoke.status !== "succeeded" || !smoke.artifact_key) {
+      return err("no_artifact", 409, { status: smoke.status, message: "this smoke render produced no verified artifact" });
+    }
+
+    // Re-fetched through the tenant's own door on every request rather than cached here: the
+    // control plane owns no tenant data and is not about to start by keeping copies of customer
+    // renders. The tenant credential still never leaves this worker.
+    const got = await deps.provisioner.smokeClient.fetchArtifact(tenant, smoke.artifact_key);
+    if (got.status !== 200 || !got.bytes) {
+      return err("artifact_unavailable", 502, {
+        message: `the tenant studio would not serve the artifact (HTTP ${got.status})`,
+      });
+    }
+    // INTEGRITY, not decoration: these are served as the bytes that were verified, so prove they
+    // still are. A mismatch means the object changed under us and the operator must not be handed
+    // it as though it were the verified artifact.
+    const sha = await sha256Hex(got.bytes);
+    if (sha !== smoke.artifact_sha256) {
+      return err("artifact_changed", 409, {
+        message: "the stored artifact no longer matches the bytes that were verified",
+        verified_sha256: smoke.artifact_sha256,
+        current_sha256: sha,
+      });
+    }
+    return new Response(got.bytes, {
+      headers: {
+        "content-type": got.contentType,
+        "content-length": String(got.bytes.byteLength),
+        "x-vivijure-smoke-sha256": sha,
+        // Operator-facing, never a browser surface: this is an admin-token route and the bytes are
+        // a customer's render.
+        "cache-control": "no-store",
+      },
+    });
+  }
+
   return err("not_found", 404);
 }
 
@@ -804,4 +936,61 @@ async function readJson(request: Request): Promise<unknown> {
 
 function redirectTo(env: ControlPlaneEnv, path: string, headers: Record<string, string> = {}): Response {
   return new Response(null, { status: 302, headers: { location: `${publicOrigin(env)}${path}`, ...headers } });
+}
+
+/**
+ * Resolve a smoke render THAT BELONGS TO THIS TENANT (cp#45).
+ *
+ * The tenant id in the path is not decoration: without this join a smoke render id would address a
+ * render on any tenant, and the artifact route would serve one customer's render off another
+ * customer's URL. 404 rather than 403 for a mismatch, same as the tenant routes -- an authorization
+ * error that confirms existence is an enumeration oracle.
+ */
+async function loadSmokeRender(
+  deps: ControlPlaneDeps,
+  tenantId: string,
+  smokeId: string,
+): Promise<{ tenant: Tenant; smoke: SmokeRender } | null> {
+  const smoke = await deps.store.getSmokeRender(smokeId);
+  if (!smoke || smoke.tenant_id !== tenantId) return null;
+  const tenant = await deps.store.getTenantById(tenantId);
+  if (!tenant) return null;
+  return { tenant, smoke };
+}
+
+/**
+ * The operator-facing projection of a smoke render.
+ *
+ * `verified` is the ONE summary field and it means exactly one thing: this worker fetched the
+ * artifact bytes and hashed them. It is derived from the presence of that evidence rather than from
+ * the status string, so there is no way to report verified:true for a render whose bytes nobody
+ * pulled. The coverage statement rides along on every response, because a green tick that does not
+ * state its limits is how "the modules answered" became "the modules render".
+ */
+function smokeRenderView(smoke: SmokeRender): Record<string, unknown> {
+  const verified = smoke.status === "succeeded" && smoke.artifact_sha256 !== null;
+  return {
+    smoke_render_id: smoke.id,
+    tenant_id: smoke.tenant_id,
+    status: smoke.status,
+    verified,
+    // WHICH module bytes produced these pixels. Without this the artifact answers "does it render",
+    // never "does THIS release render", which is the question a post-upgrade check is asking.
+    modules_release: smoke.modules_release,
+    studio_job_id: smoke.studio_job_id,
+    artifact: verified
+      ? {
+          key: smoke.artifact_key,
+          bytes: smoke.artifact_bytes,
+          sha256: smoke.artifact_sha256,
+          content_type: smoke.artifact_content_type,
+          // Where an operator goes to LOOK at it, which is the whole point of the issue.
+          url: `/api/admin/tenants/${smoke.tenant_id}/smoke-render/${smoke.id}/artifact`,
+        }
+      : null,
+    error_message: smoke.error_message,
+    created_at: smoke.created_at,
+    finished_at: smoke.finished_at,
+    coverage: SMOKE_RENDER_COVERAGE,
+  };
 }

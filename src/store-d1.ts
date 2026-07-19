@@ -13,6 +13,9 @@ import type {
   ProvisionJob,
   Session,
   SlugClaim,
+  SmokeRender,
+  SmokeRenderArtifact,
+  SmokeRenderBounds,
   Tenant,
   TenantLifecycle,
 } from "./store";
@@ -517,6 +520,128 @@ export class D1Store implements ControlPlaneStore {
     await this.db
       .prepare("INSERT INTO admin_audit (actor, action, target, detail) VALUES (?1, ?2, ?3, ?4)")
       .bind(actor, action, target, detail)
+      .run();
+  }
+
+  // ---- operator smoke renders (cp#45) -----------------------------------------------------------
+
+  /**
+   * The spend guard, as ONE statement. Every bound is in the WHERE clause of the INSERT itself, so
+   * SQLite's writer serializes two concurrent operator submits and exactly one of them creates a
+   * row. Splitting this into a read and a write would reintroduce the classic check-then-act hole,
+   * and here that hole costs GPU money rather than a duplicate record.
+   *
+   * The three bounds, in order:
+   *   1. no smoke render for this tenant is IN FLIGHT (bounded, so a lost poll cannot wedge it);
+   *   2. this tenant is past its COOLDOWN since the last submit;
+   *   3. the trailing-24h count across ALL tenants is under the DAILY CAP.
+   */
+  async openSmokeRender(
+    id: string,
+    tenantId: string,
+    modulesRelease: string | null,
+    bounds: SmokeRenderBounds,
+  ): Promise<SmokeRender | null> {
+    return await this.db
+      .prepare(
+        "INSERT INTO smoke_renders (id, tenant_id, modules_release) " +
+          "SELECT ?1, ?2, ?3 WHERE NOT EXISTS (" +
+          "SELECT 1 FROM smoke_renders WHERE tenant_id = ?2 AND status = 'running' " +
+          "AND created_at > datetime('now', '-' || ?6 || ' seconds')" +
+          ") AND NOT EXISTS (" +
+          "SELECT 1 FROM smoke_renders WHERE tenant_id = ?2 " +
+          "AND created_at > datetime('now', '-' || ?4 || ' seconds')" +
+          ") AND (" +
+          "SELECT COUNT(*) FROM smoke_renders WHERE created_at > datetime('now', '-86400 seconds')" +
+          ") < ?5 RETURNING *",
+      )
+      .bind(id, tenantId, modulesRelease, bounds.cooldownSeconds, bounds.dailyCap, bounds.inFlightSeconds)
+      .first<SmokeRender>();
+  }
+
+  /**
+   * The LEGIBLE half. Deliberately a separate read: it can disagree with the INSERT under a race,
+   * and that is fine, because it never authorizes anything. Ordered most-specific first so an
+   * operator is told the nearest bound rather than the broadest one.
+   */
+  async describeSmokeRenderRefusal(tenantId: string, bounds: SmokeRenderBounds): Promise<string | null> {
+    const inFlight = await this.db
+      .prepare(
+        "SELECT id FROM smoke_renders WHERE tenant_id = ?1 AND status = 'running' " +
+          "AND created_at > datetime('now', '-' || ?2 || ' seconds') LIMIT 1",
+      )
+      .bind(tenantId, bounds.inFlightSeconds)
+      .first<{ id: string }>();
+    if (inFlight) return `a smoke render is already running for this tenant (${inFlight.id})`;
+
+    const recent = await this.db
+      .prepare(
+        "SELECT created_at FROM smoke_renders WHERE tenant_id = ?1 " +
+          "AND created_at > datetime('now', '-' || ?2 || ' seconds') ORDER BY created_at DESC LIMIT 1",
+      )
+      .bind(tenantId, bounds.cooldownSeconds)
+      .first<{ created_at: string }>();
+    if (recent) {
+      return (
+        `this tenant had a smoke render at ${recent.created_at}; the cooldown is ` +
+        `${bounds.cooldownSeconds}s and it has not elapsed`
+      );
+    }
+
+    const day = await this.db
+      .prepare("SELECT COUNT(*) AS n FROM smoke_renders WHERE created_at > datetime('now', '-86400 seconds')")
+      .first<{ n: number }>();
+    if ((day?.n ?? 0) >= bounds.dailyCap) {
+      return `the platform-wide smoke-render cap of ${bounds.dailyCap} per 24h has been reached`;
+    }
+    return null;
+  }
+
+  async getSmokeRender(id: string): Promise<SmokeRender | null> {
+    return await this.db.prepare("SELECT * FROM smoke_renders WHERE id = ?1").bind(id).first<SmokeRender>();
+  }
+
+  async setSmokeRenderSubmitted(id: string, studioJobId: string, bundleKey: string): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE smoke_renders SET studio_job_id = ?2, bundle_key = ?3, updated_at = datetime('now') " +
+          "WHERE id = ?1",
+      )
+      .bind(id, studioJobId, bundleKey)
+      .run();
+  }
+
+  /**
+   * Terminal write, guarded on status = 'running' so a late poll cannot overwrite an outcome an
+   * earlier poll already recorded. Two operators polling the same smoke render is normal.
+   */
+  async finishSmokeRender(
+    id: string,
+    outcome: { status: "succeeded"; artifact: SmokeRenderArtifact } | { status: "failed"; error: string },
+  ): Promise<void> {
+    if (outcome.status === "succeeded") {
+      await this.db
+        .prepare(
+          "UPDATE smoke_renders SET status = 'succeeded', artifact_key = ?2, artifact_bytes = ?3, " +
+            "artifact_sha256 = ?4, artifact_content_type = ?5, updated_at = datetime('now'), " +
+            "finished_at = datetime('now') WHERE id = ?1 AND status = 'running'",
+        )
+        .bind(
+          id,
+          outcome.artifact.key,
+          outcome.artifact.bytes,
+          outcome.artifact.sha256,
+          outcome.artifact.contentType,
+        )
+        .run();
+      return;
+    }
+    await this.db
+      .prepare(
+        "UPDATE smoke_renders SET status = 'failed', error_message = ?2, updated_at = datetime('now'), " +
+          "finished_at = datetime('now') WHERE id = ?1 AND status = 'running'",
+      )
+      .bind(id, outcome.error)
       .run();
   }
 }
