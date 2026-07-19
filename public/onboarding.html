@@ -54,15 +54,18 @@
 
         <h3>What gets created on your RunPod account</h3>
         <p class="small muted">
-          Nothing is created until you say go. You will see this exact list again, with your real
-          numbers, before anything happens.
+          A representative example. Nothing is created until you say go, and you will see this exact
+          list again with your account's real numbers at the review step, before anything happens.
         </p>
-        <div class="rows" id="plan-preview" aria-live="polite">loading...</div>
+        <!-- Rendered from checks.REPRESENTATIVE_PLAN by renderRepresentativePlan(), synchronously and
+             with NO network call. The empty div is the pre-JS state, not a spinner: there is no fetch
+             to wait on, so nothing sits "loading". -->
+        <div class="rows" id="plan-preview" aria-live="polite"></div>
 
         <div class="callout">
           <p><strong>Idle costs you $0.</strong> Every endpoint is scale-to-zero: when nothing is
           rendering, nothing is running, and nothing is billed. Not "a few cents." Zero.</p>
-          <p class="small muted" id="cost-example">loading a real example...</p>
+          <p class="small muted" id="cost-example"></p>
         </div>
 
         <div class="callout">

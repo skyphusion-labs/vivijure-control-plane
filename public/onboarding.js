@@ -59,7 +59,7 @@
     confirmed: false,
     invokeVerified: false,
     plan: [],
-    costExample: null,
+    planError: null,
     studioUrl: null,
     createdEndpoints: [],
     tenantId: null,
@@ -121,17 +121,31 @@
     });
   }
 
-  // Renders the plan rows. Reads ONLY from the data: an endpoint added to the
-  // plan grows a row here with no change to this function.
-  function renderPlan(container, opts) {
+  // Renders the plan rows from the endpoints it is HANDED. Reads only the data:
+  // an endpoint added to the array grows a row here with no change to this
+  // function. The caller chooses the source -- the intro passes the
+  // representative example, the review step passes the fetched real plan -- so
+  // the two render identically from one code path.
+  function renderPlan(container, endpoints, opts) {
     const el = typeof container === "string" ? $(container) : container;
     if (!el) return;
+    const rows = endpoints || [];
     el.innerHTML = "";
-    if (!state.plan.length) {
-      el.innerHTML = '<p class="muted small">No plan loaded.</p>';
+    if (!rows.length) {
+      // An empty plan on the REVIEW step means the real fetch failed or has not
+      // landed. Say which, honestly. The intro never reaches this branch: it is
+      // handed a non-empty representative example.
+      const msg = (opts && opts.errorMessage)
+        ? "Could not load the setup plan: " + opts.errorMessage
+        : "No plan loaded.";
+      const pEl = document.createElement("p");
+      pEl.className = opts && opts.errorMessage ? "hint" : "muted small";
+      if (opts && opts.errorMessage) pEl.dataset.level = "bad";
+      pEl.textContent = msg;
+      el.appendChild(pEl);
       return;
     }
-    state.plan.forEach(function (ep) {
+    rows.forEach(function (ep) {
       const row = document.createElement("div");
       row.className = "row";
 
@@ -204,10 +218,12 @@
     });
   }
 
-  function renderCostExample() {
+  // The intro cost line. Takes the example it renders so it never depends on a
+  // fetch: the figure is a real, dated render from our history (representative),
+  // and the account sees its own spend in the studio after the first render.
+  function renderCostExample(ex) {
     const el = $("#cost-example");
     if (!el) return;
-    const ex = state.costExample;
     if (!ex) { el.textContent = ""; return; }
     const ceiling = checks.costCeilingUsd(ex.wall_clock_ms, ex.gpu_hourly_usd);
     const money = checks.formatUsd(ceiling);
@@ -221,6 +237,18 @@
       ex.gpu_hourly_usd + "/hr, that costs you at most " + money +
       ". Probably less: that clock includes queue and model-load time, and RunPod bills you for " +
       "active GPU seconds. Your studio shows your real spend after the first render.";
+  }
+
+  // The intro renders a REPRESENTATIVE example immediately, with NO network
+  // call. The real plan lives behind a session, so fetching it here 401d a
+  // signed-out visitor: a red error in the plan box and a cost line stuck on
+  // "loading a real example" forever. This shows a clearly-labelled stand-in
+  // instead; the account sees its real numbers at the Review step, which is
+  // past the sign-in and where the live plan is fetched.
+  function renderRepresentativePlan() {
+    const rep = checks.REPRESENTATIVE_PLAN || { endpoints: [], cost_example: null };
+    renderPlan("#plan-preview", rep.endpoints);
+    renderCostExample(rep.cost_example);
   }
 
   function renderCapacity() {
@@ -288,18 +316,19 @@
   }
 
   // ---- flow -------------------------------------------------------------
+  // Fetch the REAL plan for the steps that need it (capacity fit, the review
+  // rows and total). This runs once the flow BEGINS -- never on the intro --
+  // because the route needs a session, so a load here cannot 401 a signed-out
+  // visitor on the landing page. A failure is recorded and surfaced at Review,
+  // where the numbers are due, and nowhere else.
   async function loadPlan() {
     try {
       const data = await PlatformApi.plan();
       state.plan = (data && data.endpoints) || [];
-      state.costExample = (data && data.cost_example) || null;
-      renderPlan("#plan-preview");
-      renderCostExample();
+      state.planError = null;
     } catch (err) {
-      const el = $("#plan-preview");
-      if (el) el.innerHTML = '<p class="hint" data-level="bad"></p>';
-      const hint = el && el.querySelector(".hint");
-      if (hint) hint.textContent = "Could not load the setup plan: " + err.message;
+      state.plan = [];
+      state.planError = err.message;
     }
   }
 
@@ -816,13 +845,18 @@
           return;
         }
 
+        // Leaving the intro is where the flow truly begins, so this is where the
+        // real plan is fetched -- past the landing page, ready well before the
+        // capacity and review steps that read it.
+        if (from === "what" && !state.plan.length) loadPlan();
+
         const idx = checks.stepIndex(from);
         const next = checks.STEPS[idx + 1];
         if (!next) return;
         show(next.key);
 
         if (next.key === "capacity") runCapacityCheck();
-        if (next.key === "review") { renderPlan("#plan-review"); renderTotal(); }
+        if (next.key === "review") { renderPlan("#plan-review", state.plan, { errorMessage: state.planError }); renderTotal(); }
         if (next.key === "build") runProvision();
       });
     });
@@ -872,7 +906,7 @@
     show("what");
     refreshGates();
     loadConfig();
-    loadPlan();
+    renderRepresentativePlan();
     loadAup();
   }
 
