@@ -33,6 +33,30 @@ compatibility_flags = ["nodejs_compat"]
 preview_urls = false
 workers_dev = false
 
+# --- Observability (Workers Logs) ---
+#
+# Turns on Workers Logs for this Worker: invocation summaries, status, timings, and console output,
+# retained 7 days and queryable from the dashboard Observability tab and the CF obs query API.
+# Included on both Free and Paid; we are Paid (20M events/month included, then $0.60/million).
+#
+# head_sampling_rate = 1 is EXPLICIT, not a default worth leaving implicit. The control plane is a
+# LOW-volume Worker (signup, admin, provisioning) whose interesting events are rare and individually
+# important -- a provision failure or an admin action is exactly the line you cannot afford to have
+# been sampled away. Measured constellation volume is ~150k events/month against a 20M allowance
+# (see docs/observability.md in vivijure-cf), so full-rate capture here costs nothing and sampling
+# would buy nothing.
+#
+# SCOPE NOTE: this block is the CF-side surface only. It does NOT ship logs to the self-hosted
+# Loki/Grafana; that path is a tail consumer (tail_consumers -> vivijure-tail -> LOKI_VPC), and it is
+# deliberately NOT wired here. A tail_consumers entry naming OUR vivijure-tail Worker would be a
+# DANGLING BINDING for any other operator -- `wrangler deploy` FAILS outright on a tail consumer that
+# does not exist, and unlike vivijure-cf (whose deploy.sh strips SELFHOST-SKIP blocks) this repo
+# renders its config with scripts/render-wrangler.sh, which has no such stripping seam. Wiring the
+# Loki leg here therefore needs that seam built first; tracked separately.
+[observability]
+enabled = true
+head_sampling_rate = 1
+
 # The front-door UI (Joan, #58). Deliberately a SEPARATE bundle from public/ (the studio frontend
 # that ships to every self-hoster): the hosted door is ours, the studio is everyone's.
 #
