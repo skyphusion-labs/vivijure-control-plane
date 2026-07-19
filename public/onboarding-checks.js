@@ -45,6 +45,46 @@
     { key: "done", title: "Done" },
   ];
 
+  // A REPRESENTATIVE example for the INTRO, shown before anyone signs in.
+  //
+  // The intro must render with ZERO network calls. The real provisioning plan
+  // lives behind a session (GET /api/tenant/provision-plan requires auth), so a
+  // signed-out visitor whose intro fetched it got a 401 painted red into the
+  // plan box and a cost line stuck forever on "loading a real example". This is
+  // the fix: the intro renders THIS instead, clearly labelled representative,
+  // and the REAL numbers for the account appear at the Review step, which is
+  // past the sign-in and where the live plan is fetched.
+  //
+  // "Representative" is honest, not invented: the endpoints are the actual
+  // product composition (the same four every tenant gets, not per-account or
+  // secret), and the cost figure is a real, dated render from our own history.
+  // The intro is a projection of THIS constant the same way the review screen
+  // is a projection of the fetched plan; neither hardcodes a per-feature
+  // section. Keep the fields in step with the PlannedEndpoint shape the review
+  // rows read, so the two render identically.
+  const REPRESENTATIVE_PLAN = {
+    endpoints: [
+      { key: "backend", label: "backend", purpose: "The main render: keyframes, video, and cast LoRA training", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "H200 / B200" },
+      { key: "upscale", label: "upscale", purpose: "Makes finished video sharper", image: "ghcr.io/skyphusion-labs/vivijure-upscale", max_workers: 1, gpu: "RTX 6000 Pro" },
+      { key: "lipsync", label: "lipsync", purpose: "Matches mouth movement to dialogue", image: "ghcr.io/skyphusion-labs/vivijure-musetalk", max_workers: 1, gpu: "RTX 6000 Pro" },
+      { key: "audio-upscale", label: "audio-upscale", purpose: "Cleans up and sharpens audio", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", max_workers: 1, gpu: "RTX 6000 Pro" },
+    ],
+    // A real, named render from our own history (film-2294a9d7, 2026-07-14: 2
+    // shots, 10s of finished video, final quality). wall_clock_ms is wall-clock
+    // since submit, so the derived cost is a CEILING and is labelled as one
+    // wherever it is shown. Provenance travels WITH the number so a reader can
+    // audit it.
+    cost_example: {
+      job_id: "film-2294a9d7-d994-4807-8ed8-301a8e2fd796",
+      rendered_on: "2026-07-14",
+      description: "a 2-shot film, 10 seconds of finished video, final quality",
+      wall_clock_ms: 362857,
+      gpu_hourly_usd: 4.39,
+      gpu_label: "H200 secure",
+      rate_checked_on: "2026-07-17",
+    },
+  };
+
   // RunPod re-issued its API keys in 2024-11 with an `rpa_` prefix; older keys
   // carry different permission semantics and cannot express the Restricted
   // graphql-R/W shape this flow asks for (spike delta 4). This is a courtesy
@@ -551,6 +591,7 @@
 
   return {
     STEPS: STEPS,
+    REPRESENTATIVE_PLAN: REPRESENTATIVE_PLAN,
     KEY_PREFIX: KEY_PREFIX,
     keyShapeHint: keyShapeHint,
     slugHint: slugHint,

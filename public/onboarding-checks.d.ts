@@ -69,6 +69,28 @@ export interface OnboardingState {
 }
 
 export const STEPS: OnboardingStep[];
+
+/** The dated, real render cited by the intro cost line. wall_clock_ms is a
+ *  ceiling (see costCeilingUsd), and every field travels so the number can be
+ *  audited. */
+export interface RepresentativeCostExample {
+  job_id: string;
+  rendered_on: string;
+  description: string;
+  wall_clock_ms: number;
+  gpu_hourly_usd: number;
+  gpu_label: string;
+  rate_checked_on: string;
+}
+
+/** The static, clearly-labelled example the INTRO renders with no network
+ *  call. The real plan is fetched later, behind the sign-in, for the Review
+ *  step. See REPRESENTATIVE_PLAN in onboarding-checks.js for why. */
+export interface RepresentativePlan {
+  endpoints: PlannedEndpoint[];
+  cost_example: RepresentativeCostExample;
+}
+export const REPRESENTATIVE_PLAN: RepresentativePlan;
 export const KEY_PREFIX: string;
 
 export function keyShapeHint(raw: string | null | undefined): KeyShapeHint;
