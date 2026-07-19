@@ -136,8 +136,13 @@ describe("store-d1 statements execute against real SQLite", () => {
   });
 
   it("REFUSES a second open while one is in flight, and writes nothing", async () => {
-    await store.openSmokeRender("smk_1", "ten_1", null, BOUNDS);
-    expect(await store.openSmokeRender("smk_2", "ten_1", null, BOUNDS)).toBeNull();
+    // COOLDOWN ZEROED DELIBERATELY. With the default cooldown this test passed even when the
+    // in-flight predicate was deleted outright -- the cooldown was doing the refusing and the
+    // assertion could not tell. A mutation pass caught that: an assertion that cannot fail for the
+    // reason it names is not testing the thing in its own title.
+    const noCooldown = { ...BOUNDS, cooldownSeconds: 0 };
+    await store.openSmokeRender("smk_1", "ten_1", null, noCooldown);
+    expect(await store.openSmokeRender("smk_2", "ten_1", null, noCooldown)).toBeNull();
     const n = db.prepare("SELECT COUNT(*) AS n FROM smoke_renders").get() as { n: number };
     expect(n.n).toBe(1);
   });

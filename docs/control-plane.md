@@ -505,3 +505,83 @@ identity is an operator/CI fact with a different audience and different cache se
 it in is how a config endpoint turns into a junk drawer. Unauthenticated, like the config route: the
 version of an AGPL codebase whose tags are public is not a secret, and a version you need a
 credential to read is useless to the monitoring that needs it most.
+
+## Watching a hosted tenant actually render (cp#45)
+
+Our release standard is that nothing is verified until someone has looked at the actual output. For
+a hosted tenant that standard was **not performable by anyone**, and that gap is the reason this
+route exists.
+
+The tenant studio serves its root publicly but 403s every API path. The control plane reaches it
+over `env.TENANT_DISPATCH` -- a Workers for Platforms dispatch binding, not the public internet --
+with `authorization: Bearer <studioApiToken>`, and that token is `tenants.studio_token_enc`,
+decryptable only with the worker KEK. An operator with full D1 read access holds the ciphertext and
+nothing usable. So every hosted module release to date rested on install-and-probe evidence (the
+module ANSWERED) and never once on observed pixels.
+
+Conrad ruled **option (b)**: the plane submits the render itself. **No credential leaves the
+worker.** Option (a), issuing an operator-usable tenant credential, was rejected -- it would create
+a standing credential class able to drive a customer studio, to be custodied forever, for something
+we do a few times per release.
+
+### The three routes
+
+| Route | What it does |
+| --- | --- |
+| `POST /api/admin/tenants/:id/smoke-render` | Opens a smoke render, builds the canonical bundle and submits it. `202` with the row, or `429` when a spend bound refuses. |
+| `GET /api/admin/tenants/:id/smoke-render/:smk` | Drives it. This is the call that FETCHES the artifact and decides whether anything is verified. |
+| `GET /api/admin/tenants/:id/smoke-render/:smk/artifact` | Streams the bytes back through the plane, so an operator can LOOK at them. |
+
+All three are behind the existing admin bearer. Note that `adminRoutes` checks the bearer BEFORE
+matching a path, so **every** `/api/admin/*` string returns 401 unauthenticated, including routes
+that do not exist: a 401 here is never evidence that a route is wired.
+
+### phase=done is not a pass
+
+The poll does not believe a status field. It reads the studio's `COMPLETED`, takes the keyframe key
+out of the output, **fetches those bytes back through this worker**, and records their size, mime
+and sha256. A `COMPLETED` job that names no keyframe, whose key will not fetch, or whose body is
+zero bytes is recorded **FAILED**. `verified` in the response is derived from the presence of that
+fetched evidence, not from the status string, so there is no path that reports `verified: true` for
+bytes nobody pulled. The artifact route re-hashes on every serve and answers `409 artifact_changed`
+if the object no longer matches what was verified.
+
+### The spend guard
+
+This route costs GPU by definition. Four things bound it, and the first is the strongest:
+
+1. **The payload is canonical.** The route takes a tenant id and nothing else. One scene, one shot,
+   `keyframesOnly`, so the studio skips motion, finish, assemble and mux entirely. There is no
+   scene count, duration, tier or model knob an operator could turn into a film's worth of GPU.
+2. **Per-tenant cooldown** (`SMOKE_RENDER_COOLDOWN_SECONDS`, default 1800).
+3. **Platform-wide daily cap** across all tenants (`SMOKE_RENDER_DAILY_CAP`, default 20).
+4. **One in flight per tenant** (`SMOKE_RENDER_INFLIGHT_SECONDS`, default 1200), bounded rather than
+   infinite so a smoke render whose poll never returned cannot wedge the route forever.
+
+Bounds 2 to 4 live in the `WHERE` clause of **one conditional INSERT**, so the WRITE authorizes and
+two concurrent operator submits cannot both pass. The read that produces the human-readable refusal
+is advisory only. A blank env var is treated as ABSENT, never as a deliberate zero.
+
+**What the guard does NOT bound, stated plainly:** it bounds INVOCATIONS, not dollars -- it has no
+idea what a keyframe costs, and a cold GPU costs more than a warm one. It does not bound a tenant's
+own rendering, which is theirs to spend. It cannot cancel a job already handed to RunPod. And it
+does not stop an operator who deliberately waits out the cooldown; it makes repeat renders a
+decision rather than a reflex, which is what a guard on an authenticated operator route can do.
+
+### What a green smoke render proves, and what it does not
+
+Returned in `coverage` on every response, because a green tick that does not state its own limits is
+exactly how "the modules answered" became "the modules render".
+
+**Proves:** this tenant's own studio accepted an authenticated submit over its dispatch binding;
+this tenant's own keyframe module ran on RunPod under this tenant's own invoke key; the bytes were
+fetched back, sized and hashed; and they came from the module bytes recorded in `modules_release`
+on the row.
+
+**Does not prove:** that any OTHER module renders (this exercises the keyframe hook only); the
+motion, dialogue, speech, finish, assemble, master or mux stages; anything about image quality (the
+artifact is measured, never judged); or that a tenant's own end-to-end film submit works.
+
+Rendering through a **non-tenant door stays rejected**. It would produce a satisfying artifact that
+answers a different question -- that the modules render somewhere, not that THIS tenant's upgraded
+modules render. An honest hole beats a number that looks like proof.
