@@ -404,7 +404,7 @@ export class D1Store implements ControlPlaneStore {
     const row = await this.db
       .prepare(
         "INSERT INTO provision_jobs (id, tenant_id, kind, status, from_release, to_release) " +
-          "VALUES (?1, ?2, module_upgrade, queued, ?3, ?4) RETURNING *",
+          "VALUES (?1, ?2, 'module_upgrade', 'queued', ?3, ?4) RETURNING *",
       )
       .bind(id, tenantId, fromRelease, toRelease)
       .first<ProvisionJob>();
