@@ -372,6 +372,11 @@ async function tenantRoutes(
       const driven = await driveJobIfNeeded(ctx, deps, tenant, job);
       if (driven) job = driven;
       return json({
+        // WHICH KIND OF JOB THIS IS (cp#43). Without it every other field here is ambiguous: a
+        // "failed" with a step name reads identically whether a provision died or a module upgrade
+        // did, and those have opposite recovery procedures (retry the provision vs re-run the
+        // upgrade at from_release). It is also the field that makes the release pair below legible.
+        kind: job.kind,
         status: job.status,
         step: job.step,
         steps_done: JSON.parse(job.steps_done) as string[],
@@ -379,6 +384,21 @@ async function tenantRoutes(
         // tenant reads exactly that, not "provisioning failed".
         error_step: job.error_step,
         error_message: job.error_message,
+        // THE RELEASE PAIR (cp#43). 0006_module_upgrade.sql tells an operator facing a NULL
+        // modules_release to "consult the job row", and until now that instruction pointed at a
+        // table no route reported: the only way to learn the previous release was reading prod D1
+        // with a separately minted credential, which is what a rehearsal actually had to do.
+        //
+        // from_release is the whole point. The upgrade NULLs tenants.modules_release before its
+        // first upload, so after a partial failure THIS ROW is the only place the previous release
+        // still exists, and re-running the upgrade at from_release IS the documented rollback.
+        // Reporting to_release beside it makes the row read as an intent (R_old -> R_new) rather
+        // than a bare target. NULL on every non-upgrade kind, which is honest rather than absent.
+        from_release: job.from_release,
+        to_release: job.to_release,
+        // When it stopped. NULL while it is still running, which distinguishes "in flight" from
+        // "finished and this is the terminal state" without inferring it from status.
+        finished_at: job.finished_at,
       });
     }
 

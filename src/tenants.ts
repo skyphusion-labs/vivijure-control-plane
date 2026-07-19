@@ -58,6 +58,15 @@ export interface TenantView {
   status: TenantStatus;
   url: string | null;
   studio_release: string | null;
+  /**
+   * The release whose MODULE bytes this tenant runs, or NULL (cp#43).
+   *
+   * Projected alongside studio_release because they are a PAIR, and withholding one half is what
+   * made the other half unreadable. NULL here is load-bearing, not "unknown legacy row": per
+   * 0006_module_upgrade.sql it means "not known to be uniformly at any one release; consult the job
+   * row". Callers must not render it as a version; render it as "consult the job".
+   */
+  modules_release: string | null;
   created_at: string;
   live_at: string | null;
   suspended_reason: string | null;
@@ -76,6 +85,10 @@ export function tenantView(tenant: Tenant, domainSuffix: string): TenantView {
     // suspended tenant gets no URL either, whatever its lifecycle says.
     url: tenant.status === "live" && !suspended ? `https://${tenant.slug}${domainSuffix}` : null,
     studio_release: tenant.studio_release,
+    // NOT gated on status or suspension, unlike url. A URL is withheld because a dead link is a
+    // lie; a release is a FACT about the bytes installed, and it stays true (and stays needed for
+    // diagnosis) whatever the lifecycle says.
+    modules_release: tenant.modules_release,
     created_at: tenant.created_at,
     live_at: tenant.live_at,
     suspended_reason: tenant.suspended_reason,
