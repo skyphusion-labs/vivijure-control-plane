@@ -614,11 +614,116 @@ describe("POST /api/tenant/provision", () => {
     expect(after?.d1_database_id).toBe("db-old");
   });
 
+  // cp#43: the job row is where a failed module upgrade keeps the ONLY surviving copy of the
+  // previous release (the upgrade NULLs tenants.modules_release before its first upload), and
+  // 0006_module_upgrade.sql instructs an operator to "consult the job row". These assert that
+  // instruction is now performable through the API rather than only through prod D1.
+  describe("GET /api/tenant/:id/job -- reports the job row, not a summary of it", () => {
+    async function accepted() {
+      const s = await signedIn();
+      await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
+      return s;
+    }
+
+    it("carries the release PAIR and the kind for a FAILED module upgrade (the rollback path)", async () => {
+      const s = await accepted();
+      await store.createTenant("ten_abc123", "hero", s.account.id, "live");
+      await store.createModuleUpgradeJob("job_up1", "ten_abc123", "v1.0.0", "v1.1.0");
+      await store.finishJob("job_up1", "failed", "modules", "module 4 upload exploded");
+
+      const res = await handle(req("/api/tenant/ten_abc123/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(res.status).toBe(200);
+      expect(body.kind).toBe("module_upgrade");
+      expect(body.status).toBe("failed");
+      // The whole point: without this an operator cannot learn what to re-run the upgrade at.
+      expect(body.from_release).toBe("v1.0.0");
+      expect(body.to_release).toBe("v1.1.0");
+      expect(body.error_message).toBe("module 4 upload exploded");
+      expect(body.finished_at).not.toBeNull();
+    });
+
+    it("reports the pair as NULL on a PROVISION job rather than omitting the fields", async () => {
+      // Absent and null are different answers. A caller that has to distinguish "no release pair
+      // because this kind has none" from "the field was not sent" is back to guessing.
+      const s = await accepted();
+      // A queued provision job IS driven by this poll, and the wiring stub has no resume, so arm it
+      // or the route 500s on a TypeError instead of answering.
+      (wiring as unknown as { resume: unknown }).resume = vi.fn(async () => {});
+      await store.createTenant("ten_dd0001", "other", s.account.id, "provisioning");
+      await store.createProvisionJob("job_p1", "ten_dd0001", "provision");
+
+      const res = await handle(req("/api/tenant/ten_dd0001/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(body.kind).toBe("provision");
+      expect(Object.keys(body).sort()).toEqual([
+        "error_message", "error_step", "finished_at", "from_release", "kind", "status", "step",
+        "steps_done", "to_release",
+      ]);
+      expect(body.from_release).toBeNull();
+      expect(body.to_release).toBeNull();
+      expect(body.finished_at).toBeNull();
+    });
+  });
+
   it("404s another account's tenant rather than 403 (no existence oracle)", async () => {
     await store.createTenant("ten_someoneelse", "theirs", "acct_other", "live");
     const { cookie } = await ready();
     const res = await handle(req("/api/tenant/ten_someoneelse/job", { headers: { cookie } }), env(), ctx, deps);
     expect(res.status).toBe(404);
+  });
+});
+
+// ---- the poll drives PROVISION jobs only (found while building cp#43) --------------------------
+//
+// FOUND, NOT DESIGNED: reading the job route for cp#43 showed driveJobIfNeeded has no `kind` check,
+// while claimJob matches any kind and a module_upgrade job is created `queued` with a NULL lease.
+// So a tenant polling their own job page during an admin module upgrade wins the claim and starts
+// continueProvisionJob against a LIVE tenant. That path ends with setTenantStatus("awaiting_invoke_key"),
+// which routingStatusFor treats as non-routable: the customer goes 503 on the path where the upgrade
+// SUCCEEDS. upgradeTenantModules documents at length that it must never write tenants.status for
+// exactly this reason; the poll reached around it.
+describe("GET /api/tenant/:id/job -- drives PROVISION jobs only", () => {
+  const armResume = () => {
+    const resume = vi.fn(async () => {});
+    (wiring as unknown as { resume: unknown }).resume = resume;
+    return resume;
+  };
+
+  // The AUP gate sits in front of every tenant route, so a signed-in session alone reads 403 here.
+  async function accepted() {
+    const s = await signedIn();
+    await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    return s;
+  }
+
+  it("NEVER hands a module_upgrade job to the provision driver (that would take a live tenant dark)", async () => {
+    const resume = armResume();
+    const s = await accepted();
+    await store.createTenant("ten_abc123", "hero", s.account.id, "live");
+    await store.createModuleUpgradeJob("job_up1", "ten_abc123", "v1.0.0", "v1.1.0");
+
+    const res = await handle(req("/api/tenant/ten_abc123/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    await flush();
+
+    // The job is still readable: refusing to DRIVE it is not refusing to REPORT it.
+    expect(res.status).toBe(200);
+    expect(resume).not.toHaveBeenCalled();
+    expect((await store.getTenantById("ten_abc123"))?.status).toBe("live");
+  });
+
+  it("POSITIVE CONTROL: it DOES drive a provision job, so the guard above is not passing vacuously", async () => {
+    const resume = armResume();
+    const s = await accepted();
+    await store.createTenant("ten_dd0001", "other", s.account.id, "provisioning");
+    await store.createProvisionJob("job_p1", "ten_dd0001", "provision");
+
+    await handle(req("/api/tenant/ten_dd0001/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    await flush();
+
+    expect(resume).toHaveBeenCalledWith("job_p1", expect.objectContaining({ id: "ten_dd0001" }), []);
   });
 });
 
