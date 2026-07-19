@@ -21,7 +21,10 @@ import { TenantModuleError } from "../src/tenant-modules";
 // going green against a contract this route no longer serves -- the defect that shipped twice.
 // expectExactKeys is deliberately NOT toMatchObject: a subset match cannot see a field appear or
 // disappear, which is precisely the drift being guarded.
-import { LIVE_KEYS, LIVE_UNVERIFIED_KEYS, UNCONFIRMED_KEYS, expectExactKeys } from "./invoke-key-shapes";
+import {
+  LIVE_KEYS, LIVE_UNVERIFIED_KEYS, UNCONFIRMED_KEYS, MESSAGE_MUST_SAY, READINESS_CLAIMS,
+  expectExactKeys,
+} from "./invoke-key-shapes";
 
 const ROOT_HOST = "studio.vivijure.com";
 const ORIGIN = `https://${ROOT_HOST}`;
@@ -884,6 +887,46 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(body.status).toBe("awaiting_invoke_key");
     // SAFETY: unconfirmed is never live. This is the entire point of the gate.
     expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+
+    // cp#27: the STRUCTURED facts behind that sentence. These are the numbers a client otherwise
+    // has to parse back out of English, and the three claims that were previously load-bearing by
+    // substring grep alone. Asserted against the real probe outcome (attempts 6, elapsedMs 9800)
+    // rather than a hardcoded pair, so the fields cannot go stale against what the prober reported.
+    expect(body.readiness).toEqual({
+      attempts: 6,
+      elapsed_ms: 9800,
+      ...READINESS_CLAIMS,
+    });
+  });
+
+  it("cp#27: the structured claims and the prose make the SAME four claims, or one of them is lying", async () => {
+    // The point of the change is that these stop being independent. If a rewording drops "do not
+    // re-paste" while repaste_needed stays false, or the reverse, this fails.
+    const { cookie } = await tenantReady(String.raw`["ep1"]`);
+    wiring.installInvokeKey.mockResolvedValueOnce({
+      verified: [], unverified: [], unconfirmed: ["keyframe"], attempts: 2, elapsedMs: 300,
+    });
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    const body = (await res.json()) as Record<string, unknown>;
+    const readiness = body.readiness as Record<string, unknown>;
+
+    MESSAGE_MUST_SAY.forEach((claim) => expect(String(body.message)).toMatch(claim));
+    expect(readiness.key_stored).toBe(true);
+    expect(readiness.retry_finishes).toBe(true);
+    expect(readiness.repaste_needed).toBe(false);
+    // The numbers track the ACTUAL probe, not the fixture: a client rendering a progress hint from
+    // these must not be shown a constant.
+    expect(readiness.attempts).toBe(2);
+    expect(readiness.elapsed_ms).toBe(300);
   });
 
   it("MISCONFIGURED -> 503 carrying the REAL diagnostic, never a bare internal_error", async () => {
