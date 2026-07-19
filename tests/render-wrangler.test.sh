@@ -124,6 +124,66 @@ check "explicitly-empty SSO ids are allowed (provider simply not offered)" pass
 set_full_env; export GOOGLE_OAUTH_CLIENT_ID="g-client" GITHUB_OAUTH_CLIENT_ID="gh-client"
 check "populated SSO ids are allowed" pass
 
+# ---------------------------------------------------------------------------
+# STRUCTURAL guard: the rendered config must actually BIND what we think it binds.
+#
+# Every check above asks "did the render succeed?". None of them ask "is the result the config we
+# meant?" -- and on 2026-07-19 that gap cost us three days of production with no user-visitable
+# page. `assets` is a BARE key, so TOML binds it to the table header above it. It sat below
+# `[observability]` and was silently parsed as `observability.assets`: the ASSETS binding was never
+# created, env.ASSETS.fetch() threw on undefined, and `/` plus every HTML path 500'd while the JSON
+# routes stayed green and every test passed. wrangler's only protest was a scroll-past WARNING.
+#
+# A render that succeeds is not a render that is CORRECT. This asserts the shape.
+assert_toml() {
+  local name="$1" expr="$2" want="$3" file="${4:-$tmp/out.toml}"
+  local got
+  got="$(python3 -c "
+import sys, tomllib
+d = tomllib.load(open('$file','rb'))
+print($expr)
+" 2>&1)" || { echo "  FAIL $name -- could not parse: $got"; fail=$((fail + 1)); return; }
+  if [ "$got" = "$want" ]; then
+    echo "  ok   $name"; pass=$((pass + 1))
+  else
+    echo "  FAIL $name -- expected '$want', got '$got'"; fail=$((fail + 1))
+  fi
+}
+
+set_full_env
+"$render" "$tmp/out.toml" >"$tmp/log" 2>&1 || { echo "  FAIL structural: base render failed"; fail=$((fail + 1)); }
+
+assert_toml "assets is a TOP-LEVEL key, not nested under a table" "'assets' in d" "True"
+assert_toml "the ASSETS binding is named" "d.get('assets',{}).get('binding')" "ASSETS"
+assert_toml "run_worker_first survives the render" "d.get('assets',{}).get('run_worker_first')" "True"
+assert_toml "no stray assets key under [observability]" "'assets' in d.get('observability',{})" "False"
+
+# NEGATIVE CONTROL. The four assertions above would ALSO pass if assert_toml were broken, or if
+# every key happened to exist for unrelated reasons. Re-run them against a config deliberately
+# regressed to the 2026-07-19 shape (assets moved below [observability]) and require them to FAIL.
+# A guard only observed passing is an assumption with a green checkmark.
+python3 - "$tmp/out.toml" "$tmp/regressed.toml" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+line = re.search(r"^assets = \{.*\}$", src, re.M)
+src = src.replace(line.group(0) + "\n", "")
+src = src.replace("[observability]\n", "[observability]\n" + line.group(0) + "\n")
+open(sys.argv[2], "w").write(src)
+PY
+
+# The control's inner assertion is EXPECTED to fail, so its output is captured rather than printed:
+# a literal "FAIL" line in CI output is the exact string a human greps for, and a deliberate one
+# trains people to ignore real ones.
+before_fail=$fail
+assert_toml "CONTROL" "'assets' in d" "True" "$tmp/regressed.toml" >/dev/null 2>&1
+if [ "$fail" -gt "$before_fail" ]; then
+  echo "  ok   CONTROL held: the guard catches the 2026-07-19 regression (assets under [observability])"
+  fail=$before_fail; pass=$((pass + 1))
+else
+  echo "  FAILED CONTROL: the guard passed a config it must have caught -- it proves nothing"
+  fail=$((fail + 1))
+fi
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ] || exit 1
