@@ -234,12 +234,28 @@ custom_domain = true
 #   (b) a certificate covering *.<CONTROL_PLANE_HOST>. That is a SECOND-level wildcard, which
 #       Universal SSL does NOT cover, so it needs an Advanced Certificate Manager pack.
 #
-# *** BLOCKED as of 2026-07-17 (#55): ACM is NOT currently entitled on the vivijure.com zone. The
-# cert-pack quota reads allocated:0/used:6 and ordering returns 1450. The spike's "ACM already
-# active, zero new spend" reading was inferred from the EXISTENCE of five wildcard packs, which
-# proves they were ordered once, not that the subscription is live. Awaiting a spend/domain-shape
-# decision from Conrad. Everything here is correct for the ruled <tenant>.studio.<root> shape and
-# changes with it. ***
+# *** RESOLVED as of 2026-07-19, VERIFIED FROM THE EDGE. Both (a) and (b) are live. ***
+#
+# This block previously read "BLOCKED: ACM is NOT entitled on the vivijure.com zone" (2026-07-17,
+# cert-pack quota allocated:0/used:6, ordering returning 1450). That is STALE and was left standing
+# after the situation changed the same day. A stale confident headline mis-anchors whoever reads it
+# next, so it is corrected here rather than annotated.
+#
+# Evidence, fetched not inferred (2026-07-19):
+#   $ openssl s_client -servername probe.studio.vivijure.com -connect probe.studio.vivijure.com:443
+#     subject=CN = vivijure.com   issuer=Google Trust Services WE1   notBefore=Jul 17 13:35:58 2026
+#     X509v3 Subject Alternative Name:
+#       DNS:vivijure.com, DNS:studio.vivijure.com, DNS:*.studio.vivijure.com
+#   $ curl -sS -D - https://probe.studio.vivijure.com/
+#     HTTP/2 404 ; content-type: application/json ; server: cloudflare
+#
+# The SAN carries the SECOND-level wildcard *.studio.vivijure.com, which Universal SSL does not
+# cover, so the ACM pack exists and is serving. And the 404 is application/json from THIS Worker
+# (classifyHost() refusing an unknown tenant slug), not an edge error page: the proxied wildcard DNS
+# record and this route are both live, and a request for an arbitrary tenant host reaches this code.
+#
+# Note what that 404 does NOT prove: that any particular tenant serves. It proves the wildcard leg
+# terminates TLS and routes here. Per-tenant liveness is a separate check.
 #
 # NOTE the asymmetry with the certificate: this pattern's `*` matches ACROSS dots, so a.b.<suffix>
 # reaches this Worker while sitting OUTSIDE the one-label wildcard cert. classifyHost() refuses
