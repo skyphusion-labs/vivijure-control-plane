@@ -144,6 +144,29 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history so the ancestry guard below can walk main to the built commit.
+          fetch-depth: 0
+
+      # SECURITY GATE (cp#62, fc#859): refuse to deploy a commit that is not on main.
+      # The org tag ruleset enforces deletion + non_fast_forward only; nothing requires a
+      # v* tag (or a workflow_dispatch ref) to point at a reviewed, merged commit. Without
+      # this, `git tag v9.9.9 <unmerged-commit> && git push origin v9.9.9` -- or a
+      # dry_run=false dispatch from a feature branch -- deploys unreviewed code to the live
+      # plane, routing around branch protection. UNCONDITIONAL on purpose: this job ALSO runs
+      # on a branch dispatch (dry_run=false), so gating on refs/tags/v* would wave a branch
+      # dispatch straight past. Asserts the CHECKED-OUT commit (git rev-parse HEAD), which is
+      # exactly what deploys.
+      - name: Assert built commit is on main (no deploy of an unreviewed commit)
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          head="$(git rev-parse HEAD)"
+          if ! git merge-base --is-ancestor "$head" origin/main; then
+            echo "::error::commit ${head} is not on origin/main; refusing to deploy an unreviewed commit"
+            exit 1
+          fi
+          echo "commit ${head} is on origin/main; ancestry guard passed."
 
       - uses: actions/setup-node@v7
         with:
