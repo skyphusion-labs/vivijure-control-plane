@@ -419,6 +419,19 @@ async function driveJobIfNeeded(
 ): Promise<ProvisionJob | null> {
   if (job.status === "succeeded" || job.status === "failed") return null;
   if (!deps.provisioner) return null;
+  // KIND GUARD. This driver resumes a PROVISION and nothing else: deps.provisioner.resume runs
+  // continueProvisionJob, whose success path writes setTenantStatus("awaiting_invoke_key"). Pointed
+  // at a module_upgrade job that is exactly the outage upgradeTenantModules refuses to cause -- a
+  // LIVE, paying tenant flipped to a non-routable status (503 from routingStatusFor) on the path
+  // where the upgrade SUCCEEDS, plus a second driver PUTting module bytes concurrently with the
+  // real one.
+  //
+  // Reachable, not theoretical: createModuleUpgradeJob inserts `queued` with a NULL lease, and
+  // claimJob matches on status alone, so any tenant poll landing in the window before the first
+  // updateJobProgress of the upgrade WINS the claim. The upgrade carries its own driver (the
+  // ctx.waitUntil in the admin route) and deliberately has no continuation, so there is nothing
+  // here to drive in any case: the correct behavior is to REPORT the job and drive nothing.
+  if (job.kind !== "provision") return null;
 
   // Lost driver: no progress for too long. Fail honestly rather than leave a spinner running.
   const lastProgress = Date.parse(`${job.updated_at.replace(" ", "T")}Z`);

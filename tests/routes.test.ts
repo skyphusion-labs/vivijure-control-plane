@@ -622,6 +622,57 @@ describe("POST /api/tenant/provision", () => {
   });
 });
 
+// ---- the poll drives PROVISION jobs only (found while building cp#43) --------------------------
+//
+// FOUND, NOT DESIGNED: reading the job route for cp#43 showed driveJobIfNeeded has no `kind` check,
+// while claimJob matches any kind and a module_upgrade job is created `queued` with a NULL lease.
+// So a tenant polling their own job page during an admin module upgrade wins the claim and starts
+// continueProvisionJob against a LIVE tenant. That path ends with setTenantStatus("awaiting_invoke_key"),
+// which routingStatusFor treats as non-routable: the customer goes 503 on the path where the upgrade
+// SUCCEEDS. upgradeTenantModules documents at length that it must never write tenants.status for
+// exactly this reason; the poll reached around it.
+describe("GET /api/tenant/:id/job -- drives PROVISION jobs only", () => {
+  const armResume = () => {
+    const resume = vi.fn(async () => {});
+    (wiring as unknown as { resume: unknown }).resume = resume;
+    return resume;
+  };
+
+  // The AUP gate sits in front of every tenant route, so a signed-in session alone reads 403 here.
+  async function accepted() {
+    const s = await signedIn();
+    await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    return s;
+  }
+
+  it("NEVER hands a module_upgrade job to the provision driver (that would take a live tenant dark)", async () => {
+    const resume = armResume();
+    const s = await accepted();
+    await store.createTenant("ten_abc123", "hero", s.account.id, "live");
+    await store.createModuleUpgradeJob("job_up1", "ten_abc123", "v1.0.0", "v1.1.0");
+
+    const res = await handle(req("/api/tenant/ten_abc123/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    await flush();
+
+    // The job is still readable: refusing to DRIVE it is not refusing to REPORT it.
+    expect(res.status).toBe(200);
+    expect(resume).not.toHaveBeenCalled();
+    expect((await store.getTenantById("ten_abc123"))?.status).toBe("live");
+  });
+
+  it("POSITIVE CONTROL: it DOES drive a provision job, so the guard above is not passing vacuously", async () => {
+    const resume = armResume();
+    const s = await accepted();
+    await store.createTenant("ten_dd0001", "other", s.account.id, "provisioning");
+    await store.createProvisionJob("job_p1", "ten_dd0001", "provision");
+
+    await handle(req("/api/tenant/ten_dd0001/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    await flush();
+
+    expect(resume).toHaveBeenCalledWith("job_p1", expect.objectContaining({ id: "ten_dd0001" }), []);
+  });
+});
+
 describe("POST /api/tenant/:id/invoke-key", () => {
   async function tenantReady(endpoints: string | null, script: string | null = "tenant-hero-studio") {
     const s = await signedIn();
