@@ -228,6 +228,39 @@ export interface ProvisionClock {
 
 const realClock: ProvisionClock = { now: () => Date.now() };
 
+/**
+ * Per-step wall-clock, for cp#18.
+ *
+ * THE GAP THIS CLOSES: elapsedMs was logged ONLY on yield, so a provision that SUCCEEDED recorded
+ * no timing anywhere. D1 was no help either -- steps_done holds step NAMES and updated_at is
+ * overwritten by every progress write, so per-step duration has never been captured for any
+ * provision that has ever run. cp#18 has to be MEASURED rather than argued, and this is what
+ * produces the numbers.
+ *
+ * WHAT stepMs ACTUALLY MEASURES, stated precisely because the answer is not "the step's work":
+ * it is mark-to-mark, so it includes the previous mark's updateJobProgress write as well as the
+ * step itself. That is DELIBERATE. The question cp#18 asks is whether two steps fit inside the
+ * 15s invocation budget, and the budget is consumed by everything on the wall clock, D1 writes
+ * included. A number that excluded them would be tidier and would understate the thing being
+ * bounded.
+ *
+ * THE FIRST STEP IS THE ONE EXCEPTION WORTH KNOWING: its stepMs runs from startedAt, so it also
+ * carries the unmarked precondition work ahead of it (the release bundle fetch, which is
+ * deliberately not a marked step). Read the first number as "everything up to and including this
+ * step", not as that step alone.
+ *
+ * Takes the timestamp rather than the clock on purpose: the caller has already read it for the
+ * budget check, and this must not add a second read.
+ */
+function stepTimer(startedAt: number) {
+  let previous = startedAt;
+  return (step: MarkableProvisionStep, at: number) => {
+    const stepMs = at - previous;
+    previous = at;
+    return { step, stepMs, elapsedMs: at - startedAt };
+  };
+}
+
 /** Internal control-flow signal: this invocation is out of budget, not broken. */
 class ProvisionYield extends Error {
   constructor(readonly after: ProvisionStep) {
@@ -271,10 +304,17 @@ export async function runProvisionJob(
    * throw is caught below and turned into an honest "yielded", NOT a failure -- nothing is wrong,
    * we simply ran out of invocation.
    */
+  const timeStep = stepTimer(startedAt);
   const mark = async (step: MarkableProvisionStep) => {
     done.push(step);
     await deps.store.updateJobProgress(jobId, step, JSON.stringify(done));
-    if (clock.now() - startedAt >= budgetMs) throw new ProvisionYield(step);
+    // ONE clock read, reused for both the timing and the budget check. Reading the clock twice
+    // would be the obvious way to write this and it would be wrong: the tests drive a hand-rolled
+    // clock that ADVANCES ON EVERY READ, so a second read would change when a yield fires. That is
+    // perturbing the instrument the measurement is about (cp#18), not a style preference.
+    const at = clock.now();
+    deps.log("provision.step", { tenant: tenant.id, job: jobId, phase: "provision", ...timeStep(step, at) });
+    if (at - startedAt >= budgetMs) throw new ProvisionYield(step);
   };
 
   try {
@@ -591,10 +631,17 @@ export async function continueProvisionJob(
 ): Promise<ProvisionOutcome> {
   const startedAt = clock.now();
   const done: ProvisionStep[] = PROVISION_STEPS.filter((s) => stepsDone.includes(s));
+  const timeStep = stepTimer(startedAt);
   const mark = async (step: MarkableProvisionStep) => {
     done.push(step);
     await deps.store.updateJobProgress(jobId, step, JSON.stringify(done));
-    if (clock.now() - startedAt >= budgetMs) throw new ProvisionYield(step);
+    // ONE clock read, reused for both the timing and the budget check. Reading the clock twice
+    // would be the obvious way to write this and it would be wrong: the tests drive a hand-rolled
+    // clock that ADVANCES ON EVERY READ, so a second read would change when a yield fires. That is
+    // perturbing the instrument the measurement is about (cp#18), not a style preference.
+    const at = clock.now();
+    deps.log("provision.step", { tenant: tenant.id, job: jobId, phase: "resume", ...timeStep(step, at) });
+    if (at - startedAt >= budgetMs) throw new ProvisionYield(step);
   };
   const complete = (step: ProvisionStep) => done.includes(step);
 
@@ -887,10 +934,17 @@ export async function upgradeTenantModules(
 ): Promise<ModuleUpgradeOutcome> {
   const startedAt = clock.now();
   const done: MarkableProvisionStep[] = [];
+  const timeStep = stepTimer(startedAt);
   const mark = async (step: MarkableProvisionStep) => {
     done.push(step);
     await deps.store.updateJobProgress(jobId, step, JSON.stringify(done));
-    if (clock.now() - startedAt >= budgetMs) throw new ProvisionYield(step);
+    // ONE clock read, reused for both the timing and the budget check. Reading the clock twice
+    // would be the obvious way to write this and it would be wrong: the tests drive a hand-rolled
+    // clock that ADVANCES ON EVERY READ, so a second read would change when a yield fires. That is
+    // perturbing the instrument the measurement is about (cp#18), not a style preference.
+    const at = clock.now();
+    deps.log("provision.step", { tenant: tenant.id, job: jobId, phase: "module_upgrade", ...timeStep(step, at) });
+    if (at - startedAt >= budgetMs) throw new ProvisionYield(step);
   };
 
   try {

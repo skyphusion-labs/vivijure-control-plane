@@ -273,3 +273,170 @@ describe("readTenantEndpoints", () => {
     expect(readTenantEndpoints(reread)).toEqual([]);
   });
 });
+
+// ---- per-step timing instrumentation (cp#18) ----------------------------------------------------
+//
+// THE GAP: elapsedMs was logged ONLY on yield, so a provision that SUCCEEDED recorded no timing
+// anywhere, and D1 could not fill it in (steps_done holds NAMES, updated_at is overwritten by every
+// progress write). cp#18 must be MEASURED rather than argued, and the measurement did not exist.
+//
+// These tests are about the NUMBERS being right and the SUCCESS path being covered. The control at
+// the bottom is about the instrument not having changed the thing it measures.
+
+/** A clock that returns a scripted sequence, so every stepMs below is an exact expected value. */
+function scriptedClock(times: readonly number[]) {
+  let i = 0;
+  return { now: () => times[Math.min(i++, times.length - 1)] };
+}
+
+type StepLog = { step: string; stepMs: number; elapsedMs: number; phase: string };
+
+const stepLogs = (logs: { event: string; fields: Record<string, unknown> }[]): StepLog[] =>
+  logs.filter((l) => l.event === "provision.step").map((l) => l.fields as unknown as StepLog);
+
+describe("per-step provision timing (cp#18)", () => {
+  it("records timing on the SUCCESS path -- the entire gap this closes", async () => {
+    const store = new MemoryStore();
+    const t = await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const logs: { event: string; fields: Record<string, unknown> }[] = [];
+
+    const res = await runProvisionJob(
+      deps(store, { log: (event, fields) => void logs.push({ event, fields }) }),
+      job.id,
+      t,
+      "rpa_keyA",
+      // A budget nothing can exhaust: this run must SUCCEED, because success is the path that
+      // previously produced no timing at all.
+      scriptedClock([0]),
+      10_000_000,
+    );
+
+    expect(res).toMatchObject({ ok: true });
+    // Not "some logs": one per step actually completed, which is what makes the record usable.
+    const steps = stepLogs(logs);
+    expect(steps.length).toBe(JSON.parse(store.jobs.get("job_1")!.steps_done).length);
+    expect(steps.length).toBeGreaterThan(0);
+    for (const s of steps) expect(s).toMatchObject({ phase: "provision" });
+  });
+
+  it("stepMs is THIS step alone; elapsedMs stays cumulative", async () => {
+    const store = new MemoryStore();
+    const t = await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const logs: { event: string; fields: Record<string, unknown> }[] = [];
+    // now() is read once at start, then exactly once per mark. Deltas are uneven on purpose: a
+    // cumulative-vs-per-step bug is invisible against evenly spaced readings.
+    const times = [0, 100, 350, 1_350, 1_400, 6_400, 6_450, 6_500, 6_600, 6_700, 6_800];
+
+    await runProvisionJob(
+      deps(store, { log: (event, fields) => void logs.push({ event, fields }) }),
+      job.id,
+      t,
+      "rpa_keyA",
+      scriptedClock(times),
+      10_000_000,
+    );
+
+    const steps = stepLogs(logs);
+    steps.forEach((s, i) => {
+      // Derived from the SCRIPT, not read off the output: this fails if stepMs ever goes cumulative.
+      expect(s.stepMs).toBe(times[i + 1] - times[i]);
+      expect(s.elapsedMs).toBe(times[i + 1] - times[0]);
+    });
+    // And the two numbers genuinely diverge in this run, so the assertion above is not vacuous.
+    expect(steps.some((s) => s.stepMs !== s.elapsedMs)).toBe(true);
+  });
+
+  it("resolves the two steps cp#18 is actually about, by name", async () => {
+    const store = new MemoryStore();
+    const t = await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const logs: { event: string; fields: Record<string, unknown> }[] = [];
+
+    await runProvisionJob(
+      deps(store, { log: (event, fields) => void logs.push({ event, fields }) }),
+      job.id,
+      t,
+      "rpa_keyA",
+      scriptedClock([0]),
+      10_000_000,
+    );
+
+    const byStep = new Map(stepLogs(logs).map((s) => [s.step, s]));
+    // Option (1) in cp#18 treats these two as one atomic couplet. That is viable only if their
+    // combined worst case fits the 15s budget, which cannot be argued without these two numbers.
+    expect(byStep.has("runpod_endpoints")).toBe(true);
+    expect(byStep.has("wfp_upload")).toBe(true);
+    for (const step of ["runpod_endpoints", "wfp_upload"]) {
+      expect(typeof byStep.get(step)!.stepMs).toBe("number");
+      expect(Number.isFinite(byStep.get(step)!.stepMs)).toBe(true);
+    }
+  });
+
+  it("logs the timing of the step that TRIGGERS the yield, before throwing", async () => {
+    // The step that blew the budget is the most interesting measurement in the whole run. Logging
+    // after the budget check would silently drop exactly that one.
+    const store = new MemoryStore();
+    const t = await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const logs: { event: string; fields: Record<string, unknown> }[] = [];
+
+    const res = await runProvisionJob(
+      deps(store, { log: (event, fields) => void logs.push({ event, fields }) }),
+      job.id,
+      t,
+      "rpa_keyA",
+      scriptedClock([0, 20_000]),
+      15_000,
+    );
+
+    expect(res).toMatchObject({ ok: false, yielded: true });
+    const steps = stepLogs(logs);
+    expect(steps.length).toBe(1);
+    expect(steps[0]).toMatchObject({ stepMs: 20_000, elapsedMs: 20_000 });
+    // The yielded event still carries what it always did.
+    expect(logs.some((l) => l.event === "provision.yielded")).toBe(true);
+  });
+
+  it("tags the RESUME path so its steps are distinguishable from a first invocation", async () => {
+    const store = new MemoryStore();
+    const t = await seedTenant(store, { throughStudio: true });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const logs: { event: string; fields: Record<string, unknown> }[] = [];
+
+    await continueProvisionJob(
+      deps(store, { log: (event, fields) => void logs.push({ event, fields }) }),
+      job.id,
+      t,
+      PROVISION_STEPS.slice(0, PROVISION_STEPS.indexOf("wfp_upload") + 1),
+      scriptedClock([0]),
+      10_000_000,
+    );
+
+    const steps = stepLogs(logs);
+    expect(steps.length).toBeGreaterThan(0);
+    for (const s of steps) expect(s.phase).toBe("resume");
+  });
+
+  // ---- THE CONTROL ----
+  //
+  // Instrumenting a thing must not change the thing. The budget check now reuses the timestamp the
+  // log line already read, rather than reading the clock a second time -- and that detail is
+  // load-bearing here, because these tests drive a clock that ADVANCES ON EVERY READ. A second read
+  // per mark would make every yield fire earlier and quietly invalidate the measurement.
+  it("CONTROL: one clock read per mark, so yield timing is unchanged", async () => {
+    const store = new MemoryStore();
+    const t = await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    let reads = 0;
+    const counting = { now: () => (reads++, 0) };
+
+    await runProvisionJob(deps(store), job.id, t, "rpa_keyA", counting, 10_000_000);
+
+    const marks = JSON.parse(store.jobs.get("job_1")!.steps_done).length;
+    // 1 read for startedAt + exactly 1 per mark. If instrumentation ever adds its own read, this
+    // fails and the yield-timing tests above become untrustworthy.
+    expect(reads).toBe(marks + 1);
+  });
+});
