@@ -4,6 +4,61 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
+## v1.3.0 -- 2026-07-19
+
+MINOR: an operator can finally watch a hosted tenant actually render, the plane gets a diagnostic
+surface, and a provision records where its time goes (cp#45, cp#18, cp#43).
+
+### Operator verification route (cp#45)
+
+Until now the release standard -- **nothing is verified until someone has looked at the actual output**
+-- was not performable for a hosted tenant by anyone without the control-plane KEK. The tenant studio
+serves its root publicly but gates every API path, and the only credential that can drive it is
+encrypted in D1 and decryptable only inside the worker. Every hosted module release to date rested on
+install-and-probe evidence, never on observed output.
+
+- **Three admin routes**: open a canonical smoke render, drive it, and **stream the artifact bytes back
+  through the plane** so an operator can actually look at them. The third one is the point; returning an
+  R2 key to someone who by construction cannot reach the tenant would be `phase=done` wearing a hat.
+- **No credential leaves the worker.** The studio token is decrypted per call, used, and dropped. It
+  never crosses the interface, never reaches the store, never reaches a response. The client is **four
+  typed calls with constant paths**, deliberately NOT a generic "dispatch this path to that tenant"
+  helper, which would have been a permanent operator proxy into every customer studio.
+- **Spend guard is part of the build, not a follow-up**, because this route costs GPU by definition.
+  The payload is canonical (tenant id and nothing else, so it cannot be turned into a film), plus a
+  per-tenant cooldown, a platform-wide daily cap, and one render in flight per tenant. Guards live in
+  the `WHERE` of a single conditional INSERT: the WRITE authorizes, the read only explains.
+- **What it does NOT bound, stated plainly**: dollars (it bounds invocations, and a cold GPU costs more
+  than a warm one), a tenant's own rendering, a job already handed to RunPod, or an operator who simply
+  waits out the cooldown.
+- Rendering through a non-tenant door remains rejected. It would produce a satisfying artifact that
+  answers a different question.
+
+### Per-step provision timing (cp#18)
+
+- Every `mark()` now logs `provision.step` with **`stepMs` (that step alone)**, cumulative `elapsedMs`,
+  and the driver phase. Previously timing was recorded ONLY on yield, so a provision that SUCCEEDED
+  produced no timing anywhere, and D1 never held it either (`steps_done` carries step names, and
+  `updated_at` is overwritten on every write).
+- **Additive only**: the budget logic and yield boundary are untouched, and the instrument deliberately
+  does not perturb what it measures. It reuses the timestamp the log line already read rather than
+  calling the clock twice, and the log lands BEFORE the budget throw so the step that triggers a yield
+  is not the one measurement that goes missing.
+- `stepMs` is mark-to-mark and therefore includes the previous step's progress write, because the
+  invocation budget is consumed by everything on the wall clock. The first step additionally carries
+  unmarked precondition work; read it as "everything up to and including this step".
+
+### Observability
+
+- **Workers Logs enabled on the control plane**, which had no observability surface at all.
+- Tenant telemetry design recorded in `docs/tenant-telemetry.md`: operational fields only, with the
+  content-carrying fields excluded and a written per-field disposition. Design only; nothing is wired.
+
+### Docs
+
+- Backfilled the missing v1.2.0 and v1.2.1 entries, including the fact that v1.2.0's headline route
+  shipped non-functional.
+
 ## v1.2.1 -- 2026-07-19
 
 PATCH: the module-upgrade route could not insert its job, so the feature v1.2.0 had just shipped could
