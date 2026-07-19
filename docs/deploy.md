@@ -92,6 +92,33 @@ These are `secret_text` bindings on the worker and they **persist across `wrangl
 pipeline does not carry them and a deploy does not need them staged in Actions. They are set once,
 out of band. A deploy will not clear them; equally, a deploy cannot repair one that was never set.
 
+#### Every worker secret has a named owner and a recorded home
+
+"Set once, out of band" has a failure mode we hit on 2026-07-19: `CONTROL_PLANE_ADMIN_TOKEN` was live
+on the worker and nobody could say who had put it there or where the value lived. A production admin
+gate whose provenance cannot be accounted for is not a leak, but it is not owned either, and an
+unowned credential cannot be rotated, audited, or handed over.
+
+So: **a worker secret is not considered set until this table names its owner and its home.** If you
+`wrangler secret put` something, you add the row in the same change.
+
+| Secret | Owner | Home |
+| --- | --- | --- |
+| `CONTROL_PLANE_ADMIN_TOKEN` | Mackaye | `~/.vivijure-cp-admin.token` on the primary crew box (`chmod 600`) |
+| `POSTERN_SEND_TOKEN` | Strummer | send identity recorded in `crew-secrets/operator/postern/vivijure-control-plane-send-identity.fragment.json` |
+| `CF_PROVISIONER_TOKEN` | UNCLAIMED -- home not yet confirmed | |
+| `STUDIO_TOKEN_KEK` | UNCLAIMED -- home not yet confirmed | |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
+| `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
+| `APPLE_PRIVATE_KEY` | unset (SSO not offered) | n/a |
+
+The two `UNCLAIMED` rows are the same defect, still open. They are recorded as unknown rather than
+guessed at, because a plausible-looking owner in a table is worse than an admitted gap.
+
+Re-keying one of these is cheap and non-destructive: the admin gate fails closed, no tenant traffic
+touches it, and the check is two curls (bearer -> 200, bare -> 401). Re-key on unknown provenance;
+do NOT reflexively re-key because a value passed through a trusted boundary such as a transcript.
+
 ### Empty is a value, but only for four of them
 
 `scripts/render-wrangler.sh` treats **everything as required unless it is on an explicit
