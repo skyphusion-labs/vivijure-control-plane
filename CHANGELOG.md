@@ -4,6 +4,52 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
+## v1.4.0 -- 2026-07-19
+
+MINOR. The demo-hardening batch: everything merged after the v1.3.1 outage fix, shipped together
+because control-plane deploy is tag-only. This is the release that makes tonight's work LIVE -- until
+it deploys, the site still serves the pre-batch behavior (the cold-401 intro and the live-tenant 503
+below).
+
+### Availability: the tenant job poll drives PROVISION jobs only (#56)
+
+A tenant polling its own job page during an admin module upgrade could win the job claim and be driven
+through `continueProvisionJob`, whose success path writes `awaiting_invoke_key` -- taking a LIVE tenant
+non-routable (503) on the branch where the upgrade SUCCEEDS. The poll now refuses to drive any job kind
+it does not own; it still reports the job. Guard placed before the stale-job branch, which also closed
+a second `setTenantStatus("failed")` instance of the same class.
+
+### Onboarding: the signed-out intro renders without a 401 (#67)
+
+The intro eagerly fetched the session-gated `/api/tenant/provision-plan`, so every unauthenticated
+visitor -- i.e. everyone on a cold visit, and everyone while signups are closed -- saw a red "Could not
+load the setup plan: unauthorized" and a spinner that never resolved. That is exactly the first screen
+an outside evaluator sees. The intro now renders a clearly-labelled representative example with no
+network call; the real numbers are fetched behind the sign-in for the Review step.
+
+### Operator + client surfaces
+
+- `modules_release` and the job row are readable (#43, #57): the release pair projects on the tenant
+  view and `GET /api/tenant/:id/job` reports `kind`, `from_release`, `to_release`, `finished_at`. The
+  answer to "what version is this tenant on?" now exists over the API instead of only in prod D1.
+- The invoke-key 202 emits structured facts, not just prose (#27, #59): a `readiness` object a client
+  can compose from, with the four load-bearing claims (installed, stored, retry, do-not-re-paste) as
+  assertable fields rather than substring greps. `message` retained for one release.
+
+### The onboarding transport seam is testable (#31, #58)
+
+`onboarding.js` no longer owns any transport; the request-building code lives once in
+`onboarding-api.js` behind one seam, replacing a mirror that asserted a copy of the code rather than the
+code. A tripwire fails if `onboarding.js` ever regrows a fetch.
+
+### Deploy safety (both first exercised by THIS release)
+
+- Post-deploy human-surface smoke check (#63, #64): the release run now asserts the human-visited front
+  door actually renders (200 AND text/html AND a real front-door body), turning the v1.3.1 outage class
+  into a red run in seconds instead of days of green silence.
+- Tag-deploy ancestry guard (#62, fc#859): the release job refuses to deploy a commit that is not on
+  `main`, closing the `git tag v9.9.9 <unmerged-commit>` bypass around branch protection.
+
 ## v1.3.1 -- 2026-07-19
 
 PATCH, and an outage fix. **The hosted control plane had served no human-visitable page since
