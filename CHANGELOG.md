@@ -4,6 +4,58 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
+## v1.2.1 -- 2026-07-19
+
+PATCH: the module-upgrade route could not insert its job, so the feature v1.2.0 had just shipped could
+not succeed for any input at all (cf#103).
+
+- **`createModuleUpgradeJob` wrote bare words where it needed string literals**:
+  `VALUES (?1, ?2, module_upgrade, queued, ?3, ?4)`. SQLite parses a bare word in `VALUES` as a COLUMN
+  REFERENCE, so every call threw `SQLITE_ERROR` and the route answered `500` for every tenant and every
+  release. Fixed by quoting them. The correct pattern (`?3` bound, `'queued'` quoted) sat 17 lines above
+  in `createProvisionJob`.
+- **468 green tests could not have caught it.** Every test in the repo builds a hand-written
+  `MemoryStore`, so no test ever handed a `store-d1.ts` SQL string to a SQL engine. Every literal, column
+  name, and clause in that file was unverified by construction.
+- **`tests/store-d1-sql.test.ts` (new)** drives the REAL `D1Store` against real SQLite built from the
+  real `migrations/`, and reads results back through SQL rather than trusting `RETURNING`. Two controls
+  (`createProvisionJob`, `getTenantBySlug`) prove the harness discriminates.
+- Found by a live rehearsal on the first real call, after unit tests, code review, and a production
+  deploy all passed. Standing consequence recorded: **a store or SQL layer exercised only through a fake
+  is UNTESTED**, and only a live run against real infrastructure says otherwise.
+
+## v1.2.0 -- 2026-07-18
+
+MINOR: module upgrade for live tenants, and the slug-reclaim lane (cf#103, control-plane#18).
+
+**Correction, recorded rather than quietly fixed:** the module-upgrade route below shipped
+NON-FUNCTIONAL in this version and could not succeed for any input. See v1.2.1. The slug-reclaim work in
+this release was unaffected and did work as described.
+
+### Module upgrade
+
+- **Ship a new module release to a LIVE tenant without taking it down.** The tenant keeps serving
+  throughout; the upgrade runs as a job with progress recorded per step.
+
+### Slug reclaim
+
+- **Tier A slug reclaim executes**, so a slug held by a tenant that never went live can be freed and
+  re-provisioned by its owner without operator SQL.
+- **Slug lease tiers with the WRITE as the enforcement point, not the check.** The check is never the
+  gate; a conditional write is. This is the pattern the rest of the lifecycle now follows.
+- **Reclaim is serialized on a lease** so two concurrent attempts cannot destroy each other, and a
+  reclaim is REFUSED while a provision driver holds the lease. A lease expires, so a dead reclaim
+  self-heals rather than stranding the row.
+- **Teardown reaps the STORED script name**, not one recomputed from the slug.
+- Live teardown rehearsal run against real Cloudflare rather than against fakes.
+
+### Fixes
+
+- Onboarding names the unproven modules instead of rendering `[object Object]` to the customer.
+- The invoke-key contract is read as the route actually serves it, and the summary `ok` field is dropped
+  from both invoke-key outcomes (cp#20).
+- One slug rule shared by the preview and provision paths, so the two cannot disagree.
+
 ## v1.1.1 -- 2026-07-18
 
 PATCH: the readiness probe stops failing customers for a benign propagation delay, and its diagnostic
