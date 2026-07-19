@@ -66,24 +66,51 @@ describe("control-plane schema boundary", () => {
     // The pattern is deliberately NOT a bare /key/: platform_settings.key is a settings key NAME,
     // not a credential, and a looser rule flagged it. Matching a name is not reading a meaning, so
     // this matches credential-SHAPED names only and lets *_hash through by construction.
-    const cols = [...sql.matchAll(/^\s{2}([a-z_]+)\s+TEXT/gim)].map((m) => m[1].toLowerCase());
-    const suspicious = cols.filter(
-      (c) => (/(^|_)(token|secret|password)$/.test(c) || /_key$/.test(c) || c === "api_key") && !c.endsWith("_hash"),
-    );
-    expect(suspicious).toEqual([]);
+    expect(credentialShapedColumns(sql)).toEqual([]);
   });
 
   it("the credential-column guard actually catches a planted credential (control)", () => {
     // A guard I have not watched FIRE is not a guard. Prove the rule above rejects the exact drift
     // it exists to stop, rather than passing because it matches nothing at all.
     const planted = "CREATE TABLE t (\n  runpod_api_key TEXT,\n  session_token TEXT,\n  token_hash TEXT\n);";
-    const cols = [...planted.matchAll(/^\s{2}([a-z_]+)\s+TEXT/gim)].map((m) => m[1].toLowerCase());
-    const suspicious = cols.filter(
-      (c) => (/(^|_)(token|secret|password)$/.test(c) || /_key$/.test(c) || c === "api_key") && !c.endsWith("_hash"),
-    );
-    expect(suspicious).toEqual(["runpod_api_key", "session_token"]);
+    // Runs the SAME predicate the real check runs, allowlist included, so an allowlist that had
+    // quietly swallowed the whole rule would fail HERE rather than passing everywhere.
+    expect(credentialShapedColumns(planted)).toEqual(["runpod_api_key", "session_token"]);
+  });
+
+  it("the allowlist exempts by EXACT NAME only, never by shape (control)", () => {
+    // The exemption below is the narrowest thing that works. If it were a loosened regex instead, a
+    // future encryption_key or signing_key column would sail through; this proves it does not.
+    const planted = "CREATE TABLE t (\n  artifact_key TEXT,\n  signing_key TEXT\n);";
+    expect(credentialShapedColumns(planted)).toEqual(["signing_key"]);
   });
 });
+
+/**
+ * Column names that LOOK like credentials. ONE rule, used by the check and by both its controls.
+ *
+ * THE ALLOWLIST IS BY EXACT NAME, and that is the whole design. The obvious fix when this guard
+ * fired on cp#45 R2 object keys was to loosen /_key$/, which would have silently un-guarded every
+ * future signing_key and encryption_key as well -- trading a real control for a green tick.
+ * Exempting named columns costs one line per column and leaves the rule intact for everything else.
+ */
+const R2_OBJECT_KEY_COLUMNS = new Set([
+  // cp#45. Both are R2 OBJECT PATHS in the tenant own bucket (the studio calls the same thing
+  // film_key / output_key), not cryptographic material. Neither is usable without the tenant studio
+  // token, which this worker never stores in plaintext and never hands out.
+  "bundle_key",
+  "artifact_key",
+]);
+
+function credentialShapedColumns(sql: string): string[] {
+  const cols = [...sql.matchAll(/^\s{2}([a-z_]+)\s+TEXT/gim)].map((m) => m[1].toLowerCase());
+  return cols.filter(
+    (c) =>
+      (/(^|_)(token|secret|password)$/.test(c) || /_key$/.test(c) || c === "api_key") &&
+      !c.endsWith("_hash") &&
+      !R2_OBJECT_KEY_COLUMNS.has(c),
+  );
+}
 
 // ---- The Tier B tombstone control (cf#103) ----
 //

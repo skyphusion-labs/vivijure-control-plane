@@ -23,7 +23,17 @@ import {
 } from "./provisioner";
 import { createTenantEndpoints } from "./runpod";
 import type { ControlPlaneStore, Tenant } from "./store";
+import {
+  canonicalStoryboard,
+  SMOKE_PROJECT_NAME,
+  SMOKE_PROMPT,
+  SMOKE_SCENE_SECONDS,
+  SMOKE_SHOT_ID,
+  type StudioReply,
+  type TenantStudioSmokeClient,
+} from "./smoke-render";
 import { D1Store } from "./store-d1";
+import { decryptStudioToken } from "./token-crypto";
 import { CfTokenMinter } from "./token-minter";
 import {
   TENANT_MODULE_CATALOG,
@@ -83,6 +93,15 @@ export interface ProvisionerWiring {
    * is the blast-radius gate on this whole route.
    */
   upgradeModules(jobId: string, tenant: Tenant, context: ModuleUpgradeContext): Promise<void>;
+  /**
+   * The operator verification client (cp#45): four typed calls against THIS tenant's own studio.
+   *
+   * It lives on ProvisionerWiring because this is where the KEK and the dispatch binding already
+   * are, so custody does not spread. It also means the smoke-render route inherits the same honest
+   * refusal as every other route here: no provisioner wiring configured, no verification offered
+   * (503), rather than a route that looks present and cannot work.
+   */
+  smokeClient: TenantStudioSmokeClient;
 }
 
 export interface ControlPlaneDeps {
@@ -197,6 +216,7 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
   };
 
   return {
+    smokeClient: tenantStudioSmokeClient(env, STUDIO_TOKEN_KEK),
     async start(jobId, tenant, runpodApiKey) {
       // runProvisionJob records every outcome on the job row; the return value is the same fact.
       // A "yielded" outcome is normal under #112: progress is persisted and the next poll resumes.
@@ -231,6 +251,106 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     },
     async upgradeModules(jobId, tenant, context) {
       await upgradeTenantModules(deps, jobId, tenant, context);
+    },
+  };
+}
+
+/**
+ * Per-call ceilings for the operator smoke render (cp#45). Deliberately NOT the 5s provision
+ * ceiling: these run in an operator-initiated request rather than inside a provision job's step
+ * budget, and the bundle leg does real work (tar assembly) in the studio. Still bounded, for the
+ * same reason everything else here is -- a hung studio must fail honestly, not hold the route open.
+ */
+const SMOKE_BUNDLE_TIMEOUT_MS = 25_000;
+const SMOKE_SUBMIT_TIMEOUT_MS = 15_000;
+const SMOKE_POLL_TIMEOUT_MS = 10_000;
+const SMOKE_ARTIFACT_TIMEOUT_MS = 25_000;
+
+/**
+ * The tenant-studio client the operator verification route drives (cp#45).
+ *
+ * CUSTODY IS THE WHOLE POINT. The tenant token is decrypted HERE, per call, used on the dispatch
+ * stub, and dropped. It is never returned, never logged, never placed on a response, and never
+ * crosses the TenantStudioSmokeClient interface. An operator drives this route and receives an
+ * artifact; there is no code path by which they receive a credential.
+ *
+ * Every path below is a CONSTANT. The client takes no caller-supplied path or body, so it cannot be
+ * turned into a general operator proxy into customer studios.
+ */
+export function tenantStudioSmokeClient(env: ControlPlaneEnv, kek: string): TenantStudioSmokeClient {
+  const dispatch = async (
+    tenant: Tenant,
+    init: { method: string; path: string; body?: string; timeoutMs: number; accept?: string },
+  ): Promise<Response> => {
+    if (!tenant.script_name) throw new Error("tenant has no studio script to dispatch to");
+    if (!tenant.studio_token_enc) throw new Error("tenant has no stored studio token");
+    const token = await decryptStudioToken(kek, tenant.studio_token_enc);
+    const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+    if (init.body !== undefined) headers["content-type"] = "application/json";
+    if (init.accept) headers["accept"] = init.accept;
+    const stub = env.TENANT_DISPATCH.get(tenant.script_name);
+    return await stub.fetch(
+      new Request(`https://tenant.internal${init.path}`, {
+        method: init.method,
+        headers,
+        body: init.body,
+        signal: AbortSignal.timeout(init.timeoutMs),
+      }),
+    );
+  };
+
+  const asReply = async (res: Response): Promise<StudioReply> => ({ status: res.status, text: await res.text() });
+
+  return {
+    async putCanonicalBundle(tenant) {
+      const res = await dispatch(tenant, {
+        method: "POST",
+        path: "/api/storyboard/bundle",
+        // characterRefs is REQUIRED by the route and legitimately empty: the canonical smoke render
+        // has no cast, which is also why it is the cheapest thing that still renders.
+        body: JSON.stringify({ storyboard: canonicalStoryboard(), characterRefs: {} }),
+        timeoutMs: SMOKE_BUNDLE_TIMEOUT_MS,
+      });
+      return await asReply(res);
+    },
+    async submitKeyframeRender(tenant, bundleKey) {
+      const res = await dispatch(tenant, {
+        method: "POST",
+        path: "/api/storyboard/render",
+        // keyframesOnly is what keeps this cheap AND what removes the motion_backend requirement:
+        // the studio skips motion, finish, assemble and mux entirely. One shot, one keyframe.
+        body: JSON.stringify({
+          bundleKey,
+          keyframesOnly: true,
+          project: SMOKE_PROJECT_NAME,
+          scenes: [{ shot_id: SMOKE_SHOT_ID, prompt: SMOKE_PROMPT, seconds: SMOKE_SCENE_SECONDS }],
+        }),
+        timeoutMs: SMOKE_SUBMIT_TIMEOUT_MS,
+      });
+      return await asReply(res);
+    },
+    async pollRender(tenant, studioJobId) {
+      const res = await dispatch(tenant, {
+        method: "GET",
+        path: `/api/storyboard/render/${encodeURIComponent(studioJobId)}`,
+        timeoutMs: SMOKE_POLL_TIMEOUT_MS,
+      });
+      return await asReply(res);
+    },
+    async fetchArtifact(tenant, key) {
+      // The studio serves artifact bytes under a prefix allowlist; the key comes from ITS OWN poll
+      // response, so it is never operator-supplied. Encoded per segment: the key contains slashes
+      // that are path structure, not data.
+      const path = `/api/artifact/${key.split("/").map(encodeURIComponent).join("/")}`;
+      const res = await dispatch(tenant, { method: "GET", path, timeoutMs: SMOKE_ARTIFACT_TIMEOUT_MS });
+      if (res.status !== 200) {
+        return { status: res.status, bytes: null, contentType: res.headers.get("content-type") ?? "" };
+      }
+      return {
+        status: 200,
+        bytes: await res.arrayBuffer(),
+        contentType: res.headers.get("content-type") ?? "application/octet-stream",
+      };
     },
   };
 }

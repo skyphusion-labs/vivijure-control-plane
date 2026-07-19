@@ -12,7 +12,7 @@ export interface RateLimiter {
   limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
-export interface ControlPlaneEnv {
+export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   // The front-door UI (Joan, #58), served via Workers Assets. Bundle lives at hosted/public, kept
   // separate from public/ (the studio frontend that ships to every self-hoster).
   ASSETS: Fetcher;
@@ -129,3 +129,18 @@ export const publicOrigin = (env: ControlPlaneEnv): string => `https://${env.CON
 
 /** Tenant studios live at <slug><suffix>. Derived from the same single fact. */
 export const tenantDomainSuffix = (env: ControlPlaneEnv): string => `.${env.CONTROL_PLANE_HOST}`;
+
+/**
+ * OPERATOR SMOKE-RENDER BOUNDS (cp#45). All optional, all vars rather than secrets -- they are
+ * policy numbers, not credentials. Unset means the DEFAULT applies (src/smoke-render.ts), never
+ * that the bound is off: this route costs GPU by definition, so there is no unbounded mode.
+ */
+export interface SmokeRenderBoundEnv {
+  /** Seconds before the same tenant may be smoke-rendered again. Default 1800. */
+  SMOKE_RENDER_COOLDOWN_SECONDS?: string;
+  /** Ceiling on operator smoke renders across ALL tenants in a rolling 24h. Default 20. */
+  SMOKE_RENDER_DAILY_CAP?: string;
+  /** How long a running smoke render blocks a new one for that tenant, and its own deadline.
+   *  Default 1200. */
+  SMOKE_RENDER_INFLIGHT_SECONDS?: string;
+}

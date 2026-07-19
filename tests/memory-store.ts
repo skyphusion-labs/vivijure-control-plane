@@ -19,6 +19,9 @@ import type {
   Tenant,
   TenantLifecycle,
   SlugClaim,
+  SmokeRender,
+  SmokeRenderArtifact,
+  SmokeRenderBounds,
 } from "../src/store";
 import { classifySlugClaim, leaseIsLive, TIER_A_STATUSES } from "../src/store";
 
@@ -390,6 +393,121 @@ export class MemoryStore implements ControlPlaneStore {
   }
   async recordAdminAction(actor: string, action: string, target: string | null, detail: string | null) {
     this.audit.push({ actor, action, target, detail });
+  }
+
+  // ---- operator smoke renders (cp#45) ----
+  //
+  // MIRRORS D1Store's SEMANTICS, and is NOT evidence about the shipped SQL. The conditional INSERT
+  // that actually enforces the spend guard lives in store-d1.ts and is exercised against real
+  // SQLite in tests/store-d1-sql.test.ts. What these prove is the DECISION path: that the route
+  // refuses when a bound is hit and that a terminal outcome is written once.
+  //
+  // Timestamps are written in D1's "YYYY-MM-DD HH:MM:SS" UTC shape rather than ISO, deliberately:
+  // the deadline logic parses created_at, so a fake writing a different shape would test a string
+  // production never sees.
+  smokeRenders = new Map<string, SmokeRender>();
+
+  private sqliteNow(offsetMs = 0): string {
+    return new Date(Date.now() + offsetMs).toISOString().replace("T", " ").slice(0, 19);
+  }
+
+  private secondsSince(stamp: string): number {
+    return (Date.now() - Date.parse(`${stamp.replace(" ", "T")}Z`)) / 1000;
+  }
+
+  private smokeFor(tenantId: string): SmokeRender[] {
+    return [...this.smokeRenders.values()].filter((s) => s.tenant_id === tenantId);
+  }
+
+  async openSmokeRender(
+    id: string,
+    tenantId: string,
+    modulesRelease: string | null,
+    bounds: SmokeRenderBounds,
+  ): Promise<SmokeRender | null> {
+    if (await this.describeSmokeRenderRefusal(tenantId, bounds)) return null;
+    const row: SmokeRender = {
+      id,
+      tenant_id: tenantId,
+      status: "running",
+      modules_release: modulesRelease,
+      studio_job_id: null,
+      bundle_key: null,
+      artifact_key: null,
+      artifact_bytes: null,
+      artifact_sha256: null,
+      artifact_content_type: null,
+      error_message: null,
+      created_at: this.sqliteNow(),
+      updated_at: this.sqliteNow(),
+      finished_at: null,
+    };
+    this.smokeRenders.set(id, row);
+    return row;
+  }
+
+  async describeSmokeRenderRefusal(tenantId: string, bounds: SmokeRenderBounds): Promise<string | null> {
+    const mine = this.smokeFor(tenantId);
+    const inFlight = mine.find(
+      (s) => s.status === "running" && this.secondsSince(s.created_at) < bounds.inFlightSeconds,
+    );
+    if (inFlight) return `a smoke render is already running for this tenant (${inFlight.id})`;
+
+    const recent = mine
+      .filter((s) => this.secondsSince(s.created_at) < bounds.cooldownSeconds)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    if (recent) {
+      return (
+        `this tenant had a smoke render at ${recent.created_at}; the cooldown is ` +
+        `${bounds.cooldownSeconds}s and it has not elapsed`
+      );
+    }
+
+    const day = [...this.smokeRenders.values()].filter((s) => this.secondsSince(s.created_at) < 86400).length;
+    if (day >= bounds.dailyCap) {
+      return `the platform-wide smoke-render cap of ${bounds.dailyCap} per 24h has been reached`;
+    }
+    return null;
+  }
+
+  async getSmokeRender(id: string): Promise<SmokeRender | null> {
+    return this.smokeRenders.get(id) ?? null;
+  }
+
+  async setSmokeRenderSubmitted(id: string, studioJobId: string, bundleKey: string): Promise<void> {
+    const row = this.smokeRenders.get(id);
+    if (!row) return;
+    row.studio_job_id = studioJobId;
+    row.bundle_key = bundleKey;
+    row.updated_at = this.sqliteNow();
+  }
+
+  async finishSmokeRender(
+    id: string,
+    outcome: { status: "succeeded"; artifact: SmokeRenderArtifact } | { status: "failed"; error: string },
+  ): Promise<void> {
+    const row = this.smokeRenders.get(id);
+    // Guarded on running, exactly like the SQL: a late poll must not overwrite a recorded outcome.
+    if (!row || row.status !== "running") return;
+    if (outcome.status === "succeeded") {
+      row.status = "succeeded";
+      row.artifact_key = outcome.artifact.key;
+      row.artifact_bytes = outcome.artifact.bytes;
+      row.artifact_sha256 = outcome.artifact.sha256;
+      row.artifact_content_type = outcome.artifact.contentType;
+    } else {
+      row.status = "failed";
+      row.error_message = outcome.error;
+    }
+    row.updated_at = this.sqliteNow();
+    row.finished_at = this.sqliteNow();
+  }
+
+  /** TEST SEAM: age a smoke render backwards, so cooldown and deadline paths are reachable. */
+  ageSmokeRender(id: string, seconds: number): void {
+    const row = this.smokeRenders.get(id);
+    if (!row) throw new Error(`no smoke render ${id}`);
+    row.created_at = this.sqliteNow(-seconds * 1000);
   }
 }
 

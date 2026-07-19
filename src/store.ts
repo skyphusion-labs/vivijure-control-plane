@@ -415,4 +415,92 @@ export interface ControlPlaneStore {
   getSetting(key: string): Promise<string | null>;
   setSetting(key: string, value: string, updatedBy: string): Promise<void>;
   recordAdminAction(actor: string, action: string, target: string | null, detail: string | null): Promise<void>;
+
+  // ---- operator smoke renders (cp#45) ----
+  /**
+   * OPEN a smoke render, or refuse. THE WRITE IS THE GATE.
+   *
+   * This is the spend guard, and it is one conditional INSERT on purpose. The route costs GPU by
+   * definition, so a check-then-insert would let two concurrent operator requests both pass the
+   * check and both burn a render. The predicate lives in the INSERT's WHERE, where SQLite's single
+   * writer serializes it, exactly like claimReclaim: the check that runs beforehand exists to
+   * produce a LEGIBLE refusal, never to authorize.
+   *
+   * Returns null when any bound is hit. Call describeSmokeRenderRefusal to say WHICH one, and note
+   * that a refusal here has written nothing at all -- no row, no dispatch, no GPU.
+   */
+  openSmokeRender(
+    id: string,
+    tenantId: string,
+    modulesRelease: string | null,
+    bounds: SmokeRenderBounds,
+  ): Promise<SmokeRender | null>;
+  /**
+   * Why an open would be refused, in words. ADVISORY ONLY (it is a read, so it can be stale by the
+   * time the INSERT runs); openSmokeRender is what actually decides.
+   */
+  describeSmokeRenderRefusal(tenantId: string, bounds: SmokeRenderBounds): Promise<string | null>;
+  getSmokeRender(id: string): Promise<SmokeRender | null>;
+  /** The studio accepted the submit. Records the studio-side ids so an operator can correlate. */
+  setSmokeRenderSubmitted(id: string, studioJobId: string, bundleKey: string): Promise<void>;
+  /**
+   * Terminal, and written ONLY by the poll that observed the outcome.
+   *
+   * The artifact fields are all-or-nothing and only ever accompany "succeeded": they describe bytes
+   * this worker actually PULLED. There is deliberately no way to record a success without them,
+   * because a success with no fetched bytes is the phase=done lie this route exists to end.
+   */
+  finishSmokeRender(
+    id: string,
+    outcome:
+      | { status: "succeeded"; artifact: SmokeRenderArtifact }
+      | { status: "failed"; error: string },
+  ): Promise<void>;
+}
+
+/** The tunable half of the spend guard. Every field is a hard bound, never a hint. */
+export interface SmokeRenderBounds {
+  /** No second smoke render for THIS tenant until this many seconds after the last one STARTED. */
+  cooldownSeconds: number;
+  /** Ceiling on smoke renders across ALL tenants in the trailing 24h. The blast-radius bound. */
+  dailyCap: number;
+  /**
+   * How long a "running" row blocks a new submit for the same tenant. Bounded rather than infinite
+   * so a smoke render whose poll never returned cannot wedge the route forever; it is longer than
+   * any legitimate keyframe render, so it never races a live one.
+   */
+  inFlightSeconds: number;
+}
+
+/** Proof of bytes this worker fetched. Never inferred from a status field. */
+export interface SmokeRenderArtifact {
+  key: string;
+  bytes: number;
+  sha256: string;
+  contentType: string;
+}
+
+/**
+ * One operator-initiated canonical smoke render against one tenant (cp#45).
+ *
+ * What this row is EVIDENCE OF, stated precisely, because the whole issue was a claim outrunning
+ * its proof: status="succeeded" means this worker submitted a canonical keyframe render THROUGH
+ * THIS TENANT's own studio and module workers, then pulled the resulting bytes back and hashed
+ * them. It does NOT mean the tenant's other modules render -- see SMOKE_RENDER_COVERAGE.
+ */
+export interface SmokeRender {
+  id: string;
+  tenant_id: string;
+  status: "running" | "succeeded" | "failed";
+  modules_release: string | null;
+  studio_job_id: string | null;
+  bundle_key: string | null;
+  artifact_key: string | null;
+  artifact_bytes: number | null;
+  artifact_sha256: string | null;
+  artifact_content_type: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
 }
