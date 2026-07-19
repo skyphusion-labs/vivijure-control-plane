@@ -253,6 +253,63 @@ describe("continueProvisionJob", () => {
   });
 });
 
+// ---- the runpod_endpoints -> wfp_upload strand (cp#18) ------------------------------------------
+//
+// THE STRAND: mark() checked the invocation budget AFTER every step uniformly, runpod_endpoints
+// included. A yield there left a job with 4 BILLABLE RunPod endpoints created but the studio never
+// uploaded -- and continueProvisionJob (a poll, no key A) can only resume from wfp_upload onward, so
+// that job was permanently unresumable. The fix carries runpod_endpoints THROUGH to wfp_upload in the
+// same invocation, so the yield boundary lines up with the resume boundary and no such window exists.
+//
+// These force the budget to cross EXACTLY at the runpod_endpoints boundary (and nowhere earlier), then
+// prove (a) the yield never lands inside the window, and (b) the resulting job is driven to succeeded
+// by a keyless poll -- the real-world recovery that was impossible before.
+describe("the runpod_endpoints -> wfp_upload yield strand (cp#18)", () => {
+  // Reads: [start, d1_create, d1_migrate, r2_bucket, r2_token, runpod_endpoints, wfp_upload, ...].
+  // Under 15s through r2_token, over 15s at runpod_endpoints: the budget is crossed in the window.
+  const CROSS_AT_RUNPOD = [0, 100, 200, 300, 400, 20_000, 20_100, 20_200, 20_300, 20_400, 20_500];
+
+  it("never yields in the unresumable window: a yield past runpod_endpoints carries wfp_upload too", async () => {
+    const store = new MemoryStore();
+    const t = await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const d = deps(store);
+
+    const res = await runProvisionJob(d, job.id, t, "rpa_keyA", scriptedClock(CROSS_AT_RUNPOD), 15_000);
+
+    // The budget WAS crossed and the billable endpoints WERE created: this is genuinely the window.
+    expect(res).toMatchObject({ ok: false, yielded: true });
+    expect((d as unknown as { runpod: { createEndpoints: ReturnType<typeof vi.fn> } }).runpod.createEndpoints).toHaveBeenCalledTimes(1);
+    const done = JSON.parse(store.jobs.get("job_1")!.steps_done) as string[];
+    expect(done).toContain("runpod_endpoints");
+    // THE INVARIANT: endpoints created implies the studio was uploaded, because only from wfp_upload
+    // onward can a keyless continueProvisionJob carry the job forward. RED on today code (yield lands
+    // right after runpod_endpoints, wfp_upload absent).
+    expect(done).toContain("wfp_upload");
+  });
+
+  it("the yielded job is RESUMABLE to succeeded by a keyless poll", async () => {
+    const store = new MemoryStore();
+    const t = await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+
+    // First invocation crosses the budget at the runpod_endpoints boundary and yields.
+    const first = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", scriptedClock(CROSS_AT_RUNPOD), 15_000);
+    expect(first).toMatchObject({ ok: false, yielded: true });
+
+    // A poll picks it up with NO key A, exactly as production polls never carry one.
+    const stepsDone = JSON.parse(store.jobs.get("job_1")!.steps_done) as string[];
+    const resumed = (await store.getTenantById(t.id)) as Tenant;
+    const res = await continueProvisionJob(deps(store), job.id, resumed, stepsDone, fakeClock(0), 15_000);
+
+    // GREEN only when the first invocation reached wfp_upload; on today code the poll REFUSES (no
+    // key A) and the job is stranded failed with 4 endpoints live.
+    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(store.jobs.get("job_1")!.status).toBe("succeeded");
+    expect(store.tenants.get(t.id)!.status).toBe("awaiting_invoke_key");
+  });
+});
+
 describe("readTenantEndpoints", () => {
   it("reads the stored objects, endpointVar and all", async () => {
     const store = new MemoryStore();
