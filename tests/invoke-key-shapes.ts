@@ -31,6 +31,7 @@ export const LIVE_UNVERIFIED_KEYS = [...LIVE_KEYS, "modules_unverified"].sort();
 // Exact key set of the 202 installed-but-unconfirmed body.
 export const UNCONFIRMED_KEYS = [
   "message",
+  "readiness",
   "modules_ready",
   "modules_unconfirmed",
   "modules_verified",
@@ -81,6 +82,18 @@ export const UNCONFIRMED = {
   modules_ready: false,
   modules_verified: ["backend"],
   modules_unconfirmed: ["lipsync", "audio-upscale"],
+  // cp#27: the FACTS behind the sentence, so a client can compose its own copy (and localise it)
+  // instead of echoing ours. attempts/elapsed_ms are the numbers a client currently has to parse
+  // back out of English; the three booleans are the claims MESSAGE_MUST_SAY could previously only
+  // grep for. Note repaste_needed:false rather than a "do not re-paste" string -- that claim is the
+  // one that protects the credential, so it is the last one that should have stayed prose-only.
+  readiness: {
+    attempts: 6,
+    elapsed_ms: 9800,
+    key_stored: true,
+    retry_finishes: true,
+    repaste_needed: false,
+  },
   message:
     "your key is installed and stored. Your render modules have not finished picking it up yet " +
     "(checked 6 times over 9800ms). This usually clears in under a minute: retry this request to " +
@@ -96,7 +109,23 @@ export const UNCONFIRMED = {
 
 // The claims the 202 message MUST keep making. If a rewording drops one of
 // these, the customer loses the reason not to re-paste their credential.
+//
+// cp#27 KEPT THESE RATHER THAN REPLACING THEM, which is a deliberate reading of the issue. The
+// structured booleans in `readiness` are now the checkable contract, and READINESS_CLAIMS below is
+// what a caller should assert against. But `message` still SHIPS, and the onboarding client still
+// renders it verbatim, so the prose is still the thing a customer reads: retiring its guard the
+// moment a structured twin appeared would drop coverage on the live surface while the replacement
+// has no consumer yet. These go when the client stops echoing message, in the release that removes
+// message -- not before.
 export const MESSAGE_MUST_SAY = [/installed/i, /stored/i, /retry/i, /do not re-paste/i];
+
+// The structured twin of MESSAGE_MUST_SAY: the same four claims, assertable rather than greppable.
+// A rewording cannot silently drop one of these, which is the entire point of the change.
+export const READINESS_CLAIMS = {
+  key_stored: true,      // installed + stored
+  retry_finishes: true,  // retry
+  repaste_needed: false, // do not re-paste
+} as const;
 
 // Failure bodies. Unlike the success bodies these all carry a diagnostic,
 // which is why the OLD client produced a blank refusal on SUCCESS only.

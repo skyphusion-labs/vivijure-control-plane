@@ -689,6 +689,39 @@ async function installInvokeKey(
         modules_verified: readiness.verified,
         modules_unconfirmed: readiness.unconfirmed,
         ...(readiness.unverified.length ? { modules_unverified: readiness.unverified } : {}),
+        // THE FACTS, so a client can COMPOSE the sentence instead of echoing ours (cp#27).
+        //
+        // The prose below cannot be localised (its wording is fixed here, in English) and cannot be
+        // re-presented (a client wanting the retry as a button, or the elapsed time as a progress
+        // hint, would have to parse English back into numbers -- a parser only as fresh as the
+        // sample it was built from). Worse, the claims that MATTER to a customer were load-bearing
+        // only by convention: tests/invoke-key-shapes.ts greps the message for "installed",
+        // "stored", "retry" and "do not re-paste" precisely because dropping one costs the customer
+        // the reason not to re-paste their credential. A substring assertion standing in for a
+        // contract is a stand-in, honest about it or not.
+        //
+        // So each of those four claims gets a field that is ASSERTABLE rather than greppable:
+        //   key_stored     -- a FACT. We are past the secrets PUT; the key is installed and stored.
+        //   retry_finishes -- the INSTRUCTION. Retrying THIS request is the way forward. It is not
+        //                     a promise the retry succeeds; it names the correct next action.
+        //   repaste_needed -- the SAFETY claim, and the reason this object is not just the pair the
+        //                     issue sketched. "Do not re-paste" is the single most important thing
+        //                     the message says (a re-paste pulls the credential out from under a
+        //                     propagation that is already working), and leaving it grep-only would
+        //                     have left the most load-bearing claim as the one thing not structured.
+        //   attempts / elapsed_ms -- what we probed and for how long, as numbers, which is the part
+        //                     a client currently has to read back out of a sentence.
+        //
+        // message is RETAINED, deliberately. Dropping it is breaking for any consumer echoing it
+        // (the onboarding client does today), so it stays for at least one release and the client
+        // migrates to composing from these fields on its own schedule.
+        readiness: {
+          attempts: readiness.attempts,
+          elapsed_ms: readiness.elapsedMs,
+          key_stored: true,
+          retry_finishes: true,
+          repaste_needed: false,
+        },
         message:
           "your key is installed and stored. Your render modules have not finished picking it up yet " +
           `(checked ${readiness.attempts} times over ${readiness.elapsedMs}ms). This usually clears in ` +
