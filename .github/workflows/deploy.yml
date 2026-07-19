@@ -231,6 +231,18 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy
 
+      # THE missing signal. Every other deploy check hits a JSON route; the v1.3.1
+      # outage served 500 on `/` and every HTML path for three days while those JSON
+      # routes stayed green. This asserts on the RENDERED front-door result (200 AND
+      # text/html AND a non-trivial front-door body) so that class of regression turns
+      # this release run RED instead of sitting silent. DETECTION, not prevention:
+      # Workers deploys are atomic with no pre-switch slot, so a bad build is briefly
+      # live; the point is the run goes red and pings us within seconds, not days.
+      - name: Verify human-visited surface renders
+        env:
+          CONTROL_PLANE_HOST: ${{ vars.CONTROL_PLANE_HOST }}
+        run: scripts/smoke-human-surface.sh "https://${CONTROL_PLANE_HOST}"
+
       - name: Summary
         if: always()
         run: |
