@@ -209,6 +209,26 @@ const SPEND_RATELIMIT_NAMESPACE = "3001";
  */
 export const PROVISION_INVOCATION_BUDGET_MS = 15_000;
 
+/**
+ * The steps AFTER which a yield leaves a job the next driver can actually carry forward. Every step
+ * qualifies EXCEPT runpod_endpoints, and that single exception is the whole of cp#18.
+ *
+ *   - After a CF-only step (d1_create .. r2_token) nothing billable exists yet, so recovery is a
+ *     fresh re-provision (key A in hand) that ADOPTS the idempotent-by-name D1/bucket and re-mints
+ *     the token. No strand.
+ *   - After wfp_upload and everything past it, a poll-driven continueProvisionJob finishes the job
+ *     with NO key A, because all it then needs is on the tenant row (endpoints_json, studio_token_enc).
+ *
+ * runpod_endpoints is NEITHER: it has just created 4 BILLABLE RunPod endpoints that a keyless poll
+ * cannot use and a re-provision would strand. Yielding there produced a permanently unresumable job,
+ * because continueProvisionJob refuses anything short of wfp_upload. So the invocation MUST carry
+ * runpod_endpoints THROUGH to wfp_upload in the same run; suppressing the yield at exactly this
+ * boundary lines the yield boundary up with continueProvisionJob resume boundary. Carrying one extra
+ * step past the 15s budget is safe inside the ~30s waitUntil window (the finale run measured the
+ * whole pre-install prefix at 22s, and wfp_upload is a fraction of that).
+ */
+const YIELD_UNSAFE_STEPS = new Set<MarkableProvisionStep>(["runpod_endpoints"]);
+
 /** A job that ran out of invocation budget with work left. NOT a failure: progress is persisted. */
 export interface ProvisionYielded {
   ok: false;
@@ -314,7 +334,7 @@ export async function runProvisionJob(
     // perturbing the instrument the measurement is about (cp#18), not a style preference.
     const at = clock.now();
     deps.log("provision.step", { tenant: tenant.id, job: jobId, phase: "provision", ...timeStep(step, at) });
-    if (at - startedAt >= budgetMs) throw new ProvisionYield(step);
+    if (!YIELD_UNSAFE_STEPS.has(step) && at - startedAt >= budgetMs) throw new ProvisionYield(step);
   };
 
   try {
@@ -641,7 +661,7 @@ export async function continueProvisionJob(
     // perturbing the instrument the measurement is about (cp#18), not a style preference.
     const at = clock.now();
     deps.log("provision.step", { tenant: tenant.id, job: jobId, phase: "resume", ...timeStep(step, at) });
-    if (at - startedAt >= budgetMs) throw new ProvisionYield(step);
+    if (!YIELD_UNSAFE_STEPS.has(step) && at - startedAt >= budgetMs) throw new ProvisionYield(step);
   };
   const complete = (step: ProvisionStep) => done.includes(step);
 
@@ -944,7 +964,7 @@ export async function upgradeTenantModules(
     // perturbing the instrument the measurement is about (cp#18), not a style preference.
     const at = clock.now();
     deps.log("provision.step", { tenant: tenant.id, job: jobId, phase: "module_upgrade", ...timeStep(step, at) });
-    if (at - startedAt >= budgetMs) throw new ProvisionYield(step);
+    if (!YIELD_UNSAFE_STEPS.has(step) && at - startedAt >= budgetMs) throw new ProvisionYield(step);
   };
 
   try {
