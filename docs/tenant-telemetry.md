@@ -189,3 +189,138 @@ fallback in the ruling is **not** needed for tenant monitoring as a whole, but i
 apply, narrowly, to one promise: **telemetry alone cannot see a studio serving HTTP
 errors**, and no clean field set will fix that. That capability comes from synthetic Gatus
 probes or it does not come at all, and the SLA must be written to match.
+
+---
+
+# Part 6: Logpush delivery design (answers to the three gating questions)
+
+Design only. Nothing here is wired, and per the ruling nothing gets wired until the
+tenant leg is approved on its merits.
+
+## Q1. Can Logpush deliver to our self-hosted Loki? Not directly. A shim is required.
+
+Loki's push API expects its own envelope:
+
+```json
+{"streams":[{"stream":{"worker":"..."},"values":[["<ns>","<line>"]]}]}
+```
+
+Logpush does not emit that. It POSTs its own batch of the selected fields to an HTTPS
+destination. So a translating shim is mandatory; there is no configuration that makes
+Loki accept a Logpush batch directly.
+
+**The privacy question you asked, answered: YES, the never-collected property survives
+the shim.** `output_options.field_names` determines what is in the payload Cloudflare
+sends. A field that is not in `field_names` is **not in the POST body**. The shim
+therefore cannot forward, log, or leak `Logs`, `Exceptions`, or `Event`, because it never
+receives them. The exclusion stays enforced by the platform, upstream of any code we
+write, which is exactly the property that distinguishes this from the tail-worker
+approach.
+
+That holds regardless of where the shim runs or how carelessly it is written. Worth
+stating plainly: **the shim is not part of the trust boundary for content.** It is only
+trusted for availability and correct reshaping.
+
+**Recommended shim placement: a Worker, reusing the existing `LOKI_VPC` pattern.**
+
+```
+Logpush (filtered fields only) --HTTPS--> shim Worker --LOKI_VPC (vpc_service)--> Loki
+```
+
+Rationale: Loki is deliberately network-isolated with **no auth on its push path** (the
+monitoring compose comments call this out explicitly, and it is safe precisely because
+Loki is unreachable from outside). A Logpush HTTP destination must be publicly
+reachable. Exposing Loki directly to satisfy that would destroy the isolation that makes
+the credentialless push path acceptable. A Worker keeps Loki private and terminates the
+public surface somewhere we control, and `vivijure-tail` already proves the
+`vpc_service` hop works.
+
+Authentication is our responsibility, not Cloudflare's: the docs state plainly that
+"Cloudflare customers are expected to perform their own authentication of the pushed
+logs." Logpush supports `header_*` destination parameters, so the shim requires a shared
+secret header. That secret is a Worker secret, never a tracked file.
+
+**Implementation ordering constraint (do not discover this at deploy time):** creating a
+Logpush job VALIDATES the destination first. Per the docs, the endpoint must accept a
+gzipped `test.txt.gz` whose content is `{"content":"tests"}` or job creation errors. So
+the shim Worker must be **deployed and answering that validation probe BEFORE** the
+Logpush job can be created. Same class as the dangling-binding hazard already documented
+in `wrangler.toml.example`: an ordering fact that only a real deploy will teach you.
+
+**One item to confirm empirically rather than assume:** the destination documentation does
+not state the exact wire format of a live batch (the validation upload is gzipped, which
+strongly suggests gzipped NDJSON, and that matches Logpush behaviour elsewhere). The shim
+must be written against a REAL captured push, not against an assumed shape. This is the
+same trap as parsing a vendor format from a remembered sample.
+
+## Q2. Can a job be scoped to the tenant dispatch namespace? Yes, cleanly.
+
+`DispatchNamespace` is a plain `string` field in `workers_trace_events`, and Logpush
+filters support `eq` on strings. Filtering is unsupported only on `objects` and
+`array[object]` types, which does not affect us here.
+
+```json
+{"where":{"key":"DispatchNamespace","operator":"eq","value":"vivijure-tenants"}}
+```
+
+`ScriptName` is also a string and supports `startsWith`, giving a fallback or a
+belt-and-braces second predicate (`tenant-`).
+
+**Important framing: scoping is NOT the privacy control, and must not be relied on as
+one.** The job's `field_names` never includes `Logs`, `Exceptions`, or `Event`, so even a
+job that over-captured every Worker in the account would collect **zero** customer
+content. Scoping controls cost and noise. The field set controls content. Keeping those
+two concerns distinct matters, because it means a future filter mistake is a billing
+annoyance rather than a privacy incident. Use both; depend on the field set.
+
+Per the Workers for Platforms documentation, one job on the dispatch Worker covers the
+dispatch Worker and every user Worker in the namespace, so this needs no per-tenant
+configuration and does not scale with tenant count.
+
+## Q3. Outage classes: what the clean field set CAN and CANNOT see
+
+Restated here as the standalone deliverable. Clean set = `ScriptName`,
+`DispatchNamespace`, `Outcome`, `EventTimestampMs`, `WallTimeMs`, `CPUTimeMs`,
+`ScriptVersion`.
+
+| Outage class | Detectable? | Mechanism, or why not |
+|---|---|---|
+| Studio throws / crashes | **YES** | `Outcome = exception`, rate per `ScriptName`. |
+| Studio hangs / times out | **YES** | `WallTimeMs` p95 against baseline; `Outcome = canceled`. |
+| Studio CPU-starved | **YES** | `CPUTimeMs` against baseline. |
+| Studio never invoked | **PARTIAL** | Absence of rows. **Ambiguous by construction:** an idle studio and an unreachable studio are indistinguishable. Usable estate-wide (all tenants silent = platform fault), NOT usable per tenant. |
+| **Studio returns HTTP 4xx/5xx** | **NO** | A Worker that executes successfully and returns a 500 has `Outcome = ok`. Status lives inside `Event`, excluded as a content carrier. |
+| Bad deploy / regression by version | **YES** | `ScriptVersion` correlated against exception rate. |
+
+**The 4xx/5xx blindness is structural, not a tuning problem.** No selection of clean
+fields fixes it, because the status code is only ever inside `Event`, and `Event` also
+carries the request URL. That is the whole trade.
+
+Consequence for the SLA, stated so it cannot be missed: **an SLA backed by telemetry
+alone must not promise to detect a studio serving errors.** It can promise detection of
+crashes, hangs, and platform-wide outage. Detection of error responses requires the
+synthetic Gatus probe described in Part 3, which uses our own request rather than the
+tenant's traffic and therefore stays inside the boundary.
+
+## Q4. `path` is user-derived, and it is not being smuggled in
+
+Agreed and already handled. `path` reaches us only inside `Event`, which Part 2 excludes
+in full. There is no configuration in this design that collects a request path for a
+tenant Worker.
+
+Noting for completeness, because it is the same field and could confuse a future reader:
+our **own** tail worker DOES put `path` on its invocation line
+(`path: ev.request?.path` in `tail/src/index.ts`). That is correct for our Workers, whose
+paths we author, and is one more reason the tail worker must never be pointed at a tenant
+script.
+
+## Summary of Part 6
+
+| Question | Answer |
+|---|---|
+| Deliver straight to Loki? | **No.** Shim required; Loki does not accept Logpush batches. |
+| Does the shim weaken the boundary? | **No.** It only ever receives the filtered field set. Not in the content trust boundary. |
+| Scope to the tenant namespace? | **Yes**, `DispatchNamespace eq vivijure-tenants`. Cost control, not the privacy control. |
+| Blind spots? | **HTTP 4xx/5xx**, structurally. Per-tenant silence is ambiguous. Both constrain the SLA. |
+| Blocking prerequisite | Shim Worker must answer the gzipped validation probe BEFORE job creation. |
+| Must be verified empirically | The live batch wire format. Write the shim against a captured push, never an assumed shape. |
