@@ -4,6 +4,46 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
+## v1.3.1 -- 2026-07-19
+
+PATCH, and an outage fix. **The hosted control plane had served no human-visitable page since
+v1.3.0.** `/` and every HTML, CSS and JS path returned 500 while every JSON route returned 200, so
+the plane looked healthy to every check anyone was running.
+
+### The ASSETS binding was never created (#60)
+
+`assets` is a **bare TOML key**, so it binds to whatever table header precedes it. The
+`[observability]` table added in v1.3.0 landed above it, and the line was silently parsed as
+`observability.assets`. The top-level ASSETS binding therefore did not exist, and
+`env.ASSETS.fetch(request)` at the end of `src/index.ts` threw on undefined for every asset path.
+
+wrangler's only protest was a warning that is easy to scroll past:
+
+```
+Unexpected fields found in observability field: "assets"
+```
+
+The fix is a **move**: bare top-level keys go above the first table header. The comment now records
+that the position is load-bearing, because the line reads as equally correct in either place, which
+is precisely why it shipped.
+
+### The gap that let it ship is closed too
+
+Every render guard asked *"did the render succeed?"*. None asked *"is the result the config we
+meant?"* -- and a render can succeed while binding nothing. `tests/render-wrangler.test.sh` now
+parses the rendered TOML and asserts a top-level `assets` key, `binding == "ASSETS"`,
+`run_worker_first`, and the absence of a stray key under `[observability]`.
+
+The guard was watched **red** before being trusted: a negative control regenerates the exact broken
+shape and requires the assertion to fail against it. Its output is captured rather than printed,
+because a deliberate `FAIL` line in CI teaches people to ignore real ones.
+
+This is the second config-shape defect on this file the unit suite could not see; `run_worker_first`
+was the first, on 2026-07-17. The suite never loads the asset layer.
+
+**Still open:** nothing verifies at deploy time that a human-visited path returns 200. `/ready` does
+not cover it. That check is what would have caught this in minutes instead of days.
+
 ## v1.3.0 -- 2026-07-19
 
 MINOR: an operator can finally watch a hosted tenant actually render, the plane gets a diagnostic
