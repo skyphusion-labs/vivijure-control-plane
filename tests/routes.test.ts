@@ -243,6 +243,56 @@ describe("GET /auth/email/callback", () => {
   });
 });
 
+// ---- SSO start: redirect_to must stay same-origin relative ----
+
+describe("GET /auth/:provider/start redirect_to", () => {
+  const googleEnv = () =>
+    env({ GOOGLE_OAUTH_CLIENT_ID: "gid", GOOGLE_OAUTH_CLIENT_SECRET: "gsec" });
+
+  async function storedRedirectTo(path: string): Promise<string | null> {
+    const res = await handle(req(path), googleEnv(), ctx, deps);
+    expect(res.status).toBe(302);
+    expect([...store.oauthStates.values()]).toHaveLength(1);
+    return [...store.oauthStates.values()][0].redirect_to;
+  }
+
+  it("keeps a same-origin relative path", async () => {
+    expect(await storedRedirectTo("/auth/google/start?redirect_to=%2Fonboarding")).toBe("/onboarding");
+  });
+
+  it("keeps query and hash on a relative path", async () => {
+    expect(await storedRedirectTo("/auth/google/start?redirect_to=%2Fapp%3Fstep%3D2%23ready")).toBe(
+      "/app?step=2#ready",
+    );
+  });
+
+  it("REFUSES the backslash open-redirect (`/\\evil.com` → protocol-relative)", async () => {
+    // Literal backslash in the query value (browsers treat \\ as / → //evil.com).
+    expect(await storedRedirectTo("/auth/google/start?redirect_to=/%5Cevil.com")).toBeNull();
+    store.oauthStates.clear();
+    const withSlash = "/auth/google/start?redirect_to=" + encodeURIComponent("/\\evil.com");
+    expect(await storedRedirectTo(withSlash)).toBeNull();
+  });
+
+  it("REFUSES protocol-relative and absolute external URLs", async () => {
+    expect(await storedRedirectTo("/auth/google/start?redirect_to=" + encodeURIComponent("//evil.com"))).toBeNull();
+    store.oauthStates.clear();
+    expect(await storedRedirectTo("/auth/google/start?redirect_to=" + encodeURIComponent("https://evil.com"))).toBeNull();
+  });
+
+  it("REFUSES absolute same-origin URLs (relative paths only)", async () => {
+    expect(
+      await storedRedirectTo(
+        "/auth/google/start?redirect_to=" + encodeURIComponent("https://studio.vivijure.com/onboarding"),
+      ),
+    ).toBeNull();
+  });
+
+  it("defaults to null (later `/`) when redirect_to is absent", async () => {
+    expect(await storedRedirectTo("/auth/google/start")).toBeNull();
+  });
+});
+
 // ---- session + AUP gate ----
 
 describe("the AUP gate", () => {

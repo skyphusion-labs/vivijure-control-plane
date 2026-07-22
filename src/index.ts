@@ -250,9 +250,7 @@ async function beginSso(
   }
   const redirectToParam = url.searchParams.get("redirect_to");
   // Only same-origin relative paths: an open redirector on the auth flow is a phishing primitive.
-  const redirectTo = redirectToParam && redirectToParam.startsWith("/") && !redirectToParam.startsWith("//")
-    ? redirectToParam
-    : null;
+  const redirectTo = safeSameOriginRedirectPath(redirectToParam, publicOrigin(env));
 
   const { url: authUrl, state, verifier } = await authorizeUrl(env, provider, redirectTo);
   await deps.store.createOAuthState({
@@ -1002,6 +1000,25 @@ async function readJson(request: Request): Promise<unknown> {
 
 function redirectTo(env: ControlPlaneEnv, path: string, headers: Record<string, string> = {}): Response {
   return new Response(null, { status: 302, headers: { location: `${publicOrigin(env)}${path}`, ...headers } });
+}
+
+/**
+ * Post-SSO return path. Only same-origin relative paths are kept.
+ *
+ * The classic `startsWith("/") && !startsWith("//")` check is not enough: browsers treat `\` as `/`
+ * in URL paths, so `/\\evil.com` becomes protocol-relative `//evil.com`. Reject backslashes and
+ * any `//`, then re-parse against the public origin and demand an origin match.
+ */
+function safeSameOriginRedirectPath(raw: string | null, origin: string): string | null {
+  if (!raw) return null;
+  if (!raw.startsWith("/") || raw.includes("\\") || raw.includes("//")) return null;
+  try {
+    const url = new URL(raw, origin);
+    if (url.origin !== origin) return null;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
 }
 
 /**
