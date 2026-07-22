@@ -6,6 +6,10 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.4.1 -- 2026-07-22
+
+PATCH. Provisioner rollback on failed provision (cf#91).
+
 ### fix(provisioner) -- auto-teardown on failed provision (cf#91)
 
 - Failed provisions auto-unwind created resources (re-fetch tenant row, then `teardownTenant`).
