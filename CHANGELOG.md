@@ -4,6 +4,15 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
+## Unreleased
+
+### fix(provisioner) -- auto-teardown on failed provision (cf#91)
+
+- Failed provisions auto-unwind created resources (re-fetch tenant row, then `teardownTenant`).
+- R2 token revoke falls back to deterministic name (`vivijure-tenant-<slug>-r2`) via a
+  result_info-checked token census when the id was never persisted.
+- Persist `r2_token_id` immediately after mint (before hashing the secret value).
+
 ## v1.4.0 -- 2026-07-19
 
 MINOR. The demo-hardening batch: everything merged after the v1.3.1 outage fix, shipped together
