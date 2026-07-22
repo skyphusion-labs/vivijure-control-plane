@@ -6,4 +6,4 @@
  * Kept in lockstep with package.json by tests/version.test.ts, so cutting a tag
  * without bumping the manifest fails the gate instead of shipping a lie.
  */
-export const CONTROL_PLANE_VERSION = "1.4.0";
+export const CONTROL_PLANE_VERSION = "1.4.1";
