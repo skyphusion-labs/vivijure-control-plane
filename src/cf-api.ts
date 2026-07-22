@@ -26,6 +26,19 @@ interface CfEnvelope<T> {
   success: boolean;
   result: T;
   errors?: { code?: number; message: string }[];
+  result_info?: {
+    page?: number;
+    per_page?: number;
+    count?: number;
+    total_count?: number;
+    total_pages?: number;
+  };
+}
+
+/** One row from GET /accounts/{id}/tokens. Id + name are the only fields teardown needs. */
+export interface AccountTokenSummary {
+  id: string;
+  name: string;
 }
 
 const CF_API = "https://api.cloudflare.com/client/v4";
@@ -267,6 +280,80 @@ export class CfApi {
 
   async revokeToken(tokenId: string): Promise<void> {
     await this.call<unknown>("tokens.delete", `/accounts/${this.accountId}/tokens/${tokenId}`, { method: "DELETE" });
+  }
+
+  /**
+   * List account API tokens with result_info pagination checked (cf#91).
+   *
+   * WHY FULL ENVELOPE: `call()` returns only `result`, which is correct for create/delete but
+   * silently truncates a multi-page token census. A failed provision that minted a token whose id
+   * never persisted can only be cleaned up by NAME; missing a page means the credential stays live.
+   * Walk every page until result_info says we are done (or the page comes back empty).
+   */
+  async listAccountTokens(): Promise<AccountTokenSummary[]> {
+    const out: AccountTokenSummary[] = [];
+    const perPage = 50;
+    let page = 1;
+    // Cap pages so a runaway CF response cannot loop the Worker forever. 50 * 40 = 2000 tokens is
+    // far above any realistic hosted-tier account; hitting the cap is itself a loud failure.
+    for (let guard = 0; guard < 40; guard++) {
+      const path =
+        `/accounts/${this.accountId}/tokens?page=${page}&per_page=${perPage}`;
+      const res = await this.fetchImpl(`${CF_API}${path}`, {
+        headers: { authorization: `Bearer ${this.token}` },
+      });
+      let body: CfEnvelope<AccountTokenSummary[] | null> | null = null;
+      try {
+        body = (await res.json()) as CfEnvelope<AccountTokenSummary[] | null>;
+      } catch {
+        throw new CfApiError("tokens.list", res.status, []);
+      }
+      if (!res.ok || !body?.success) {
+        throw new CfApiError("tokens.list", res.status, body?.errors ?? []);
+      }
+      const batch = Array.isArray(body.result) ? body.result : [];
+      for (const row of batch) {
+        if (row && typeof row.id === "string" && typeof row.name === "string") {
+          out.push({ id: row.id, name: row.name });
+        }
+      }
+      const info = body.result_info ?? {};
+      const totalPages =
+        typeof info.total_pages === "number" && info.total_pages > 0 ? info.total_pages : null;
+      if (totalPages !== null) {
+        if (page >= totalPages) break;
+      } else if (batch.length < perPage) {
+        break;
+      }
+      page += 1;
+    }
+    return out;
+  }
+
+  /** Find a token by exact name. Prefers the name= filter; falls back to a full census. */
+  async findTokenByName(name: string): Promise<AccountTokenSummary | null> {
+    const path =
+      `/accounts/${this.accountId}/tokens?name=${encodeURIComponent(name)}&per_page=50`;
+    try {
+      const filtered = await this.call<AccountTokenSummary[]>("tokens.listByName", path);
+      const hit = (filtered ?? []).find((t) => t && t.name === name);
+      if (hit) return { id: hit.id, name: hit.name };
+    } catch {
+      // Older accounts / reduced tokens may not support name=; fall through to census.
+    }
+    const all = await this.listAccountTokens();
+    return all.find((t) => t.name === name) ?? null;
+  }
+
+  /**
+   * Revoke by deterministic name when the id was never persisted (cf#91 unpersisted-id class).
+   * No-op (returns false) when the census finds nothing -- already-revoked is success for teardown.
+   */
+  async revokeTokenByName(name: string): Promise<boolean> {
+    const hit = await this.findTokenByName(name);
+    if (!hit) return false;
+    await this.revokeToken(hit.id);
+    return true;
   }
 
   // ---- Workers for Platforms ----

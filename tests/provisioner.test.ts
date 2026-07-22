@@ -89,6 +89,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     tokenMinter: {
       mintBucketToken: vi.fn(async () => (calls.push("mintR2Token"), { id: "tok-1", value: "TOKEN_VALUE_SECRET" })),
       revoke: vi.fn(async () => void calls.push("revokeToken")),
+      revokeByName: vi.fn(async (name: string) => (calls.push(`revokeByName:${name}`), true)),
     },
     bundle: {
       fetch: vi.fn(async () => ({
@@ -438,6 +439,72 @@ describe("teardownTenant", () => {
     expect(calls).toContain("revokeToken");
     expect(calls).not.toContain("deleteD1");
     expect(calls).not.toContain("deleteR2Bucket");
+  });
+
+  it("revokes by deterministic name when r2_token_id was never persisted (cf#91)", async () => {
+    const d = deps();
+    const t = await provisioned();
+    const orphan = { ...t, r2_token_id: null };
+    await teardownTenant(d, orphan, { deleteData: true });
+    expect(d.tokenMinter.revoke).not.toHaveBeenCalled();
+    expect(d.tokenMinter.revokeByName).toHaveBeenCalledWith("vivijure-tenant-hero-r2");
+    // Credential still happens before the bucket/D1 it points at.
+    expect(calls.indexOf("revokeByName:vivijure-tenant-hero-r2")).toBeLessThan(calls.indexOf("deleteD1"));
+    expect(calls.indexOf("revokeByName:vivijure-tenant-hero-r2")).toBeLessThan(calls.indexOf("deleteR2Bucket"));
+  });
+
+  it("falls back to by-name when revoke-by-id fails (cf#91)", async () => {
+    const d = deps({
+      tokenMinter: {
+        mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "TOKEN_VALUE_SECRET" })),
+        revoke: vi.fn(async () => {
+          throw new Error("token gone");
+        }),
+        revokeByName: vi.fn(async (name: string) => (calls.push(`revokeByName:${name}`), true)),
+      },
+    });
+    const res = await teardownTenant(d, await provisioned(), { deleteData: true });
+    expect(res.failures.some((f) => f.resource === "r2_token")).toBe(true);
+    expect(d.tokenMinter.revokeByName).toHaveBeenCalledWith("vivijure-tenant-hero-r2");
+  });
+});
+
+describe("auto-teardown on provision failure (cf#91)", () => {
+  it("unwinds minted resources after a mid-chain failure", async () => {
+    const t = await tenant();
+    const boom = new CfApiError("runpod.create", 400, [{ message: "worker quota" }]);
+    const d = deps({
+      runpod: { createEndpoints: vi.fn(async () => { throw boom; }) },
+    });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
+
+    expect(res.ok).toBe(false);
+    expect(store.tenants.get(t.id)?.status).toBe("failed");
+    // Token was persisted before the RunPod step; rollback must revoke it.
+    expect(d.tokenMinter.revoke).toHaveBeenCalledWith("tok-1");
+    expect(calls).toContain("deleteD1");
+    expect(calls).toContain("deleteR2Bucket");
+    expect(logs.some((l) => l.event === "provision.rollback")).toBe(true);
+  });
+
+  it("re-fetches the tenant row so teardown sees ids persisted after the start snapshot", async () => {
+    // Start-of-job tenant has null r2_token_id; after mint the store has tok-1. Rollback must
+    // NOT use the stale snapshot (that would miss the credential and only try by-name).
+    const t = await tenant();
+    expect(t.r2_token_id).toBeNull();
+    const boom = new Error("modules explode");
+    const d = deps({
+      moduleBundle: {
+        fetch: vi.fn(async () => {
+          throw boom;
+        }),
+      },
+    });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    expect(d.tokenMinter.revoke).toHaveBeenCalledWith("tok-1");
+    expect(d.tokenMinter.revokeByName).not.toHaveBeenCalled();
   });
 });
 

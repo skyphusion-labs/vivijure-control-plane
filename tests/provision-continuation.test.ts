@@ -79,6 +79,7 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),
       revoke: vi.fn(async () => undefined),
+      revokeByName: vi.fn(async () => false),
     },
     bundle: {
       fetch: vi.fn(async () => ({

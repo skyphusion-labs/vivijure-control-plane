@@ -416,11 +416,13 @@ export async function runProvisionJob(
       }
     }
     const token = await deps.tokenMinter.mintBucketToken(tenantR2TokenName(tenant.slug), bucket);
+    // Persist the id IMMEDIATELY (cf#91 / #93): if we die between mint and the next await, teardown
+    // can still revoke by id. Hashing the secret value is pure CPU and can wait.
+    await deps.store.setTenantR2Token(tenant.id, token.id);
     // R2 S3 semantics: access key id = token id, secret = SHA-256 hex of the token value. Derived
     // ONCE here and used for both the satellite templates and the worker secret, so they cannot
     // disagree.
     const s3Secret = await sha256Hex(token.value);
-    await deps.store.setTenantR2Token(tenant.id, token.id);
     await mark("r2_token");
 
     // 5. RunPod (#54). The ONLY step that needs key A, which is why it is a parameter and why its
@@ -590,6 +592,11 @@ export async function runProvisionJob(
     deps.log("provision.failed", { tenant: tenant.id, step, message });
     await deps.store.finishJob(jobId, "failed", step, message);
     await deps.store.setTenantStatus(tenant.id, "failed");
+    // Auto-teardown (cf#91): a failed provision must not leave live R2 tokens / buckets / D1
+    // standing. Re-fetch the row so we see ids persisted mid-run (the start-of-job `tenant`
+    // snapshot is stale after setTenantR2Token). Best-effort: teardown failures are logged; the
+    // job stays failed either way so reclaim can retry.
+    await rollbackFailedProvision(deps, tenant.id);
     return { ok: false, step, message };
   }
 }
@@ -708,7 +715,30 @@ export async function continueProvisionJob(
     deps.log("provision.failed", { tenant: tenant.id, step, message, resumed: true });
     await deps.store.finishJob(jobId, "failed", step, message);
     await deps.store.setTenantStatus(tenant.id, "failed");
+    await rollbackFailedProvision(deps, tenant.id);
     return { ok: false, step, message };
+  }
+}
+
+/**
+ * Best-effort unwind after a failed provision (cf#91). Never throws: the caller has already
+ * recorded the failure, and a teardown exception must not erase that record.
+ */
+async function rollbackFailedProvision(deps: ProvisionDeps, tenantId: string): Promise<void> {
+  try {
+    const fresh = await deps.store.getTenantById(tenantId);
+    if (!fresh) {
+      deps.log("provision.rollback_skipped", { tenant: tenantId, reason: "tenant_missing" });
+      return;
+    }
+    const result = await teardownTenant(deps, fresh, { deleteData: true });
+    deps.log("provision.rollback", {
+      tenant: tenantId,
+      ok: result.ok,
+      failures: result.failures,
+    });
+  } catch (e) {
+    deps.log("provision.rollback_error", { tenant: tenantId, error: String(e) });
   }
 }
 
@@ -1055,8 +1085,10 @@ async function uploadAssets(
 /**
  * Tear a tenant down. Best-effort and ORDERED so that the tenant stops being reachable FIRST:
  * pulling the worker before deleting its data means no request can hit a half-deleted studio.
- * Every failure is collected and reported rather than thrown, because a teardown that stops at the
- * first error leaves the most dangerous leftovers (a live credential) behind.
+ * The R2 credential is revoked BEFORE the bucket/D1 it points at (credential-first among data
+ * resources; cf#91), and revoke falls back to the deterministic token name when the id was never
+ * persisted. Every failure is collected and reported rather than thrown, because a teardown that
+ * stops at the first error leaves the most dangerous leftovers (a live credential) behind.
  */
 export async function teardownTenant(
   deps: ProvisionDeps,
@@ -1091,8 +1123,30 @@ export async function teardownTenant(
   // failure is surfaced (a live-configured module worker is exactly what must not be left behind).
   const moduleTeardown = await teardownTenantModules(deps, tenant.id);
   for (const f of moduleTeardown.failures) failures.push(f);
-  // The credential goes next: an un-revoked token outliving its bucket is an orphaned grant.
-  if (tenant.r2_token_id) await attempt("r2_token", () => deps.tokenMinter.revoke(tenant.r2_token_id!));
+
+  // Credential BEFORE bucket/D1 (cf#91): kill the live grant, then the resources it points at.
+  // Prefer the persisted id; always attempt by-name as well when id is missing OR revoke-by-id
+  // failed (the unpersisted-id class and the "id on a row we are about to blank" class).
+  const tokenName = tenantR2TokenName(tenant.slug);
+  let revokedById = false;
+  if (tenant.r2_token_id) {
+    try {
+      await deps.tokenMinter.revoke(tenant.r2_token_id);
+      revokedById = true;
+    } catch (e) {
+      failures.push({ resource: "r2_token", error: String(e) });
+      deps.log("teardown.failed", { tenant: tenant.id, resource: "r2_token", error: String(e) });
+    }
+  }
+  if (!revokedById) {
+    await attempt("r2_token_by_name", async () => {
+      const hit = await deps.tokenMinter.revokeByName(tokenName);
+      if (!hit && !tenant.r2_token_id) {
+        // Nothing to revoke: either never minted, or already gone. Not a failure.
+        deps.log("teardown.r2_token_absent", { tenant: tenant.id, name: tokenName });
+      }
+    });
+  }
 
   if (opts.deleteData) {
     if (tenant.d1_database_id) await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!));

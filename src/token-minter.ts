@@ -25,6 +25,11 @@ export interface MintedR2Credential {
 export interface TokenMinter {
   mintBucketToken(name: string, bucket: string): Promise<MintedR2Credential>;
   revoke(tokenId: string): Promise<void>;
+  /**
+   * Revoke by deterministic name when the id was never persisted (cf#91).
+   * Returns true when a token was found and deleted; false when the census found nothing.
+   */
+  revokeByName(name: string): Promise<boolean>;
 }
 
 /**
@@ -48,5 +53,9 @@ export class CfTokenMinter implements TokenMinter {
 
   async revoke(tokenId: string): Promise<void> {
     await this.cf.revokeToken(tokenId);
+  }
+
+  async revokeByName(name: string): Promise<boolean> {
+    return await this.cf.revokeTokenByName(name);
   }
 }

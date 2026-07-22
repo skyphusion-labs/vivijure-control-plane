@@ -208,6 +208,10 @@ by `scripts/build-module-release.ts` in the release workflow.
 in-job gate); a render past discovery + moving pixels needs key B and is the out-of-band release
 gate. Teardown pulls the studio worker first (discovery goes dark), then prefix-sweeps the tenant's
 module scripts and censuses that zero remain; the `installed_modules` rows die with the tenant D1.
+A failed provision auto-tears down created resources (cf#91): re-fetch the tenant row, revoke the
+R2 token by persisted id or by deterministic name (`vivijure-tenant-<slug>-r2`, result_info-checked
+census), then delete D1/bucket. Slug reuse for never-live failed rows stays on the Tier A reclaim
+path.
 
 Naming: **"control-plane", never "platform"**. The Studio's
 [`vivijure-cf src/platform/`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/src/platform/) is already the host-neutral Platform ICD.
