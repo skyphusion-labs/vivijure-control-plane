@@ -6,7 +6,14 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
-- **docs:** clarify studio PIN is studio-only; module bundles are self-anchored (cf#147).
+## v1.4.2 -- 2026-07-22
+
+PATCH. SSO redirect harden + audit CI.
+
+- **fix(security):** reject SSO `redirect_to` backslash / protocol-relative open redirect (#76)
+- **docs:** clarify studio PIN is studio-only; module bundles are self-anchored (cf#147)
+- **ci:** adversarial security audit workflow
+
 ## v1.4.1 -- 2026-07-22
 
 PATCH. Provisioner rollback on failed provision (cf#91).
