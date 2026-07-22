@@ -276,15 +276,20 @@ shared source code.
 3. At provision time it reads that pinned bundle out of the mirror and **checks the hash** before
    using it.
 
-The manifest is the contract, and it carries everything needed to stand a tenant studio up:
+The top-level studio `manifest.json` is the contract for the **studio** artifact (and the pin
+`manifest_sha256` covers only that file). Module bundles are co-published under the same tag tree
+at `modules/<name>/` but are **self-anchored**: each module has its own `manifest.json` with
+`worker.sha256`, which this plane re-checks at provision (cf#147). A tenant may also pin modules to
+a different release than the studio (cf#103), so the top-level digest deliberately does not claim
+to cover module bytes.
 
-| The manifest carries | Why it is in the manifest and not in this repo |
+| What ships under the tag | Where integrity is anchored |
 |---|---|
-| the studio **worker** | It is the studio's build output, not ours |
-| the studio **assets** | Same. They ship as one unit with the worker |
-| the **modules** | One tag, one artifact, so a studio and its modules are never a mismatched pair |
-| the studio **migrations** | The schema belongs to whoever owns the tables. We apply them; we do not author them |
-| **`required_vars`** | The studio declares what it needs. We read that list rather than keeping our own copy that silently drifts |
+| the studio **worker** | top-level `manifest.json` → `worker.sha256` (in the pin) |
+| the studio **assets** | top-level manifest asset hashes (in the pin) |
+| the **modules** | per-module `modules/<name>/manifest.json` → `worker.sha256` (not in the studio pin) |
+| the studio **migrations** | top-level manifest (in the pin) |
+| **`required_vars`** | top-level manifest (in the pin); we read that list rather than keeping our own copy |
 
 **The pin has a floor: `v1.3.1`.** Migrations and `required_vars` only started riding the manifest
 at that release, so an earlier artifact cannot describe a tenant fully enough to build one. The

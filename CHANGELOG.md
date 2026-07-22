@@ -6,6 +6,7 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+- **docs:** clarify studio PIN is studio-only; module bundles are self-anchored (cf#147).
 ## v1.4.1 -- 2026-07-22
 
 PATCH. Provisioner rollback on failed provision (cf#91).
