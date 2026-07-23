@@ -457,7 +457,7 @@ async function driveJobIfNeeded(
 
   // Lost driver: no progress for too long. Fail honestly rather than leave a spinner running.
   const lastProgress = Date.parse(`${job.updated_at.replace(" ", "T")}Z`);
-  if (Number.isFinite(lastProgress) && Date.now() - lastProgress > MAX_JOB_STALE_MS) {
+  if (Number.isFinite(lastProgress) && deps.now() - lastProgress > MAX_JOB_STALE_MS) {
     await deps.store.finishJob(
       job.id,
       "failed",
