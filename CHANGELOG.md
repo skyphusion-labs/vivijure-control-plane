@@ -6,6 +6,12 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.4.3 -- 2026-07-23
+
+PATCH. K3 stale-job clock fix (#79).
+
+- **fix(security):** use `deps.now()` for stale-job detection instead of `Date.now()` (K3 verify)
+
 ## v1.4.2 -- 2026-07-22
 
 PATCH. SSO redirect harden + audit CI.
