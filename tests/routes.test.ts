@@ -53,6 +53,7 @@ const env = (over: Partial<ControlPlaneEnv> = {}): ControlPlaneEnv =>
     CONTROL_PLANE_ADMIN_TOKEN: ADMIN_TOKEN,
     POSTERN_SEND_URL: "https://mail.example/api/send",
     POSTERN_SEND_TOKEN: "t",
+    CP_RATE_LIMIT: { limit: async () => ({ success: true }) },
     ...over,
   }) as ControlPlaneEnv;
 

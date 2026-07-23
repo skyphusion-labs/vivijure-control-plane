@@ -221,6 +221,10 @@ async function emailStart(
     // The send door is an outbound-email amplifier: without a limit, anyone can make us mail anyone.
     const { success } = await env.CP_RATE_LIMIT.limit({ key: `email-start:${email}` });
     if (!success) return accepted();
+  } else if (env.POSTERN_SEND_URL && env.POSTERN_SEND_TOKEN) {
+    // Production mail path configured but rate limit binding absent: fail closed (K3).
+    console.error("CP_RATE_LIMIT binding required when POSTERN send door is configured");
+    return accepted();
   }
 
   const signupsEnabled = (await deps.store.getSetting("signups_enabled")) !== "false";
