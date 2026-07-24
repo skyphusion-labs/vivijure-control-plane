@@ -14,6 +14,7 @@
 // steps) lands in #53/#54. A tenant created today therefore parks at status "pending" with a
 // "queued" job until that runner ships. Nothing here claims otherwise to the caller.
 
+import { ApiTokenError } from "./tenant-api-token";
 import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt } from "./aup";
 import {
   clearedSessionCookie,
@@ -362,6 +363,51 @@ async function tenantRoutes(
     // is an enumeration oracle.
     if (!tenant || tenant.account_id !== account.id) return err("not_found", 404);
     const action = scoped[2];
+
+    // ---- the tenant's PROGRAMMATIC studio token (cf#94) -------------------------------------
+    //
+    // SEPARATE credential, ruled: never a reveal of the dispatcher-injected STUDIO_API_TOKEN, so
+    // revoking this can never sign the owner out of their browser session.
+    //
+    // The plaintext appears in the POST response and NOWHERE else -- not in GET, not in a log, not
+    // in any table on this plane. The tenant's own studio DB stores only its SHA-256 hash, which is
+    // why GET carries no masked `display` field: masking implies keeping a copy, and the visible
+    // absence is the honest signal.
+    if (action === "api-token") {
+      if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+      const fail = (e: unknown): Response => {
+        if (e instanceof ApiTokenError) {
+          return err(e.code, e.code === "tenant_unreachable" ? 503 : 409);
+        }
+        throw e;
+      };
+
+      if (request.method === "GET") {
+        try {
+          return json(await deps.provisioner.apiToken.read(tenant));
+        } catch (e) {
+          return fail(e);
+        }
+      }
+      if (request.method === "POST") {
+        try {
+          // Mint AND rotate: one verb, because from the tenant's side they are the same request, and
+          // a separate rotate invites a UI that can leave two live credentials behind.
+          return json(await deps.provisioner.apiToken.issue(tenant), 201);
+        } catch (e) {
+          return fail(e);
+        }
+      }
+      if (request.method === "DELETE") {
+        try {
+          await deps.provisioner.apiToken.revoke(tenant);
+          return json({ configured: false });
+        } catch (e) {
+          return fail(e);
+        }
+      }
+      return err("method_not_allowed", 405);
+    }
 
     if (request.method === "GET" && action === "job") {
       let job = await deps.store.getLatestJobForTenant(tenant.id);

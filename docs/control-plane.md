@@ -632,3 +632,53 @@ Do not reach for the resource ids on the row. Go through `teardownTenant`, which
 first, blanks each column only on that resource's successful deletion, and records the outcome
 (`teardown_at`, `teardown_failures`) so a partial teardown is visible in the data rather than only
 in a caller's return value.
+
+## Tenant programmatic API token (`/api/tenant/{id}/api-token`)
+
+The token a tenant uses from their own MCP client, scripts or CI. **A separate credential from the
+dispatcher-injected `STUDIO_API_TOKEN`**, ruled 2026-07-24: revoking or rotating this must never sign
+the owner out of their browser session, and the two lifetimes stay independent.
+
+| Verb | Response |
+| --- | --- |
+| `GET` | `200 { configured, name, created_at, last_rotated_at }` |
+| `POST` | `201 { token, name, created_at }` -- mint AND rotate, one verb |
+| `DELETE` | `200 { configured: false }` |
+
+Refusals: `not_found` (404, also covers someone else's tenant -- an authorization error that confirms
+existence is an enumeration oracle), `tenant_not_live` (409), `not_provisioned` (409),
+`tenant_unreachable` (503), `provisioner_unconfigured` (503).
+
+### The plane stores no part of the credential
+
+The token is a row in the **tenant's own studio database** (`api_tokens`, studio migration 0009),
+holding only its SHA-256 hash. Reveal-once is therefore true **by construction, not by discipline**:
+there is no copy anywhere to reveal.
+
+That is why `GET` carries **no masked `display` field**. Masking a value implies keeping one, so a
+mask here would assert a custody property we deliberately do not have. The visible absence is the
+honest signal, and the panel says so in words: *your studio stores only a one-way hash of it, so
+nobody, including us, can show it to you again.*
+
+The one thing the plane keeps is a fact the studio has nowhere to put: `tenants.api_token_rotated_at`
+(migration 0009 here). Rotation replaces the studio row, so the studio's `created_at` can only ever
+mean "when the current token was issued".
+
+### CONTRACT PIN: custody is not on the wire, and changing that is a wire change
+
+`GET` deliberately does **not** carry a `custody` field. The custody is settled (`separate`), not a
+runtime variable, and the panel's default rotate warning states the accurate separate-custody
+consequence: *your browser session is not affected.*
+
+**If custody ever changes, the change MUST emit `custody: "shared"` on the `GET` wire in the same
+commit.** The panel keeps a `shared` branch specifically as a tripwire that makes its warning harsher
+on its own; without the emission that tripwire never fires and the UI keeps telling users their
+session is safe when it no longer is. Adding the field is not optional cleanup, it is the mechanism.
+
+### Additive, not a replacement (the coupling that would ship a broken button)
+
+The studio's token gate returns 403 when `STUDIO_API_TOKEN` is unset, **before** it consults the
+named-token table. A programmatic token is strictly additive to the operator secret. So minting one
+on a studio without that secret hands the tenant a credential that 403s on arrival, and the mint path
+refuses with `not_provisioned` rather than issuing it.
+

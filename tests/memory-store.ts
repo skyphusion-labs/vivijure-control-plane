@@ -236,6 +236,7 @@ export class MemoryStore implements ControlPlaneStore {
       reclaim_lease_until: null,
       reclaim_lease_token: null,
       teardown_at: null,
+      api_token_rotated_at: null,
       teardown_failures: null,
     };
     this.tenants.set(id, t);
@@ -326,6 +327,11 @@ export class MemoryStore implements ControlPlaneStore {
     else if (resource === "r2_token") t.r2_token_id = null;
     else if (resource === "worker") t.script_name = null;
     else throw new Error(`unknown tenant resource kind: ${resource}`);
+  }
+
+  async setApiTokenRotatedAt(id: string) {
+    const t = this.tenants.get(id);
+    if (t) t.api_token_rotated_at = new Date().toISOString();
   }
 
   async recordTeardown(id: string, failures: { resource: string; error: string }[]) {

@@ -666,6 +666,10 @@ export class D1Store implements ControlPlaneStore {
     await this.db.prepare(`UPDATE tenants SET ${column} = NULL WHERE id = ?1`).bind(id).run();
   }
 
+  async setApiTokenRotatedAt(id: string): Promise<void> {
+    await this.db.prepare("UPDATE tenants SET api_token_rotated_at = datetime('now') WHERE id = ?1").bind(id).run();
+  }
+
   async recordTeardown(id: string, failures: { resource: string; error: string }[]): Promise<void> {
     await this.db
       .prepare("UPDATE tenants SET teardown_at = datetime('now'), teardown_failures = ?2 WHERE id = ?1")

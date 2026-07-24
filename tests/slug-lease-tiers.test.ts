@@ -38,6 +38,7 @@ function row(over: Partial<Tenant>): Tenant {
     reclaim_lease_until: null,
     reclaim_lease_token: null,
   teardown_at: null,
+  api_token_rotated_at: null,
   teardown_failures: null,
     ...over,
   };
