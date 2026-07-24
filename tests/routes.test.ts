@@ -1334,10 +1334,11 @@ describe("POST /api/admin/tenants/:id/upgrade-modules", () => {
     expect(wiring.upgradeModules).not.toHaveBeenCalled();
   });
 
-  it("REFUSES while another job for this tenant is still running (no two drivers, one script set)", async () => {
+  it("REFUSES while another job for this tenant holds a live lease (no two drivers, one script set)", async () => {
     await liveTenant();
     const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
     running.status = "running";
+    running.lease_until = new Date(Date.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
 
     const res = await handle(
       jsonReq("/api/admin/tenants/ten_abc123/upgrade-modules", { release: "v1.1.0" }, { headers: admin() }),
@@ -1347,6 +1348,25 @@ describe("POST /api/admin/tenants/:id/upgrade-modules", () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: "job_in_progress", job_id: "job_running", kind: "provision" });
     expect(wiring.upgradeModules).not.toHaveBeenCalled();
+  });
+
+  it("ALLOWS a new upgrade when the latest job is stranded queued with no lease (#44 self-heal)", async () => {
+    await liveTenant();
+    const stranded = await store.createModuleUpgradeJob("job_stranded", "ten_abc123", "v1.0.0", "v1.1.0");
+    stranded.status = "queued";
+    stranded.lease_until = null;
+
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/upgrade-modules", { release: "v1.2.0" }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+
+    expect(res.status).toBe(202);
+    await flush();
+    expect(wiring.upgradeModules).toHaveBeenCalledTimes(1);
+    const claimed = [...store.jobs.values()].find((j) => j.to_release === "v1.2.0");
+    expect(claimed?.status).toBe("running");
+    expect(claimed?.lease_until).not.toBeNull();
   });
 
   it("a preflight refusal creates NO job and starts NO work", async () => {
@@ -1412,6 +1432,8 @@ describe("POST /api/admin/tenants/:id/upgrade-modules", () => {
     expect(job.kind).toBe("module_upgrade");
     expect(job.from_release).toBe("v1.0.0");
     expect(job.to_release).toBe("v1.1.0");
+    expect(job.status).toBe("running");
+    expect(job.lease_until).not.toBeNull();
   });
 
   it("404s an unknown tenant, and REFUSES without the admin token", async () => {

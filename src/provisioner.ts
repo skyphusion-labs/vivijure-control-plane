@@ -998,6 +998,10 @@ export async function upgradeTenantModules(
   };
 
   try {
+    // Same lease treatment as provision (#44): the route claims before 202; this covers direct
+    // callers and renews if the claim expired between accept and execution.
+    await deps.store.setJobRunning(jobId);
+
     // Clear the recorded module release BEFORE the first upload. From here until success the tenant
     // is not known to be uniformly at any one release, and the column must say so: a value left
     // standing through a partial failure would assert a uniformity the resident scripts do not

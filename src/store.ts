@@ -198,6 +198,18 @@ export function leaseIsLive(leaseUntil: string | null, nowMs: number): boolean {
   return Number.isFinite(t) && t > nowMs;
 }
 
+/**
+ * Does this job currently have a live driver (#44, #112)?
+ *
+ * Status alone is not enough: a dead upgrade left `queued` with no lease wedged the tenant
+ * forever under the old guard. An expired or absent lease reads as free, which is the self-healing
+ * half -- same reasoning as reclaim_lease_until and claimJob.
+ */
+export function jobHasLiveDriver(job: ProvisionJob, nowMs: number): boolean {
+  if (job.status !== "queued" && job.status !== "running") return false;
+  return leaseIsLive(job.lease_until, nowMs);
+}
+
 /** The generic refusal. Every tier gives a stranger THIS string and nothing more (enumeration). */
 export const SLUG_TAKEN_REASON = "that name is taken";
 
