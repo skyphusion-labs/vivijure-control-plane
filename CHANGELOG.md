@@ -6,6 +6,29 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(test): live provision e2e drives the step machine the way production does (#4)
+
+- The suite generates its own **ephemeral KEK**; `STUDIO_TOKEN_KEK` is off the required-env list.
+  It round-trips in-process over a `MemoryStore` tenant, so the live worker KEK was never needed and
+  admitting it would only widen that credential's custody into CI. This was #4's recorded blocker
+  and it was a premise error.
+- The suite now **resumes on a budget yield** (`runProvisionJob` -> `continueProvisionJob`), matching
+  the `deps.ts` start/resume wiring the tenant job poll drives. A real provision yields after
+  `wfp_upload` at ~23s under the 15s invocation budget, so the previous single-invocation assertion
+  could never pass against real infrastructure.
+- `docs/deploy.md` records the KEK recovery search as **exhausted** and the value as unrecoverable
+  (worker secrets are write-only), plus the escrow gap and the re-key cost that follow from it.
+- **Dispatch door for the suite.** There is no out-of-worker HTTP path into a WfP dispatch namespace
+  (`*.workers.dev` TLS covers one label; WfP user Workers are not published there at all), so the
+  suite deploys an ephemeral `e2e-harness-dispatcher-<run>` in `beforeAll` and deletes it in
+  `afterAll`, verified from the account. It carries a per-run bearer AND a tenant scope baked into
+  the deployed artifact, because both namespaces are shared with production tenants. A leftover
+  harness fails the run loudly.
+- The e2e tenant **id** now carries the run token. Module script names derive from the tenant id, so
+  the old fixed `ten_e2e` put every run's module workers at identical names inside a shared
+  namespace, and `ten-e2e` could collide with a real hex tenant id beginning `ten_e2e...`.
+
+
 ### fix(hosted): module-upgrade jobs claim a lease and self-heal (#44)
 
 - `setJobRunning` runs synchronously on accept and again at upgrade entry, matching provision.

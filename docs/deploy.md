@@ -107,7 +107,7 @@ So: **a worker secret is not considered set until this table names its owner and
 | `CONTROL_PLANE_ADMIN_TOKEN` | Mackaye | `~/.vivijure-cp-admin.token` on the primary crew box (`chmod 600`) |
 | `POSTERN_SEND_TOKEN` | Strummer | send identity recorded in `crew-secrets/operator/postern/vivijure-control-plane-send-identity.fragment.json` |
 | `CF_PROVISIONER_TOKEN` | Rollins (hosted sprint mint, 2026-07-17) | `~/.vivijure-provisioner-full.env` on the primary crew box (dischord, `chmod 600`); mirrored to repo Actions secret `CF_PROVISIONER_TOKEN` for live gates |
-| `STUDIO_TOKEN_KEK` | UNCLAIMED -- home not yet confirmed | |
+| `STUDIO_TOKEN_KEK` | UNCLAIMED -- home not yet confirmed; recovery exhausted 2026-07-25 (see below) | none |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `APPLE_PRIVATE_KEY` | unset (SSO not offered) | n/a |
@@ -115,6 +115,27 @@ So: **a worker secret is not considered set until this table names its owner and
 `STUDIO_TOKEN_KEK` remains `UNCLAIMED` (set on the live worker during #93 deploy; no durable home
 file found). It is recorded as unknown rather than guessed at, because a plausible-looking owner in
 a table is worse than an admitted gap.
+
+**Recovery search, exhausted 2026-07-25 (#4):** absent from the setting member's home and
+`~/.secrets`, from every `crew-secrets` tier manifest and doc, from both repos' Actions secrets, from
+`fleet-chezmoi`, and from shell history (crew shells are non-interactive, so none is written). The
+binding IS live on the worker (`secret_text`), but Cloudflare worker secrets are write-only -- the
+API returns names and types only -- so the value cannot come back off the platform. Treat it as
+**unrecoverable**, not merely unlocated.
+
+Consequences, stated plainly because this one is not like the others in this table:
+
+- It is **not** cheap to re-key. Unlike the admin gate, this key decrypts `tenants.studio_token_enc`
+  for every tenant that has one (7 at time of writing). A new KEK orphans that ciphertext and breaks
+  dispatcher-injected auth for those tenants. Re-keying requires an explicit migration that re-mints
+  and re-encrypts each tenant's studio token, and it is a ruled decision, not a maintenance chore.
+- It has **no escrow**, which is the actual defect: the only copy of a key protecting live customer
+  credentials exists in one write-only location, with no recovery path if it is lost.
+- The live **provision e2e does not need it** and never did. That suite round-trips a KEK entirely
+  in-process over a `MemoryStore` tenant it creates itself, so it generates an ephemeral key
+  (`tests/provision-e2e-env.ts`). Admitting the production KEK there would widen its custody into CI
+  to buy nothing. The belief that #4 was blocked on recovering this value was the premise error that
+  parked that issue.
 
 Re-keying one of these is cheap and non-destructive: the admin gate fails closed, no tenant traffic
 touches it, and the check is two curls (bearer -> 200, bare -> 401). Re-key on unknown provenance;
