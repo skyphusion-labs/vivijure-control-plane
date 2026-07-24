@@ -6,6 +6,20 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(r2): SigV4 header signing, proven against the official AWS vectors (cf#72)
+
+- `src/sigv4.ts`: AWS Signature Version 4 header-based signing (arbitrary method, headers, body), the
+  capability the R2 empty-then-delete leg needs. The existing presign helper is query-based, GET/PUT
+  only, and test-side by contract, so it could not sign a ListObjectsV2 or a DeleteObjects POST.
+- **S3 flavour stated explicitly:** the canonical URI is used AS GIVEN, no path normalization, because
+  S3 is the documented exception and an object key legitimately contains `.`/`..`/`//`. The suite's
+  `normalize-path` cases are deliberately NOT vendored: they encode non-S3 behaviour and passing them
+  would mean the signer was wrong for its only caller.
+- Proven against the **official AWS SigV4 conformance vectors**, vendored byte-for-byte from a pinned
+  `boto/botocore` commit with AWS's LICENSE and NOTICE. All three stages asserted (canonical request,
+  string to sign, Authorization) so a failure names the stage that diverged.
+
+
 ### fix(teardown): referential guard, column blanking, and a recorded outcome (#23)
 
 - **Referential guard, fail-closed.** `teardownTenant` now asks whether any OTHER tenant row still
