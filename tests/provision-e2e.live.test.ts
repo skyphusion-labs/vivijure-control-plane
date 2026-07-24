@@ -41,6 +41,8 @@ import { localStudioBundleSource } from "./studio-bundle-local";
 import { localModuleBundleSource } from "./module-bundle-local";
 import { provisionE2eLive, provisionE2eEnvOrThrow } from "./provision-e2e-env";
 import { wfpDispatchFetch } from "./wfp-dispatch-fetch";
+import { deployHarnessDispatcher, type HarnessDispatcher } from "./e2e-harness-dispatcher";
+import { tenantModuleScriptPrefix } from "../src/tenant-modules";
 import { MemoryStore } from "./memory-store";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -50,7 +52,16 @@ const LIVE = provisionE2eLive();
 const env = LIVE ? provisionE2eEnvOrThrow(true)! : null;
 
 const PROD_TELL = "t9wcvlxh8rc5la";
-const slug = `rollins-e2e-${Date.now().toString(36).slice(-6)}`;
+const RUN = Date.now().toString(36).slice(-6);
+const slug = `rollins-e2e-${RUN}`;
+// The tenant id carries the run token too, and that is not cosmetic. Module script names derive
+// from the TENANT ID (tenantModuleScriptPrefix), not the slug, so the previous fixed "ten_e2e"
+// put every run's module workers at the SAME names inside a namespace shared with production
+// tenants -- two runs would have clobbered each other, and the prefix "ten-e2e" is a live
+// collision risk against a real hex tenant id beginning `ten_e2e...`. Hex, to match the real id
+// shape the routes accept.
+const TENANT_ID = `ten_e2e${Date.now().toString(16)}`;
+const HARNESS_NAME = `e2e-harness-dispatcher-${RUN}`;
 const NAMESPACE = env?.dispatchNamespace ?? "vivijure-tenants";
 
 const cf = LIVE ? new CfApi(env!.cfAccountId, env!.cfToken) : (null as unknown as CfApi);
@@ -58,6 +69,7 @@ const runpodClient = LIVE ? new RunPodClient(env!.runpodKey) : (null as unknown 
 let scratchOk = false;
 let store: MemoryStore;
 let deps: ProvisionDeps;
+let harness: HarnessDispatcher | null = null;
 
 const migrations = LIVE
   ? readdirSync("migrations").filter((f) => f.endsWith(".sql")).sort()
@@ -71,11 +83,20 @@ beforeAll(async () => {
 
   store = new MemoryStore();
   const tag = (JSON.parse(readFileSync(join(env.studioReleaseDir, "manifest.json"), "utf8")) as { tag: string }).tag;
-  const dispatch = wfpDispatchFetch({
-    workersDevSubdomain: env.workersDevSubdomain,
+  // The dispatch door for this run. Scoped to THIS tenant's two script-name prefixes, so even a
+  // leaked bearer inside the window cannot reach the production tenants sharing these namespaces.
+  harness = await deployHarnessDispatcher({
+    accountId: env.cfAccountId,
+    cfToken: env.cfToken,
+    name: HARNESS_NAME,
     studioNamespace: env.dispatchNamespace,
     moduleNamespace: env.moduleNamespace,
+    studioPrefix: `tenant-${slug}-`,
+    modulePrefix: tenantModuleScriptPrefix(TENANT_ID),
+    workersDevSubdomain: env.workersDevSubdomain,
   });
+  console.log(`  harness dispatcher live at ${harness.baseUrl} (scope guard verified armed)`);
+  const dispatch = wfpDispatchFetch(harness);
 
   deps = {
     store,
@@ -125,6 +146,20 @@ afterAll(async () => {
       }
     }
   }
+
+  // The harness goes away, and we PROVE it from the account rather than trusting the delete call.
+  // A leftover is a test FAILURE, not a warning: it is a live door into a shared namespace, and a
+  // warning in a scrollback is how a door stays open for a week.
+  if (harness) {
+    await harness.destroy();
+    if (await harness.existsOnAccount()) {
+      throw new Error(
+        `LEFTOVER HARNESS DISPATCHER ${HARNESS_NAME} is still on the account after destroy() -- ` +
+          `delete it by hand NOW; it holds live dispatch bindings.`,
+      );
+    }
+    console.log(`  harness dispatcher ${HARNESS_NAME} deleted and verified gone`);
+  }
 }, 300_000);
 
 describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)", () => {
@@ -135,7 +170,7 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
   it("provisions a REAL tenant end to end and parks at awaiting_invoke_key", async () => {
     expect(scratchOk).toBe(true);
     const account = await store.createAccount("acct_e2e", "e2e@example.com");
-    const tenant = await store.createTenant("ten_e2e", slug, account.id, "pending");
+    const tenant = await store.createTenant(TENANT_ID, slug, account.id, "pending");
     const job = await store.createProvisionJob("job_e2e", tenant.id, "provision");
 
     // DRIVE IT THE WAY PRODUCTION DRIVES IT (#112 budget yield).
@@ -171,7 +206,7 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
       console.log(`  [resume] invocation ${invocations + 1}, yielded after ${result.after}`);
       // Re-read the tenant: the resume path reads persisted resource ids off the row, so handing it
       // the stale pre-provision object would prove nothing about a real poll-driven continuation.
-      result = await continueProvisionJob(deps, job.id, store.tenants.get("ten_e2e")!, stepsDone);
+      result = await continueProvisionJob(deps, job.id, store.tenants.get(TENANT_ID)!, stepsDone);
       invocations += 1;
     }
     if (!result.ok) {
@@ -181,7 +216,7 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
 
     expect(result).toEqual({ ok: true, status: "awaiting_invoke_key" });
     console.log(`  provision converged in ${invocations} invocation(s)`);
-    const t = store.tenants.get("ten_e2e")!;
+    const t = store.tenants.get(TENANT_ID)!;
     console.log(`  tenant ${slug}: d1=${t.d1_database_id?.slice(0, 8)} bucket=${t.r2_bucket_name} script=${t.script_name}`);
     console.log(`  endpoints: ${t.endpoints_json}`);
     expect(t.status).toBe("awaiting_invoke_key");
