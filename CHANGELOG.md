@@ -6,6 +6,20 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(r2): bounded empty-then-delete cycle (vivijure-cf#72)
+
+- `src/r2-empty.ts`: ListObjectsV2 + batched DeleteObjects over the S3 API, so a tenant bucket that
+  has been rendered into can finally be removed. R2 refuses to delete a non-empty bucket and its REST
+  API has no object list/delete at all, which is why de-provision could not complete.
+- **Invariant, stated in the file: MINT -> WORK -> REVOKE -> YIELD.** Each cycle mints its own
+  credential, does bounded work, and revokes before returning. No credential outlives its invocation
+  and none is persisted; a large bucket empties across N cycles instead of failing terminally.
+- `emptied` is only ever claimed from an **observed empty listing**, never inferred from "we deleted
+  everything we saw".
+- Live-proven against real R2, including the positive control that the old `deleteR2Bucket` still
+  fails on a non-empty bucket, so the fix cannot pass for the boring reason.
+
+
 ### feat(r2): SigV4 header signing, proven against the official AWS vectors (cf#72)
 
 - `src/sigv4.ts`: AWS Signature Version 4 header-based signing (arbitrary method, headers, body), the
