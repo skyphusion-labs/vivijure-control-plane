@@ -6,6 +6,18 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### test(reclaim): the reclaim SEQUENCE runs against real infrastructure (#38)
+
+- `claimReclaim -> teardown -> reclaimSlug` now runs as ONE pass with a real store (real migration
+  ledger) on one side and real Cloudflare resources on the other. Both halves were separately
+  live-proven; the join between them had never run.
+- Covers what was mock-only: the ordering, the exclusivity write refusing a second claim under a
+  live lease, the lease-token check refusing a blank without it, the row actually blanking, and a
+  follow-on provision job starting on the reclaimed row.
+- The node:sqlite D1 shim + migrated-db helper move to `tests/sqlite-d1.ts` so the sequence
+  rehearsal drives the SAME store harness as the store-half proofs rather than a second one.
+
+
 ### fix(test): live provision e2e drives the step machine the way production does (#4)
 
 - The suite generates its own **ephemeral KEK**; `STUDIO_TOKEN_KEK` is off the required-env list.
