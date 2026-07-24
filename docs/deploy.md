@@ -106,14 +106,15 @@ So: **a worker secret is not considered set until this table names its owner and
 | --- | --- | --- |
 | `CONTROL_PLANE_ADMIN_TOKEN` | Mackaye | `~/.vivijure-cp-admin.token` on the primary crew box (`chmod 600`) |
 | `POSTERN_SEND_TOKEN` | Strummer | send identity recorded in `crew-secrets/operator/postern/vivijure-control-plane-send-identity.fragment.json` |
-| `CF_PROVISIONER_TOKEN` | UNCLAIMED -- home not yet confirmed | |
+| `CF_PROVISIONER_TOKEN` | Rollins (hosted sprint mint, 2026-07-17) | `~/.vivijure-provisioner-full.env` on the primary crew box (dischord, `chmod 600`); mirrored to repo Actions secret `CF_PROVISIONER_TOKEN` for live gates |
 | `STUDIO_TOKEN_KEK` | UNCLAIMED -- home not yet confirmed | |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `APPLE_PRIVATE_KEY` | unset (SSO not offered) | n/a |
 
-The two `UNCLAIMED` rows are the same defect, still open. They are recorded as unknown rather than
-guessed at, because a plausible-looking owner in a table is worse than an admitted gap.
+`STUDIO_TOKEN_KEK` remains `UNCLAIMED` (set on the live worker during #93 deploy; no durable home
+file found). It is recorded as unknown rather than guessed at, because a plausible-looking owner in
+a table is worse than an admitted gap.
 
 Re-keying one of these is cheap and non-destructive: the admin gate fails closed, no tenant traffic
 touches it, and the check is two curls (bearer -> 200, bare -> 401). Re-key on unknown provenance;
