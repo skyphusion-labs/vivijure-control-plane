@@ -12,6 +12,14 @@ The control plane Worker is deployed behind Cloudflare. `cf-connecting-ip` for A
 
 Preflight uses `${SECRET:+SET}` presence checks only; secret values are never echoed. `@v7` action pins match org aviation-grade CI convention (same as `ci.yml` / adversarial-audit).
 
+## Live provision e2e harness (tests/)
+
+`provision-e2e.live.test.ts` and helpers under `tests/` are **operator-only** live gates (`PROVISION_E2E=1`). They never run on PR CI (`describe.skipIf(!LIVE)`). Scratch CF/RunPod creds and `STUDIO_TOKEN_KEK` are supplied from the operator shell or maintainer Actions secrets at dispatch time, same trust boundary as `live-release-gate.yml`.
+
+`localStudioBundleSource` / `localModuleBundleSource` read manifests from a **locally built** studio release dir (`build-studio-release.ts`), not from untrusted HTTP. `worker.path` joins under that dir with sha256 verification before use; same pattern as the studio bundle harness.
+
+`wfpDispatchFetch` mirrors production `deps.ts` (`cf#114`): module `/ready` probes are unauthenticated by design; dispatch namespace binding is the boundary. `workersDevSubdomain` is operator env, not tenant input.
+
 ## Record
 
 | Date | Audit | Finding | Rationale |
@@ -26,3 +34,7 @@ Preflight uses `${SECRET:+SET}` presence checks only; secret values are never ec
 | 2026-07-24 | K2.7 PR #81 | RUNPOD_LIVE local bypass | Public ubuntu-latest only; live job not on PR CI; maintainer dispatch trust boundary |
 | 2026-07-24 | K2.7 PR #81 | Global concurrency group | Intentional: one scratch live gate at a time |
 | 2026-07-24 | K2.7 PR #81 | Missing rotation runbook | Scratch keys rotated via crew-secrets; follow-up once secrets land on repo |
+| 2026-07-24 | K2.7 PR #82 | KEK/tokens in process env (provision-e2e-env) | Operator-only live harness; never on PR CI; env is how scratch creds are supplied |
+| 2026-07-24 | K2.7 PR #82 | Path traversal in localModuleBundleSource | Operator-built release dir; sha256 integrity gate; same as studio-bundle-local |
+| 2026-07-24 | K2.7 PR #82 | workersDevSubdomain hostname injection | Operator env `PROVISION_E2E_WORKERS_DEV_SUBDOMAIN`; maintainer live gate only |
+| 2026-07-24 | K2.7 PR #82 | callTenantModule lacks auth | Mirrors prod `deps.ts` cf#114: `/ready` unauthenticated; dispatch namespace is boundary |
