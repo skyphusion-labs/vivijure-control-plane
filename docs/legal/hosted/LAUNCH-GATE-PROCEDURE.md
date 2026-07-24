@@ -26,7 +26,7 @@ person's afternoon; after extraction nobody owns it by default.
 | Repo | Documents that change at the flip | Why |
 |---|---|---|
 | `skyphusion-labs/vivijure-cf` (studio) | `docs/legal/PRIVACY.md`, `docs/legal/TERMS.md`, `docs/legal/ACCEPTABLE-USE.md` (pointer stub), `docs/legal/README.md` | These are the in-force documents. The exact required edits are enumerated in `PRIVACY-DELTA.md` Section 7. |
-| `skyphusion-labs/vivijure` (hub) | `docs/legal/ACCEPTABLE-USE.md` (the canonical constellation AUP) | Its BLUF says Vivijure is "not a service Skyphusion Labs operates for the public" and "there is no central platform here." Both become false at launch, in a repository nobody working the hosted tier has open. This is the easiest item in the whole procedure to miss. |
+| `skyphusion-labs/vivijure` (hub) | `docs/legal/ACCEPTABLE-USE.md` (the canonical constellation AUP); `docs/legal/PRIVACY-COMMITMENT.md` Section 4.2 and the hosted-tier row in Section 4 | The AUP BLUF says Vivijure is "not a service Skyphusion Labs operates for the public" and "there is no central platform here." Both become false at launch, in a repository nobody working the hosted tier has open. This is the easiest item in the whole procedure to miss. **Separately**, `PRIVACY-COMMITMENT.md` Section 4.2 states in the present tense that the hosted tier "has not launched, has no tenants, and no telemetry collection is wired." That sentence goes false the day signups open; Section 7 of the commitment names this procedure as the flip owner, and the commitment was not listed here until #49. |
 | `skyphusion-labs/vivijure-control-plane` (this repo) | `docs/legal/hosted/README.md` status banner, `docs/legal/hosted/aup/1.0.0.md` draft banner, this document | The hosted scaffolding stops being DRAFT and becomes the operative instrument set. |
 
 ## Owners
@@ -50,6 +50,13 @@ the same PR. An unowned launch gate is the failure mode this table exists to pre
       new version file, never an edit.
 - [ ] The DMCA agent question (T1-2) has an answer, because `TERMS.md` Section 10 currently says we
       are not a hosting provider and that is one of the sentences being deleted.
+- [ ] **Privacy commitment (`PRIVACY-COMMITMENT.md`, hub):** the Section 4.2 rewrite and the hosted-tier
+      row in the Section 4 inventory table are drafted and held in the hub flip PR. Section 4.2 must stop
+      claiming "has not launched / no tenants / no telemetry collection is wired" and must instead describe
+      what is actually collected post-launch.
+- [ ] **Privacy commitment (hub):** the per-field telemetry dispositions and the service-level monitoring
+      disclosure owed at launch (Section 4.1 and Section 4.2) are written, linked from the commitment,
+      and held in the hub flip PR. Launch without them is a falsification of Section 7.
 - [ ] All flip PRs are open, green, reviewed, and **held unmerged**.
 
 ## The window
@@ -58,7 +65,9 @@ the same PR. An unowned launch gate is the failure mode this table exists to pre
 window is merges and a config flag, with no authoring in it.
 
 1. **Merge the studio repo PR** (`vivijure-cf`): PRIVACY, TERMS, ACCEPTABLE-USE stub, README.
-2. **Merge the hub PR** (`vivijure`): the canonical AUP BLUF.
+2. **Merge the hub PR** (`vivijure`): the canonical AUP BLUF; `PRIVACY-COMMITMENT.md` Section 4.2 and
+   Section 4 hosted-tier row flip to post-launch facts; per-field telemetry dispositions and
+   service-level monitoring disclosure linked from the commitment.
 3. **Merge the control-plane PR** (this repo): hosted docs flip from DRAFT to IN FORCE.
 4. **Enable signups.** This is the last step, and it is deliberately last.
 5. **Run the verification census** (below) before announcing anything.
@@ -97,6 +106,11 @@ The flip is not done because the PRs merged. It is done when the census is clean
 Across **all three repositories on `main`**, grep for the claim family being retired: "does not host",
 "not a service", "no central platform", "no hosted", "not a hosted-service agreement", "exactly two
 Vivijure instances", "not an online hosting provider".
+
+Also grep the hub `PRIVACY-COMMITMENT.md` on `main` for the Section 4.2 pre-launch claim family:
+"has not launched", "no tenants", "no telemetry collection is wired", "Not yet. Pre-launch", "owed at
+launch and do not exist yet". Every hit must be edited or deliberately retained with a reason. A
+Section 4.2 sentence that still describes pre-launch facts after signups are open is a launch defect.
 
 Every hit must be either (a) edited, or (b) deliberately retained with a reason (some are true of
 self-hosting and stay true). **A hit that is neither is a false public statement, and the launch is
