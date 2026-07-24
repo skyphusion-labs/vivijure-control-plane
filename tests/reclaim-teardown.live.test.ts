@@ -36,6 +36,8 @@ import { CfApi } from "../src/cf-api";
 import { CfTokenMinter } from "../src/token-minter";
 import { teardownTenant, type ProvisionDeps } from "../src/provisioner";
 import type { Tenant } from "../src/store";
+import { D1Store } from "../src/store-d1";
+import { d1Over, freshMigratedDb } from "./sqlite-d1";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -243,4 +245,102 @@ describe.skipIf(!LIVE)("reclaim teardown, live against real Cloudflare", () => {
     expect(await scriptExists(NAMESPACE, SCRIPT)).toBe(false);
     expect(await bucketExists(BUCKET)).toBe(false);
   }, 180_000);
+});
+
+
+// ---------------------------------------------------------------------------------------------
+// THE SEQUENCE, END TO END (#38).
+//
+// Everything above proves the DESTRUCTIVE half against real Cloudflare. #32 proved the STORE half
+// against real SQL built from the real migration ledger. Both were green, and the JOIN between them
+// had never run: `claimReclaim -> teardown -> reclaimSlug`, in that order, with a real store on one
+// side and real cloud resources on the other. Two proofs meeting at an untested seam is exactly the
+// shape this sprint kept finding, so this drives all three steps in one pass.
+//
+// It uses the SAME store harness as the store-half proofs (sqlite-d1.ts) rather than a second
+// "real enough" store invented here, because a rehearsal that swaps the component under test is not
+// rehearsing the seam.
+//
+// What is deliberately NOT claimed: this drives the sequence the route drives, not the HTTP route
+// itself (session, AUP gate, and the advisory availability check upstream are covered by
+// routes.test.ts). The ordering, the exclusivity write, the blanking and the follow-on job are the
+// parts that had never touched real infrastructure, and they are what this covers.
+// ---------------------------------------------------------------------------------------------
+describe.skipIf(!LIVE)("the reclaim SEQUENCE against a real store and real cloud resources", () => {
+  it("claims, reaps for real, blanks the row, and leaves a follow-on job queued", async () => {
+    const store = new D1Store(d1Over(freshMigratedDb()));
+    await store.createAccount("acct_seq", "seq@example.com");
+
+    // A Tier A row: never-live, owned by this account, half-built. `failed` is the honest status for
+    // a provision that died partway, which is the population reclaim exists for.
+    const seeded = await store.createTenant("ten_seq", SLUG, "acct_seq", "failed");
+    expect(seeded.live_at ?? null).toBeNull();
+
+    // Real resources, then the row is told it owns them -- the ids are Cloudflare's, not invented.
+    const built = await buildHalfBuiltTenant();
+    await store.setTenantD1("ten_seq", built.d1_database_id!);
+    await store.setTenantBucket("ten_seq", built.r2_bucket_name!);
+    await store.setTenantScript("ten_seq", built.script_name!, built.studio_release ?? "test");
+
+    // POSITIVE CONTROL. A delete against a name that never existed also succeeds, so absence at the
+    // end proves nothing unless presence at the start was proven first.
+    expect(await d1Exists(built.d1_database_id!)).toBe(true);
+    expect(await bucketExists(built.r2_bucket_name!)).toBe(true);
+    expect(await scriptExists(NAMESPACE, built.script_name!)).toBe(true);
+
+    // 1. The row is recognised as reclaimable by its owner.
+    const claim = await store.checkSlugAvailability(SLUG, "acct_seq");
+    // Narrowed by a throw rather than an expect, so the refusal REASON reaches the failure output.
+    // "expected true, got false" would tell us the tier rules disagreed and not a word about why.
+    if (!claim.available) throw new Error(`Tier A row did not read as reclaimable: ${claim.reason}`);
+    expect(claim.reclaim?.tenant_id).toBe("ten_seq");
+
+    // 2. The claim WRITE is the exclusivity gate, so a second attempt must lose while the first
+    //    holds the lease. Proven here in sequence, not only in isolation: this is the write that
+    //    makes it safe to start deleting slug-derived resources at all.
+    const claimed = await store.claimReclaim("ten_seq", "acct_seq", 120);
+    expect(claimed, "the owner's claim must succeed").not.toBeNull();
+    const loser = await store.claimReclaim("ten_seq", "acct_seq", 120);
+    expect(loser, "a second claim under a live lease must be refused").toBeNull();
+
+    // 3. Teardown, for real, against the resources the row actually owns.
+    const seqDeps = {
+      cf,
+      tokenMinter: minter,
+      namespace: NAMESPACE,
+      moduleNamespace: MODULE_NAMESPACE,
+      tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
+      log: (event: string, fields: Record<string, unknown>) => void logged.push({ event, fields }),
+      store,
+    } as unknown as ProvisionDeps;
+
+    const reaped = await teardownTenant(seqDeps, claimed!.tenant, { deleteData: true });
+    expect(reaped.ok, `teardown failures: ${JSON.stringify(reaped.failures)}`).toBe(true);
+
+    // Absence witnessed by RAW REST, not by the client that issued the deletes.
+    expect(await d1Exists(built.d1_database_id!)).toBe(false);
+    expect(await bucketExists(built.r2_bucket_name!)).toBe(false);
+    expect(await scriptExists(NAMESPACE, built.script_name!)).toBe(false);
+
+    // 4. Only now may the row be blanked, and only by the holder of the lease token.
+    const wrongToken = await store.reclaimSlug("ten_seq", "acct_seq", "not-the-token");
+    expect(wrongToken, "blanking without the winning lease token must be refused").toBeNull();
+
+    const reclaimed = await store.reclaimSlug("ten_seq", "acct_seq", claimed!.lease_token);
+    expect(reclaimed, "the winner must be able to blank the row").not.toBeNull();
+    expect(reclaimed!.d1_database_id ?? null).toBeNull();
+    expect(reclaimed!.r2_bucket_name ?? null).toBeNull();
+    expect(reclaimed!.script_name ?? null).toBeNull();
+    expect(reclaimed!.status).toBe("pending");
+
+    // The row must no longer point at anything: this is the property whose ABSENCE is filed as #23,
+    // and the reclaim path is the one place that already gets it right.
+    const after = await store.getTenantBySlug(SLUG);
+    expect(after!.d1_database_id ?? null).toBeNull();
+
+    // 5. And the slug is genuinely reusable: a follow-on provision job starts on the same row.
+    const job = await store.createProvisionJob("job_seq", "ten_seq", "provision");
+    expect(job.tenant_id).toBe("ten_seq");
+    expect(["queued", "running"]).toContain(job.status);
+  }, 300_000);
 });

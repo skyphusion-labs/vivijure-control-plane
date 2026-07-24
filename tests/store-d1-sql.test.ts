@@ -15,53 +15,13 @@
 // node:sqlite is built into Node -- no new runtime or dev dependency. It needs
 // --experimental-sqlite on Node 22 (what CI pins); the flag is an accepted no-op on Node 24, so
 // vitest.config.ts passes it unconditionally.
-import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { D1Store } from "../src/store-d1";
-
-/**
- * The narrowest possible D1Database shim over node:sqlite: prepare/bind/first/run, which is the
- * entire surface store-d1.ts uses. Deliberately thin -- its job is to be a transparent pipe to a
- * real SQL engine, not to emulate D1 semantics. Anything it papered over would be a hole in the
- * seam, so it papers over nothing.
- */
-function d1Over(db: DatabaseSync): any {
-  return {
-    prepare(sql: string) {
-      const stmt = db.prepare(sql);
-      const bound: unknown[] = [];
-      const api = {
-        bind(...args: unknown[]) {
-          bound.length = 0;
-          // D1 binds null as null; node:sqlite wants null, not undefined.
-          for (const a of args) bound.push(a === undefined ? null : a);
-          return api;
-        },
-        async first<T>(): Promise<T | null> {
-          return (stmt.get(...(bound as never[])) as T) ?? null;
-        },
-        async run() {
-          return stmt.run(...(bound as never[]));
-        },
-      };
-      return api;
-    },
-  };
-}
-
-function freshDb(): DatabaseSync {
-  const db = new DatabaseSync(":memory:");
-  const dir = join(import.meta.dirname, "..", "migrations");
-  // Applied in ledger order, exactly as prod does. If a migration is unreplayable, that is a
-  // finding about the migration, not something to work around here.
-  for (const f of readdirSync(dir).filter((n) => n.endsWith(".sql")).sort()) {
-    db.exec(readFileSync(join(dir, f), "utf8"));
-  }
-  return db;
-}
+// The shim + migrated-db helpers live in sqlite-d1.ts so the #38 reclaim SEQUENCE rehearsal drives
+// the SAME store harness these store-half proofs do.
+import { d1Over, freshMigratedDb as freshDb } from "./sqlite-d1";
 
 describe("store-d1 statements execute against real SQLite", () => {
   let db: DatabaseSync;
