@@ -107,7 +107,7 @@ So: **a worker secret is not considered set until this table names its owner and
 | `CONTROL_PLANE_ADMIN_TOKEN` | Mackaye | `~/.vivijure-cp-admin.token` on the primary crew box (`chmod 600`) |
 | `POSTERN_SEND_TOKEN` | Strummer | send identity recorded in `crew-secrets/operator/postern/vivijure-control-plane-send-identity.fragment.json` |
 | `CF_PROVISIONER_TOKEN` | Rollins (hosted sprint mint, 2026-07-17) | `~/.vivijure-provisioner-full.env` on the primary crew box (dischord, `chmod 600`); mirrored to repo Actions secret `CF_PROVISIONER_TOKEN` for live gates |
-| `STUDIO_TOKEN_KEK` | UNCLAIMED -- home not yet confirmed; recovery exhausted 2026-07-25 (see below) | none |
+| `STUDIO_TOKEN_KEK` | Rollins (recovered 2026-07-25) | `~/.vivijure-studio-token-kek` on the primary crew box (dischord, `chmod 600`). **Single-copy file home, NOT yet escrowed to the crew-secrets age tier -- see below.** |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `APPLE_PRIVATE_KEY` | unset (SSO not offered) | n/a |
@@ -123,14 +123,51 @@ binding IS live on the worker (`secret_text`), but Cloudflare worker secrets are
 API returns names and types only -- so the value cannot come back off the platform. Treat it as
 **unrecoverable**, not merely unlocated.
 
+### RECOVERED 2026-07-25, and how
+
+Filesystem recovery was genuinely exhausted (nothing on any box, no Actions secret, no crew-secrets
+tier, no shell history) and the Cloudflare API cannot return a worker secret. But the RUNNING worker
+still reads `env.STUDIO_TOKEN_KEK` on every request, and that is a recovery surface the API is not.
+
+The value was recovered through a `wrangler dev --remote` session for this script name, which
+**inherits the deployed script's secret bindings** while creating **no version and no deployment**.
+That property is why this route was chosen over the two alternatives, both of which were rejected on
+the same principle: a temporary export route merged to `main` would sit in a PUBLIC repo's history
+forever, and a `wrangler versions upload` would sit in the script's version history, which has no
+delete operation in either the CLI or the API. A closing window attached to a non-closing artifact is
+not a closing window.
+
+Custody of the recovery itself:
+
+- The handler **never returned the KEK in plaintext.** It RSA-OAEP encrypted it to a public key
+  generated on the operator box seconds earlier, so the plaintext never crossed the network and a
+  captured response is inert without a private half that never left the box.
+- Gated on `CONTROL_PLANE_ADMIN_TOKEN` (constant-time compare) plus a single-use per-run nonce.
+- The response was decrypted straight into the `chmod 600` file home. The value was never rendered
+  to a terminal, a log, or a transcript at any point.
+- Ephemeral keypair, nonce and ciphertext were shredded afterwards.
+
+**Verified by use, not by assertion:** the recovered key decrypts **7 of 7** live tenants'
+`studio_token_enc` to well-formed 64-hex studio tokens. An escrow holding the wrong value is worse
+than no escrow, so this check is the point, not a formality. Outside verification after the sitting:
+deployed version id unchanged, version count unchanged, plane still serving.
+
+### It has a HOME now, but it is not yet ESCROWED
+
+`~/.vivijure-studio-token-kek` on one box is a **single copy**. That closes the "nobody can say where
+this lives" gap and it does NOT close the "only one copy exists" gap: lose the box and we are back to
+exactly where we started. Real escrow means the crew-secrets age tier, and that step is outstanding.
+Until it lands, treat this row as half-closed.
+
 Consequences, stated plainly because this one is not like the others in this table:
 
 - It is **not** cheap to re-key. Unlike the admin gate, this key decrypts `tenants.studio_token_enc`
   for every tenant that has one (7 at time of writing). A new KEK orphans that ciphertext and breaks
   dispatcher-injected auth for those tenants. Re-keying requires an explicit migration that re-mints
   and re-encrypts each tenant's studio token, and it is a ruled decision, not a maintenance chore.
-- It has **no escrow**, which is the actual defect: the only copy of a key protecting live customer
-  credentials exists in one write-only location, with no recovery path if it is lost.
+- It had **no escrow**, which was the actual defect: the only copy of a key protecting live customer
+  credentials existed in one write-only location. Recovery (above) gives it a readable home; the age
+  tier is what will finally give it a second copy.
 - The live **provision e2e does not need it** and never did. That suite round-trips a KEK entirely
   in-process over a `MemoryStore` tenant it creates itself, so it generates an ephemeral key
   (`tests/provision-e2e-env.ts`). Admitting the production KEK there would widen its custody into CI
