@@ -107,14 +107,14 @@ So: **a worker secret is not considered set until this table names its owner and
 | `CONTROL_PLANE_ADMIN_TOKEN` | Mackaye | `~/.vivijure-cp-admin.token` on the primary crew box (`chmod 600`) |
 | `POSTERN_SEND_TOKEN` | Strummer | send identity recorded in `crew-secrets/operator/postern/vivijure-control-plane-send-identity.fragment.json` |
 | `CF_PROVISIONER_TOKEN` | Rollins (hosted sprint mint, 2026-07-17) | `~/.vivijure-provisioner-full.env` on the primary crew box (dischord, `chmod 600`); mirrored to repo Actions secret `CF_PROVISIONER_TOKEN` for live gates |
-| `STUDIO_TOKEN_KEK` | Rollins (recovered 2026-07-25) | `~/.vivijure-studio-token-kek` on the primary crew box (dischord, `chmod 600`). **Single-copy file home, NOT yet escrowed to the crew-secrets age tier -- see below.** |
+| `STUDIO_TOKEN_KEK` | Rollins (recovered 2026-07-25); escrow: Mackaye | `~/.vivijure-studio-token-kek` on the primary crew box (dischord, `chmod 600`); **escrowed 2026-07-25** to crew-secrets tier `secrets-vivijure-kek` (mackaye + conrad-operator recipients only; recovery runbook `crew-secrets/docs/vivijure-kek-escrow-recovery.md`) |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `APPLE_PRIVATE_KEY` | unset (SSO not offered) | n/a |
 
-`STUDIO_TOKEN_KEK` remains `UNCLAIMED` (set on the live worker during #93 deploy; no durable home
-file found). It is recorded as unknown rather than guessed at, because a plausible-looking owner in
-a table is worse than an admitted gap.
+`STUDIO_TOKEN_KEK` was `UNCLAIMED` until 2026-07-25 (set on the live worker during the #93 deploy
+with no durable home file); the recovery below closed that, and the crew-secrets escrow closed the
+single-copy gap the same day. The paragraphs that follow are the record of how.
 
 **Recovery search, exhausted 2026-07-25 (#4):** absent from the setting member's home and
 `~/.secrets`, from every `crew-secrets` tier manifest and doc, from both repos' Actions secrets, from
@@ -152,12 +152,13 @@ Custody of the recovery itself:
 than no escrow, so this check is the point, not a formality. Outside verification after the sitting:
 deployed version id unchanged, version count unchanged, plane still serving.
 
-### It has a HOME now, but it is not yet ESCROWED
+### It has a HOME, and now an ESCROW (both closed 2026-07-25)
 
 `~/.vivijure-studio-token-kek` on one box is a **single copy**. That closes the "nobody can say where
-this lives" gap and it does NOT close the "only one copy exists" gap: lose the box and we are back to
-exactly where we started. Real escrow means the crew-secrets age tier, and that step is outstanding.
-Until it lands, treat this row as half-closed.
+this lives" gap and it does NOT, alone, close the "only one copy exists" gap. That second gap CLOSED
+2026-07-25: the key is escrowed in crew-secrets tier `secrets-vivijure-kek` (age ciphertext, mackaye +
+conrad-operator recipients only, blob verified sha256-equal to the file home before commit; recovery
+procedure in `crew-secrets/docs/vivijure-kek-escrow-recovery.md`). The row is CLOSED.
 
 Consequences, stated plainly because this one is not like the others in this table:
 
@@ -166,15 +167,15 @@ Consequences, stated plainly because this one is not like the others in this tab
   dispatcher-injected auth for those tenants. Re-keying requires an explicit migration that re-mints
   and re-encrypts each tenant's studio token, and it is a ruled decision, not a maintenance chore.
 - It had **no escrow**, which was the actual defect: the only copy of a key protecting live customer
-  credentials existed in one write-only location. Recovery (above) gives it a readable home; the age
-  tier is what will finally give it a second copy.
+  credentials existed in one write-only location. Recovery (above) gave it a readable home; the age
+  tier (`secrets-vivijure-kek`, landed 2026-07-25) gave it the second copy.
 - The live **provision e2e does not need it** and never did. That suite round-trips a KEK entirely
   in-process over a `MemoryStore` tenant it creates itself, so it generates an ephemeral key
   (`tests/provision-e2e-env.ts`). Admitting the production KEK there would widen its custody into CI
   to buy nothing. The belief that #4 was blocked on recovering this value was the premise error that
   parked that issue.
 
-Re-keying one of these is cheap and non-destructive: the admin gate fails closed, no tenant traffic
+Re-keying an ADMIN TOKEN (not the KEK) is cheap and non-destructive: the admin gate fails closed, no tenant traffic
 touches it, and the check is two curls (bearer -> 200, bare -> 401). Re-key on unknown provenance;
 do NOT reflexively re-key because a value passed through a trusted boundary such as a transcript.
 
