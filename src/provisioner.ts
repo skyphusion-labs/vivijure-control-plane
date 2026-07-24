@@ -19,7 +19,12 @@ import { CfApiError } from "./cf-api";
 import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
 import type { TenantR2Creds } from "./runpod";
-import type { ControlPlaneStore, Tenant } from "./store";
+import type {
+  ControlPlaneStore,
+  ResourceReferrer,
+  Tenant,
+  TenantResourceKind,
+} from "./store";
 import { decryptStudioToken, encryptStudioToken } from "./token-crypto";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
 import type { TokenMinter } from "./token-minter";
@@ -1100,9 +1105,87 @@ export async function teardownTenant(
   opts: { deleteData: boolean },
 ): Promise<{ ok: boolean; failures: { resource: string; error: string }[] }> {
   const failures: { resource: string; error: string }[] = [];
-  const attempt = async (resource: string, fn: () => Promise<unknown>) => {
+
+  // ---- THE REFERENTIAL GUARD (#23) -------------------------------------------------------------
+  //
+  // A resource id on this row does NOT mean the object is this tenant's to delete. Resource names
+  // derive from the SLUG, and the house pattern frees a slug by RENAMING the old row, so the old row
+  // keeps its ids while the next tenant to take that slug provisions onto the same names -- and
+  // therefore the same objects. Slug reuse is resource reuse.
+  //
+  // A census of the live plane found ONE physical D1 referenced by nine successive tenant rows:
+  // eight tombstones and the LIVE tenant. Tearing down any one of those tombstones with
+  // deleteData would have deleted the live tenant's database, bucket and studio worker. Nothing in
+  // the code prevented it; the only thing that did was that no caller existed yet. This issue wires
+  // a caller, so the guard has to exist first.
+  //
+  // FAIL CLOSED, and note which direction that is. If the guard cannot answer, we do not know whose
+  // the resources are, and "delete anyway" is the one answer that cannot be taken back. An
+  // un-run teardown leaves resources alive, which is recoverable by running it again.
+  let blocked: Map<TenantResourceKind, ResourceReferrer[]>;
+  try {
+    const referrers = await deps.store.findResourceReferrers(tenant.id, {
+      d1_database_id: tenant.d1_database_id,
+      r2_bucket_name: tenant.r2_bucket_name,
+      r2_token_id: tenant.r2_token_id,
+      script_name: tenant.script_name,
+    });
+    blocked = new Map();
+    for (const r of referrers) {
+      const list = blocked.get(r.resource) ?? [];
+      list.push(r);
+      blocked.set(r.resource, list);
+    }
+  } catch (e) {
+    // Cannot prove ownership -> reap nothing. Recorded as its own resource so the row says WHY it
+    // is untouched rather than reading as a teardown that found nothing to do.
+    const error = `referential guard could not run, refusing every deletion: ${String(e)}`;
+    deps.log("teardown.guard_failed", { tenant: tenant.id, error: String(e) });
+    const only = [{ resource: "guard", error }];
+    await recordTeardownSafely(deps, tenant.id, only);
+    return { ok: false, failures: only };
+  }
+
+  /**
+   * Refuse a resource another row still points at, and say who.
+   *
+   * ANY referrer blocks, not just a live one. A resource shared only with tombstones is still not
+   * provably ours -- the tombstone is the row that would tell us what happened -- and deciding
+   * which of several tombstones "owns" a shared object is a rule nobody has written. Refusing is
+   * honest and reversible; the referrer's status travels in the message so an operator can see at a
+   * glance whether they are looking at a live blocker or a historical one.
+   */
+  const guarded = (resource: TenantResourceKind): boolean => {
+    const hits = blocked.get(resource);
+    if (!hits?.length) return false;
+    const who = hits.map((h) => `${h.tenant_id} (${h.slug}, status=${h.status})`).join(", ");
+    const live = hits.some((h) => h.status !== "deleted");
+    const error =
+      `refused: ${resource} is still referenced by ${hits.length} other tenant row(s): ${who}` +
+      (live ? " -- AT LEAST ONE IS NOT DELETED, this resource is in use" : "");
+    failures.push({ resource, error });
+    deps.log("teardown.refused", { tenant: tenant.id, resource, referrers: hits.length, live });
+    return true;
+  };
+
+  /**
+   * Try to delete, and on success blank the column so the row stops claiming a resource that is
+   * gone. Blanking ONLY on success is the whole point: a row that blanks on failure would read as
+   * reaped while a customer's bucket is still there.
+   */
+  const attempt = async (resource: string, fn: () => Promise<unknown>, clears?: TenantResourceKind) => {
     try {
       await fn();
+      if (clears) {
+        try {
+          await deps.store.clearTenantResource(tenant.id, clears);
+        } catch (e) {
+          // The resource IS gone; only the bookkeeping failed. Recorded distinctly so it is never
+          // read as "the delete failed" -- the two need opposite follow-up actions.
+          failures.push({ resource: `${resource}_record`, error: String(e) });
+          deps.log("teardown.record_failed", { tenant: tenant.id, resource, error: String(e) });
+        }
+      }
     } catch (e) {
       failures.push({ resource, error: String(e) });
       deps.log("teardown.failed", { tenant: tenant.id, resource, error: String(e) });
@@ -1121,7 +1204,9 @@ export async function teardownTenant(
   // Latent today (both derive from the same immutable slug), which is exactly why it is worth fixing
   // before something makes it live. Caught by Strummer during the reclaim-lease seam review.
   const scriptToDelete = tenant.script_name ?? deps.tenantScriptName(tenant.slug);
-  await attempt("worker", () => deps.cf.deleteUserWorker(deps.namespace, scriptToDelete));
+  if (!guarded("worker")) {
+    await attempt("worker", () => deps.cf.deleteUserWorker(deps.namespace, scriptToDelete), "worker");
+  }
   // Module scripts next (cf#99): the studio (discovery) is already gone, so sweeping the tenant's
   // module scripts cannot tear a /poll out from under a live studio. Prefix sweep + census; every
   // failure is surfaced (a live-configured module worker is exactly what must not be left behind).
@@ -1133,16 +1218,20 @@ export async function teardownTenant(
   // failed (the unpersisted-id class and the "id on a row we are about to blank" class).
   const tokenName = tenantR2TokenName(tenant.slug);
   let revokedById = false;
-  if (tenant.r2_token_id) {
+  const tokenGuarded = guarded("r2_token");
+  if (tenant.r2_token_id && !tokenGuarded) {
     try {
       await deps.tokenMinter.revoke(tenant.r2_token_id);
       revokedById = true;
+      await deps.store.clearTenantResource(tenant.id, "r2_token").catch((e: unknown) => {
+        failures.push({ resource: "r2_token_record", error: String(e) });
+      });
     } catch (e) {
       failures.push({ resource: "r2_token", error: String(e) });
       deps.log("teardown.failed", { tenant: tenant.id, resource: "r2_token", error: String(e) });
     }
   }
-  if (!revokedById) {
+  if (!revokedById && !tokenGuarded) {
     await attempt("r2_token_by_name", async () => {
       const hit = await deps.tokenMinter.revokeByName(tokenName);
       if (!hit && !tenant.r2_token_id) {
@@ -1153,7 +1242,9 @@ export async function teardownTenant(
   }
 
   if (opts.deleteData) {
-    if (tenant.d1_database_id) await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!));
+    if (tenant.d1_database_id && !guarded("d1")) {
+      await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!), "d1");
+    }
     // KNOWN, LIVE-PROVEN CONSTRAINT: R2 refuses to delete a NON-EMPTY bucket, and R2's REST API has
     // no object-list/delete endpoint at all (404) -- emptying a bucket only goes through the S3 API.
     // So this call SUCCEEDS only for a tenant that never rendered, and for everyone else it fails
@@ -1162,12 +1253,38 @@ export async function teardownTenant(
     // fail. Emptying-then-deleting needs an S3 client here (mint a bucket cred, ListObjectsV2 +
     // DeleteObjects, delete, revoke) and is tracked as #53 follow-up rather than faked.
     // Caught on real R2; the unit fake said delete always works.
-    if (tenant.r2_bucket_name) await attempt("r2_bucket", () => deps.cf.deleteR2Bucket(tenant.r2_bucket_name!));
+    if (tenant.r2_bucket_name && !guarded("r2_bucket")) {
+      await attempt("r2_bucket", () => deps.cf.deleteR2Bucket(tenant.r2_bucket_name!), "r2_bucket");
+    }
   }
 
   // Their RunPod endpoints are THEIRS. We never touch the tenant's RunPod account beyond what they
   // authorized; de-provision shows them a "delete these on RunPod" checklist instead.
+
+  // The row records what happened, including the clean case. "Teardown ran and reaped everything"
+  // and "no teardown has ever run" are different facts and the data has to be able to tell them
+  // apart -- that indistinguishability is what forced the cf#103 Tier B refusal.
+  await recordTeardownSafely(deps, tenant.id, failures);
   return { ok: failures.length === 0, failures };
+}
+
+/**
+ * Persist the teardown outcome without ever letting the bookkeeping erase the result.
+ *
+ * teardownTenant is best-effort by contract, and a throw from the RECORD would discard the failure
+ * list its caller needs -- the exact "one failure strands a live credential" shape the collect-don't-
+ * throw design exists to prevent.
+ */
+async function recordTeardownSafely(
+  deps: ProvisionDeps,
+  tenantId: string,
+  failures: { resource: string; error: string }[],
+): Promise<void> {
+  try {
+    await deps.store.recordTeardown(tenantId, failures);
+  } catch (e) {
+    deps.log("teardown.record_failed", { tenant: tenantId, resource: "teardown_record", error: String(e) });
+  }
 }
 
 async function sha256Hex(s: string): Promise<string> {

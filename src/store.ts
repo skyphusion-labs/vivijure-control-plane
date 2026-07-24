@@ -68,6 +68,15 @@ export interface Tenant {
   suspended_at: string | null;
   suspended_reason: string | null;
   deleted_at: string | null;
+  /** When a teardown was last ATTEMPTED on this row. NULL means never attempted (#23). */
+  teardown_at: string | null;
+  /**
+   * JSON array of the failures the last teardown collected; '[]' means it reaped everything it
+   * tried. NULL means no teardown has run. Three states, deliberately: "clean" and "never tried"
+   * are not the same fact, and collapsing them is how a row that still owns live resources reads
+   * as reaped.
+   */
+  teardown_failures: string | null;
   /** Somebody is tearing this row down RIGHT NOW, until this time. Expires, so a dead reclaim heals. */
   reclaim_lease_until: string | null;
   /** Proves WHICH caller holds the reclaim lease. A timestamp cannot. */
@@ -261,6 +270,25 @@ export function classifySlugClaim(row: Tenant | null, accountId: string, nowMs: 
   return { available: false, reason: "you already have a studio at that name" };
 }
 
+/** The four control-plane-owned resources a teardown can reap. RunPod endpoints are the TENANT's. */
+export type TenantResourceKind = "d1" | "r2_bucket" | "r2_token" | "worker";
+
+/** The resource values to look for, as they appear on a tenant row. */
+export interface TenantResourceRefs {
+  d1_database_id?: string | null;
+  r2_bucket_name?: string | null;
+  r2_token_id?: string | null;
+  script_name?: string | null;
+}
+
+/** Another row that still points at one of those resources, and what state that row is in. */
+export interface ResourceReferrer {
+  tenant_id: string;
+  slug: string;
+  status: TenantLifecycle;
+  resource: TenantResourceKind;
+}
+
 export interface ControlPlaneStore {
   // accounts + identities
   getAccountById(id: string): Promise<Account | null>;
@@ -384,6 +412,36 @@ export interface ControlPlaneStore {
   setTenantR2Token(id: string, tokenId: string): Promise<void>;
   setTenantEndpoints(id: string, endpointsJson: string): Promise<void>;
   setTenantScript(id: string, scriptName: string, release: string): Promise<void>;
+
+  /**
+   * Blank ONE resource column, on that resource's successful deletion (#23).
+   *
+   * Per-resource rather than all-at-once because teardown is best-effort: it can reap the worker and
+   * fail on the bucket, and a row that blanked both would then claim the bucket is gone when it is
+   * still there holding a customer's films.
+   */
+  clearTenantResource(id: string, resource: TenantResourceKind): Promise<void>;
+
+  /** Record that a teardown ran and what it failed to reap ('[]' when it reaped everything). */
+  recordTeardown(id: string, failures: { resource: string; error: string }[]): Promise<void>;
+
+  /**
+   * Every OTHER tenant row that still points at any of these resources (#23).
+   *
+   * This exists because the resource ids on a tenant row are not private to it. Resource NAMES
+   * derive from the SLUG, and the house pattern frees a slug by RENAMING the old row, so the old row
+   * keeps the ids while the next tenant to take that slug provisions onto the same names -- and
+   * therefore the same objects. Slug reuse is resource reuse. A census of the live plane found ONE
+   * physical D1 referenced by nine successive tenant rows, eight of them tombstones and one of them
+   * the LIVE tenant.
+   *
+   * So "is this id on the row I am tearing down" does not answer "is this object mine to delete".
+   * Only this does.
+   */
+  findResourceReferrers(
+    exceptTenantId: string,
+    resources: TenantResourceRefs,
+  ): Promise<ResourceReferrer[]>;
   /**
    * Set (or deliberately CLEAR, with null) the tenant module release.
    *
