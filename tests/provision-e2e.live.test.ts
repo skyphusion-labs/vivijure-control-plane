@@ -7,7 +7,9 @@
 //     --config wrangler.toml --tag <tag> --out /tmp/studio-release
 //   set -a; . ~/.cf-provisioner-full.env; . ~/.runpod-scratch.env; set +a
 //   CF_ACCOUNT_ID=<id> STUDIO_RELEASE_DIR=/tmp/studio-release PROVISION_E2E=1 \
-//     npx vitest run tests/control-plane/provision-e2e.live.test.ts
+//     STUDIO_TOKEN_KEK=<base64-32-byte-kek> \
+//     PROVISION_E2E_WORKERS_DEV_SUBDOMAIN=<account>.workers.dev \
+//     npx vitest run tests/provision-e2e.live.test.ts
 //
 // PROVENANCE LABEL (same as the upload leg, and it is not a formality): the bundle comes from a
 // LOCAL REPRODUCIBLE BUILD of main, not a published tag. Byte-identical to what the workflow will
@@ -26,41 +28,23 @@ import { CfTokenMinter } from "../src/token-minter";
 import { runProvisionJob, teardownTenant, type ProvisionDeps } from "../src/provisioner";
 import { createTenantEndpoints, RunPodClient, tenantEndpointName, PROVISION_PLAN } from "../src/runpod";
 import { localStudioBundleSource } from "./studio-bundle-local";
+import { localModuleBundleSource } from "./module-bundle-local";
+import { provisionE2eLive, provisionE2eEnvOrThrow } from "./provision-e2e-env";
+import { wfpDispatchFetch } from "./wfp-dispatch-fetch";
 import { MemoryStore } from "./memory-store";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { expectProvisionFailure } from "./provision-assert";
 
-declare const process: { env: Record<string, string | undefined> };
-
-const CF_TOKEN = process.env.CF_PROVISIONER_TOKEN;
-const ACCOUNT = process.env.CF_ACCOUNT_ID;
-const RUNPOD_KEY = process.env.RUNPOD_API_KEY;
-const DIR = process.env.STUDIO_RELEASE_DIR;
-// QUARANTINED (cf#85 extraction). This suite CANNOT run as written: its ProvisionDeps literal is
-// missing five fields that ProvisionDeps has since grown -- moduleBundle, moduleNamespace, kek,
-// spendDailyCeiling and callTenantStudio. It rotted silently because it is LIVE-gated, so CI never
-// compiled it, and vivijure-cf never typechecked tests/ at all (cf#107).
-//
-// The five values are NOT invented here, deliberately. This test provisions REAL tenant
-// infrastructure across two cloud accounts; a guessed kek or a guessed moduleNamespace does not fail
-// safe, it provisions something wrong and bills for it. The intended values get supplied when we run
-// the first live e2e against the extracted control plane (post-v1.0.0), tracked in the issue below.
-//
-// LIVE is forced false so the gate can never open by environment alone, and the suite is skipped with
-// a reason rather than deleted, because the recipe in the header is the thing worth keeping.
-const QUARANTINE_ISSUE = "vivijure-control-plane#4: restore the live provision e2e";
-const LIVE = false as boolean;
-void CF_TOKEN;
-void RUNPOD_KEY;
-void DIR;
+const LIVE = provisionE2eLive();
+const env = LIVE ? provisionE2eEnvOrThrow(true)! : null;
 
 const PROD_TELL = "t9wcvlxh8rc5la";
 const slug = `rollins-e2e-${Date.now().toString(36).slice(-6)}`;
-const NAMESPACE = "vivijure-tenants";
+const NAMESPACE = env?.dispatchNamespace ?? "vivijure-tenants";
 
-const cf = LIVE ? new CfApi(ACCOUNT!, CF_TOKEN!) : (null as unknown as CfApi);
-const runpodClient = LIVE ? new RunPodClient(RUNPOD_KEY!) : (null as unknown as RunPodClient);
+const cf = LIVE ? new CfApi(env!.cfAccountId, env!.cfToken) : (null as unknown as CfApi);
+const runpodClient = LIVE ? new RunPodClient(env!.runpodKey) : (null as unknown as RunPodClient);
 let scratchOk = false;
 let store: MemoryStore;
 let deps: ProvisionDeps;
@@ -70,44 +54,36 @@ const migrations = LIVE
       .map((f) => ({ name: f, sql: readFileSync(join("migrations", f), "utf8") }))
   : [];
 
-/**
- * A placeholder that refuses to be a value. Returns `never` at the type level so it satisfies any
- * field, and throws the moment anything reads it, so an accidental un-quarantine fails LOUD at the
- * first use rather than provisioning against a silently wrong default.
- */
-function notSupplied(field: string): never {
-  throw new Error(
-    `provision-e2e is quarantined: ProvisionDeps.${field} was never supplied. See ${QUARANTINE_ISSUE}.`,
-  );
-}
-
 beforeAll(async () => {
-  if (!LIVE) return;
+  if (!LIVE || !env) return;
   const eps = await runpodClient.listEndpoints();
   scratchOk = !eps.some((e) => e.id === PROD_TELL);
 
   store = new MemoryStore();
-  const tag = (JSON.parse(readFileSync(join(DIR!, "manifest.json"), "utf8")) as { tag: string }).tag;
+  const tag = (JSON.parse(readFileSync(join(env.studioReleaseDir, "manifest.json"), "utf8")) as { tag: string }).tag;
+  const dispatch = wfpDispatchFetch({
+    workersDevSubdomain: env.workersDevSubdomain,
+    studioNamespace: env.dispatchNamespace,
+    moduleNamespace: env.moduleNamespace,
+  });
+
   deps = {
     store,
     cf,
     runpod: { createEndpoints: (key, s, r2) => createTenantEndpoints(key, s, r2) },
-    bundle: localStudioBundleSource(DIR!),
+    bundle: localStudioBundleSource(env.studioReleaseDir),
+    moduleBundle: localModuleBundleSource(env.studioReleaseDir),
     tokenMinter: new CfTokenMinter(cf),
-    r2Endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
+    r2Endpoint: `https://${env.cfAccountId}.r2.cloudflarestorage.com`,
     namespace: NAMESPACE,
+    moduleNamespace: env.moduleNamespace,
     release: tag,
     tenantScriptName: (s: string) => `tenant-${s}-studio`,
+    kek: env.studioTokenKek,
+    spendDailyCeiling: env.spendDailyCeiling,
+    callTenantStudio: dispatch.callTenantStudio,
+    callTenantModule: dispatch.callTenantModule,
     log: (event, fields) => console.log(`  [${event}]`, JSON.stringify(fields).slice(0, 200)),
-    // The five fields this suite predates. They THROW rather than hold a plausible default: an
-    // invented value here provisions real infrastructure incorrectly instead of failing. Supplying
-    // them for real is the work tracked in QUARANTINE_ISSUE.
-    moduleBundle: notSupplied("moduleBundle"),
-    moduleNamespace: notSupplied("moduleNamespace"),
-    kek: notSupplied("kek"),
-    spendDailyCeiling: notSupplied("spendDailyCeiling"),
-    callTenantModule: notSupplied("callTenantModule"),
-    callTenantStudio: notSupplied("callTenantStudio"),
   };
 });
 
@@ -152,7 +128,7 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
     const tenant = await store.createTenant("ten_e2e", slug, account.id, "pending");
     const job = await store.createProvisionJob("job_e2e", tenant.id, "provision");
 
-    const result = await runProvisionJob(deps, job.id, tenant, RUNPOD_KEY!);
+    const result = await runProvisionJob(deps, job.id, tenant, env!.runpodKey);
     if (!result.ok) {
       const fail = expectProvisionFailure(result);
       throw new Error(`provision failed at ${fail.step}: ${fail.message}`);
