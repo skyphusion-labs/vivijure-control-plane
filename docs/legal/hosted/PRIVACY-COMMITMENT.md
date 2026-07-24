@@ -41,7 +41,7 @@ week; it is already decided.
 
 1. **Section 4.2 states, in the present tense, that the hosted tier has not launched, has no
    tenants, and has no telemetry wired.** That sentence goes false the day hosted opens. It is a
-   launch-gate item, tracked as #49.
+   launch-gate item in `LAUNCH-GATE-PROCEDURE.md` (added #49).
 2. **The per-field dispositions and the service-level monitoring disclosure do not exist yet.** The
    canonical document says so plainly rather than claiming a boundary we have not built. They are
    owed at launch.
