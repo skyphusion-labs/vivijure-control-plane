@@ -6,10 +6,15 @@
 // never renders a Create button next to a studio that cannot serve the token,
 // which is the local#201 "advertise a button that throws" class.
 //
-// Contract (agreed with Rollins, sprint cf#215; custody ruled SEPARATE):
-//   GET    /api/tenant/{id}/api-token -> { configured, created_at, last_rotated_at, display, custody }
-//   POST   /api/tenant/{id}/api-token -> { token, created_at, display }   <- plaintext, ONCE
+// Contract (COMMITTED by Rollins, sprint cf#215; custody ruled SEPARATE):
+//   GET    /api/tenant/{id}/api-token -> { configured, name, created_at, last_rotated_at }
+//   POST   /api/tenant/{id}/api-token -> { token, name, created_at }   <- plaintext, ONCE
 //   DELETE /api/tenant/{id}/api-token -> { configured: false }
+//
+// There is no masked `display` field and there never will be: the studio stores
+// only the SHA-256 hash of a token (migrations/0009_api_tokens.sql), so there is
+// no copy to partially reveal. Reveal-once is a property of the SYSTEM here, not a
+// promise about this file's behaviour.
 //
 // REVEAL-ONCE, enforced on this side as hard as it is on the backend:
 //   - the plaintext lives in ONE parameter inside showReveal() and in the DOM node
@@ -17,8 +22,8 @@
 //     localStorage / sessionStorage / a cookie / the URL, and never console.logged;
 //   - any other action, and the "hide this" control, tears it out of the DOM, so
 //     the value cannot be recovered by reopening a panel;
-//   - the refresh path (GET) can never show it: the backend does not return it, and
-//     this file has no code path that would render it if it did.
+//   - the refresh path (GET) can never show it: the backend does not have it to
+//     return, and this file has no code path that would render it if it did.
 (function () {
   "use strict";
 

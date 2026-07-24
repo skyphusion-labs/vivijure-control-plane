@@ -3,12 +3,24 @@
 // classic <script> on index.html as `window.apiTokenChecks`. Same UMD-ish shape
 // as front-door-checks.js / onboarding-checks.js. No framework, no build step.
 //
-// Custody is RULED (Mackaye, sprint cf#215): the programmatic token is a SEPARATE
-// tenant-scoped token, never the KEK-encrypted STUDIO_API_TOKEN the dispatcher
-// injects into the owner's browser session. That ruling lives in the BACKEND; this
-// file still projects `custody` off the payload rather than hardcoding it, because
-// a UI that assumes a fact it did not read is exactly how a warning goes stale. If
-// the plane ever reports shared custody, the rotate warning gets harsher on its own.
+// ALIGNED to the contract Rollins committed (sprint cf#215). Two things changed
+// from the first cut, and both made the panel MORE honest, so they are worth
+// recording rather than quietly editing away:
+//
+//  1. There is NO `display` field, because there is nothing to mask. The studio
+//     stores only the SHA-256 hash of a token (migrations/0009_api_tokens.sql,
+//     auth-gate.ts sha256Hex); the plaintext exists exactly once, in the mint
+//     response. A masked "vjs_...9f2c" would have implied we kept a copy we could
+//     partially show, which is a lie about custody. Reveal-once here is enforced
+//     BY CONSTRUCTION, not by anyone's discipline: nobody can show you the value
+//     later because nobody has it.
+//  2. There is no `custody` field on the wire, because custody is settled
+//     architecture, not runtime state: a named row in the tenant's own api_tokens
+//     table, revoked independently, resolving to sub "api-token:<name>" distinct
+//     from the operator token. So the DEFAULT rotate warning is the accurate
+//     separate-custody one. The `shared` branch is kept as an explicit override
+//     and tripwire: if some future payload ever declares shared custody, the
+//     warning gets harsher on its own rather than silently going stale.
 (function (root, factory) {
   const api = factory();
   if (typeof module !== "undefined" && module.exports) {
@@ -18,7 +30,7 @@
   }
 })(typeof self !== "undefined" ? self : this, function () {
   function str(value) {
-    return typeof value === "string" && value.trim() ? value : null;
+    return typeof value === "string" && value.trim() ? value.trim() : null;
   }
 
   // THE state decision for the panel. Total on purpose: a payload we cannot read
@@ -28,7 +40,7 @@
   function tokenView(payload) {
     const blank = {
       state: "unknown",
-      display: "",
+      name: null,
       custody: null,
       created_at: null,
       last_rotated_at: null,
@@ -39,9 +51,7 @@
     const custody = payload.custody === "shared" || payload.custody === "separate" ? payload.custody : null;
     return {
       state: state,
-      // Masked, backend-supplied. Never a value this file derives: deriving a mask
-      // from a plaintext would mean the plaintext passed through here at all.
-      display: typeof payload.display === "string" ? payload.display : "",
+      name: str(payload.name),
       custody: custody,
       created_at: str(payload.created_at),
       last_rotated_at: str(payload.last_rotated_at),
@@ -49,15 +59,19 @@
   }
 
   // Copy for the error codes the control plane returns as { error: "<code>" }.
-  // Anything unrecognized gets an honest generic that says we do not know, rather
-  // than a guess dressed up as a diagnosis.
+  // These are the codes Rollins committed for this path, no more and no fewer:
+  // carrying copy for a code the route cannot emit is dead weight that implies a
+  // mechanism we do not use (the KEK, notably, is irrelevant here -- a direct
+  // dividend of the separate-token ruling).
   const TOKEN_ERRORS = {
     not_found:
       "We could not find that studio. If you just created it, reload the page.",
     tenant_not_live:
       "Your studio is not live yet, so there is no API token to hand out. Finish setup first, then come back.",
-    kek_unavailable:
-      "We cannot reach the key that protects your token right now. That is our problem, not yours, and nothing about your token changed.",
+    not_provisioned:
+      "Your studio is still being built, so it cannot hold a token yet. Give it a few minutes and reload.",
+    tenant_unreachable:
+      "We could not reach your studio's database just now, so nothing was changed. That is our problem, not yours; please try again in a minute.",
     unauthorized:
       "Your session expired while this page was open. Sign in again and retry.",
     rate_limited:
@@ -72,26 +86,31 @@
     );
   }
 
-  // What rotation actually costs the person clicking it, read off custody rather
-  // than assumed. The `shared` branch is not dead code: it is the honest answer if
-  // the backend ever welds the two tokens together again.
+  // What rotation actually costs the person clicking it.
+  //
+  // The default is the SEPARATE-custody statement because that is what the system
+  // structurally is: rotating replaces one named row in the tenant's api_tokens
+  // table and never touches the operator secret the browser session rides on. The
+  // `shared` branch is not dead code; it is the tripwire for a future payload that
+  // says otherwise.
   function rotateWarning(custody) {
-    if (custody === "separate") {
-      return "Rotating issues a new programmatic token and invalidates the old one immediately. Anything using the old value (scripts, CI, an MCP client) stops working until you paste the new one in. Your studio browser session is NOT affected.";
-    }
     if (custody === "shared") {
       return "WARNING: this token is the same one your browser session uses. Rotating it signs you out of the studio in this browser AND breaks anything using the old value.";
     }
-    return "Rotating issues a new token and invalidates the old one immediately. We cannot tell from here what else is holding the old value, so assume everything using it stops working.";
+    return "Rotating issues a new programmatic token and invalidates the old one immediately. Anything using the old value (scripts, CI, an MCP client) stops working until you paste the new one in. Your studio browser session is NOT affected.";
   }
 
   function revokeWarning() {
     return "Revoking deletes the programmatic token. Anything using it stops working immediately. You can create a new one afterwards; you cannot get this one back.";
   }
 
-  // Shown next to the plaintext, once, at mint/rotate time.
+  // Shown next to the plaintext, once, at mint/rotate time. It states the actual
+  // mechanism rather than making a promise about our behaviour, because the
+  // mechanism is the stronger claim: only a SHA-256 hash of this value is stored,
+  // so "we cannot show it to you again" is a fact about the system, not a policy
+  // we could quietly change later.
   function revealNotice() {
-    return "This is the only time this value is shown. We do not keep a copy we can show you again, and it is never written to a log. Copy it somewhere safe now. If you lose it, rotate to get a new one.";
+    return "This is the only time this value exists. Your studio stores only a one-way hash of it, so nobody, including us, can show it to you again. Copy it somewhere safe now. If you lose it, rotate to get a new one.";
   }
 
   // A studio URL we are willing to print into a copyable command. Anything that is
@@ -114,7 +133,10 @@
   // Copyable examples. DELIBERATELY placeholder-based: the token value is never
   // interpolated into a snippet. A snippet with the live secret baked in is a
   // secret that ends up in a bug report, a screenshot, or a pasted terminal
-  // scrollback, and the reveal-once promise would be a fiction.
+  // scrollback, and the reveal-once property would be undermined by our own UI.
+  //
+  // The header shape is CONFIRMED against the studio's token gate
+  // (vivijure-cf src/auth-gate.ts verifyTokenRequest): Authorization: Bearer.
   //
   // Projection rule, same as everywhere else: a surface is only advertised if the
   // payload says it exists. The MCP example appears the day the plane reports an
@@ -163,16 +185,17 @@
   }
 
   // One line describing the token that exists, built only from what the backend
-  // projected. Never claims a creation date it was not given.
+  // projected. Never claims a name or a date it was not given.
   function summaryLine(view) {
     if (!view || view.state !== "present") return "";
     const parts = [];
-    if (view.display) parts.push(view.display);
+    if (view.name) parts.push('named "' + view.name + '"');
     const rotated = whenLabel(view.last_rotated_at);
     const created = whenLabel(view.created_at);
     if (rotated) parts.push("last rotated " + rotated);
     else if (created) parts.push("created " + created);
-    return parts.join(" -- ");
+    if (!parts.length) return "A programmatic token exists for this studio.";
+    return "Active token, " + parts.join(", ") + ".";
   }
 
   return {
