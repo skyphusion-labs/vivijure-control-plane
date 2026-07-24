@@ -152,7 +152,7 @@ Custody of the recovery itself:
 than no escrow, so this check is the point, not a formality. Outside verification after the sitting:
 deployed version id unchanged, version count unchanged, plane still serving.
 
-### It has a HOME now, but it is not yet ESCROWED
+### It has a HOME, and now an ESCROW (both closed 2026-07-25)
 
 `~/.vivijure-studio-token-kek` on one box is a **single copy**. That closes the "nobody can say where
 this lives" gap and it does NOT, alone, close the "only one copy exists" gap. That second gap CLOSED
@@ -167,15 +167,15 @@ Consequences, stated plainly because this one is not like the others in this tab
   dispatcher-injected auth for those tenants. Re-keying requires an explicit migration that re-mints
   and re-encrypts each tenant's studio token, and it is a ruled decision, not a maintenance chore.
 - It had **no escrow**, which was the actual defect: the only copy of a key protecting live customer
-  credentials existed in one write-only location. Recovery (above) gives it a readable home; the age
-  tier is what will finally give it a second copy.
+  credentials existed in one write-only location. Recovery (above) gave it a readable home; the age
+  tier (`secrets-vivijure-kek`, landed 2026-07-25) gave it the second copy.
 - The live **provision e2e does not need it** and never did. That suite round-trips a KEK entirely
   in-process over a `MemoryStore` tenant it creates itself, so it generates an ephemeral key
   (`tests/provision-e2e-env.ts`). Admitting the production KEK there would widen its custody into CI
   to buy nothing. The belief that #4 was blocked on recovering this value was the premise error that
   parked that issue.
 
-Re-keying one of these is cheap and non-destructive: the admin gate fails closed, no tenant traffic
+Re-keying an ADMIN TOKEN (not the KEK) is cheap and non-destructive: the admin gate fails closed, no tenant traffic
 touches it, and the check is two curls (bearer -> 200, bare -> 401). Re-key on unknown provenance;
 do NOT reflexively re-key because a value passed through a trusted boundary such as a transcript.
 
