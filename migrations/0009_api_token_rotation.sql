@@ -1,0 +1,15 @@
+-- cf#94: when this tenant's PROGRAMMATIC studio token was last rotated.
+--
+-- WHY THE METADATA LIVES HERE AND THE CREDENTIAL DOES NOT. The token itself is a row in the
+-- TENANT's own studio database (`api_tokens`, studio migration 0009), which stores only its
+-- SHA-256 hash -- the control plane never holds the value, which is what makes reveal-once true by
+-- construction rather than by discipline.
+--
+-- But rotation REPLACES that row, so the studio's `created_at` can only ever mean "when the current
+-- token was issued". "Has this ever been rotated, and when" is a different fact with nowhere to live
+-- over there, and adding a column to the studio schema for it would mean a cross-repo migration
+-- riding the release artifact to record something the STUDIO does not care about.
+--
+-- So the credential stays with the tenant and the lifecycle metadata stays with the plane that
+-- manages the lifecycle. NULL means never rotated (the token has only ever been minted).
+ALTER TABLE tenants ADD COLUMN api_token_rotated_at TEXT;

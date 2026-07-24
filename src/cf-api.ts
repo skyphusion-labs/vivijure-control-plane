@@ -182,11 +182,19 @@ export class CfApi {
     return hit ? { uuid: hit.uuid } : null;
   }
 
-  /** Multi-statement SQL in one call works (spike-proven); statements are reported per-statement. */
-  async queryD1(databaseId: string, sql: string): Promise<unknown> {
+  /**
+   * Multi-statement SQL in one call works (spike-proven); statements are reported per-statement.
+   *
+   * `params` binds `?` placeholders D1-side. It exists because the tenant API-token path (cf#94)
+   * writes a credential hash into a tenant database, and building that statement by string
+   * concatenation would put SQL construction on a credential path -- the one place where "the values
+   * are controlled, so it is fine today" is an argument that ages badly. Migrations keep passing SQL
+   * with no params, which is unchanged behaviour.
+   */
+  async queryD1(databaseId: string, sql: string, params?: unknown[]): Promise<unknown> {
     return await this.call<unknown>("d1.query", `/accounts/${this.accountId}/d1/database/${databaseId}/query`, {
       method: "POST",
-      body: JSON.stringify({ sql }),
+      body: JSON.stringify(params && params.length > 0 ? { sql, params } : { sql }),
       headers: { "content-type": "application/json" },
     });
   }

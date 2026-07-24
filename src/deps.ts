@@ -12,6 +12,13 @@ import type { ControlPlaneEnv } from "./env";
 import type { MailSender } from "./email";
 import { posternSender } from "./email";
 import {
+  readTenantApiToken,
+  issueTenantApiToken,
+  revokeTenantApiToken,
+  type ApiTokenState,
+  type MintedApiToken,
+} from "./tenant-api-token";
+import {
   continueProvisionJob,
   preflightModuleUpgrade,
   runProvisionJob,
@@ -65,6 +72,16 @@ export interface ProvisionerWiring {
    * awaiting_invoke_key rather than being promoted on credentials nothing has proven.
    */
   installInvokeKey(tenant: Tenant, key: string): Promise<ModuleReadiness>;
+  /**
+   * The tenant's PROGRAMMATIC studio token (cf#94). Lives here because this is where the CF client
+   * and the dispatch namespace already are, and because the plane deliberately stores no part of
+   * the credential -- these calls reach into the TENANT's own database, which only ever holds a hash.
+   */
+  apiToken: {
+    read(tenant: Tenant): Promise<ApiTokenState>;
+    issue(tenant: Tenant): Promise<MintedApiToken>;
+    revoke(tenant: Tenant): Promise<void>;
+  };
   /**
    * Reap the cloud resources a HALF-BUILT tenant left behind, for the reclaim path (cf#103).
    *
@@ -215,7 +232,29 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     log: (event, fields) => console.log("provision", { event, ...fields }),
   };
 
+  // 256 bits of token. The VALUE exists here and in the HTTP response exactly once and is stored
+  // nowhere: the tenant's studio DB keeps only its SHA-256 hash.
+  const apiTokenDeps = {
+    cf,
+    store,
+    namespace: DISPATCH_NAMESPACE,
+    randomToken: () => {
+      const raw = new Uint8Array(32);
+      crypto.getRandomValues(raw);
+      return [...raw].map((b) => b.toString(16).padStart(2, "0")).join("");
+    },
+    sha256Hex: async (s: string) => {
+      const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+      return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    },
+  };
+
   return {
+    apiToken: {
+      read: (tenant) => readTenantApiToken(apiTokenDeps, tenant),
+      issue: (tenant) => issueTenantApiToken(apiTokenDeps, tenant),
+      revoke: (tenant) => revokeTenantApiToken(apiTokenDeps, tenant),
+    },
     smokeClient: tenantStudioSmokeClient(env, STUDIO_TOKEN_KEK),
     async start(jobId, tenant, runpodApiKey) {
       // runProvisionJob records every outcome on the job row; the return value is the same fact.

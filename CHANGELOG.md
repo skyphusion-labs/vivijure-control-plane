@@ -6,6 +6,19 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(hosted): tenant programmatic API token endpoints (vivijure-cf#94)
+
+- `GET/POST/DELETE /api/tenant/{id}/api-token`. Separate credential from the dispatcher-injected
+  `STUDIO_API_TOKEN` (ruled): revoking it can never sign the owner out of their browser session.
+- **The plane stores no part of it.** The token is a row in the TENANT's studio DB holding only a
+  SHA-256 hash, so reveal-once is true by construction. `GET` therefore carries no masked `display`
+  field -- masking implies keeping a copy.
+- Refuses `not_provisioned` when the studio has no `STUDIO_API_TOKEN`, because the studio's gate 403s
+  before consulting named tokens and the minted credential would fail on arrival.
+- `CfApi.queryD1` gains real parameter binding; migration 0009 adds `tenants.api_token_rotated_at`.
+- Contract + the custody pin documented in `docs/control-plane.md`.
+
+
 ### feat(r2): bounded empty-then-delete cycle (vivijure-cf#72)
 
 - `src/r2-empty.ts`: ListObjectsV2 + batched DeleteObjects over the S3 API, so a tenant bucket that

@@ -68,6 +68,11 @@ export interface Tenant {
   suspended_at: string | null;
   suspended_reason: string | null;
   deleted_at: string | null;
+  /**
+   * When this tenant's programmatic studio token was last ROTATED (cf#94). NULL means never rotated.
+   * The token itself lives in the tenant's own studio DB as a hash; only this lifecycle fact is here.
+   */
+  api_token_rotated_at: string | null;
   /** When a teardown was last ATTEMPTED on this row. NULL means never attempted (#23). */
   teardown_at: string | null;
   /**
@@ -421,6 +426,9 @@ export interface ControlPlaneStore {
    * still there holding a customer's films.
    */
   clearTenantResource(id: string, resource: TenantResourceKind): Promise<void>;
+
+  /** Stamp a programmatic-token rotation on the tenant row (cf#94). */
+  setApiTokenRotatedAt(id: string): Promise<void>;
 
   /** Record that a teardown ran and what it failed to reap ('[]' when it reaped everything). */
   recordTeardown(id: string, failures: { resource: string; error: string }[]): Promise<void>;
