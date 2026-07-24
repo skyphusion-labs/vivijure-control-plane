@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "guard:resolve": "node scripts/resolve-guard.mjs",
     "test": "vitest run",
+    "test:live:scratch": "vitest run tests/runpod.live.test.ts tests/cf-api.live.test.ts",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage"
   },

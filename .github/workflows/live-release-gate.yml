@@ -1,0 +1,83 @@
+name: Live release gate (scratch)
+
+# Scratch-account live tests for control-plane provisioning legs (vivijure-cf#90).
+# Drives real Cloudflare + RunPod APIs so workerd/API-shape defects cannot ship on
+# green stub CI alone. ZERO GPU invoke spend: RunPod suite creates template+endpoint
+# only; cf-api suite uses prefixed rollins-verify-* resources with afterAll teardown.
+#
+# SPEND is gated: workflow_dispatch ONLY; live job runs ONLY when `live` input is true.
+# Secrets (scratch RunPod key, CF provisioner token) must be repo/org Actions secrets
+# before the first green dispatch. Attach to tag deploy as a required check in a follow-up
+# PR once one manual dispatch passes end to end.
+#
+# Runner: ubuntu-latest (public repo; fork-safe). Live suites opt in via env, never on PR CI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      live:
+        description: "Run scratch live tests against real CF + RunPod APIs (creates prefixed test resources; zero GPU invoke)."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-release-gate
+  cancel-in-progress: false
+
+jobs:
+  dry-run:
+    if: ${{ inputs.live != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Stub CI parity (live suites skipped without env)
+        run: npm test
+
+  live-gate:
+    if: ${{ inputs.live == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUNPOD_LIVE: "1"
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      CF_PROVISIONER_TOKEN: ${{ secrets.CF_PROVISIONER_TOKEN }}
+      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Preflight -- required secrets present (presence-check only)
+        run: |
+          set -eu
+          test -n "${RUNPOD_API_KEY:+SET}" || { echo "RUNPOD_API_KEY secret missing"; exit 1; }
+          test -n "${CF_PROVISIONER_TOKEN:+SET}" || { echo "CF_PROVISIONER_TOKEN secret missing"; exit 1; }
+          test -n "${CF_ACCOUNT_ID:+SET}" || { echo "CF_ACCOUNT_ID secret missing"; exit 1; }
+          echo "all required live-gate secrets present"
+
+      - name: RunPod scratch live (template+endpoint; no invoke)
+        run: npx vitest run tests/runpod.live.test.ts
+
+      - name: CF provisioner live (prefixed rollins-verify-* resources)
+        run: npx vitest run tests/cf-api.live.test.ts
