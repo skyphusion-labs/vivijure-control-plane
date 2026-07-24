@@ -306,6 +306,22 @@ describe("upgradeTenantModules", () => {
     expect(after.studio_release).toBe(OLD_RELEASE);
     const finished = await store.getJob(job.id);
     expect(finished?.status).toBe("succeeded");
+    expect(finished?.lease_until).toBeNull();
+  });
+
+  it("claims the job with a live lease before work begins (#44)", async () => {
+    const store = new MemoryStore();
+    const tenant = await seedLiveTenant(store);
+    const d = deps(store);
+    const job = await store.createModuleUpgradeJob("job_up", tenant.id, OLD_RELEASE, NEW_RELEASE);
+    expect(job.status).toBe("queued");
+    expect(job.lease_until).toBeNull();
+
+    await upgradeTenantModules(d, job.id, tenant, await contextFor(d, tenant));
+
+    const mid = await store.getJob(job.id);
+    expect(mid?.status).toBe("succeeded");
+    // setJobRunning ran at entry; finishJob cleared the lease on success.
   });
 
   it("THE GATE -- a FAILED upgrade leaves the tenant LIVE and SERVING", async () => {

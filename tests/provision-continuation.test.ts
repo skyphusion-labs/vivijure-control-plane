@@ -19,7 +19,8 @@ import {
   type ProvisionDeps,
 } from "../src/provisioner";
 import type { CfApi } from "../src/cf-api";
-import type { Tenant } from "../src/store";
+import type { Tenant, ProvisionJob } from "../src/store";
+import { jobHasLiveDriver } from "../src/store";
 import { encryptStudioToken } from "../src/token-crypto";
 import { MemoryStore } from "./memory-store";
 
@@ -161,6 +162,45 @@ describe("the job lease (#112 concurrency guard)", () => {
     await store.finishJob(job.id, "succeeded", null, null);
 
     expect(await store.claimJob(job.id, 60)).toBe(false);
+  });
+});
+
+describe("jobHasLiveDriver (#44 upgrade guard)", () => {
+  const now = Date.now();
+  const liveLease = new Date(now + 60_000).toISOString().replace("T", " ").slice(0, 19);
+  const expiredLease = new Date(now - 60_000).toISOString().replace("T", " ").slice(0, 19);
+
+  const job = (overrides: Partial<ProvisionJob>): ProvisionJob => ({
+    id: "job_1",
+    tenant_id: "ten_1",
+    kind: "module_upgrade",
+    status: "queued",
+    step: null,
+    steps_done: "[]",
+    error_step: null,
+    error_message: null,
+    attempts: 0,
+    lease_until: null,
+    from_release: "v1.0.0",
+    to_release: "v1.1.0",
+    created_at: "2026-01-01 00:00:00",
+    updated_at: "2026-01-01 00:00:00",
+    finished_at: null,
+    ...overrides,
+  });
+
+  it("queued with a live lease blocks; queued with no lease does not (#44 self-heal)", () => {
+    expect(jobHasLiveDriver(job({ status: "queued", lease_until: liveLease }), now)).toBe(true);
+    expect(jobHasLiveDriver(job({ status: "queued", lease_until: null }), now)).toBe(false);
+  });
+
+  it("running with an expired lease does not block", () => {
+    expect(jobHasLiveDriver(job({ status: "running", lease_until: expiredLease }), now)).toBe(false);
+  });
+
+  it("terminal statuses never block", () => {
+    expect(jobHasLiveDriver(job({ status: "succeeded" }), now)).toBe(false);
+    expect(jobHasLiveDriver(job({ status: "failed" }), now)).toBe(false);
   });
 });
 

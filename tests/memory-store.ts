@@ -342,10 +342,13 @@ export class MemoryStore implements ControlPlaneStore {
   }
   async setJobRunning(id: string) {
     const j = this.jobs.get(id);
-    if (j) {
-      j.status = "running";
-      j.attempts += 1;
-    }
+    if (!j) return;
+    const held = j.lease_until !== null && Date.parse(`${j.lease_until.replace(" ", "T")}Z`) > Date.now();
+    if (held) return;
+    j.status = "running";
+    j.attempts += 1;
+    j.lease_until = new Date(Date.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
+    j.updated_at = j.lease_until;
   }
   /**
    * Mirrors the D1 predicate: win only if nobody holds a LIVE lease. Modelled faithfully because the
@@ -366,7 +369,8 @@ export class MemoryStore implements ControlPlaneStore {
     if (j) {
       j.step = step;
       j.steps_done = stepsDoneJson;
-      j.updated_at = new Date().toISOString();
+      j.updated_at = new Date().toISOString().replace("T", " ").slice(0, 19);
+      j.lease_until = new Date(Date.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
     }
   }
   async finishJob(id: string, status: "succeeded" | "failed", errorStep: string | null, errorMessage: string | null) {

@@ -37,7 +37,7 @@ import { publicOrigin, tenantDomainSuffix } from "./env";
 import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "./oauth";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
-import { RECLAIM_LEASE_SECONDS } from "./store";
+import { RECLAIM_LEASE_SECONDS, jobHasLiveDriver } from "./store";
 import type { Account, Tenant, ProvisionJob, SmokeRender } from "./store";
 import {
   advanceSmokeRender,
@@ -827,7 +827,7 @@ async function adminRoutes(
     // first would have two drivers PUTting different bytes into the same module scripts, which is
     // the one way to reach a mixed state that nothing recorded.
     const latest = await deps.store.getLatestJobForTenant(tenant.id);
-    if (latest && (latest.status === "queued" || latest.status === "running")) {
+    if (latest && jobHasLiveDriver(latest, deps.now())) {
       return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
     }
 
@@ -850,6 +850,10 @@ async function adminRoutes(
       tenant.id,
       JSON.stringify({ from: tenant.modules_release, to: release, job: job.id }),
     );
+    // Claim the job BEFORE returning 202, same as provision's setJobRunning: a lease that expires
+    // if the driver dies, so a stranded upgrade self-heals instead of wedging every future attempt
+    // (#44). The guard above keys off live leases, not bare status.
+    await deps.store.setJobRunning(job.id);
     // upgradeModules writes its own terminal job state for every failure it can see. The rejection
     // handler only catches something thrown OUTSIDE that, where the job would otherwise be stranded
     // "running" forever with no record of why.

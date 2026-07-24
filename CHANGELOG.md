@@ -6,6 +6,13 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(hosted): module-upgrade jobs claim a lease and self-heal (#44)
+
+- `setJobRunning` runs synchronously on accept and again at upgrade entry, matching provision.
+- The upgrade-route 409 guard keys off a **live lease**, not bare `queued`/`running` status, so a
+  dead driver no longer wedges every future upgrade for that tenant.
+- `jobHasLiveDriver` exported from `store.ts` (same expired-or-absent lease reads as free).
+
 ## v1.4.3 -- 2026-07-23
 
 PATCH. K3 stale-job clock fix (#79).

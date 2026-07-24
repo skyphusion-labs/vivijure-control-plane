@@ -328,7 +328,7 @@ here. That is a release-discipline defect which would break a full re-provision 
 | `tenant_suspended` | 409 | suspended; an upgrade must not route around the kill switch |
 | `tenant_not_live` | 409 | not `live`. An unfinished provision is resumed through its provision job, not upgraded |
 | `tenant_has_no_studio` | 409 | no `script_name` recorded |
-| `job_in_progress` | 409 | a job for this tenant is queued or running |
+| `job_in_progress` | 409 | a job for this tenant holds a live driver lease |
 | `tenant_endpoints_incomplete` | 422 | the tenant lacks an endpoint some catalog module needs |
 | `tenant_studio_token_missing` / `tenant_studio_token_unreadable` | 422 | no usable studio token |
 | `tenant_studio_not_serving` | 422 | the studio was already 5xx BEFORE the upgrade |
