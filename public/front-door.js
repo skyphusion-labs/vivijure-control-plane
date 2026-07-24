@@ -186,6 +186,14 @@
       }
     }
 
+    // cf#94: the programmatic-token panel is mounted ONLY here, on the route the
+    // control plane already told us means a live studio. Gating it on the route
+    // rather than on its own status check keeps ONE rule about what "live" means:
+    // a second opinion in the panel is how two surfaces start disagreeing.
+    if (route === "studio" && me.tenant && window.tenantApiToken) {
+      window.tenantApiToken.mount(me.tenant);
+    }
+
     if (route === "suspended" && me.tenant) {
       const el = $("#suspended-reason");
       if (el && me.tenant.suspended_reason) {
