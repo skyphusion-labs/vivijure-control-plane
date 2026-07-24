@@ -115,10 +115,12 @@ const created: { d1: string[]; buckets: string[]; scripts: string[] } = { d1: []
 let cf: CfApi;
 let minter: CfTokenMinter;
 let deps: ProvisionDeps;
+let rehearsalStore: D1Store;
 const logged: { event: string; fields: Record<string, unknown> }[] = [];
 
 beforeAll(() => {
   if (!LIVE) return;
+  rehearsalStore = new D1Store(d1Over(freshMigratedDb()));
   cf = new CfApi(ACCOUNT!, TOKEN!);
   minter = new CfTokenMinter(cf);
   deps = {
@@ -128,9 +130,16 @@ beforeAll(() => {
     moduleNamespace: MODULE_NAMESPACE,
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
     log: (event: string, fields: Record<string, unknown>) => void logged.push({ event, fields }),
-    // Teardown reads none of these. They throw rather than defaulting, so a future teardown that
-    // starts reading one fails LOUD here instead of running against a silently wrong value.
-    get store() { return notSupplied("store"); },
+    // #23: teardown now READS THE STORE by design -- the referential guard has to ask whether any
+    // other row still points at these resources, and blanking/recording are store writes. The
+    // notSupplied getter did exactly its job here: the day teardown started reading the store, this
+    // file failed loud instead of running against a silently wrong value. So it gets a real one.
+    //
+    // A fresh migrated store with no other tenant rows is the honest fixture for THIS file: it
+    // proves the guard's clean path (nothing else references these resources, so nothing is
+    // refused). The aliasing refusals are proven in teardown-guard.test.ts against the same real
+    // SQL, where the referring rows can be constructed deliberately.
+    store: rehearsalStore,
     get runpod() { return notSupplied("runpod"); },
     get bundle() { return notSupplied("bundle"); },
     get moduleBundle() { return notSupplied("moduleBundle"); },

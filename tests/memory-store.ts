@@ -22,6 +22,9 @@ import type {
   SmokeRender,
   SmokeRenderArtifact,
   SmokeRenderBounds,
+  TenantResourceKind,
+  TenantResourceRefs,
+  ResourceReferrer,
 } from "../src/store";
 import { classifySlugClaim, leaseIsLive, TIER_A_STATUSES } from "../src/store";
 
@@ -232,6 +235,8 @@ export class MemoryStore implements ControlPlaneStore {
       deleted_at: null,
       reclaim_lease_until: null,
       reclaim_lease_token: null,
+      teardown_at: null,
+      teardown_failures: null,
     };
     this.tenants.set(id, t);
     return t;
@@ -310,6 +315,41 @@ export class MemoryStore implements ControlPlaneStore {
   async setTenantModulesRelease(id: string, release: string | null) {
     const t = this.tenants.get(id);
     if (t) t.modules_release = release;
+  }
+
+  // ---- #23: teardown record + referential guard ------------------------------------------------
+  async clearTenantResource(id: string, resource: TenantResourceKind) {
+    const t = this.tenants.get(id);
+    if (!t) return;
+    if (resource === "d1") t.d1_database_id = null;
+    else if (resource === "r2_bucket") t.r2_bucket_name = null;
+    else if (resource === "r2_token") t.r2_token_id = null;
+    else if (resource === "worker") t.script_name = null;
+    else throw new Error(`unknown tenant resource kind: ${resource}`);
+  }
+
+  async recordTeardown(id: string, failures: { resource: string; error: string }[]) {
+    const t = this.tenants.get(id);
+    if (!t) return;
+    t.teardown_at = new Date().toISOString();
+    t.teardown_failures = JSON.stringify(failures);
+  }
+
+  async findResourceReferrers(
+    exceptTenantId: string,
+    resources: TenantResourceRefs,
+  ): Promise<ResourceReferrer[]> {
+    const out: ResourceReferrer[] = [];
+    for (const t of this.tenants.values()) {
+      if (t.id === exceptTenantId) continue;
+      const hit = (resource: TenantResourceKind) =>
+        out.push({ tenant_id: t.id, slug: t.slug, status: t.status, resource });
+      if (resources.d1_database_id && t.d1_database_id === resources.d1_database_id) hit("d1");
+      if (resources.r2_bucket_name && t.r2_bucket_name === resources.r2_bucket_name) hit("r2_bucket");
+      if (resources.r2_token_id && t.r2_token_id === resources.r2_token_id) hit("r2_token");
+      if (resources.script_name && t.script_name === resources.script_name) hit("worker");
+    }
+    return out;
   }
   async createModuleUpgradeJob(id: string, tenant_id: string, fromRelease: string | null, toRelease: string) {
     const j: ProvisionJob = {

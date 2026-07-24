@@ -589,3 +589,46 @@ artifact is measured, never judged); or that a tenant's own end-to-end film subm
 Rendering through a **non-tenant door stays rejected**. It would produce a satisfying artifact that
 answers a different question -- that the modules render somewhere, not that THIS tenant's upgraded
 modules render. An honest hole beats a number that looks like proof.
+
+## Slug reuse is resource reuse (read before touching any delete path)
+
+Every tenant resource name derives from the **slug**, not from the tenant row:
+`vivijure-tenant-<slug>` for the D1 and the bucket, `tenant-<slug>-studio` for the worker,
+`vivijure-tenant-<slug>` for the R2 token. And the house pattern frees a slug by **renaming the old
+row**, not by deleting it (`getTenantBySlug` has no status filter, so a freed slug means a renamed
+row).
+
+Put those two together and you get the fact this section exists for:
+
+> A tenant row's resource ids are **not private to that row**. The old row keeps the ids it was
+> provisioned with; the next tenant to take that slug provisions onto the same *names*, and
+> therefore onto the same *objects*. Several rows end up pointing at one physical resource.
+
+This is not hypothetical. A census of the live plane on 2026-07-25 found **one** D1 database
+referenced by **nine** successive tenant rows -- eight tombstones and the live tenant -- with six of
+them also sharing the live tenant's bucket and studio worker.
+
+### What follows from it
+
+- **"This id is on the row I am tearing down" does NOT mean "this object is mine to delete."** Only
+  a query across the other rows answers that. `teardownTenant` runs that query (the referential
+  guard, #23) and refuses, fail-closed, any resource another row still references. If the guard
+  cannot run, nothing is deleted: an un-run teardown is recoverable, a wrong delete is not.
+- **A resource shared only with tombstones is still refused.** Deciding which of several tombstones
+  "owns" a shared object is a rule nobody has written, and inventing a silent tiebreak in a delete
+  path is the wrong place to be clever. The refusal message names the referrers and their statuses
+  so an operator can tell a live blocker from a historical one.
+- **Fresh-slug testing cannot see any of this.** A test that provisions a brand new slug never
+  produces the aliasing, which is why it went unnoticed until a census looked at the real rows.
+- The reclaim path is **not** exposed to it, and the reason is worth knowing rather than assuming:
+  `claimReclaim` requires `live_at IS NULL` **and** a status in `TIER_A_STATUSES`
+  (`pending`/`provisioning`/`awaiting_invoke_key`/`failed`). `deleted` is not in that set, so a
+  tombstone cannot be reclaimed. The status filter is what holds that line -- four of the eight
+  tombstones are never-live and would have passed the liveness test on its own.
+
+### If you are adding a delete path
+
+Do not reach for the resource ids on the row. Go through `teardownTenant`, which asks the guard
+first, blanks each column only on that resource's successful deletion, and records the outcome
+(`teardown_at`, `teardown_failures`) so a partial teardown is visible in the data rather than only
+in a caller's return value.

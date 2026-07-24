@@ -36,6 +36,12 @@ export function d1Over(db: DatabaseSync): any {
         async run() {
           return stmt.run(...(bound as never[]));
         },
+        // Added when the #23 referential guard needed a multi-row read. D1's all() answers
+        // { results }, so the shim answers the same shape -- the point of this thing is to be a pipe,
+        // and a differently-shaped return would be exactly the kind of paper-over that hides a seam.
+        async all<T>(): Promise<{ results: T[] }> {
+          return { results: stmt.all(...(bound as never[])) as T[] };
+        },
       };
       return api;
     },

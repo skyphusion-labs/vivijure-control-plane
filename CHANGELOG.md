@@ -6,6 +6,22 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(teardown): referential guard, column blanking, and a recorded outcome (#23)
+
+- **Referential guard, fail-closed.** `teardownTenant` now asks whether any OTHER tenant row still
+  references a resource before reaping it, and refuses (recording who, and whether they are live) if
+  one does. A census of the live plane found ONE D1 referenced by NINE tenant rows -- eight
+  tombstones and the live tenant -- because resource names derive from the SLUG and freeing a slug
+  RENAMES the old row. Tearing down any tombstone would have deleted the live tenant's database,
+  bucket and worker. If the guard cannot run, nothing is deleted.
+- **Columns blank only on that resource's successful deletion**, so a row can no longer read as
+  reaped while a customer's bucket is still there.
+- **The outcome is recorded** (`teardown_at`, `teardown_failures`, migration 0008), keeping
+  "attempted and clean" distinguishable from "never attempted".
+- `docs/control-plane.md` documents slug-reuse-is-resource-reuse as a structural fact, including why
+  the reclaim path is NOT exposed to it (`TIER_A_STATUSES` excludes `deleted`).
+
+
 ### test(reclaim): the reclaim SEQUENCE runs against real infrastructure (#38)
 
 - `claimReclaim -> teardown -> reclaimSlug` now runs as ONE pass with a real store (real migration

@@ -19,7 +19,11 @@ import type {
   Tenant,
   TenantLifecycle,
 } from "./store";
-import { classifySlugClaim, TIER_A_STATUSES } from "./store";
+import { classifySlugClaim, TIER_A_STATUSES,
+  type TenantResourceKind,
+  type TenantResourceRefs,
+  type ResourceReferrer,
+} from "./store";
 
 /**
  * How long one driver holds a job (#112). Sized to a single invocation, not to a whole provision:
@@ -643,5 +647,74 @@ export class D1Store implements ControlPlaneStore {
       )
       .bind(id, outcome.error)
       .run();
+  }
+
+  // ---- teardown record + the referential guard (#23) -------------------------------------------
+
+  /** Column per resource kind. Named explicitly so a new kind cannot silently blank the wrong one. */
+  private static readonly RESOURCE_COLUMN: Record<TenantResourceKind, string> = {
+    d1: "d1_database_id",
+    r2_bucket: "r2_bucket_name",
+    r2_token: "r2_token_id",
+    worker: "script_name",
+  };
+
+  async clearTenantResource(id: string, resource: TenantResourceKind): Promise<void> {
+    const column = D1Store.RESOURCE_COLUMN[resource];
+    if (!column) throw new Error(`unknown tenant resource kind: ${resource}`);
+    // Column name is looked up from a closed literal map, never interpolated from caller input.
+    await this.db.prepare(`UPDATE tenants SET ${column} = NULL WHERE id = ?1`).bind(id).run();
+  }
+
+  async recordTeardown(id: string, failures: { resource: string; error: string }[]): Promise<void> {
+    await this.db
+      .prepare("UPDATE tenants SET teardown_at = datetime('now'), teardown_failures = ?2 WHERE id = ?1")
+      .bind(id, JSON.stringify(failures))
+      .run();
+  }
+
+  async findResourceReferrers(
+    exceptTenantId: string,
+    resources: TenantResourceRefs,
+  ): Promise<ResourceReferrer[]> {
+    const d1 = resources.d1_database_id ?? null;
+    const bucket = resources.r2_bucket_name ?? null;
+    const token = resources.r2_token_id ?? null;
+    const script = resources.script_name ?? null;
+    // Nothing to look for is not the same as nothing found, but it has the same answer and costs a
+    // round trip to discover.
+    if (d1 === null && bucket === null && token === null && script === null) return [];
+
+    const rows = await this.db
+      .prepare(
+        "SELECT id, slug, status, d1_database_id, r2_bucket_name, r2_token_id, script_name " +
+          "FROM tenants WHERE id != ?1 AND (" +
+          "(?2 IS NOT NULL AND d1_database_id = ?2) OR " +
+          "(?3 IS NOT NULL AND r2_bucket_name = ?3) OR " +
+          "(?4 IS NOT NULL AND r2_token_id = ?4) OR " +
+          "(?5 IS NOT NULL AND script_name = ?5))",
+      )
+      .bind(exceptTenantId, d1, bucket, token, script)
+      .all<{
+        id: string;
+        slug: string;
+        status: TenantLifecycle;
+        d1_database_id: string | null;
+        r2_bucket_name: string | null;
+        r2_token_id: string | null;
+        script_name: string | null;
+      }>();
+
+    const out: ResourceReferrer[] = [];
+    for (const r of rows.results ?? []) {
+      // One row can alias SEVERAL of this tenant's resources -- in the live plane most of them alias
+      // three -- so it is reported once per resource rather than once per row. The caller refuses
+      // per resource, so a per-row answer would be the wrong granularity.
+      if (d1 !== null && r.d1_database_id === d1) out.push({ tenant_id: r.id, slug: r.slug, status: r.status, resource: "d1" });
+      if (bucket !== null && r.r2_bucket_name === bucket) out.push({ tenant_id: r.id, slug: r.slug, status: r.status, resource: "r2_bucket" });
+      if (token !== null && r.r2_token_id === token) out.push({ tenant_id: r.id, slug: r.slug, status: r.status, resource: "r2_token" });
+      if (script !== null && r.script_name === script) out.push({ tenant_id: r.id, slug: r.slug, status: r.status, resource: "worker" });
+    }
+    return out;
   }
 }
