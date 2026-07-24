@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  TOKEN_ERRORS,
   rotateWarning,
   revokeWarning,
   revealNotice,
@@ -45,10 +46,15 @@ describe("tokenView", () => {
     expect(tokenView({ configured: true }).custody).toBeNull();
   });
 
-  it("carries only the masked display the backend sent", () => {
-    expect(tokenView({ configured: true, display: "vjs_...9f2c" }).display).toBe("vjs_...9f2c");
-    expect(tokenView({ configured: true }).display).toBe("");
-    expect(tokenView({ configured: true, display: 42 as never }).display).toBe("");
+  it("carries the token NAME, and has no masked-display concept at all", () => {
+    expect(tokenView({ configured: true, name: "programmatic" }).name).toBe("programmatic");
+    expect(tokenView({ configured: true }).name).toBeNull();
+    expect(tokenView({ configured: true, name: 42 as never }).name).toBeNull();
+    // PINNED DECISION: there is no `display`. The studio stores only a SHA-256
+    // hash (migrations/0009_api_tokens.sql), so a partial reveal is impossible and
+    // rendering one would imply we kept a copy. If someone reintroduces a masked
+    // display, this fails and they have to argue for it out loud.
+    expect("display" in tokenView({ configured: true, display: "vjs_...9f2c" } as never)).toBe(false);
   });
 });
 
@@ -67,20 +73,29 @@ describe("rotateWarning: the honest cost of the button", () => {
     expect(copy).toContain("signs you out");
   });
 
-  it("does not claim safety when custody is unknown", () => {
+  it("defaults to the separate-custody statement, because that is what the system IS", () => {
+    // No custody field is sent, and that is correct: custody is settled
+    // architecture (a named row in the tenant's own api_tokens table, revoked
+    // independently, resolving to a distinct sub), not runtime state. Rotating
+    // genuinely does not touch the operator secret the browser session rides on,
+    // so saying "we cannot tell" would be false modesty, not honesty.
     const copy = rotateWarning(null);
-    expect(copy).not.toContain("NOT affected");
-    expect(copy).toContain("cannot tell");
+    expect(copy).toContain("NOT affected");
+    expect(copy).toContain("stops working");
   });
 
   it("says revoking is irreversible", () => {
     expect(revokeWarning()).toContain("cannot get this one back");
   });
 
-  it("states reveal-once plainly", () => {
+  it("states the MECHANISM, not a promise about our behaviour", () => {
+    // "we store only a one-way hash" is a stronger claim than "we promise not to
+    // look": it is a property of the system (migrations/0009_api_tokens.sql), not
+    // a policy that could quietly change.
     const copy = revealNotice();
     expect(copy).toContain("only time");
-    expect(copy).toContain("never written to a log");
+    expect(copy).toContain("one-way hash");
+    expect(copy).toContain("nobody, including us");
   });
 });
 
@@ -120,14 +135,13 @@ describe("snippets", () => {
     // payload carrying token-shaped fields and assert none of them survive.
     const hostile = {
       configured: true,
-      display: "vjs_...9f2c",
+      name: "programmatic",
       token: "vjs_SUPERSECRETVALUE",
       plaintext: "vjs_ALSOSECRET",
     } as TokenPayload;
     const bodies = snippets(URL_OK, hostile).map((r) => r.body).join("\n");
     expect(bodies).not.toContain("SUPERSECRET");
     expect(bodies).not.toContain("ALSOSECRET");
-    expect(bodies).not.toContain("9f2c");
     // CONTROL: the assertions above would also pass on an empty string, which
     // would make this test worthless. Prove the snippet really was produced and
     // really does carry the placeholder instead.
@@ -156,8 +170,16 @@ describe("snippets", () => {
 describe("tokenErrorCopy", () => {
   it("explains the codes the plane actually returns", () => {
     expect(tokenErrorCopy("tenant_not_live")).toContain("not live yet");
-    expect(tokenErrorCopy("kek_unavailable")).toContain("nothing about your token changed");
+    expect(tokenErrorCopy("not_provisioned")).toContain("still being built");
+    expect(tokenErrorCopy("tenant_unreachable")).toContain("nothing was changed");
     expect(tokenErrorCopy("unauthorized")).toContain("Sign in again");
+  });
+
+  it("carries no copy for kek_unavailable, which this path cannot emit", () => {
+    // A direct dividend of the separate-token ruling: the KEK is irrelevant here.
+    // Keeping copy for an impossible code would imply a mechanism we do not use.
+    expect(TOKEN_ERRORS.kek_unavailable).toBeUndefined();
+    expect(tokenErrorCopy("kek_unavailable")).toContain("not going to guess");
   });
 
   it("admits ignorance on an unknown code instead of guessing a diagnosis", () => {
@@ -182,18 +204,24 @@ describe("summaryLine / whenLabel", () => {
   it("prefers the rotation date when there is one", () => {
     const view = tokenView({
       configured: true,
-      display: "vjs_...9f2c",
+      name: "programmatic",
       created_at: "2026-07-01T00:00:00Z",
       last_rotated_at: "2026-07-20T00:00:00Z",
     });
-    expect(summaryLine(view)).toBe("vjs_...9f2c -- last rotated 2026-07-20");
+    expect(summaryLine(view)).toBe('Active token, named "programmatic", last rotated 2026-07-20.');
   });
 
   it("falls back to creation, and is empty for a token that does not exist", () => {
     expect(summaryLine(tokenView({ configured: true, created_at: "2026-07-01T00:00:00Z" }))).toBe(
-      "created 2026-07-01",
+      "Active token, created 2026-07-01.",
     );
     expect(summaryLine(tokenView({ configured: false }))).toBe("");
     expect(summaryLine(tokenView(null))).toBe("");
+  });
+
+  it("still says something true when the payload carries no name or dates", () => {
+    expect(summaryLine(tokenView({ configured: true }))).toBe(
+      "A programmatic token exists for this studio.",
+    );
   });
 });
