@@ -134,6 +134,27 @@
           <a href="https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/hosted-tier.md">How
           the export works</a>.</p>
         </div>
+
+        <!-- cf#94: programmatic access. Revealed ONLY on the live-studio route, and
+             only ever populated from GET /api/tenant/{id}/api-token. Every control in
+             here starts hidden and is un-hidden by what the control plane actually
+             reports, so the panel cannot offer an action the studio will refuse. -->
+        <div id="token-section" hidden>
+          <h3>Programmatic access</h3>
+          <p class="small muted">A token for driving this studio from your own scripts, CI, or an
+          MCP client. The hosted panel already signs your browser in; this is for everything else.</p>
+          <p class="small" id="token-summary"></p>
+          <p class="hint" id="token-status" role="status" aria-live="polite"></p>
+          <div class="actions">
+            <button type="button" class="primary" id="token-create" hidden>Create token</button>
+            <button type="button" id="token-rotate" hidden>Rotate</button>
+            <button type="button" id="token-revoke" hidden>Revoke</button>
+          </div>
+          <!-- The ONLY place a plaintext token is ever rendered, written once by
+               api-token.js from the POST response and torn out of the DOM after. -->
+          <div class="callout callout-warn" id="token-reveal" hidden></div>
+          <div class="rows" id="token-snippets"></div>
+        </div>
       </section>
 
       <section class="panel" data-shell="suspended" hidden>
@@ -158,6 +179,8 @@
     </main>
 
     <script src="front-door-checks.js"></script>
+    <script src="api-token-checks.js"></script>
+    <script src="api-token.js"></script>
     <script src="front-door.js"></script>
   </body>
 </html>
