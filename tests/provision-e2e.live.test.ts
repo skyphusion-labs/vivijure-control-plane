@@ -7,9 +7,13 @@
 //     --config wrangler.toml --tag <tag> --out /tmp/studio-release
 //   set -a; . ~/.cf-provisioner-full.env; . ~/.runpod-scratch.env; set +a
 //   CF_ACCOUNT_ID=<id> STUDIO_RELEASE_DIR=/tmp/studio-release PROVISION_E2E=1 \
-//     STUDIO_TOKEN_KEK=<base64-32-byte-kek> \
 //     PROVISION_E2E_WORKERS_DEV_SUBDOMAIN=<account>.workers.dev \
 //     npx vitest run tests/provision-e2e.live.test.ts
+//
+// NO STUDIO_TOKEN_KEK: this suite generates its own ephemeral 32-byte KEK per process. The live
+// worker KEK is the key to 7 real tenant token blobs in the control-plane D1 and is deliberately
+// NOT admitted here. provision-e2e-env.ts carries the full reasoning; it is not an env var, and
+// reintroducing it as one widens the custody of the one credential this system stores as a value.
 //
 // PROVENANCE LABEL (same as the upload leg, and it is not a formality): the bundle comes from a
 // LOCAL REPRODUCIBLE BUILD of main, not a published tag. Byte-identical to what the workflow will
@@ -25,7 +29,13 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import { CfApi } from "../src/cf-api";
 import { CfTokenMinter } from "../src/token-minter";
-import { runProvisionJob, teardownTenant, type ProvisionDeps } from "../src/provisioner";
+import {
+  runProvisionJob,
+  continueProvisionJob,
+  teardownTenant,
+  type ProvisionDeps,
+  type ProvisionOutcome,
+} from "../src/provisioner";
 import { createTenantEndpoints, RunPodClient, tenantEndpointName, PROVISION_PLAN } from "../src/runpod";
 import { localStudioBundleSource } from "./studio-bundle-local";
 import { localModuleBundleSource } from "./module-bundle-local";
@@ -128,13 +138,49 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
     const tenant = await store.createTenant("ten_e2e", slug, account.id, "pending");
     const job = await store.createProvisionJob("job_e2e", tenant.id, "provision");
 
-    const result = await runProvisionJob(deps, job.id, tenant, env!.runpodKey);
+    // DRIVE IT THE WAY PRODUCTION DRIVES IT (#112 budget yield).
+    //
+    // The first live run of this suite failed here, and the failure was the suite's, not the
+    // provisioner's: it called runProvisionJob ONCE and expected a terminal outcome. Under the 15s
+    // invocation budget a real provision does not finish in one invocation -- ours yielded after
+    // `wfp_upload` at 23.1s -- and a yield is explicitly NOT a failure (`ProvisionYielded`:
+    // progress is persisted, the job row stays RUNNING). Production never assumed otherwise:
+    // deps.ts wires `start` -> runProvisionJob and `resume` -> continueProvisionJob, and the tenant
+    // job poll drives the second until the job is terminal.
+    //
+    // So the loop below is not a workaround for a flaky step, it is the missing half of the
+    // contract under test. Asserting on one invocation was asserting on a shape the shipping path
+    // does not produce, which is the "each side green, the join unexercised" failure this whole
+    // suite exists to catch (#38).
+    //
+    // The resume path is also where the real risk lives, and a single call never touched it:
+    // continueProvisionJob is KEYLESS by custody rule, so it must finish from persisted state
+    // alone (endpoints_json + studio_token_enc). If anything after wfp_upload secretly needed key
+    // A or the minted R2 secret, only this loop would find out.
+    const MAX_INVOCATIONS = 12; // bounded: a driver that never converges must fail loud, not spin
+    let result: ProvisionOutcome = await runProvisionJob(deps, job.id, tenant, env!.runpodKey);
+    let invocations = 1;
+    while (!result.ok && "yielded" in result) {
+      if (invocations >= MAX_INVOCATIONS) {
+        throw new Error(
+          `provision never converged: still yielding after ${invocations} invocations ` +
+            `(last yield after ${result.after})`,
+        );
+      }
+      const stepsDone = JSON.parse(store.jobs.get(job.id)!.steps_done) as string[];
+      console.log(`  [resume] invocation ${invocations + 1}, yielded after ${result.after}`);
+      // Re-read the tenant: the resume path reads persisted resource ids off the row, so handing it
+      // the stale pre-provision object would prove nothing about a real poll-driven continuation.
+      result = await continueProvisionJob(deps, job.id, store.tenants.get("ten_e2e")!, stepsDone);
+      invocations += 1;
+    }
     if (!result.ok) {
       const fail = expectProvisionFailure(result);
       throw new Error(`provision failed at ${fail.step}: ${fail.message}`);
     }
 
     expect(result).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    console.log(`  provision converged in ${invocations} invocation(s)`);
     const t = store.tenants.get("ten_e2e")!;
     console.log(`  tenant ${slug}: d1=${t.d1_database_id?.slice(0, 8)} bucket=${t.r2_bucket_name} script=${t.script_name}`);
     console.log(`  endpoints: ${t.endpoints_json}`);

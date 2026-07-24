@@ -6,6 +6,20 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(test): live provision e2e drives the step machine the way production does (#4)
+
+- The suite generates its own **ephemeral KEK**; `STUDIO_TOKEN_KEK` is off the required-env list.
+  It round-trips in-process over a `MemoryStore` tenant, so the live worker KEK was never needed and
+  admitting it would only widen that credential's custody into CI. This was #4's recorded blocker
+  and it was a premise error.
+- The suite now **resumes on a budget yield** (`runProvisionJob` -> `continueProvisionJob`), matching
+  the `deps.ts` start/resume wiring the tenant job poll drives. A real provision yields after
+  `wfp_upload` at ~23s under the 15s invocation budget, so the previous single-invocation assertion
+  could never pass against real infrastructure.
+- `docs/deploy.md` records the KEK recovery search as **exhausted** and the value as unrecoverable
+  (worker secrets are write-only), plus the escrow gap and the re-key cost that follow from it.
+
+
 ### fix(hosted): module-upgrade jobs claim a lease and self-heal (#44)
 
 - `setJobRunning` runs synchronously on accept and again at upgrade entry, matching provision.
