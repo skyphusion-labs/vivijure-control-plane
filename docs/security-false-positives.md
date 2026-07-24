@@ -14,7 +14,7 @@ Preflight uses `${SECRET:+SET}` presence checks only; secret values are never ec
 
 ## Live provision e2e harness (tests/)
 
-`provision-e2e.live.test.ts` and helpers under `tests/` are **operator-only** live gates (`PROVISION_E2E=1`). They never run on PR CI (`describe.skipIf(!LIVE)`). Scratch CF/RunPod creds and `STUDIO_TOKEN_KEK` are supplied from the operator shell or maintainer Actions secrets at dispatch time, same trust boundary as `live-release-gate.yml`.
+`provision-e2e.live.test.ts` and helpers under `tests/` are **operator-only** live gates (`PROVISION_E2E=1`). They never run on PR CI (`describe.skipIf(!LIVE)`). Scratch CF/RunPod creds are supplied from the operator shell or maintainer Actions secrets at dispatch time, same trust boundary as `live-release-gate.yml`. The suite's KEK is **not** one of them: it is generated per process in `provision-e2e-env.ts`, so the live worker's `STUDIO_TOKEN_KEK` never enters the harness or CI.
 
 `localStudioBundleSource` / `localModuleBundleSource` read manifests from a **locally built** studio release dir (`build-studio-release.ts`), not from untrusted HTTP. `worker.path` joins under that dir with sha256 verification before use; same pattern as the studio bundle harness.
 
