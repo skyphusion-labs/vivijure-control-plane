@@ -348,7 +348,7 @@ cp#117 is done when every one of these is demonstrably true. Each is stated so i
    is refused on the bucket, AND the responder credential succeeds on the same operation. A refusal
    test alone proves nothing, because a dead capability refuses everything. **This criterion is also
    the evidence for counsel item T1-13** (Section 4.3): it is the only thing that converts "the crew
-   is not authorized" into "the crew cannot reach it.
+   is not authorized" into "the crew cannot reach it."
 
 **Mechanism**
 
