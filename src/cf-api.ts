@@ -537,23 +537,27 @@ export class CfApi {
   /**
    * Change a resident script BINDINGS without re-uploading the worker (cp#112).
    *
-   * The body carries the FULL desired binding set: bindings to keep are sent as
-   * `{ type: "inherit", name }`, and anything omitted is not kept. That is why the caller censuses
-   * first and reads back after -- an omission here is a silent loss, and the readback is what turns
-   * it into a reported one.
+   * MULTIPART, NOT JSON, AND THAT IS MEASURED. This endpoint answers a JSON body with
+   * `10001 Content-Type must be one of: multipart/form-data`. The first version of this method sent
+   * `application/json` (which is what the API reference reads like) and would have failed on EVERY
+   * call; the live probe on a throwaway script caught it before it reached a tenant. The settings
+   * travel as one `settings` part, exactly as the script upload sends its `metadata` part.
+   *
+   * THE FULL DESIRED SET GOES IN EVERY TIME. Also measured, not assumed: a binding omitted from the
+   * patch is DROPPED (probe step 3 removed a plain_text binding by leaving it out). Bindings to keep
+   * are therefore sent as `{ type: "inherit", name }`, which carries them forward without their
+   * values -- proven to preserve a `secret_text` binding across the patch.
    *
    * Distinct from putScriptSecret (one secret, no binding-set semantics) and from uploadUserWorker
    * (new bytes, new release). This one touches neither the studio bytes nor the release.
    */
   async patchScriptSettings(namespace: string, scriptName: string, bindings: WorkerBinding[]): Promise<void> {
+    const form = new FormData();
+    form.append("settings", new Blob([JSON.stringify({ bindings })], { type: "application/json" }));
     await this.call<unknown>(
       "wfp.patchSettings",
       `/accounts/${this.accountId}/workers/dispatch/namespaces/${namespace}/scripts/${scriptName}/settings`,
-      {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ bindings }),
-      },
+      { method: "PATCH", body: form },
     );
   }
 

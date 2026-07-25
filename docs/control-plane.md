@@ -278,13 +278,23 @@ patched anyway with the currently configured service id. The CF bindings endpoin
 wrapper surfaces type and name only, so the deciding code cannot see the id and "already present"
 cannot mean "already correct".
 
-### The unverified seam (read before the first live run)
+### The Cloudflare contract, as MEASURED (probe 2026-07-25)
 
-The settings-PATCH body shape and `inherit` over a `secret_text` binding are read off the Cloudflare
-API reference. **No test in this repo hands that request to Cloudflare**, and by the standing rule a
-layer exercised only through a fake is untested. One live probe against a THROWAWAY script in the
-tenants namespace (upload with a secret, PATCH with `inherit` plus a new binding, census, delete)
-settles it; the readback above is the runtime guard for the same doubt.
+Probed against a throwaway `rehearsal-`prefixed script in the tenants namespace, not read off a docs
+page. Three findings, and the first one was a defect caught before it reached a tenant:
+
+1. **The endpoint takes multipart/form-data with a `settings` part, NOT JSON.** A JSON body is
+   refused with `10001 Content-Type must be one of: multipart/form-data`. The first implementation
+   sent JSON and would have failed on every call; `tests/cf-api-settings-patch.test.ts` is that
+   probe turned into a regression test.
+2. **`inherit` preserves a `secret_text` binding.** The probe secret was still bound and still listed
+   after two patches, which is what makes this route safe on a tenant whose secrets the plane cannot
+   reproduce.
+3. **A binding omitted from the patch is DROPPED.** Undocumented, and the reason the route censuses
+   first and sends the full desired set every time.
+
+The throwaway script was deleted and the namespace re-censused through a DIFFERENT credential
+afterwards: zero `rehearsal-` prefixed residents.
 
 ## Upgrading the modules of a LIVE tenant (cf#103)
 

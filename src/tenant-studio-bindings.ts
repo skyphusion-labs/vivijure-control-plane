@@ -32,14 +32,24 @@
 // a binding forward from the latest version without holding its value. That is what makes the secret
 // problem above disappear rather than be managed: we never handle a secret value at all.
 //
-// UNVERIFIED SEAM, STATED RATHER THAN ASSUMED: the PATCH body shape and `inherit` over a
-// `secret_text` binding are read off Cloudflare's API reference, and no test in this repo hands that
-// request to Cloudflare. Per the standing rule that a layer exercised only through a fake is
-// UNTESTED, the tests below prove decision paths only; the contract itself needs one live probe
-// against a throwaway script in the tenants namespace before this ships. The readback in
-// `refreshTenantStudioBindings` is the runtime guard for the same doubt: it re-censuses through a
-// DIFFERENT credential than the one that wrote, and reports any binding or secret that went missing
-// instead of trusting a success:true.
+// THE CONTRACT IS MEASURED, NOT READ OFF A DOCS PAGE, and measuring it caught a defect. Live probe
+// 2026-07-25 against a throwaway `rehearsal-`prefixed script in the tenants namespace (recorded on
+// cp#112), which established three things:
+//
+//   1. The endpoint takes MULTIPART, not JSON. The first implementation sent `application/json` --
+//      which is what the API reference reads like -- and Cloudflare refuses that with `10001
+//      Content-Type must be one of: multipart/form-data`. It would have failed on every call. The
+//      wire shape now has its own regression test (tests/cf-api-settings-patch.test.ts).
+//   2. `inherit` DOES preserve a `secret_text` binding across the patch. The probe secret was still
+//      bound and still listed after two patches. This is what makes the route safe on a tenant whose
+//      secrets the plane cannot reproduce.
+//   3. A binding OMITTED from the patch is DROPPED (probe step 3 removed a plain_text binding by
+//      leaving it out). The docs do not state this. It is why the census-then-inherit-everything
+//      shape below is mandatory rather than stylistic.
+//
+// The readback in `refreshTenantStudioBindings` stays regardless: it re-censuses through a DIFFERENT
+// credential than the one that wrote, and reports any binding or secret that went missing instead of
+// trusting a success:true.
 
 import { CfApiError, type WorkerBinding } from "./cf-api";
 import type { ProvisionDeps } from "./provisioner";

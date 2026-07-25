@@ -3,9 +3,10 @@
 // What these tests can and cannot prove, stated up front because a green run here is easy to
 // over-read: every assertion below runs against a FAKE CfApi, so they prove the DECISION PATHS (what
 // is sent, through which credential, what is refused, what a short readback does). They prove
-// nothing about whether Cloudflare accepts a settings PATCH carrying `inherit` over a `secret_text`
-// binding. That contract is unexercised by this repo and needs one live probe against a throwaway
-// script before release; the module header says the same thing, in the code an implementer reads.
+// nothing about what Cloudflare does with the request. That half was settled separately and is not
+// assumed: a live probe (2026-07-25, recorded on cp#112) established that the endpoint takes
+// multipart rather than JSON, that `inherit` preserves a `secret_text` binding, and that an omitted
+// binding is dropped. The wire shape has its own test in tests/cf-api-settings-patch.test.ts.
 //
 // The property that matters most is #2: this route must never handle a secret VALUE, because two of
 // a tenant studio secrets cannot be reproduced by the plane at all.

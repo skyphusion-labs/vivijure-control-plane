@@ -21,9 +21,11 @@ is a separate product on a separate cadence).
   `vpc_binding_unauthorized` that points at `CF_WORKER_UPLOAD_TOKEN` rather than at the tenant.
 - **Answers with a READBACK, not a success flag,** taken through a different credential than the one
   that wrote; a binding or secret missing afterwards answers 409 with the names.
-- Unverified seam recorded rather than assumed: the settings-PATCH shape and `inherit` over a
-  `secret_text` binding are read off Cloudflare docs and are exercised by no test in this repo. One
-  live probe against a throwaway script settles it before the first tenant runs it.
+- **The CF contract is measured, and measuring it caught a defect.** Live probe against a throwaway
+  script: the endpoint takes multipart (a JSON body is refused `10001`), so the first implementation
+  would have failed on every call; `inherit` does preserve a `secret_text` binding; and a binding
+  omitted from the patch is DROPPED, which is undocumented and is why the full desired set is sent
+  every time. The wire shape now has its own regression test.
 
 ## v1.7.1 -- 2026-07-25
 
