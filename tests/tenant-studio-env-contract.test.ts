@@ -59,6 +59,11 @@ function recordingDeps() {
   const deps = {
     store,
     cf,
+    // cf#118: the studio-script upload runs on scriptUploadCf. Pointed at the SAME fake here, which
+    // is production's fallback when no upload credential is configured -- so `uploads` still
+    // captures the bindings this file exists to assert on.
+    scriptUploadCf: cf,
+    videoFinishServiceId: null,
     runpod: { createEndpoints: vi.fn(async () => ENDPOINTS) },
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),

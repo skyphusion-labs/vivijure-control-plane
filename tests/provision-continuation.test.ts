@@ -73,9 +73,13 @@ function fakeCf(over: Record<string, unknown> = {}) {
 }
 
 function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionDeps {
+  const cf = fakeCf();
   return {
     store,
-    cf: fakeCf(),
+    cf,
+    // Same object as cf: the fallback path, so a test asserting on cf's log sees the upload.
+    scriptUploadCf: cf,
+    videoFinishServiceId: null,
     runpod: { createEndpoints: vi.fn(async () => ENDPOINTS) },
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),

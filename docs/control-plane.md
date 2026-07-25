@@ -634,6 +634,74 @@ first, blanks each column only on that resource's successful deletion, and recor
 (`teardown_at`, `teardown_failures`) so a partial teardown is visible in the data rather than only
 in a caller's return value.
 
+## Video finishing for tenants, and why a shared tier is safe (cf#118)
+
+A tenant studio with no `VIDEO_FINISH_VPC` degrades honestly: assemble delivers per-shot clips and
+says so. That is correct behaviour and it is also a capability gap against self-host, which parity
+does not permit as a permanent state. Set `VIDEO_FINISH_VPC_SERVICE_ID` and every tenant studio is
+provisioned with the binding, so assemble and mux work for them.
+
+### The tier is SHARED, and the isolation is by construction, not by policy
+
+Tenants render against the same always-on finishing containers (descendents + badbrains). That is
+safe for a reason worth stating precisely, because "shared compute with per-tenant credentials"
+usually means a policy someone can misconfigure:
+
+> **The container never receives a credential.** The studio presigns per-object R2 GET/PUT URLs
+> (1800s) with its OWN bucket-scoped credential and passes URLs in the payload
+> (`presignR2Get` / `presignR2Put` in the core's film-orchestrator, render-mux and
+> scatter-orchestrator).
+
+So a shared worker cannot enumerate a tenant's bucket, cannot outlive the URLs it was handed, and
+holds nothing to leak if it is compromised. There is no policy to get wrong because there is no
+credential in the blast radius. Per-tenant finishing stacks remain available as a future premium
+decision; they would not make this boundary stronger.
+
+### Two Cloudflare credentials, and why the function is split
+
+| Credential | Owns |
+| --- | --- |
+| `CF_PROVISIONER_TOKEN` | D1, R2, token mint, teardown |
+| `CF_WORKER_UPLOAD_TOKEN` | tenant SCRIPT upload (the call that attaches bindings) |
+
+Not a preference. Attaching a Workers VPC binding needs Connectivity Directory access, and
+**Cloudflare will not let an API-created token mint a token carrying that scope**, so the capability
+could not be added to the provisioner credential the way the R2 mint was. Splitting the function was
+the only shape available, and it happens to be the better one: the upload credential is narrow and
+holds no data-plane rights.
+
+`CF_WORKER_UPLOAD_TOKEN` is OPTIONAL. Absent, script upload falls back to the provisioner credential
+and the plane behaves exactly as it did before the split. It is REQUIRED only when
+`VIDEO_FINISH_VPC_SERVICE_ID` is set, because that is the binding it exists to attach.
+
+### The refusal, and why it is not a catch-and-continue
+
+If the service id is configured and the binding cannot be attached, **the provision fails** with a
+named error at `wfp_upload`. It does not drop the binding and continue. Continuing would hand the
+operator a tenant that looks fully provisioned while silently lacking a tier the plane is configured
+to provide; the tenant's first film would then degrade with a reason blaming an unbound binding,
+which is true and useless to the person who set the service id and believes it is there. That is the
+silent-degrade class (#245 / #249), and a delete-path-grade mistake in a provisioning path.
+
+The message names the PLANE's credential rather than repeating Cloudflare's, which is accurate and
+points at the wrong owner ("your credentials are not authorized for the requested VPC resource"
+tells a reader nothing about which of the plane's two tokens is short a scope).
+
+### How the binding was proven, and what still is not
+
+A controlled probe, because "WfP supports this binding" was an assumption nobody had tested:
+
+1. identical upload WITHOUT the binding on the provisioner credential -> success (positive control);
+2. identical upload WITH it, same credential -> `10196`, credentials not authorized;
+3. same upload on the upload credential -> success;
+4. **read back through a DIFFERENT credential than the one that wrote it** -> the binding is on the
+   script. The upload response echoes no bindings, so `success: true` is the writing client's
+   opinion of its own work.
+
+What that does NOT prove is that a tenant studio can REACH the container at render time. Attach and
+reachability are different facts; the second needs a real render through a tenant carrying the
+binding, and that is the gate before the tier is considered live for tenants.
+
 ## Tearing a tenant down (`POST /api/admin/tenants/{id}/teardown`)
 
 The production caller `teardownTenant` spent its whole life without (#23). Admin-token gated,

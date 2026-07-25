@@ -97,6 +97,26 @@ export interface DispatchNamespaceBinding {
   name: string;
   namespace: string;
 }
+/**
+ * A Workers VPC service binding (cf#118). The tenant studio carries this to reach the always-on
+ * fleet video-finish container privately, exactly as the flagship and self-host deploys do
+ * ([[vpc_services]] in wrangler) -- so the assemble and mux phases work for a tenant instead of
+ * degrading to per-shot clips.
+ *
+ * LIVE-PROVEN that a WfP user worker can carry it, and it took a controlled probe to establish:
+ * an identical upload WITHOUT the binding succeeded, the same upload WITH it failed 10196 on the
+ * provisioner credential, and it succeeded on a credential holding Connectivity Directory access
+ * -- then the binding was READ BACK through a DIFFERENT credential than the one that wrote it,
+ * because the upload response echoes no bindings and "success:true" is the writing client's
+ * opinion of its own work.
+ *
+ * `service_id` is the Connectivity Directory service id, not a hostname.
+ */
+export interface VpcServiceBinding {
+  type: "vpc_service";
+  name: string;
+  service_id: string;
+}
 export type WorkerBinding =
   | D1Binding
   | R2Binding
@@ -104,7 +124,8 @@ export type WorkerBinding =
   | SecretTextBinding
   | AssetsBinding
   | RatelimitBinding
-  | DispatchNamespaceBinding;
+  | DispatchNamespaceBinding
+  | VpcServiceBinding;
 
 /** An asset in the upload manifest: the path plus a 32-hex hash and byte size. */
 export interface AssetManifestEntry {

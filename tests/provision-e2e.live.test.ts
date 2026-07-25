@@ -104,6 +104,11 @@ beforeAll(async () => {
     runpod: { createEndpoints: (key, s, r2) => createTenantEndpoints(key, s, r2) },
     bundle: localStudioBundleSource(env.studioReleaseDir),
     moduleBundle: localModuleBundleSource(env.studioReleaseDir),
+    // The live e2e drives the SAME fallback production takes when no upload credential is set: one
+    // client for everything. The cf#118 split is proven by its own probe + the tenant live verify,
+    // not by silently widening what this suite claims to cover.
+    scriptUploadCf: cf,
+    videoFinishServiceId: null,
     tokenMinter: new CfTokenMinter(cf),
     r2Endpoint: `https://${env.cfAccountId}.r2.cloudflarestorage.com`,
     // The live suite takes the REAL three: this is the run that has to prove the emptying loop
