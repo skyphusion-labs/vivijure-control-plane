@@ -4,7 +4,11 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
-## v1.5.0 -- 2026-07-25
+## v1.6.0 -- 2026-07-25
+
+MINOR: the teardown production caller (#103) is feature-class. Entry moved OUT of the
+v1.5.0 section it was mistakenly filed under -- the v1.5.0 tag predates the #103 merge, and a
+changelog claiming a feature its tag does not contain is the trap this cut corrects.
 
 ### feat(teardown): the production caller, and empty-then-delete wired in (#23, cf#72)
 
@@ -23,6 +27,8 @@ is a separate product on a separate cadence).
   A bucket too large for one budget reports an honest re-run-to-continue instead of failing.
 - `ProvisionDeps` gains `now` / `sleep` / `fetch` (the emptying loop is budgeted); production wires
   the real three in `productionDeps`, unit tests script S3 and THROW on any other fetch.
+
+## v1.5.0 -- 2026-07-25
 
 ### feat(hosted): tenant programmatic API token endpoints (vivijure-cf#94)
 
