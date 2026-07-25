@@ -385,6 +385,76 @@ describe.skipIf(!LIVE)("reclaim teardown, live against real Cloudflare", () => {
 
 
 // ---------------------------------------------------------------------------------------------
+// ALREADY GONE, AGAINST REAL CLOUDFLARE (cp#110).
+//
+// The unit suite proves the CLASSIFICATION and the blanking over a recording proxy and real SQL.
+// What it cannot prove is the thing that started this: what Cloudflare actually answers when the
+// script is not there. That answer was live-probed while writing the fix (HTTP 404, code 10007) and
+// this is the same fact exercised end to end -- a worker removed OUT OF BAND, exactly as happened to
+// the two rows the guarded sweep met, then a teardown that has to come back clean.
+//
+// SPEND: $0, one trivial user Worker. deleteData is FALSE, so no D1 and no bucket are involved.
+// ---------------------------------------------------------------------------------------------
+describe.skipIf(!LIVE)("cp#110: a studio worker that is already gone", () => {
+  it("records it as ABSENT, blanks the column, and reports a clean pass", async () => {
+    const slug = `${NAME_PREFIX}cp110-${RUN}`;
+    const script = `tenant-${slug}-studio`;
+    const store = new D1Store(d1Over(freshMigratedDb()));
+    await store.createAccount("acct_cp110", "cp110@example.com");
+    await store.createTenant("ten_cp110", slug, "acct_cp110", "failed");
+
+    await cf.uploadUserWorker({
+      namespace: NAMESPACE,
+      scriptName: script,
+      mainModule: "index.js",
+      moduleText: "export default { async fetch() { return new Response(`rehearsal`); } };",
+      compatibilityDate: "2026-06-01",
+      bindings: [],
+    });
+    created.scripts.push(script);
+    await store.setTenantScript("ten_cp110", script, "test");
+
+    // POSITIVE CONTROL, the rule this whole file is built on: absence at the end proves nothing
+    // unless presence at the start was proven first, by a witness other than the client under test.
+    expect(await scriptExists(NAMESPACE, script), "the script must really be there first").toBe(true);
+
+    // OUT OF BAND: something else removes it. This is the live shape of the defect, not a fixture.
+    await cf.deleteUserWorker(NAMESPACE, script);
+    expect(await scriptExists(NAMESPACE, script)).toBe(false);
+
+    const cpDeps = {
+      cf,
+      tokenMinter: minter,
+      namespace: NAMESPACE,
+      moduleNamespace: MODULE_NAMESPACE,
+      tenantScriptName: (s: string) => `tenant-${s}-studio`,
+      log: (event: string, fields: Record<string, unknown>) => void logged.push({ event, fields }),
+      store,
+      r2Endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
+      now: () => Date.now(),
+      sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+      fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+    } as unknown as ProvisionDeps;
+
+    const row = (await store.getTenantById("ten_cp110"))!;
+    const res = await teardownTenant(cpDeps, row, { deleteData: false });
+
+    // The DELETE really was issued against real Cloudflare and really answered not-found.
+    expect(res.absent.map((a) => a.resource), JSON.stringify(res.absent)).toContain("worker");
+    expect(
+      res.failures.filter((f) => f.resource === "worker"),
+      `worker must not be a failure: ${JSON.stringify(res.failures)}`,
+    ).toEqual([]);
+    // The log line an operator would go looking for, naming the fact rather than hiding it.
+    expect(logged.some((l) => l.event === "teardown.worker_absent")).toBe(true);
+
+    // THE DEFECT, closed: the row stops claiming a worker that does not exist.
+    expect((await store.getTenantById("ten_cp110"))!.script_name).toBeNull();
+  }, 120_000);
+});
+
+
+// ---------------------------------------------------------------------------------------------
 // THE SEQUENCE, END TO END (#38).
 //
 // Everything above proves the DESTRUCTIVE half against real Cloudflare. #32 proved the STORE half

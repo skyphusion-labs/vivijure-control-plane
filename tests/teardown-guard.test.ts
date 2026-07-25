@@ -21,6 +21,8 @@
 // silently records nothing makes every "was never called" assertion pass.
 
 import { describe, it, expect, beforeEach } from "vitest";
+import { CfApiError } from "../src/cf-api";
+import { tenantModuleScriptPrefix } from "../src/tenant-modules";
 import { D1Store } from "../src/store-d1";
 import { d1Over, freshMigratedDb } from "./sqlite-d1";
 import { teardownTenant, type ProvisionDeps } from "../src/provisioner";
@@ -295,5 +297,166 @@ describe("teardown referential guard", () => {
     // bucket-scoped grant cannot be left behind by a cycle that did not finish.
     expect(log.mint).toEqual(["bkt-big"]);
     expect(log.revoke).toEqual(["emptycred-bkt-big"]);
+  });
+});
+
+// IDEMPOTENT DELETE (cp#110): a delete that answers NOT FOUND reached its goal earlier.
+//
+// FOUND IN PRODUCTION, not in theory. The lead guarded sweep through the shipped teardown route met
+// two tenant rows whose studio script was already gone; CF answered each delete
+// `wfp.deleteScript: This Worker does not exist on your account`, teardown recorded it as a failure,
+// and so the column kept claiming a worker that does not exist, teardown_failures kept an entry no
+// re-run could ever clear, and the row could never reach provably-reaped.
+//
+// THE CF SHAPE IS LIVE-PROBED, not assumed (2026-07-25, provisioner credential, both dispatch
+// namespaces): HTTP 404 with `{code: 10007, message: "This Worker does not exist on your account."}`.
+// The fixtures below are built from that probe, so the classifier is tested against what Cloudflare
+// actually returns rather than against my recollection of it.
+//
+// THE STORE IS REAL (same harness as the guard tests above): the claim under test is "the column
+// blanks", which is a SQL fact. Asserting it through a fake would assert my reimplementation of the
+// UPDATE. The CfApi remains a recording proxy, so absence is proven by the call log plus a real
+// read-back, never by the return value alone.
+//
+// AND EVERY ABSENT-IS-FINE TEST HERE IS PAIRED WITH A REAL-FAILURE CONTROL. A fix of this shape
+// fails in exactly one direction -- classifying too much as "already gone" -- and a suite that only
+// proves 404s pass would be green for a change that swallowed everything.
+describe("teardown idempotent delete (cp#110)", () => {
+  let store: D1Store;
+  let log: CallLog;
+  let deps: ProvisionDeps;
+
+  /** CF own answer to a delete of a script that is not there, as live-probed. */
+  const scriptGone = () =>
+    new CfApiError("wfp.deleteScript", 404, [{ code: 10007, message: "This Worker does not exist on your account." }]);
+
+  const setDelete = (fn: (ns: string, name: string) => Promise<void>) => {
+    (deps.cf as unknown as { deleteUserWorker: typeof fn }).deleteUserWorker = async (ns, name) => {
+      log.deleteUserWorker.push(name);
+      return await fn(ns, name);
+    };
+  };
+
+  beforeEach(async () => {
+    store = new D1Store(d1Over(freshMigratedDb()));
+    log = emptyLog();
+    deps = recordingDeps(store, log).deps;
+    await store.createAccount("acct_1", "a@b.com");
+    await store.createTenant("ten_gone", "gone", "acct_1", "failed");
+    await store.setTenantScript("ten_gone", SCRIPT, "v1.0.0");
+    await store.setTenantD1("ten_gone", D1_ID);
+  });
+
+  const row = async () => (await store.getTenantById("ten_gone"))!;
+
+  it("BLANKS the column when the worker is already gone, and the pass reads clean", async () => {
+    setDelete(async () => {
+      throw scriptGone();
+    });
+
+    const before = await row();
+    const res = await teardownTenant(deps, before, { deleteData: true });
+
+    // The delete WAS issued (this is not a skip), it answered not-found, and that is not a failure.
+    expect(log.deleteUserWorker).toEqual([SCRIPT]);
+    expect(res.failures, JSON.stringify(res.failures)).toEqual([]);
+    expect(res.ok).toBe(true);
+
+    // Recorded, not swallowed: "we deleted it" and "it was not there" stay different facts.
+    expect(res.absent).toEqual([{ resource: "worker", detail: expect.stringContaining("does not exist") }]);
+
+    // THE DEFECT, as a read-back through the real UPDATE: the row stops claiming a script that is
+    // not there, and the failure list is clearable rather than permanent.
+    const after = await row();
+    expect(after.script_name, "the column blanks -- this is the whole issue").toBeNull();
+    expect(after.teardown_failures, "clean pass records [] rather than a permanent entry").toBe("[]");
+  });
+
+  it("POSITIVE CONTROL: a REAL delete failure is still a failure and the column still claims the script", async () => {
+    // 403 is a real error with a real follow-up (fix the credential and re-run). If the fix
+    // swallowed this, teardown would report a clean reap over a worker that is still serving.
+    setDelete(async () => {
+      throw new CfApiError("wfp.deleteScript", 403, [{ code: 10000, message: "Authentication error" }]);
+    });
+
+    const res = await teardownTenant(deps, await row(), { deleteData: true });
+
+    expect(res.ok).toBe(false);
+    expect(res.absent).toEqual([]);
+    expect(res.failures.find((f) => f.resource === "worker")?.error).toContain("Authentication error");
+    expect((await row()).script_name, "NOT reaped -> must still be claimed").toBe(SCRIPT);
+  });
+
+  it("POSITIVE CONTROL: a 404 carrying NO CF code is not proof of absence", async () => {
+    // The shape CfApi builds when a response body is not JSON at all: status only, no codes. The
+    // status alone must not be enough, or any 404 this API can produce (a dispatch namespace that
+    // does not exist, say) would blank a column over a live resource.
+    setDelete(async () => {
+      throw new CfApiError("wfp.deleteScript", 404, []);
+    });
+
+    const res = await teardownTenant(deps, await row(), { deleteData: true });
+
+    expect(res.ok).toBe(false);
+    expect(res.absent).toEqual([]);
+    expect((await row()).script_name).toBe(SCRIPT);
+  });
+
+  it("POSITIVE CONTROL: a plain Error is not proof of absence either", async () => {
+    setDelete(async () => {
+      throw new Error("script busy");
+    });
+
+    const res = await teardownTenant(deps, await row(), { deleteData: true });
+
+    expect(res.ok).toBe(false);
+    expect(res.absent).toEqual([]);
+    expect((await row()).script_name).toBe(SCRIPT);
+  });
+
+  it("keeps going: an already-gone worker does not stop the rest of the reap", async () => {
+    setDelete(async () => {
+      throw scriptGone();
+    });
+
+    await teardownTenant(deps, await row(), { deleteData: true });
+
+    expect(log.deleteD1).toEqual([D1_ID]);
+    expect((await row()).d1_database_id).toBeNull();
+  });
+
+  it("MODULE SCRIPTS: one that vanished between the list and the delete is absent, not failed", async () => {
+    const script = `${tenantModuleScriptPrefix("ten_gone")}keyframe`;
+    // Listing sees it, the delete says it is gone, and the census afterwards agrees -- the race a
+    // best-effort sweep actually hits.
+    let listed = 0;
+    (deps.cf as unknown as { listNamespaceScripts: () => Promise<string[]> }).listNamespaceScripts = async () =>
+      listed++ === 0 ? [script] : [];
+    setDelete(async (_ns, name) => {
+      if (name === script) throw scriptGone();
+    });
+
+    const res = await teardownTenant(deps, await row(), { deleteData: true });
+
+    expect(res.ok, JSON.stringify(res.failures)).toBe(true);
+    expect(res.absent.map((a) => a.resource)).toEqual([`module:${script}`]);
+  });
+
+  it("MODULE POSITIVE CONTROL: a real module delete failure still fails, and the census still runs", async () => {
+    const script = `${tenantModuleScriptPrefix("ten_gone")}keyframe`;
+    (deps.cf as unknown as { listNamespaceScripts: () => Promise<string[]> }).listNamespaceScripts = async () => [
+      script,
+    ];
+    setDelete(async (_ns, name) => {
+      if (name === script) throw new CfApiError("wfp.deleteScript", 500, [{ code: 10013, message: "Internal error" }]);
+    });
+
+    const res = await teardownTenant(deps, await row(), { deleteData: true });
+
+    expect(res.ok).toBe(false);
+    expect(res.absent).toEqual([]);
+    expect(res.failures.map((f) => f.resource)).toContain(`module:${script}`);
+    // The census is the independent witness and it still ran: the script is genuinely still there.
+    expect(res.failures.map((f) => f.resource)).toContain("modules_census");
   });
 });

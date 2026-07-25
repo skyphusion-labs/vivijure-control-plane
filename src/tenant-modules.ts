@@ -24,6 +24,7 @@
 // on the module scripts in installInvokeKey, alongside the studio -- the module can then render.
 
 import type { CfApi, WorkerBinding } from "./cf-api";
+import { isScriptAbsent } from "./cf-api";
 import type { TenantEndpoint } from "./provisioner";
 
 /**
@@ -382,20 +383,34 @@ export async function verifyTenantModulesInstalled(
 export async function teardownTenantModules(
   deps: TenantModuleDeps,
   tenantId: string,
-): Promise<{ ok: boolean; failures: { resource: string; error: string }[] }> {
+): Promise<{
+  ok: boolean;
+  failures: { resource: string; error: string }[];
+  absent: { resource: string; detail: string }[];
+}> {
   const failures: { resource: string; error: string }[] = [];
+  const absent: { resource: string; detail: string }[] = [];
   const prefix = tenantModuleScriptPrefix(tenantId);
   let scripts: string[];
   try {
     scripts = (await deps.cf.listNamespaceScripts(deps.moduleNamespace)).filter((s) => s.startsWith(prefix));
   } catch (e) {
     // Cannot list => cannot prove anything is gone. Report it; do not claim a clean teardown.
-    return { ok: false, failures: [{ resource: "modules_list", error: String(e) }] };
+    return { ok: false, failures: [{ resource: "modules_list", error: String(e) }], absent };
   }
   for (const script of scripts) {
     try {
       await deps.cf.deleteUserWorker(deps.moduleNamespace, script);
     } catch (e) {
+      // Same classification as the studio worker (cp#110). Here it is a RACE rather than the common
+      // case -- these names came out of the listing moments ago -- but a script that vanished
+      // between the list and the delete is still in the state this loop wanted, and the census
+      // below is what proves it. Only a real error (403, 500, a 404 with no code) keeps a failure.
+      if (isScriptAbsent(e)) {
+        absent.push({ resource: `module:${script}`, detail: String(e) });
+        deps.log("teardown.module_absent", { tenant: tenantId, script, error: String(e) });
+        continue;
+      }
       failures.push({ resource: `module:${script}`, error: String(e) });
       deps.log("teardown.module_failed", { tenant: tenantId, script, error: String(e) });
     }
@@ -412,7 +427,7 @@ export async function teardownTenantModules(
   } catch (e) {
     failures.push({ resource: "modules_census", error: String(e) });
   }
-  return { ok: failures.length === 0, failures };
+  return { ok: failures.length === 0, failures, absent };
 }
 
 // ---------------------------------------------------------------------------

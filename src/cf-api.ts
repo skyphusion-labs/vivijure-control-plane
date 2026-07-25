@@ -22,6 +22,33 @@ export class CfApiError extends Error {
   }
 }
 
+/**
+ * Cloudflare code for "this Worker is not on the account" (cp#110).
+ *
+ * LIVE-PROBED rather than read off a docs page (2026-07-25, provisioner credential): a DELETE of a
+ * script name that does not exist in a dispatch namespace answers HTTP 404 with
+ * `{"code": 10007, "message": "This Worker does not exist on your account."}`, identically in the
+ * tenant namespace and the tenant-module namespace.
+ */
+export const CF_SCRIPT_NOT_FOUND = 10007;
+
+/**
+ * True ONLY for a response that PROVES the script is already gone.
+ *
+ * BOTH halves are required, deliberately. The status alone would swallow every other 404 this API
+ * can produce (a dispatch namespace that does not exist is a CONFIG fault, not an absent script,
+ * and it must keep reporting as a failure). The MESSAGE is not consulted at all: matching CF prose
+ * rots the day CF rewords a sentence, so the numeric code is the invariant worth parsing.
+ *
+ * Everything else -- 403, 500, a 404 carrying no code at all (the non-JSON-body path above builds
+ * exactly that) -- fails to `false`, which is the recoverable direction: a real failure recorded as
+ * a failure can be retried, while a real failure recorded as "already gone" blanks a column over a
+ * resource that is still live.
+ */
+export function isScriptAbsent(e: unknown): boolean {
+  return e instanceof CfApiError && e.status === 404 && e.cfErrors.some((c) => c.code === CF_SCRIPT_NOT_FOUND);
+}
+
 interface CfEnvelope<T> {
   success: boolean;
   result: T;
