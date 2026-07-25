@@ -25,6 +25,7 @@ import type {
   Tenant,
   TenantResourceKind,
 } from "./store";
+import { emptyBucketBounded, type EmptyBucketResult } from "./r2-empty";
 import { decryptStudioToken, encryptStudioToken } from "./token-crypto";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
 import type { TokenMinter } from "./token-minter";
@@ -159,6 +160,17 @@ export interface ProvisionDeps {
   tokenMinter: TokenMinter;
   /** The account S3 endpoint (https://<account>.r2.cloudflarestorage.com) the satellites use. */
   r2Endpoint: string;
+  /**
+   * Clock, sleep and fetch, injected rather than reached for globally (#23 / cf#72).
+   *
+   * Teardown empties a tenant bucket over the S3 API, and that is a BUDGETED loop: it needs a clock
+   * a test can move, a sleep a test can make instant, and a fetch a test can script. Taking all
+   * three off this bundle keeps ONE seam, the rule the rest of ProvisionDeps already follows,
+   * instead of a second test-only path into the destructive code.
+   */
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  fetch: typeof fetch;
   namespace: string;
   /** The shared dispatch namespace tenant MODULE scripts live in (vivijure-tenant-modules). */
   moduleNamespace: string;
@@ -190,6 +202,20 @@ export interface ProvisionDeps {
 export const tenantD1Name = (slug: string) => `vivijure-tenant-${slug}`;
 export const tenantBucketName = (slug: string) => `vivijure-tenant-${slug}`;
 export const tenantR2TokenName = (slug: string) => `vivijure-tenant-${slug}-r2`;
+
+/**
+ * The credential a TEARDOWN cycle mints for itself to empty a bucket (cf#72). Deliberately a
+ * DIFFERENT name from the tenant long-lived r2 token: teardown revokes the tenant token by name
+ * when its id was never persisted, and a shared name would let either revoke hit the other.
+ */
+export const tenantR2TeardownTokenName = (slug: string) => `vivijure-tenant-${slug}-teardown`;
+
+/**
+ * Wall-clock budget for ONE emptying cycle. Small on purpose: teardown runs inside a request the
+ * operator is waiting on, and a bucket too large for one cycle is meant to take several honest
+ * cycles rather than one call that silently outlives its invocation.
+ */
+const TEARDOWN_EMPTY_BUDGET_MS = 15_000;
 
 /**
  * The Workers Rate Limiting namespace the tenant spend limiter binds to. Shared across tenant
@@ -1192,6 +1218,58 @@ export async function teardownTenant(
     }
   };
 
+  /**
+   * MINT -> WORK -> REVOKE, with the mint and the revoke HERE so the credential lifetime is visible
+   * at the call site rather than buried in r2-empty.ts (that module states the invariant and
+   * deliberately owns neither half).
+   *
+   * Every cycle mints its OWN bucket-scoped credential and revokes it before returning, on every
+   * path. The tempting alternative -- mint once, carry it across resumable cycles -- would store or
+   * strand a live grant, which is the orphaned-credential class this path exists to close.
+   *
+   * A bucket too large for one budget does NOT fail terminally: the cycle reports what it deleted,
+   * this throws so attempt() records the honest stop and leaves the column INTACT (blanking happens
+   * only on success), and re-running teardown continues from where this cycle stopped.
+   */
+  const emptyThenDeleteBucket = async (bucket: string): Promise<void> => {
+    const cred = await deps.tokenMinter.mintBucketToken(tenantR2TeardownTokenName(tenant.slug), bucket);
+    try {
+      const result: EmptyBucketResult = await emptyBucketBounded({
+        endpoint: deps.r2Endpoint,
+        bucket,
+        credential: { accessKeyId: cred.id, secretAccessKey: await sha256Hex(cred.value) },
+        budgetMs: TEARDOWN_EMPTY_BUDGET_MS,
+        now: deps.now,
+        sleep: deps.sleep,
+        fetch: deps.fetch,
+        log: deps.log,
+      });
+      if (!result.emptied) {
+        throw new Error(
+          `bucket not emptied this cycle (deleted ${result.deleted} object(s)` +
+            (result.stalled ? `, stalled: ${result.stalled}` : "") +
+            `); re-run teardown to continue`,
+        );
+      }
+      deps.log("teardown.bucket_emptied", { tenant: tenant.id, bucket, deleted: result.deleted });
+      await deps.cf.deleteR2Bucket(bucket);
+    } finally {
+      // A stranded bucket-scoped grant is the worst leftover this path can produce, so a failed
+      // revoke is RECORDED on the row, not merely logged. It is its own resource name because it
+      // needs the opposite follow-up from a failed delete: revoke it by hand, now.
+      try {
+        await deps.tokenMinter.revoke(cred.id);
+      } catch (e) {
+        failures.push({
+          resource: "r2_empty_credential",
+          error: `teardown credential ${cred.id} could NOT be revoked, revoke it by hand: ${String(e)}`,
+        });
+        deps.log("teardown.empty_credential_stranded", { tenant: tenant.id, bucket, error: String(e) });
+      }
+    }
+  };
+
+
   // Delete the worker by its STORED name, falling back to the derivation only when the row has none.
   //
   // These are not the same fact. script_name records what was ACTUALLY created; tenantScriptName(slug)
@@ -1245,16 +1323,21 @@ export async function teardownTenant(
     if (tenant.d1_database_id && !guarded("d1")) {
       await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!), "d1");
     }
-    // KNOWN, LIVE-PROVEN CONSTRAINT: R2 refuses to delete a NON-EMPTY bucket, and R2's REST API has
-    // no object-list/delete endpoint at all (404) -- emptying a bucket only goes through the S3 API.
-    // So this call SUCCEEDS only for a tenant that never rendered, and for everyone else it fails
-    // with CF's own "bucket is not empty". That failure is REPORTED, never swallowed: the caller
-    // gets it in `failures` and the tenant's data is still there, which is the safe direction to
-    // fail. Emptying-then-deleting needs an S3 client here (mint a bucket cred, ListObjectsV2 +
-    // DeleteObjects, delete, revoke) and is tracked as #53 follow-up rather than faked.
-    // Caught on real R2; the unit fake said delete always works.
+    // EMPTY-THEN-DELETE (cf#72), wired here by this issue caller work.
+    //
+    // THE CONSTRAINT, live-proven: R2 refuses to delete a NON-EMPTY bucket, and the R2 REST API has
+    // no object-list or object-delete endpoint at all (404). Emptying only goes through the S3 API,
+    // under a bucket-scoped credential. So before this leg existed, deleteR2Bucket succeeded only
+    // for a tenant that never rendered, and a tenant that was ever live is precisely the population
+    // that HAS rendered.
+    //
+    // ORDER IS THE SAFETY PROPERTY: guarded() runs BEFORE anything is minted or listed. Emptying is
+    // the irreversible half (an emptied bucket is gone whether or not the delete that follows
+    // succeeds), and slug reuse IS resource reuse, so a bucket another row still references must
+    // never be OPENED at all, rather than opened and then spared. The refusal short-circuits while
+    // no credential exists.
     if (tenant.r2_bucket_name && !guarded("r2_bucket")) {
-      await attempt("r2_bucket", () => deps.cf.deleteR2Bucket(tenant.r2_bucket_name!), "r2_bucket");
+      await attempt("r2_bucket", () => emptyThenDeleteBucket(tenant.r2_bucket_name!), "r2_bucket");
     }
   }
 

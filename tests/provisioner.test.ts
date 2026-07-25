@@ -87,7 +87,14 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     cf: fakeCf(),
     runpod: { createEndpoints: vi.fn(async () => (calls.push("runpod.createEndpoints"), ENDPOINTS)) },
     tokenMinter: {
-      mintBucketToken: vi.fn(async () => (calls.push("mintR2Token"), { id: "tok-1", value: "TOKEN_VALUE_SECRET" })),
+      // The id depends on WHICH credential is being minted: the tenant long-lived bucket token, or
+      // the ephemeral one a teardown cycle mints to empty the bucket (cf#72). Two ids, so a test can
+      // tell a tenant-credential revoke from an emptying-credential revoke instead of both reading
+      // the same -- which is exactly the confusion the separate token NAME exists to prevent.
+      mintBucketToken: vi.fn(async (name: string) => (
+        calls.push("mintR2Token"),
+        { id: name.endsWith("-teardown") ? "emptycred-1" : "tok-1", value: "TOKEN_VALUE_SECRET" }
+      )),
       revoke: vi.fn(async () => void calls.push("revokeToken")),
       revokeByName: vi.fn(async (name: string) => (calls.push(`revokeByName:${name}`), true)),
     },
@@ -109,6 +116,25 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
       })),
     },
     r2Endpoint: "https://acct.r2.cloudflarestorage.com",
+    // Clock and sleep are fake so a budgeted loop cannot make a unit test wait. fetch THROWS: a unit
+    // test that reaches the network is a defect, and a permissive default would hide it behind a
+    // real request. Tests that exercise the emptying loop pass their own scripted fetch.
+    now: () => 1_000_000,
+    sleep: async () => {},
+    // S3 requests (the teardown bucket-emptying loop) get a scripted EMPTY listing, so the loop
+    // reaches its terminal state from an observed read and the bucket delete that follows is what
+    // these tests are actually about. Anything else THROWS: a unit test that reaches the network is
+    // a defect, and a blanket permissive fetch would hide it behind a real request.
+    fetch: (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.startsWith("https://acct.r2.cloudflarestorage.com")) {
+        throw new Error(`unit test made a real fetch to ${url}; script one in the deps override instead`);
+      }
+      return new Response(
+        `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`,
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch,
     namespace: "vivijure-tenants",
     moduleNamespace: "vivijure-tenant-modules",
     release: "v1.0.0",
@@ -409,10 +435,11 @@ describe("teardownTenant", () => {
   });
 
   it("REPORTS a non-empty bucket honestly instead of stranding it silently (live-verified constraint)", async () => {
-    // Real R2 refuses to delete a non-empty bucket, and its REST API cannot empty one (no object
-    // endpoint). So a tenant who ever rendered CANNOT have their bucket deleted by this path. The
-    // requirement is that we say so, loudly, rather than report a clean teardown that did not
-    // happen. Found on real R2 during the #53 live verify; the fake happily deleted anything.
+    // Real R2 refuses to delete a non-empty bucket. Since cf#72 the cycle EMPTIES it first, so this
+    // is now the race that survives that fix: objects landing between the emptying loop terminal
+    // read and the delete. The requirement is unchanged and is the reason this test stays -- say so
+    // loudly rather than report a clean teardown that did not happen. Found on real R2 during the
+    // #53 live verify; the fake happily deleted anything.
     const notEmpty = new CfApiError("r2.deleteBucket", 400, [
       { message: "The bucket you tried to delete is not empty" },
     ]);
@@ -446,7 +473,10 @@ describe("teardownTenant", () => {
     const t = await provisioned();
     const orphan = { ...t, r2_token_id: null };
     await teardownTenant(d, orphan, { deleteData: true });
-    expect(d.tokenMinter.revoke).not.toHaveBeenCalled();
+    // The TENANT credential is never revoked by id (there is no id to revoke by). The emptying
+    // credential this cycle minted for itself still is, which is why this asserts the argument
+    // rather than that revoke was never called at all.
+    expect(d.tokenMinter.revoke).not.toHaveBeenCalledWith("tok-1");
     expect(d.tokenMinter.revokeByName).toHaveBeenCalledWith("vivijure-tenant-hero-r2");
     // Credential still happens before the bucket/D1 it points at.
     expect(calls.indexOf("revokeByName:vivijure-tenant-hero-r2")).toBeLessThan(calls.indexOf("deleteD1"));

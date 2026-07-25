@@ -628,10 +628,70 @@ them also sharing the live tenant's bucket and studio worker.
 
 ### If you are adding a delete path
 
-Do not reach for the resource ids on the row. Go through `teardownTenant`, which asks the guard
+There is one, and it is `POST /api/admin/tenants/{id}/teardown` (below). Do not reach for the
+resource ids on the row. Go through `teardownTenant`, which asks the guard
 first, blanks each column only on that resource's successful deletion, and records the outcome
 (`teardown_at`, `teardown_failures`) so a partial teardown is visible in the data rather than only
 in a caller's return value.
+
+## Tearing a tenant down (`POST /api/admin/tenants/{id}/teardown`)
+
+The production caller `teardownTenant` spent its whole life without (#23). Admin-token gated,
+audited, and it runs **inline**: the response IS the evidence.
+
+```
+POST /api/admin/tenants/ten_abc123/teardown
+Authorization: Bearer <CONTROL_PLANE_ADMIN_TOKEN>
+{ "confirm_slug": "hero", "delete_data": true }
+```
+
+| field | meaning |
+| --- | --- |
+| `confirm_slug` | **required**, must equal the tenant slug. Ids are opaque and adjacent in a listing; the slug is what an operator recognises. |
+| `delete_data` | **defaults to false.** False pulls the studio worker, the module scripts and the R2 credential (unreachable, cannot write) and KEEPS the D1 and the bucket. True also reaps the data. |
+
+The 200 body:
+
+| field | meaning |
+| --- | --- |
+| `reaped` | the columns that went from set to NULL, read back off the row. Not the teardown return value: columns blank only on their own resource successful deletion, so this is the plane record of the reap rather than an opinion about it. |
+| `refused` | what the referential guard would not touch, each naming the referring row and its status. **A refusal is the guard working, not a failure.** |
+| `failed` | calls that did not work. Opposite follow-up from a refusal: retry these, investigate those. |
+| `status` | where the row IS now, read back after the write. |
+
+### "deleted" means "provably reaped", and nothing else
+
+The row is promoted to `status='deleted'` (+ `deleted_at`) **only** when the pass was clean AND
+`delete_data` was true. Every other outcome leaves the status where it was, with `teardown_at` and
+`teardown_failures` carrying what refused or failed. A row that said `deleted` while the customer
+films sat in a live bucket is the exact defect #23 exists to close, and it is what forced the cf#103
+Tier B slug refusal.
+
+A tombstone being re-swept **stays** a tombstone: `beginTeardown` never downgrades `deleted` to
+`deleting`, and `deleted_at` is preserved rather than rewritten.
+
+### One destructive pass at a time
+
+`beginTeardown` takes the same lease the reclaim path uses (`reclaim_lease_until` /
+`reclaim_lease_token`, 300s). There is ONE destructive lease per row on purpose: two independent
+leases would not exclude each other, and resource names derive from the slug, so overlapping
+teardowns issue the same deletes and the loser can land its deletes on whatever was rebuilt under
+those names. A live provision or upgrade job also blocks the claim. An expired lease is free, so a
+teardown whose driver died self-heals.
+
+### Emptying the bucket, and why it is a CYCLE (cf#72)
+
+R2 refuses to delete a non-empty bucket, and the R2 REST API has no object list or delete at all;
+emptying only goes through the S3 API. So teardown mints its **own** bucket-scoped credential
+(`vivijure-tenant-<slug>-teardown`, deliberately a different name from the tenant long-lived token),
+empties within a bounded budget, and **revokes that credential before returning, on every path**. No
+credential outlives the cycle that made it.
+
+A bucket too large for one budget does not fail terminally: the response says
+`bucket not emptied this cycle ... re-run teardown to continue`, the column stays claimed, and the
+next call continues. **The guard runs BEFORE the mint**: emptying is the irreversible half (an
+emptied bucket is gone whether or not the delete that follows succeeds), so a bucket another row
+still references is never opened at all.
 
 ## Tenant programmatic API token (`/api/tenant/{id}/api-token`)
 

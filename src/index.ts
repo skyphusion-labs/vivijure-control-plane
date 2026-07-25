@@ -855,6 +855,90 @@ async function adminRoutes(
     return new Response(null, { status: 204 });
   }
 
+  // ---- teardown: THE production caller teardownTenant never had (#23) -------------------------
+  //
+  // WHY ADMIN-GATED rather than owner-facing. This is the irreversible lever, and #23 asks for a
+  // path that is REACHABLE, not for a self-serve delete button nobody has ruled on. Operator-held
+  // matches the other destructive lever on this plane (suspend) and keeps the customer-facing
+  // deprovision UX a deliberate decision rather than a side effect of wiring the caller. An
+  // owner-facing route can be built on top of this one; the reverse is not true.
+  //
+  // WHY IT RUNS INLINE rather than under waitUntil. The answer IS the evidence: what was reaped,
+  // and what the referential guard refused and why. A 202 would hand back a job id and put the
+  // refusals somewhere the operator has to go looking for, on the one route where the refusals are
+  // the most important thing in the response. Emptying is budgeted per cycle (provisioner.ts), so a
+  // large bucket returns an honest "re-run to continue" rather than a call that never lands.
+  const teardown = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/teardown$/.exec(path);
+  if (request.method === "POST" && teardown) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(teardown[1]);
+    if (!tenant) return err("not_found", 404);
+
+    const body = (await readJson(request)) as { confirm_slug?: unknown; delete_data?: unknown } | null;
+    // Name the target out loud. Tenant ids are opaque and adjacent in a listing; the slug is what an
+    // operator actually recognises, and typing it is the difference between tearing down the studio
+    // you meant and the one above it.
+    if (typeof body?.confirm_slug !== "string" || body.confirm_slug.trim() !== tenant.slug) {
+      return err("slug_confirmation_required", 400, { slug: tenant.slug });
+    }
+    // DEFAULT FALSE, deliberately (#23). Without it teardown pulls the worker, the module scripts
+    // and the credential -- the tenant stops being reachable and stops being able to write -- and
+    // LEAVES the data. Reaping a customer films is an explicit second decision.
+    const deleteData = body.delete_data === true;
+
+    // ONE destructive pass at a time, on the same lease the reclaim path uses: resource names derive
+    // from the slug, so two overlapping teardowns issue the same deletes and the second can land on
+    // whatever was rebuilt under those names.
+    const lease = await deps.store.beginTeardown(tenant.id, RECLAIM_LEASE_SECONDS);
+    if (!lease) {
+      return err("teardown_in_progress", 409, {
+        message: "another destructive pass holds this row, or a provision job is live on it",
+      });
+    }
+
+    // TEAR DOWN FROM THE LEASED ROW, not from the row read before the lease: beginTeardown is the
+    // serialization point, so those are the authoritative ids (same rule the reclaim path states).
+    const result = await deps.provisioner.teardown(lease.tenant, { deleteData });
+
+    // WHAT WAS ACTUALLY REAPED is read back off the ROW rather than taken from the return value.
+    // Columns blank only on their own resource successful deletion, so this diff is the plane own
+    // record of the reap instead of the caller opinion of it.
+    const after = await deps.store.getTenantById(tenant.id);
+    const reaped = (["script_name", "d1_database_id", "r2_bucket_name", "r2_token_id"] as const).filter(
+      (col) => lease.tenant[col] !== null && after?.[col] === null,
+    );
+
+    // A REFUSAL is not a failure: it is the guard working. They are split because they need opposite
+    // follow-up -- a refusal means "this resource is not provably ours, go look at the referrer
+    // named in the message", a failure means "this call did not work, retry it".
+    const refused = result.failures.filter((f) => f.error.startsWith("refused:"));
+    const failed = result.failures.filter((f) => !f.error.startsWith("refused:"));
+
+    // Promote to 'deleted' ONLY on a clean pass that was allowed to take the data. Anything else
+    // leaves the status where it was, because "deleted" has to keep meaning "provably reaped".
+    const finished = await deps.store.finishTeardown(tenant.id, lease.lease_token, result.ok && deleteData);
+
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.teardown",
+      tenant.id,
+      JSON.stringify({ delete_data: deleteData, reaped, refused: refused.length, failed: failed.length }),
+    );
+
+    return json({
+      tenant_id: tenant.id,
+      slug: tenant.slug,
+      // Read back, never assumed. finishTeardown returns null when the lease was taken over
+      // mid-pass, which is exactly the case where an assumed status would be wrong.
+      status: finished?.status ?? after?.status ?? tenant.status,
+      delete_data: deleteData,
+      reaped,
+      refused,
+      failed,
+      teardown_at: finished?.teardown_at ?? after?.teardown_at ?? null,
+    });
+  }
+
   const upgrade = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/upgrade-modules$/.exec(path);
   if (request.method === "POST" && upgrade) {
     if (!deps.provisioner) return err("provisioner_unconfigured", 503);

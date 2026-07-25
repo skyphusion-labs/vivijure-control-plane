@@ -292,6 +292,46 @@ export class D1Store implements ControlPlaneStore {
       .first<Tenant>();
   }
 
+  async beginTeardown(tenantId: string, leaseSeconds: number): Promise<{ tenant: Tenant; lease_token: string } | null> {
+    const token = crypto.randomUUID();
+    const tenant = await this.db
+      .prepare(
+        // A tombstone STAYS a tombstone through a re-sweep. Downgrading 'deleted' to 'deleting'
+        // would un-tell the one fact that row is carrying.
+        "UPDATE tenants SET status = CASE WHEN status = 'deleted' THEN 'deleted' ELSE 'deleting' END, " +
+          "reclaim_lease_until = datetime('now', '+' || ?2 || ' seconds'), reclaim_lease_token = ?3 " +
+          "WHERE id = ?1 " +
+          // An expired or absent lease is FREE, same rule as claimReclaim and claimJob: a teardown
+          // whose driver died must not wedge the row forever.
+          "AND (reclaim_lease_until IS NULL OR reclaim_lease_until < datetime('now')) " +
+          // A live provision or upgrade driver is WRITING to these same resources; deleting under
+          // it would race a job that believes it owns the row.
+          "AND NOT EXISTS (SELECT 1 FROM provision_jobs j WHERE j.tenant_id = tenants.id " +
+          "AND j.status IN ('queued', 'running') AND j.lease_until IS NOT NULL " +
+          "AND j.lease_until > datetime('now')) RETURNING *",
+      )
+      .bind(tenantId, leaseSeconds, token)
+      .first<Tenant>();
+    return tenant ? { tenant, lease_token: token } : null;
+  }
+
+  async finishTeardown(tenantId: string, leaseToken: string, reaped: boolean): Promise<Tenant | null> {
+    return await this.db
+      .prepare(
+        "UPDATE tenants SET " +
+          "status = CASE WHEN ?3 = 1 THEN 'deleted' ELSE status END, " +
+          // COALESCE, not overwrite: a re-swept tombstone keeps the date it actually died on.
+          "deleted_at = CASE WHEN ?3 = 1 THEN COALESCE(deleted_at, datetime('now')) ELSE deleted_at END, " +
+          "reclaim_lease_until = NULL, reclaim_lease_token = NULL " +
+          // The token is the proof. No liveness check on the lease: a pass that overran its lease
+          // but was never taken over still holds the only token, and refusing it there would throw
+          // away the record of what it just did.
+          "WHERE id = ?1 AND reclaim_lease_token = ?2 RETURNING *",
+      )
+      .bind(tenantId, leaseToken, reaped ? 1 : 0)
+      .first<Tenant>();
+  }
+
   async createTenant(id: string, slug: string, accountId: string, status: TenantLifecycle): Promise<Tenant> {
     const row = await this.db
       .prepare("INSERT INTO tenants (id, slug, account_id, status) VALUES (?1, ?2, ?3, ?4) RETURNING *")

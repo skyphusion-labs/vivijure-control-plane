@@ -334,6 +334,38 @@ export class MemoryStore implements ControlPlaneStore {
     if (t) t.api_token_rotated_at = new Date().toISOString();
   }
 
+  /**
+   * Mirrors D1Store.beginTeardown, including the parts that REFUSE. Note what it does NOT copy from
+   * claimReclaim: no account scope and no Tier A scope, because an operator teardown must be able to
+   * run on a live tenant and on a half-reaped row.
+   */
+  async beginTeardown(tenantId: string, leaseSeconds: number): Promise<{ tenant: Tenant; lease_token: string } | null> {
+    const t = this.tenants.get(tenantId);
+    if (!t) return null;
+    if (this.hasLiveProvisionLease(tenantId)) return null;
+    if (leaseIsLive(t.reclaim_lease_until, Date.now())) return null;
+    const token = `tok_${this.leaseSeq++}`;
+    t.reclaim_lease_token = token;
+    t.reclaim_lease_until = new Date(Date.now() + leaseSeconds * 1000).toISOString().replace("T", " ").slice(0, 19);
+    // A tombstone stays a tombstone, exactly as the CASE in the D1 statement.
+    if (t.status !== "deleted") t.status = "deleting";
+    return { tenant: { ...t }, lease_token: token };
+  }
+
+  async finishTeardown(tenantId: string, leaseToken: string, reaped: boolean): Promise<Tenant | null> {
+    const t = this.tenants.get(tenantId);
+    if (!t) return null;
+    // The token is the proof, and it is the ONLY condition: same as the D1 statement.
+    if (t.reclaim_lease_token !== leaseToken) return null;
+    t.reclaim_lease_until = null;
+    t.reclaim_lease_token = null;
+    if (reaped) {
+      t.status = "deleted";
+      t.deleted_at = t.deleted_at ?? new Date().toISOString();
+    }
+    return { ...t };
+  }
+
   async recordTeardown(id: string, failures: { resource: string; error: string }[]) {
     const t = this.tenants.get(id);
     if (!t) return;

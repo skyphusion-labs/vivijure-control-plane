@@ -106,6 +106,11 @@ beforeAll(async () => {
     moduleBundle: localModuleBundleSource(env.studioReleaseDir),
     tokenMinter: new CfTokenMinter(cf),
     r2Endpoint: `https://${env.cfAccountId}.r2.cloudflarestorage.com`,
+    // The live suite takes the REAL three: this is the run that has to prove the emptying loop
+    // against real R2, so a fake clock or a scripted fetch here would prove nothing.
+    now: () => Date.now(),
+    sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
     namespace: NAMESPACE,
     moduleNamespace: env.moduleNamespace,
     release: tag,
