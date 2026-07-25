@@ -49,6 +49,13 @@ jobs:
       - name: Test
         run: npm test
 
+      # Tenant image pins point OUT of this repo, so no unit test can prove the tags exist. This
+      # resolves every pin at GHCR by image name (anonymous, fork-safe): a pin at a tag nobody
+      # pushed cannot merge. The production-parity half needs a prod key and runs at release
+      # (npm run check:pins:prod), see docs/control-plane.md.
+      - name: Satellite image pins resolve at GHCR
+        run: npm run check:pins
+
       # The deploy config render is shell, so vitest never sees it. Its fail-closed guards are
       # what stand between a missing Actions secret and a deploy pointed at the wrong database,
       # so they are gated here, negative-tested, on every PR.

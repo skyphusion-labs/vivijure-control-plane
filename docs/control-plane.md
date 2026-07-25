@@ -413,11 +413,59 @@ here. That is a release-discipline defect which would break a full re-provision 
 | `module_bundle_unavailable` | 422 | the release is missing a module bundle |
 | `provisioner_unconfigured` | 503 | the deploy lacks the provisioner env |
 
+## Tenant satellite image pins (cp#126)
+
+Every tenant endpoint is created from a pinned container image, and all four pins live in exactly one
+place: `src/satellite-pins.ts`. `src/runpod.ts` decides layout, labels, GPU class and worker counts,
+and never decides a version; a test asserts no image literal can come back into it.
+
+**The authority for a pin is what PRODUCTION runs, not what is newest.** A pin mirrors a specific
+production endpoint (recorded on the pin, with the date it was read), so a hosted tenant renders on
+the line the estate has actually proven end to end. The newest published tag is not that line: its
+only evidence is that CI went green. On 2026-07-25 the newest tags were upscale 1.0.5, musetalk 1.0.6
+and audio-upscale 1.0.8, and production ran 1.0.4 / 1.0.5 / 1.0.7 -- musetalk 1.0.6 adds an HTTP
+serve path production has never exercised, and a paying tenant is not where that gets discovered.
+
+Why this file exists at all: the pins sat at backend 1.0.2 / upscale 0.2.7 / musetalk 0.1.0 /
+audio-upscale 0.1.0 for six weeks while production moved on. Nobody was careless; there was simply no
+place where a wrong pin could be SEEN. Two checks now make it visible:
+
+```bash
+npm run check:pins        # creds-free. Every pin must resolve at GHCR by image name. Runs in CI on
+                          # every PR, so a pin at a tag nobody pushed cannot merge.
+RUNPOD_API_KEY=... npm run check:pins:prod   # compares every pin to the LIVE production endpoint
+```
+
+Exit 1 is a real mismatch. **Exit 2 means the check could not be performed** (no key, network, API
+shape) and is never a pass: an unreadable check is an unverified pin.
+
+### The release rule
+
+A satellite release now has a third leg. Pinning both panels is not enough, because the plane pins
+tenants too:
+
+1. release the satellite, 2. pin the production endpoint, 3. **run `check:pins:prod`; when it goes
+red, move `src/satellite-pins.ts` to what production now runs and re-read the `mirrors` dates.**
+
+### What a pin change does and does not reach
+
+A pin change applies to endpoints created AFTER it ships. It does **not** retroactively move a live
+tenant: their endpoints were built from the pins of the day, and the plane cannot repin them, because
+the RunPod key that could (KEY A) is used once at provision and never stored (see key custody above).
+Moving a live tenant onto newer images is therefore a tenant-side or operator-side action against
+that tenant's own account, not something this plane can do on their behalf.
+
+And when any endpoint IS repinned, the repin is half the job: a template change leaves the old
+workers running the old image and squatting the account worker slots (a 50-minute render stall on
+2026-07-25). **Cycle the workers** (`workersMax` to 0 and back), then verify the first job's worker
+image and `isStale` via `GET /v2/serverless/{id}/workers` before trusting the run.
+
 ## Verifying changes
 
 ```bash
 npm run typecheck                 # the CI gate
 npm test                          # the whole suite
+npm run check:pins                # tenant image pins resolve at GHCR
 npm run dev         # live, against a real local D1
 ```
 

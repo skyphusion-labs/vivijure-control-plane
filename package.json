@@ -1,6 +1,6 @@
 {
   "name": "vivijure-control-plane",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "private": true,
   "description": "Hosted control plane for Vivijure Studio: tenancy, onboarding, provisioning",
   "license": "AGPL-3.0-only",
@@ -10,6 +10,8 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "guard:resolve": "node scripts/resolve-guard.mjs",
+    "check:pins": "node scripts/check-satellite-pins.mjs",
+    "check:pins:prod": "node scripts/check-satellite-pins.mjs --prod",
     "test": "vitest run",
     "test:live:scratch": "vitest run tests/runpod.live.test.ts tests/cf-api.live.test.ts",
     "test:watch": "vitest",
