@@ -112,6 +112,24 @@ So: **a worker secret is not considered set until this table names its owner and
 | `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `APPLE_PRIVATE_KEY` | unset (SSO not offered) | n/a |
 
+### Minted, not yet bound
+
+Cloudflare API tokens that exist and are owned but are **not** worker secrets yet. They are listed
+here rather than in the table above so that table keeps its invariant: every row there is a live
+`secret_text` binding on the worker. A token graduates into the table above when a consumer actually
+reads it, and not before -- a mint is not a roll.
+
+| Token | Owner | Home | Purpose / consumer |
+| --- | --- | --- | --- |
+| `vivijure-cp-worker-upload` (CF token id `d28c773133d51c56fdebc26ed95a10df`) | Mackaye (minted 2026-07-25, cf#224 Lane U) | `~/.vivijure-cp-worker-upload.env` (conrad) and `~rollins/.cf-worker-upload-v2.env` (rollins), both on the primary crew box (dischord, `chmod 600`), var `CF_WORKER_UPLOAD_TOKEN` | tenant-script uploads incl. Workers VPC binding attach; **no token-mint scope by design** (CF forbids a sub-token from minting token-mint scope; split-function ruling on cf#224). Consumer: the control plane, wiring pending (Rollins, Lane U) |
+
+Scope is exactly four permission groups on the account: Workers Scripts Write, Connectivity Directory
+Admin, Connectivity Directory Bind, Connectivity Directory Read. The split exists because
+`CF_PROVISIONER_TOKEN` carries `Account API Tokens Write` (it mints per-tenant bucket-scoped R2 S3
+credentials, cf#53), and Cloudflare refuses to let one API token mint another that carries that group.
+So the VPC-capable half was cut as its own narrower token instead of widening the provisioner. The
+provisioner was not modified.
+
 `STUDIO_TOKEN_KEK` was `UNCLAIMED` until 2026-07-25 (set on the live worker during the #93 deploy
 with no durable home file); the recovery below closed that, and the crew-secrets escrow closed the
 single-copy gap the same day. The paragraphs that follow are the record of how.
