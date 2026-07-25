@@ -262,6 +262,19 @@ material. Our design says only named responders may look, and `ABUSE-RESPONSE-RU
   **same human** (Conrad). If the sets are identical, minimization may be satisfied in substance.
   That argument fails the moment a second credential holder is not a responder.
 
+**THE OPERATOR'S POSITION ON "AGENT", recorded 2026-07-25 so counsel argues with a stated view
+rather than reconstructing one.** `2258A(h)(3)` limits access by "agents or employees", and the
+operator's reading is that both describe **human** roles: automation is an extension of the human who
+directs it, not a separate agent. Supporting reasoning: agency doctrine is a relationship between
+legal persons, and `UETA` had to coin "electronic agent" as a defined term -- an unnecessary coinage
+if software already qualified. **Counsel is asked to confirm or correct this**, not to discover it.
+
+**The fallback, which does not depend on that reading being right:** the set of **humans** who can
+decrypt the responder credential is **one**. The escrow recipients are the operator's key and the lead
+agent's, and the lead agent's key sits on a machine the operator roots, so every path to the plaintext
+ends at the same person. **If "agent" is construed to include automation, minimisation still holds by
+arithmetic.** Counsel should say which of the two grounds they would actually rely on.
+
 **A usable answer:** (a) is a documented authorization rule sufficient, or must access be
 technically impossible for non-responders; (b) if technical exclusion is required, does that force a
 separate Cloudflare account (which costs the server-side copy and reintroduces human possession,
