@@ -6,6 +6,10 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.7.1 -- 2026-07-25
+
+PATCH: fix/deploy class, no feature surface.
+
 ### fix(teardown): a 404 worker delete is success-equivalent, so the column blanks (#110)
 
 - A delete that answers *not found* reached its goal earlier, by something else. Teardown now blanks
