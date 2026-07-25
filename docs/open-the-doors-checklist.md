@@ -37,7 +37,7 @@ means. A row without evidence is not done, whatever anyone remembers.
 
 | Item | Status | Evidence |
 |---|---|---|
-| CSAM bright-line enforcement points VERIFIED on the tenant path | PENDING | Mackaye, this sprint: walk the tenant render path end to end and record where detect/refuse fires, with test evidence. The policy is absolute (18 U.S.C. 1466A / 2252A, synthetic included: detect, refuse, preserve, report NCMEC + LE); this row proves the MECHANISM, not the policy. Signups do not open with this row pending. |
+| CSAM bright-line enforcement points VERIFIED on the tenant path | **VERIFIED ABSENT (2026-07-25) -- BUILD REQUIRED** | Sweep of vivijure-cf, core, and backend found no code-level mechanism on the tenant path (demo path is safe by construction; LLM planning has model-side refusals, but direct API submit bypasses it, and cast-LoRA training takes user-supplied images). Build tracked in vivijure-cf#225: submit-time prompt screening, image moderation on uploads/training sets, preserve + NCMEC report runbook, fail closed. The policy is absolute (18 U.S.C. 1466A / 2252A, synthetic included); this row proves the MECHANISM. **Signups do not open before cf#225 ships.** |
 | AUP acceptance gate live, blocking, fail-closed, version-pinned | PENDING | Precondition in LAUNCH-GATE-PROCEDURE.md; verify at flip |
 | Abuse/support intake path (a human can reach us; we can act) | PENDING | studio@ From-identity fix slotted 2026-07-26 (Conrad); intake route + response runbook to be named here |
 
