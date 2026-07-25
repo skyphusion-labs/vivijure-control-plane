@@ -505,7 +505,7 @@ export async function runProvisionJob(
     //    Already fetched at step 0; reused here rather than re-read, so the worker we upload and the
     //    schema we applied are provably the same artifact and not two reads that could differ.
     let assetsJwt: string | undefined;
-    if (built.assets?.length) assetsJwt = await uploadAssets(deps, tenant.slug, built.assets);
+    if (built.assets?.length) assetsJwt = await uploadStudioAssets(deps, tenant.slug, built.assets);
 
     // The tenant's studio API token. Minted here, set as the tenant-studio secret (satisfying its
     // AUTH_MODE=token fail-closed gate), and ALSO persisted control-plane-side (encrypted) because
@@ -1168,7 +1168,7 @@ async function uploadStudioScript(
   }
 }
 
-async function uploadAssets(
+export async function uploadStudioAssets(
   deps: ProvisionDeps,
   slug: string,
   assets: NonNullable<Awaited<ReturnType<StudioBundleSource["fetch"]>>["assets"]>,

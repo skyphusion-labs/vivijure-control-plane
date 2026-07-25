@@ -121,7 +121,7 @@ export type SlugClaim =
 export interface ProvisionJob {
   id: string;
   tenant_id: string;
-  kind: "provision" | "deprovision" | "module_upgrade";
+  kind: "provision" | "deprovision" | "module_upgrade" | "studio_upgrade";
   status: "queued" | "running" | "succeeded" | "failed";
   step: string | null;
   steps_done: string;
@@ -131,7 +131,7 @@ export interface ProvisionJob {
   /** Who is currently driving this job, expressed as when that claim expires (#112). */
   lease_until: string | null;
   /**
-   * A module_upgrade job only: the release it moved FROM and the release it moved TO.
+   * An UPGRADE job (module_upgrade or studio_upgrade): the release it moved FROM and moved TO.
    *
    * from_release exists so a FAILED upgrade is still rollback-able. Rollback here is "re-run at the
    * previous release", and the upgrade NULLs tenants.modules_release before touching anything, so
@@ -451,6 +451,16 @@ export interface ControlPlaneStore {
   setTenantR2Token(id: string, tokenId: string): Promise<void>;
   setTenantEndpoints(id: string, endpointsJson: string): Promise<void>;
   setTenantScript(id: string, scriptName: string, release: string): Promise<void>;
+  /**
+   * Write (or CLEAR) the release whose studio bytes this tenant runs (cp#139).
+   *
+   * Nullable on purpose, and the null is the load-bearing half: a studio upgrade clears this before
+   * its first write, so a run that dies mid-move leaves "not known to be uniformly at any release;
+   * consult the job row" rather than a value claiming the move completed. Same discipline
+   * modules_release already follows. setTenantScript cannot express it (it takes a non-null release
+   * because a provision always knows what it uploaded).
+   */
+  setTenantStudioRelease(id: string, release: string | null): Promise<void>;
 
   /**
    * Blank ONE resource column, on that resource's successful deletion (#23).
@@ -583,6 +593,21 @@ export interface ControlPlaneStore {
    * from (the one fact a failed upgrade cannot be reconstructed without).
    */
   createModuleUpgradeJob(
+    id: string,
+    tenantId: string,
+    fromRelease: string | null,
+    toRelease: string,
+  ): Promise<ProvisionJob>;
+  /**
+   * A studio_upgrade job (cp#139): the STUDIO bytes move, which is a different fact from the module
+   * move and therefore a different job kind on the same two release columns.
+   *
+   * Separate from createModuleUpgradeJob rather than a kind parameter on it, deliberately: the two
+   * kinds NULL different tenant columns before their first write (modules_release vs studio_release),
+   * so a caller that picked the wrong kind would clear the wrong fact and leave the other column
+   * asserting a uniformity that no longer holds. Two names make that unmistakable at the call site.
+   */
+  createStudioUpgradeJob(
     id: string,
     tenantId: string,
     fromRelease: string | null,

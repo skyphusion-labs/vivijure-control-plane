@@ -39,6 +39,13 @@ import {
   type StudioBindingRefusal,
 } from "./tenant-studio-bindings";
 import {
+  preflightStudioUpgrade,
+  upgradeTenantStudio,
+  type StudioUpgradeContext,
+  type StudioUpgradePreflight,
+  type StudioUpgradeOutcome,
+} from "./tenant-studio-upgrade";
+import {
   canonicalStoryboard,
   SMOKE_PROJECT_NAME,
   SMOKE_PROMPT,
@@ -116,6 +123,19 @@ export interface ProvisionerWiring {
    * is the blast-radius gate on this whole route.
    */
   upgradeModules(jobId: string, tenant: Tenant, context: ModuleUpgradeContext): Promise<void>;
+  /**
+   * Check everything a STUDIO bytes move needs WITHOUT writing anything (cp#139), so the route can
+   * refuse before it creates a job. Same split, same reason, as preflightUpgrade.
+   */
+  preflightStudioUpgrade(tenant: Tenant, release: string): Promise<StudioUpgradePreflight>;
+  /**
+   * Move a LIVE tenant's studio bytes onto an explicit release, in place, bindings preserved.
+   *
+   * Never throws (the job row is the record) and NEVER writes tenants.status: the tenant stays live
+   * and serving throughout, which is the blast-radius gate on this route exactly as it is on the
+   * module upgrade. Returns the READBACK so the caller records evidence, not a success flag.
+   */
+  upgradeStudio(jobId: string, tenant: Tenant, context: StudioUpgradeContext): Promise<StudioUpgradeOutcome>;
   /**
    * Deliver a studio-level BINDING to a tenant that already exists (cp#112).
    *
@@ -334,6 +354,12 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     },
     async upgradeModules(jobId, tenant, context) {
       await upgradeTenantModules(deps, jobId, tenant, context);
+    },
+    async preflightStudioUpgrade(tenant, release): Promise<StudioUpgradePreflight> {
+      return await preflightStudioUpgrade(deps, tenant, release);
+    },
+    async upgradeStudio(jobId, tenant, context): Promise<StudioUpgradeOutcome> {
+      return await upgradeTenantStudio(deps, jobId, tenant, context);
     },
   };
 }
