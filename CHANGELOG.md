@@ -6,6 +6,10 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.8.0 -- 2026-07-25
+
+MINOR: two feature-class changes (cp#112, cp#118).
+
 ### feat(hosted): an operator can give an EXISTING tenant a studio binding (cp#112)
 
 - `POST /api/admin/tenants/:id/refresh-studio-bindings`: admin-gated, per-tenant, inline, and
