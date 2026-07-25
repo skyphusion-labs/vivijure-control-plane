@@ -296,6 +296,81 @@ page. Three findings, and the first one was a defect caught before it reached a 
 The throwaway script was deleted and the namespace re-censused through a DIFFERENT credential
 afterwards: zero `rehearsal-` prefixed residents.
 
+## Rotating the studio-token KEK (cp#95)
+
+`tenants.studio_token_enc` is the one credential this plane stores as a usable value rather than a
+hash (see "Key custody"), and until cp#95 the key protecting it could not be changed at all. That
+made rotation an incident rather than maintenance: any reason to rotate meant an unplanned project
+under time pressure, and there was no migration path either, so a lost key meant re-minting every
+tenant's studio token by hand.
+
+The capability is deliberately shaped as **a ring plus two operator routes**, not a script.
+
+### The ring
+
+`STUDIO_TOKEN_KEK` (in force) and, only during a window, `STUDIO_TOKEN_KEK_NEXT` (incoming). The two
+directions are separated:
+
+- **Reads try BOTH keys, always.** A row opens whether it was written before, during, or after a
+  rotation, so dispatcher-injected auth keeps working throughout the window instead of becoming its
+  blast radius.
+- **Writes use exactly ONE key**, named by the `STUDIO_TOKEN_KEK_ENCRYPT_SLOT` var.
+
+The write slot is CONFIG rather than runtime state for two reasons. First, convergence: the sweep and
+the live provision path must write under the same key, or a sweep can be outrun by provisions forever.
+Second, change control: flipping the write direction of every stored customer credential is a
+reviewable deploy, not an unlogged toggle.
+
+A slot naming `next` with no next key installed **refuses to encrypt**. It does not fall back. A
+silent fallback would write live customer credentials under a key the operator believes is retired,
+and that failure stays invisible until somebody deletes the wrong binding.
+
+### The routes
+
+```
+GET  /api/admin/kek/status      -> census (read-only, safe any time)
+POST /api/admin/kek/reencrypt   -> sweep; body { "limit": <n> } optional
+```
+
+| Refusal | When |
+| --- | --- |
+| `unauthorized` (401) | not the admin token. This is an operator surface |
+| `kek_unconfigured` (503) | no `STUDIO_TOKEN_KEK` on this deploy. Answering a census here would report every row unreadable and read like a catastrophe instead of a missing binding |
+| `rotation_window_closed` (409) | the sweep was called with no `STUDIO_TOKEN_KEK_NEXT` installed. There is nothing to rotate toward, and re-encrypting every row under the key it already carries is not harmless |
+
+### The census is three buckets, and the third one is an alarm
+
+AES-GCM cannot distinguish "wrong key" from "tampered ciphertext"; both are an auth-tag failure. A
+two-bucket census would therefore file a CORRUPT row under "still needs rotating", the sweep would
+retry it forever, and a shrinking backlog would read as progress while one row never converged.
+
+| Bucket | Meaning |
+| --- | --- |
+| `on_target` | opens under the write-slot key. Nothing to do |
+| `needs_rotation` | opens under the OTHER installed key. The sweep's work list |
+| `unreadable` | opens under NEITHER. Never touched by the sweep, and it holds `safe_to_promote` false |
+
+`total` is always reported alongside, so an empty estate answers `safe_to_promote: true` **with the
+count that makes it true**. An empty answer must never be readable as a passing answer.
+
+### What the sweep guarantees
+
+- **Idempotent.** The work list is derived from the data on every run, so a second run is a no-op.
+- **Resumable.** `limit` bounds a run; re-running finishes the job. No cursor to persist or go stale.
+- **Non-destructive under a race.** The write is a compare-and-set on the ciphertext that was read.
+  A provision that re-minted a token mid-sweep wins; the sweep reports `raced` and moves on. Without
+  that, a blind write would leave the tenant authenticating with a token its own studio rejects.
+- **Never overwrites what it could not read.** An unreadable row is left byte-identical, because the
+  value may still be recoverable from an escrowed key nobody has tried yet.
+
+The sweep response carries BOTH `sweep` and a fresh `census`, and only the census decides
+`safe_to_promote`. The sweep report is the writer describing its own work; the census is a re-read of
+what is actually stored. Same rule the cp#112 readback follows. **A run that leaves work behind
+answers 409**, so an incomplete rotation cannot read as a finished one.
+
+Full operator procedure, including the escrow-before-install step: `docs/deploy.md`, "Rotating
+`STUDIO_TOKEN_KEK`".
+
 ## Upgrading the modules of a LIVE tenant (cf#103)
 
 A tenant provisioned last month runs the module bytes that were published then. Shipping a new

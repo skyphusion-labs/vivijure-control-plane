@@ -194,4 +194,51 @@ describe("store-d1 statements execute against real SQLite", () => {
     const n = db.prepare("SELECT COUNT(*) AS n FROM smoke_renders").get() as { n: number };
     expect(n.n).toBe(0);
   });
+
+  // ---- cp#95: the rotation seam ----------------------------------------------------------------
+  //
+  // These two statements are the ONLY reason a KEK rotation is not a hand-written script, so they
+  // are the ones that must be executed by a real engine rather than mimicked by a fake. The CAS in
+  // particular cannot be proven by MemoryStore at all: it turns on `meta.changes` from a 0-row
+  // UPDATE, which is a SUCCESSFUL statement doing nothing -- exactly the shape a fake would be
+  // written to return true for.
+
+  it("listEncryptedStudioTokens returns every row carrying ciphertext, whatever its status", async () => {
+    await store.createTenant("ten_2", "parked", "acct_1", "deleted");
+    await store.createTenant("ten_3", "no-token", "acct_1", "live");
+    await store.setTenantStudioToken("ten_1", "enc-live");
+    await store.setTenantStudioToken("ten_2", "enc-parked");
+
+    const rows = await store.listEncryptedStudioTokens();
+
+    // The parked row is the point. A status filter here would leave real ciphertext behind and let a
+    // census answer "safe to promote" over a row still encrypted under the outgoing key.
+    expect(rows.map((r) => r.id)).toEqual(["ten_1", "ten_2"]);
+    expect(rows.find((r) => r.id === "ten_2")).toMatchObject({ slug: "parked", studio_token_enc: "enc-parked" });
+  });
+
+  it("listEncryptedStudioTokens skips rows with no token, and an EMPTY string is no token", async () => {
+    await store.setTenantStudioToken("ten_1", "");
+    expect(await store.listEncryptedStudioTokens()).toEqual([]);
+  });
+
+  it("setTenantStudioTokenIfUnchanged WRITES when the ciphertext still matches", async () => {
+    await store.setTenantStudioToken("ten_1", "enc-old");
+    expect(await store.setTenantStudioTokenIfUnchanged("ten_1", "enc-old", "enc-new")).toBe(true);
+    expect((await store.getTenantById("ten_1"))!.studio_token_enc).toBe("enc-new");
+  });
+
+  it("setTenantStudioTokenIfUnchanged REFUSES when the row changed underneath it", async () => {
+    await store.setTenantStudioToken("ten_1", "enc-old");
+    await store.setTenantStudioToken("ten_1", "enc-reminted-by-a-provision");
+
+    // A 0-row UPDATE raises nothing. Reporting success off the absence of an error would call a race
+    // a rotation and silently revert a freshly minted customer token.
+    expect(await store.setTenantStudioTokenIfUnchanged("ten_1", "enc-old", "enc-new")).toBe(false);
+    expect((await store.getTenantById("ten_1"))!.studio_token_enc).toBe("enc-reminted-by-a-provision");
+  });
+
+  it("setTenantStudioTokenIfUnchanged REFUSES for a tenant id that does not exist", async () => {
+    expect(await store.setTenantStudioTokenIfUnchanged("ten_missing", "enc-old", "enc-new")).toBe(false);
+  });
 });

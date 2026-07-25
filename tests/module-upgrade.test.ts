@@ -21,10 +21,11 @@ import { routingStatusFor } from "../src/tenant-resolver";
 import { tenantRefusal } from "../src/routing";
 import type { CfApi } from "../src/cf-api";
 import type { Tenant } from "../src/store";
-import { encryptStudioToken } from "../src/token-crypto";
+import { encryptStudioToken, kekRing } from "../src/token-crypto";
 import { MemoryStore } from "./memory-store";
 
 const KEK = btoa("0123456789abcdef0123456789abcdef");
+const RING = kekRing(KEK);
 const OLD_RELEASE = "v1.0.0";
 const NEW_RELEASE = "v1.1.0";
 
@@ -77,7 +78,7 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     // silently shipping at deps.release while nobody had said so.
     release: OLD_RELEASE,
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
-    kek: KEK,
+    kek: RING,
     spendDailyCeiling: null,
     callTenantStudio: vi.fn(async (_s: string, init: { path: string }) => {
       if (init.path === "/api/modules/installed") {
@@ -100,7 +101,7 @@ async function seedLiveTenant(store: MemoryStore, over: Partial<Tenant> = {}): P
   await store.createAccount("acct_1", "a@b.com");
   const t = await store.createTenant("ten_1", "hero", "acct_1", "provisioning");
   await store.setTenantEndpoints(t.id, JSON.stringify(ENDPOINTS));
-  await store.setTenantStudioToken(t.id, await encryptStudioToken(KEK, "the-studio-token"));
+  await store.setTenantStudioToken(t.id, await encryptStudioToken(RING, "the-studio-token"));
   await store.setTenantScript(t.id, "tenant-hero-studio", OLD_RELEASE);
   await store.setTenantModulesRelease(t.id, OLD_RELEASE);
   await store.setTenantStatus(t.id, "live");

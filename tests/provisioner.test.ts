@@ -16,7 +16,7 @@ import { CfApiError } from "../src/cf-api";
 import type { CfApi } from "../src/cf-api";
 import type { Tenant } from "../src/store";
 import { sha256Hex } from "../src/crypto";
-import { decryptStudioToken } from "../src/token-crypto";
+import { decryptStudioToken, kekRing } from "../src/token-crypto";
 import { MemoryStore, recordingStore } from "./memory-store";
 import { expectProvisionFailure } from "./provision-assert";
 
@@ -154,7 +154,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     release: "v1.0.0",
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
     // A valid base64 32-byte key so token-crypto importKey(AES-GCM-256) accepts it.
-    kek: btoa("0123456789abcdef0123456789abcdef"),
+    kek: kekRing(btoa("0123456789abcdef0123456789abcdef")),
     spendDailyCeiling: null,
     // cf#114: provisioning never probes /ready (key B does not exist yet at that point) -- this is
     // here because the ProvisionDeps contract requires it. It THROWS rather than returning a benign
@@ -273,7 +273,7 @@ describe("runProvisionJob", () => {
     const enc = store.tenants.get(t.id)!.studio_token_enc!;
     expect(enc).toBeTruthy();
     expect(enc).not.toContain(tokenValue); // ciphertext, not the token
-    expect(await decryptStudioToken(btoa("0123456789abcdef0123456789abcdef"), enc)).toBe(tokenValue);
+    expect(await decryptStudioToken(kekRing(btoa("0123456789abcdef0123456789abcdef")), enc)).toBe(tokenValue);
   });
 
   it("FAILS the provision (verify) when the tenant root does not SERVE, even if every binding exists", async () => {

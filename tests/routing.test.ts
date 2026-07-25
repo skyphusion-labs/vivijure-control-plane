@@ -11,7 +11,7 @@ import type { Tenant, TenantLifecycle } from "../src/store";
 import { tenantScriptName, validateSlug } from "../src/tenants";
 import { SESSION_COOKIE } from "../src/auth";
 import { sha256Hex } from "../src/crypto";
-import { encryptStudioToken } from "../src/token-crypto";
+import { encryptStudioToken, kekRing } from "../src/token-crypto";
 
 const SUFFIX = ".studio.vivijure.com";
 
@@ -261,6 +261,8 @@ describe("routeTenantRequest", () => {
 
 
 const KEK = btoa("0123456789abcdef0123456789abcdef"); // 32 bytes -> valid AES-256 key
+// cp#95: env still takes the raw key string; the crypto helpers take the RING derived from it.
+const RING = kekRing(KEK);
 
 function injectEnv(get: (name: string) => Fetcher): ControlPlaneEnv {
   return {
@@ -296,7 +298,7 @@ function reqCookie(host: string, cookie: string | null, accept?: string): Reques
 
 describe("routeTenantRequest dispatcher-injected auth", () => {
   it("injects the tenant studio token as a Bearer for the OWNER and strips the CP session cookie", async () => {
-    const enc = await encryptStudioToken(KEK, "rpa_studiotoken");
+    const enc = await encryptStudioToken(RING, "rpa_studiotoken");
     const t = tenant({ account_id: "acct_owner", studio_token_enc: enc, script_name: tenantScriptName("acme") });
     let forwarded: Request | undefined;
     const get = vi.fn(
@@ -311,7 +313,7 @@ describe("routeTenantRequest dispatcher-injected auth", () => {
   });
 
   it("redirects a signed-out BROWSER navigation to sign in, without dispatching", async () => {
-    const t = tenant({ account_id: "acct_owner", studio_token_enc: await encryptStudioToken(KEK, "rpa_x"), script_name: tenantScriptName("acme") });
+    const t = tenant({ account_id: "acct_owner", studio_token_enc: await encryptStudioToken(RING, "rpa_x"), script_name: tenantScriptName("acme") });
     const get = vi.fn(() => ({ fetch: async () => new Response("SHOULD NOT REACH") }) as unknown as Fetcher);
     const deps = await sessionDeps(t, "sess_owner", "acct_owner");
     const res = await routeTenantRequest(reqCookie(`acme${SUFFIX}`, null, "text/html"), injectEnv(get), deps);
@@ -320,7 +322,7 @@ describe("routeTenantRequest dispatcher-injected auth", () => {
   });
 
   it("passes a signed-out NON-browser request through with NO token (studio's own 403 answers)", async () => {
-    const t = tenant({ account_id: "acct_owner", studio_token_enc: await encryptStudioToken(KEK, "rpa_x"), script_name: tenantScriptName("acme") });
+    const t = tenant({ account_id: "acct_owner", studio_token_enc: await encryptStudioToken(RING, "rpa_x"), script_name: tenantScriptName("acme") });
     let forwarded: Request | undefined;
     const get = vi.fn(
       () => ({ fetch: async (r: Request) => ((forwarded = r), new Response("passthru")) }) as unknown as Fetcher,
@@ -331,7 +333,7 @@ describe("routeTenantRequest dispatcher-injected auth", () => {
   });
 
   it("does NOT inject for a valid session that is NOT the tenant owner, and still strips the cookie", async () => {
-    const t = tenant({ account_id: "acct_owner", studio_token_enc: await encryptStudioToken(KEK, "rpa_x"), script_name: tenantScriptName("acme") });
+    const t = tenant({ account_id: "acct_owner", studio_token_enc: await encryptStudioToken(RING, "rpa_x"), script_name: tenantScriptName("acme") });
     let forwarded: Request | undefined;
     const get = vi.fn(
       () => ({ fetch: async (r: Request) => ((forwarded = r), new Response("ok")) }) as unknown as Fetcher,

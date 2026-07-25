@@ -34,7 +34,8 @@ import { bearerFrom, newId } from "./crypto";
 import type { ControlPlaneDeps } from "./deps";
 import { productionDeps } from "./deps";
 import type { ControlPlaneEnv } from "./env";
-import { publicOrigin, tenantDomainSuffix } from "./env";
+import { publicOrigin, studioKekRing, tenantDomainSuffix } from "./env";
+import { kekCensus, sweepReencrypt } from "./kek-rotation";
 import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "./oauth";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
@@ -1171,6 +1172,85 @@ async function adminRoutes(
     // checks status codes, and a tenant that lost a binding or a secret is the one outcome this
     // route exists to make impossible to miss.
     return json({ tenant_id: tenant.id, slug: tenant.slug, ...result }, result.ok ? 200 : 409);
+  }
+
+  // ---- cp#95: STUDIO_TOKEN_KEK rotation -------------------------------------------------------
+  //
+  // WHY THESE ROUTES EXIST. `tenants.studio_token_enc` is the only customer credential this plane
+  // stores as a usable value, and until now the key protecting it could not be changed at all. That
+  // made rotation an incident rather than maintenance, and a key you can only rotate under pressure
+  // is one you rotate badly. The capability is admin-gated product code with tests, deliberately not
+  // a one-off script, because the day it is needed is the worst possible day to be writing it.
+  //
+  // WHAT IS **NOT** HERE, and why that is the design rather than an omission: generating the new key,
+  // installing it, escrowing it, and dropping the old one are all OPERATOR steps outside this
+  // Worker. The plane never mints its own KEK. A key generated inside the platform is exactly how
+  // the current one came to exist with no owner and no escrow (docs/deploy.md), so the new key is
+  // born on an operator box, escrowed BEFORE it is installed, and only then bound. This Worker does
+  // the one part an operator cannot: rewrite every ciphertext, and answer honestly whether the old
+  // key may now be dropped.
+  //
+  // WHY NO confirm_slug ON THE SWEEP. It is idempotent and convergent -- run it twice and the second
+  // run is a no-op, run it half way and re-run it and it finishes. The dangerous step in a rotation
+  // is DROPPING a key, and that step does not live here; it lives behind `safe_to_promote`, which is
+  // computed from a full census rather than from the sweep report.
+  const kekStatus = path === "/api/admin/kek/status";
+  const kekSweep = path === "/api/admin/kek/reencrypt";
+
+  if ((request.method === "GET" && kekStatus) || (request.method === "POST" && kekSweep)) {
+    if (!env.STUDIO_TOKEN_KEK) {
+      // No primary key means this plane cannot read a single stored token, so a census would report
+      // every row unreadable and read like a catastrophe instead of a missing binding.
+      return err("kek_unconfigured", 503, {
+        message: "STUDIO_TOKEN_KEK is not installed on this deploy; there is no key ring to inspect",
+      });
+    }
+    const ring = studioKekRing(env);
+
+    if (request.method === "GET") {
+      // READ ONLY, and safe to hit at any time. The counts are the operator gate for every
+      // destructive step that follows, so they are computed from a full walk of the rows every call
+      // rather than cached: a stale "safe to promote" is worse than a slow one.
+      return json(await kekCensus(deps.store, ring));
+    }
+
+    const body = (await readJson(request)) as { limit?: number } | null;
+    const limit = typeof body?.limit === "number" && body.limit > 0 ? Math.floor(body.limit) : undefined;
+    let sweep;
+    try {
+      sweep = await sweepReencrypt(deps.store, ring, { limit });
+    } catch (e) {
+      // The one refusal sweepReencrypt raises is "no window is open", which is an operator
+      // configuration answer and not a 500. Anything else is a real fault and rethrows.
+      const message = e instanceof Error ? e.message : String(e);
+      if (message.includes("no rotation window is open")) {
+        return err("rotation_window_closed", 409, { message });
+      }
+      throw e;
+    }
+    await deps.store.recordAdminAction(
+      actor,
+      "kek.reencrypt",
+      null,
+      JSON.stringify({
+        encrypt_slot: ring.encryptSlot,
+        examined: sweep.examined,
+        rotated: sweep.rotated,
+        skipped_on_target: sweep.skipped_on_target,
+        raced: sweep.raced,
+        unreadable: sweep.unreadable,
+        complete: sweep.complete,
+      }),
+    );
+    // The CENSUS is returned alongside the sweep report, and it is the one an operator should read.
+    // A sweep reporting "rotated: 7" is the writer describing its own work; the census is a fresh
+    // read of what is actually stored, and only it decides `safe_to_promote`. Same rule cp#112
+    // applies with its independent readback.
+    const census = await kekCensus(deps.store, ring);
+    // 409 when the run left work behind, for the same reason the binding refresh answers 409 on a
+    // short readback: an incomplete rotation returning 200 reads as done to anything checking status
+    // codes, and "done" is the one thing it is not.
+    return json({ sweep, census }, census.safe_to_promote ? 200 : 409);
   }
 
   // ---- operator verification (cp#45) ------------------------------------------------------------

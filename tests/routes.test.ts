@@ -16,6 +16,7 @@ import { MemoryStore } from "./memory-store";
 import type { Tenant } from "../src/store";
 import { TenantModuleError } from "../src/tenant-modules";
 import { StudioBindingError } from "../src/tenant-studio-bindings";
+import { decryptStudioToken, encryptStudioToken, kekRing } from "../src/token-crypto";
 // Cross-lane (authorized by the lead, control-plane#20 client fix): the CANONICAL invoke-key
 // response shapes, shared with the client suite that reads them
 // (tests/onboarding-invoke-key.test.ts). Asserting them HERE is what stops the browser client from
@@ -1820,5 +1821,117 @@ describe("POST /api/admin/tenants/:id/refresh-studio-bindings (cp#112)", () => {
     const body = (await res.json()) as { error: string; message: string };
     expect(body.error).toBe("vpc_binding_unauthorized");
     expect(body.message).toMatch(/CF_WORKER_UPLOAD_TOKEN/);
+  });
+});
+
+// ---- cp#95: KEK rotation routes ----------------------------------------------------------------
+
+describe("KEK rotation admin routes (cp#95)", () => {
+  const KEK = btoa("0123456789abcdef0123456789abcdef");
+  const NEXT = btoa("ABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP");
+  const admin = () => ({ authorization: `Bearer ${ADMIN_TOKEN}` });
+
+  const rotEnv = (over: Partial<ControlPlaneEnv> = {}) =>
+    env({ STUDIO_TOKEN_KEK: KEK, ...over });
+
+  /** A tenant row carrying ciphertext under the key of your choosing. */
+  async function seedToken(id: string, slug: string, ring: Parameters<typeof encryptStudioToken>[0]) {
+    const account = await store.createAccount(`acct_${id}`, `${slug}@example.com`);
+    const t = await store.createTenant(id, slug, account.id, "live");
+    await store.setTenantStudioToken(t.id, await encryptStudioToken(ring, `tok-${slug}`));
+    return t;
+  }
+
+  it("REFUSES both routes without the admin token (it is an operator surface, not a user one)", async () => {
+    expect((await handle(req("/api/admin/kek/status"), rotEnv(), ctx, deps)).status).toBe(401);
+    expect(
+      (await handle(jsonReq("/api/admin/kek/reencrypt", {}), rotEnv(), ctx, deps)).status,
+    ).toBe(401);
+  });
+
+  it("answers 503 when no primary KEK is installed, rather than reporting every row unreadable", async () => {
+    const res = await handle(req("/api/admin/kek/status", { headers: admin() }), env(), ctx, deps);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: "kek_unconfigured" });
+  });
+
+  it("censuses by key WITH its counts, so an empty answer can never read as a passing one", async () => {
+    await seedToken("ten_aaa111", "alpha", kekRing(KEK));
+    await seedToken("ten_bbb222", "bravo", kekRing(NEXT));
+
+    const res = await handle(
+      req("/api/admin/kek/status", { headers: admin() }),
+      rotEnv({ STUDIO_TOKEN_KEK_NEXT: NEXT, STUDIO_TOKEN_KEK_ENCRYPT_SLOT: "next" }),
+      ctx,
+      deps,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      window_open: true,
+      encrypt_slot: "next",
+      total: 2,
+      on_target: 1,
+      needs_rotation: 1,
+      unreadable: [],
+      safe_to_promote: false,
+    });
+  });
+
+  it("REFUSES the sweep with 409 when no rotation window is open", async () => {
+    await seedToken("ten_aaa111", "alpha", kekRing(KEK));
+    const res = await handle(jsonReq("/api/admin/kek/reencrypt", {}, { headers: admin() }), rotEnv(), ctx, deps);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "rotation_window_closed" });
+  });
+
+  it("sweeps, then answers 200 ONLY when a FRESH census says the old key can be dropped", async () => {
+    await seedToken("ten_aaa111", "alpha", kekRing(KEK));
+    await seedToken("ten_bbb222", "bravo", kekRing(KEK));
+    const rotating = rotEnv({ STUDIO_TOKEN_KEK_NEXT: NEXT, STUDIO_TOKEN_KEK_ENCRYPT_SLOT: "next" });
+
+    const res = await handle(jsonReq("/api/admin/kek/reencrypt", {}, { headers: admin() }), rotating, ctx, deps);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      sweep: { examined: 2, rotated: 2, raced: 0, complete: true },
+      census: { needs_rotation: 0, safe_to_promote: true },
+    });
+
+    // The rows really moved: readable under the NEW key alone. Asserted against the store, because
+    // the sweep counters are the writer describing its own work.
+    for (const id of ["ten_aaa111", "ten_bbb222"]) {
+      const enc = store.tenants.get(id)!.studio_token_enc!;
+      await expect(decryptStudioToken(kekRing(NEXT), enc)).resolves.toContain("tok-");
+      await expect(decryptStudioToken(kekRing(KEK), enc)).rejects.toBeTruthy();
+    }
+  });
+
+  it("answers 409 when the run left work behind, so an incomplete rotation cannot read as done", async () => {
+    await seedToken("ten_aaa111", "alpha", kekRing(KEK));
+    await seedToken("ten_bbb222", "bravo", kekRing(KEK));
+    const rotating = rotEnv({ STUDIO_TOKEN_KEK_NEXT: NEXT, STUDIO_TOKEN_KEK_ENCRYPT_SLOT: "next" });
+
+    const res = await handle(
+      jsonReq("/api/admin/kek/reencrypt", { limit: 1 }, { headers: admin() }),
+      rotating,
+      ctx,
+      deps,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ census: { safe_to_promote: false } });
+  });
+
+  it("records the sweep as an admin action, without any key or token value in the detail", async () => {
+    await seedToken("ten_aaa111", "alpha", kekRing(KEK));
+    const rotating = rotEnv({ STUDIO_TOKEN_KEK_NEXT: NEXT, STUDIO_TOKEN_KEK_ENCRYPT_SLOT: "next" });
+    await handle(jsonReq("/api/admin/kek/reencrypt", {}, { headers: admin() }), rotating, ctx, deps);
+
+    const action = store.audit.find((a) => a.action === "kek.reencrypt");
+    expect(action).toBeTruthy();
+    // NEGATIVE assertion on what was PASSED to the recorder, not on a rendered view: no key material
+    // and no token value may ride an audit row.
+    expect(action!.detail ?? "").not.toContain(KEK);
+    expect(action!.detail ?? "").not.toContain(NEXT);
+    expect(action!.detail ?? "").not.toContain("tok-alpha");
+    expect(JSON.parse(action!.detail!)).toMatchObject({ encrypt_slot: "next", rotated: 1 });
   });
 });

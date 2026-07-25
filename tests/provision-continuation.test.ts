@@ -21,10 +21,11 @@ import {
 import type { CfApi } from "../src/cf-api";
 import type { Tenant, ProvisionJob } from "../src/store";
 import { jobHasLiveDriver } from "../src/store";
-import { encryptStudioToken } from "../src/token-crypto";
+import { encryptStudioToken, kekRing } from "../src/token-crypto";
 import { MemoryStore } from "./memory-store";
 
 const KEK = btoa("0123456789abcdef0123456789abcdef");
+const RING = kekRing(KEK);
 const MIGRATIONS = [{ name: "0001_init.sql", sql: "CREATE TABLE IF NOT EXISTS projects (id TEXT);" }];
 // All four, because the module catalog maps a module onto each one; a short list fails at
 // modules_upload rather than testing what this file is about.
@@ -101,7 +102,7 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     namespace: "vivijure-tenants",
     release: "v1.0.0",
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
-    kek: KEK,
+    kek: RING,
     spendDailyCeiling: null,
     probeTenantRoot: vi.fn(async () => ({ status: 200 })),
     // 201 on install is the studio's real success code; 200 is a FAILURE there. Modelled exactly,
@@ -123,7 +124,7 @@ async function seedTenant(store: MemoryStore, opts: { throughStudio?: boolean } 
   const t = await store.createTenant("ten_1", "hero", "acct_1", "provisioning");
   if (opts.throughStudio) {
     await store.setTenantEndpoints(t.id, JSON.stringify(ENDPOINTS));
-    await store.setTenantStudioToken(t.id, await encryptStudioToken(KEK, "the-studio-token"));
+    await store.setTenantStudioToken(t.id, await encryptStudioToken(RING, "the-studio-token"));
     await store.setTenantScript(t.id, "tenant-hero-studio", "v1.0.0");
   }
   return (await store.getTenantById(t.id)) as Tenant;

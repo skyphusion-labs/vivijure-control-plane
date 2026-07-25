@@ -14,6 +14,7 @@
 // "we bound it".
 
 import { describe, it, expect, vi } from "vitest";
+import { kekRing } from "../src/token-crypto";
 import { assertDispositionCoversContract } from "../src/tenant-studio-env";
 import {
   REQUIRED_TENANT_STUDIO_VARS,
@@ -85,7 +86,7 @@ function recordingDeps() {
     namespace: "vivijure-tenants",
     release: "v1.0.0",
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
-    kek: btoa("0123456789abcdef0123456789abcdef"),
+    kek: kekRing(btoa("0123456789abcdef0123456789abcdef")),
     spendDailyCeiling: "5.00",
     probeTenantRoot: vi.fn(async () => ({ status: 200 })),
     callTenantStudio: vi.fn(async (_s: string, init: { path: string }) => {
