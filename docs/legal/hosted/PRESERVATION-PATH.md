@@ -88,6 +88,17 @@ Stated plainly, because a preservation path that overstates its reach is worse t
 - **The tenant own RunPod account.** RunPod is the tenant provider, not our sub-processor
   (`PRIVACY-DELTA.md` Section 4.3). Anything on their endpoints, workers, or network volumes is
   beyond our custody entirely.
+- **And teardown is where those orphans are BORN, in TWO layers** (measured during the cp#117
+  rehearsal, 2026-07-25). A completed teardown reaped our side cleanly and left, on the tenant's own
+  RunPod account: **four endpoints**, and underneath them **four templates**, because deleting an
+  endpoint does not delete the template it was created from. The plane cannot reach either: key A is
+  used once at provision and never stored, key B is a restricted invoke key. **This is the custody
+  design working, not a defect** -- but it means:
+
+  > **"Teardown fully clean" is a claim about OUR side of the custody boundary only.** It must never
+  > appear without that caveat, least of all in customer-facing text about what deleting an account
+  > destroys, and any cleanup guidance must say **endpoints AND templates** or it leaves half the
+  > debris behind while reading as complete.
 - **Copies the tenant already downloaded**, or published elsewhere.
 - **Anything already deleted before the hold opened.** A hold is not a time machine.
 - **Material outside the studio**, for example content described in a report but never rendered on
@@ -493,11 +504,27 @@ cp#117 is done when every one of these is demonstrably true. Each is stated so i
    responder list (cp#119).
 6. The credential is **not** present in the shared crew secret tier. Presence-checked by name only,
    never by value.
-7. **Negative test with a positive control:** a crew credential that is not the responder credential
-   is refused on the bucket, AND the responder credential succeeds on the same operation. A refusal
-   test alone proves nothing, because a dead capability refuses everything. **This criterion is also
-   the evidence for counsel item T1-13** (Section 4.3): it is the only thing that converts "the crew
-   is not authorized" into "the crew cannot reach it."
+7. **RULED AND REFRAMED 2026-07-25** (Strummer's proposal, adopted). As originally written this
+   criterion was **not satisfiable**: it asked for a crew credential to be refused, and a refusal is
+   indistinguishable from a dead credential. The first attempt to satisfy it was retracted for
+   exactly that reason. It now has three parts, and **all three are required**:
+   - **(a) POSITIVE.** The responder credential **succeeds** on the bucket. Without this the rest is
+     unanchored.
+   - **(b) NEGATIVE, BY INVENTORY rather than by probe.** **No credential in the documented crew
+     tiers is scoped to this bucket**, read off the **token list**. An inventory fact is checkable
+     and cannot be faked by a broken key; a probe cannot tell "refused here" from "dead everywhere".
+   - **(c) STATED, NOT TESTED.** (b) **cannot** cover an account-scoped administrative credential,
+     which by construction can reach the bucket (Section 4.3). That is disclosed rather than tested,
+     and it is not a failure of this criterion.
+
+   > **DOCTRINE, and it generalises past this bucket:** any probe-based negative result requires a
+   > **same-credential, same-window positive control**, and the control is run and believed FIRST.
+   > A refusal recorded without one is inadmissible, not merely weak. Naming this trap is not the
+   > same as being immune to it: it was named and then walked into on the same day, by the person
+   > who named it.
+
+   This criterion remains the evidence for counsel item **T1-13(a)** (Section 4.3), which is what
+   would convert "the crew is not authorized" into "no documented crew credential is scoped to it"."
 
 **Mechanism**
 
@@ -508,8 +535,23 @@ cp#117 is done when every one of these is demonstrably true. Each is stated so i
 9. In the same rehearsal, teardown of the held tenant is attempted and **refused** (the cp#118
    interlock firing against a live tenant rather than in unit tests), and a positive control tenant
    with no hold tears down normally.
-10. The copy is demonstrated to be server-side: the responder machine never holds the object. Egress
-    or request logs support the claim.
+10. The copy is demonstrated to be server-side: **the responder machine never holds the object.**
+    **CORRECTED 2026-07-25: this criterion previously asked for "egress or request logs", which sent
+    the drill hunting for a byte counter. That was the wrong evidence and it named a weaker artifact
+    than the right one.** What proves it is the **protocol artifact**: the copy is performed by an
+    operation that structurally cannot transit the client (S3 `CopyObject` with `x-amz-copy-source`,
+    evidenced by the `CopyObjectResult` response and the client's explicit server-side-copy marker).
+    A client-side byte counter is **not** required, and is weaker: it would establish only that this
+    one run moved no bytes, whereas the protocol artifact establishes the mechanism. A logical
+    "transferred" figure from a copy tool is **accounting, not wire bytes**, and discriminates
+    nothing.
+
+    > **The drill did not meet this criterion as written, and it is not being back-fitted to pass.**
+    > What the rehearsal captured (server-side marker, timing, exact source/destination checksum
+    > match) is **sufficient for a DRILL on synthetic benign content**, where possession was never a
+    > legal question because the material was ours. **The FIRST REAL tier 2 copy must capture the
+    > protocol artifact itself**, because that is the one where possession is a criminal-law question
+    > under 2252A rather than a hygiene preference.
 
 **Record**
 

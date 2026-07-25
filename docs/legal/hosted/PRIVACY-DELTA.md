@@ -227,6 +227,20 @@ not a third-party email vendor.
 legal preservation obligation, survives an account deletion request. Promising unconditional
 deletion would be false.
 
+**And deletion reaches only what WE hold, which is a second limit and just as real.** Tearing down a
+hosted studio destroys our side: the studio worker, the tenant database, the tenant bucket and its
+credential. **It does not touch the tenant's own RunPod account**, where the GPU endpoints we
+provisioned, **and the templates underneath them**, both survive. Measured, not assumed (cp#117
+rehearsal, 2026-07-25): a clean teardown left four endpoints and four templates standing, because
+the plane holds no credential that can delete them by design (key A is used once and never stored,
+key B is a restricted invoke key).
+
+> **This must be said to the customer, not just to us.** A user who reads "your studio was deleted"
+> and believes that covers everything is wrong about resources sitting in **their own** provider
+> account, accruing **their own** costs, under **their own** contract. The honest version tells them
+> what survives and what to delete: **endpoints AND templates**, because guidance that says only
+> "delete the endpoints" leaves half of it and reads as complete.
+
 ---
 
 ## 6. The EU question, which is a decision and not a detail
@@ -268,7 +282,7 @@ Specified here so the launch-gate flip is mechanical rather than a rewrite under
 | Section 4 | token-mode gate framing | Add the control-plane account layer (SSO + magic-link) sitting in front of the per-tenant studio token. |
 | Section 5 | processors | Add: for hosted, Cloudflare is **our** sub-processor and the AI Gateway providers are ours; RunPod is the **tenant's** own provider (Section 4.3 here). |
 | Section 6 | "the operator (Conrad) has determined that it does not fall under the GDPR ... not offered to the public" | **Must change or the EU must be blocked.** See Section 6 above. |
-| Section 7 | retention | Add the hosted table from Section 5 above, including the acceptance-record and preservation carve-outs. |
+| Section 7 | retention | Add the hosted table from Section 5 above, including the acceptance-record and preservation carve-outs. **Also add the custody-boundary limit on deletion** (Section 5 above): deleting a hosted studio destroys what we hold and does **not** reach the tenant's own RunPod endpoints or the templates underneath them, which survive on their account under their contract. Say what to delete (**both** classes) rather than leaving a user to discover it on an invoice. |
 | Section 9 | children | Add: on the hosted surface, reporting is a statutory duty under 2258A, not only a moral one. |
 | Section 2 or 7 (new) | nothing today | **ADD the operator-capability disclosure**, per Conrad's ruling 2026-07-25 (disclosure, not technical pretense). This is the row that **executes** the ruling: Section 2.2 above and `PRESERVATION-PATH.md` Section 4.3 are internal documents, and **a disclosure that never reaches a signed-up human is documentation, not notification.** The customer-facing text must carry, in plain words: (1) preserved material goes to a separate store the running service cannot reach; (2) we remain technically able to **administer** that store, including removing the deletion-protection, and that is **measured**, not theoretical; (3) whether an operator credential can **read** preserved material is unsettled and we are not claiming it cannot; (4) **why** the capability exists (multi-tenant provisioning needs account-scoped storage rights; 2258A requires preserving material a tenant must not be able to delete); (5) what limits it (a written rule, an audit trail, a small named set of people, not a technical barrier); and (6) **self-hosting as a first-class alternative, not a footnote** -- self-host and no platform operator is in your custody chain at all, which is credible because the studio and the control plane are both AGPL and the control plane is not needed to self-host. Scope (6) honestly: it removes **us**, not every third party the self-hoster chooses to wire. |
 
