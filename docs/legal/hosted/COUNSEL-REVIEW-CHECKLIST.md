@@ -191,6 +191,67 @@ just asserts "you are an adult" (AUP Section 3), which is not verification of an
 **A usable answer:** (a) do these statutes reach us; (b) if so, does permitting adult content stay
 worth it at tier 1; (c) if we keep it, what verification is actually required.
 
+### T1-12. 2258A(h)(6) NIST CSF: the phase-in has already expired
+**Question:** What does "preserve materials in a manner consistent with the most recent version of
+the [NIST] Cybersecurity Framework" actually require of an operation this size, and is a documented,
+CSF-shaped design enough, or does it require an assessment?
+
+**Why it is live, and why it is not a future item:** 2258A(h)(6) gave providers **1 year from the
+date of enactment** to comply. Enactment was **2024-05-07** (Pub. L. 118-59), so the deadline was
+**2025-05-07**. There is no grace period left to schedule around. The duty attaches to a provider
+**preserving materials under this subsection**, which means it attaches the first time we preserve,
+which is the first time we report. If hosted signups open and a report arrives in week one, this
+applies in week one.
+
+**What we know:**
+- The current version is **NIST CSF 2.0** (February 2024). The statute says "most recent version",
+  so this must be re-checked rather than pinned.
+- `PRESERVATION-PATH.md` Section 7 maps the preservation design to CSF 2.0 areas. **That is a map,
+  not an assessment**, and the document says so: it names `detect` as the weakest area (no
+  content-access log, cp#120) and explicitly declines to claim consistency we have not tested.
+- Designing the store CSF-shaped from the start was the cheap move and it is done. Retrofitting
+  after an incident would not have been.
+
+**A usable answer:** (a) is a documented design plus a written procedure "consistent with" for a
+provider of our size, or is a formal assessment expected; (b) does the missing content-access log
+put us outside consistency, or is it a known gap we can carry with the manual custody log; (c) is
+there any reporting or attestation obligation attached, or is this only a standard of care that
+matters if we are ever examined.
+
+### T1-13. Access minimization vs what our credentials can actually reach
+**Question:** Does an administrative credential that **can** reach preserved material, held by
+someone who is not a named authorized responder, breach 2258A(h)(3) or 2258B(c)?
+
+**Why it is live:** both provisions are about limiting **access**, not about limiting **policy**.
+2258A(h)(3) requires "appropriate steps to limit access by agents or employees of the service" to
+what is necessary; 2258B(c) requires minimizing the number of employees with access to reported
+material. Our design says only named responders may look, and `ABUSE-RESPONSE-RUNBOOK.md` Section
+4.2 says technical capability is not authorization. **That is a rule, and a rule is not obviously a
+"step".**
+
+**The specific facts counsel should be given** (`PRESERVATION-PATH.md` Section 4.3):
+- The preservation bucket is designed with **no Worker binding** and a **dedicated responder
+  credential** whose custody is outside the shared crew secret tier.
+- But provisioning needs **account-wide R2 rights** to create per-tenant buckets on demand, and R2
+  token scoping **cannot express "everything except this one bucket."** So an account-scoped
+  administrative credential can reach it.
+- **Open question, deliberately not answered by me:** whether any credential the crew holds has
+  account-scoped R2 reach. I hold no such credential and did not go looking for a wider one, because
+  hunting for a credential to test a hypothesis is the exact behavior our own rules forbid. **The
+  test that settles it is acceptance criterion 7** in `PRESERVATION-PATH.md`: a crew credential is
+  refused on the bucket, **with the positive control** that the responder credential succeeds. Infra
+  runs it during the cp#117 rehearsal, and the answer is evidence rather than assertion.
+- **The argument in our favor, which counsel should judge rather than adopt:** the person holding
+  the privileged credential and the person named as authorized responder are expected to be the
+  **same human** (Conrad). If the sets are identical, minimization may be satisfied in substance.
+  That argument fails the moment a second credential holder is not a responder.
+
+**A usable answer:** (a) is a documented authorization rule sufficient, or must access be
+technically impossible for non-responders; (b) if technical exclusion is required, does that force a
+separate Cloudflare account (which costs the server-side copy and reintroduces human possession,
+`PRESERVATION-PATH.md` Section 3.4); (c) does the answer change once anyone other than Conrad holds
+production credentials.
+
 ---
 
 ## Band T2: before our-GPUs and payments
