@@ -20,6 +20,10 @@ import { decryptStudioToken } from "../src/token-crypto";
 import { MemoryStore, recordingStore } from "./memory-store";
 import { expectProvisionFailure } from "./provision-assert";
 
+/** The ONE account S3 endpoint these tests allow, and the origin the scripted fetch matches on. */
+const R2_TEST_ENDPOINT = "https://acct.r2.cloudflarestorage.com";
+const R2_TEST_ORIGIN = new URL(R2_TEST_ENDPOINT).origin;
+
 // The var contract the pinned release declares (cf#85). Every entry must have a disposition in
 // tenant-studio-env.ts or the provision refuses, so this fixture doubles as a check that the two
 // stay in step.
@@ -115,7 +119,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
         compatibilityFlags: ["nodejs_compat"],
       })),
     },
-    r2Endpoint: "https://acct.r2.cloudflarestorage.com",
+    r2Endpoint: R2_TEST_ENDPOINT,
     // Clock and sleep are fake so a budgeted loop cannot make a unit test wait. fetch THROWS: a unit
     // test that reaches the network is a defect, and a permissive default would hide it behind a
     // real request. Tests that exercise the emptying loop pass their own scripted fetch.
@@ -127,7 +131,15 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     // a defect, and a blanket permissive fetch would hide it behind a real request.
     fetch: (async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (!url.startsWith("https://acct.r2.cloudflarestorage.com")) {
+      // ORIGIN equality, not a substring or a prefix test (CodeQL js/incomplete-url-substring-
+      // sanitization). `https://acct.r2.cloudflarestorage.com.evil.test/...` starts with the same
+      // characters and is a different host, so a prefix check answers "does this look like our
+      // endpoint" rather than "is this our endpoint". Test-only today, and worth being right in a
+      // fixture that exists to prove a REFUSAL: an allow-check with a hole cannot prove one.
+      const origin = (() => {
+        try { return new URL(url).origin; } catch { return null; }
+      })();
+      if (origin !== R2_TEST_ORIGIN) {
         throw new Error(`unit test made a real fetch to ${url}; script one in the deps override instead`);
       }
       return new Response(
@@ -374,6 +386,20 @@ describe("runProvisionJob", () => {
     await runProvisionJob(deps(), job.id, t, "rpa_keyA");
     expect(calls).toContain(`createD1:${tenantD1Name("hero")}`);
     expect(calls).toContain(`createR2:${tenantBucketName("hero")}`);
+  });
+});
+
+describe("the scripted-fetch allow check itself", () => {
+  it("REFUSES a look-alike host, so the fixture proves a refusal rather than a resemblance", async () => {
+    const d = deps();
+    const scripted = d.fetch as unknown as (input: string) => Promise<Response>;
+    // The endpoint itself is allowed (positive control: the check is not refusing everything).
+    await expect(scripted(`${R2_TEST_ENDPOINT}/bucket?list-type=2`)).resolves.toBeInstanceOf(Response);
+    // ...and a host that merely STARTS WITH it is not. This is the CodeQL finding
+    // (js/incomplete-url-substring-sanitization) as an assertion instead of a dismissal.
+    await expect(scripted("https://acct.r2.cloudflarestorage.com.evil.test/bucket")).rejects.toThrow(
+      /made a real fetch/,
+    );
   });
 });
 
