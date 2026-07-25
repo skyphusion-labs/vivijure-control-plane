@@ -123,7 +123,7 @@ because somebody complained about it would be a privacy defect wearing an eviden
 | **Kind** | A single dedicated R2 bucket, `vivijure-preservation` | One place, named, findable under stress. |
 | **Namespace** | Deliberately **outside** the `vivijure-tenant-<slug>` prefix that `tenantBucketName()` produces | Teardown only ever names `tenant.r2_bucket_name` read from the tenant row (`src/provisioner.ts`), so no teardown pass can name this bucket even by accident. |
 | **Worker bindings** | **None. Anywhere.** Not in the plane, not in the dispatcher, not in a tenant studio | A bucket no Worker is bound to has no runtime path into it. This is the cheapest verifiable control in the design: the test is a grep. |
-| **Lifecycle rules** | **None, ever** | A lifecycle rule here deletes evidence on a timer. See also: bucket lock rules take precedence over lifecycle rules in R2, but the rule is none rather than none-that-matter. |
+| **Lifecycle rules** | **None, ever. The list is empty and stays empty**, including R2's auto-created default (see below) | A lifecycle rule here deletes evidence on a timer. The invariant is `rules == []`, checkable by looking rather than by argument. |
 | **Bucket lock** | A lock rule over the `incidents/` prefix, retention **1 year minimum** | R2 bucket locks prevent deletion and overwriting for the retention period. One year matches the longest ordinary clock, 2258A(h)(1). |
 | **Account** | The same Cloudflare account as the tenant buckets | So the copy in Section 3.4 can be **server-side**. A separate account would isolate better but would force the bytes through a human machine, and avoiding possession outweighs account isolation. The residual is stated in Section 4.3. |
 
@@ -134,6 +134,43 @@ strength here anyway: 2258B(c) requires us to be **able** to destroy material on
 request, and a lock nobody can lift would put us in breach of that duty instead of in compliance
 with (h). Re-verify the mode question at implementation time; if R2 has since added an
 unremovable/compliance mode, **do not use it**, for the reason just given.
+
+### 3.2.1 R2's default lifecycle rule: removed, and this is RULED so nobody re-litigates it
+
+**A new R2 bucket is not created empty of lifecycle rules.** R2 adds a **Default Multipart Abort
+Rule** (aborts incomplete multipart uploads after 7 days). Strummer found this building the bucket,
+established what it actually does, and removed it so that `rules == []` holds. **That is the right
+call and it is now the rule.**
+
+The tempting alternative was to keep the default and reword criterion 4 to "no rule capable of
+deleting a completed object", which is **technically accurate**: the abort rule cannot touch a
+completed object, so it was never a threat to preserved material. It is still the weaker choice, for
+four reasons:
+
+1. **An invariant that requires an argument is weaker than one that requires a look.** "No lifecycle
+   rules" is a fact anyone can check in one API call. "No rule *capable of* deleting a completed
+   object" requires the checker to reason about R2 lifecycle semantics, correctly, possibly during
+   an incident, possibly without knowing R2 well.
+2. **A carve-out is a foothold.** Once one benign rule is permitted by argument, the next rule
+   arrives with the same argument attached. "None, ever" has no argument surface. This bucket holds
+   material we are statutorily forbidden to destroy early; that is exactly where a bright line beats
+   a correct-but-nuanced position.
+3. **It would make our invariant depend on continuously-true vendor semantics.** "Cannot delete a
+   completed object" is a vendor behavior claim, true today, re-verifiable only by reading vendor
+   docs we do not control. A preservation guarantee should not rest on a vendor not changing the
+   meaning of a rule we chose to keep.
+4. **The failure modes are asymmetric.** Removing the rule risks orphaned multipart parts billing
+   indefinitely: **visible on an invoice, reversible at any time**. Keeping it risks a
+   deletion-capable rule surviving a semantics change: **silent, in the data, discovered too late.**
+   Prefer the failure that shows up on a bill.
+
+**The cost is real and is handled procedurally rather than ignored.** With no abort rule, a stalled
+multipart copy leaves parts that accumulate and bill. Two compensating steps, both in Section 3.4:
+the copy procedure explicitly lists and aborts stale uploads, and the source is never released until
+the destination is verified complete. **On this bucket, deletion of anything should be a deliberate,
+recorded human act rather than a background rule.** Removing the default did not lose a safety
+feature; it moved a piece of housekeeping into the open, which is where everything on this bucket
+belongs.
 
 ### 3.3 Layout
 
@@ -146,11 +183,36 @@ vivijure-preservation/
     ncmec/             submission id, receipt, correspondence metadata
     le/                law enforcement requests, the 2703(f) request itself, correspondence
     payload/           ONLY if Section 3.1 fired: the server-side copies
+  rehearsals/<YYYYMMDD>-<seq>/
+                     drills. OUTSIDE incidents/, so the lock does not bind them and they stay
+                     cleanly deletable. No drill ever takes an incident id.
+  incidents/_locktest/
+                     one small benign object, written ONCE, to prove the lock (Section 3.3.1)
 ```
 
 `<incident_id>` is `inc_<YYYYMMDD>_<6 hex>`, allocated when the incident opens, and it is the join
 key across the whole system: the preservation hold, the incident record, the NCMEC submission, and
 any LE correspondence all carry it.
+
+#### 3.3.1 Where a rehearsal writes, and the one thing it must write under the lock
+
+**Drills write to `rehearsals/<YYYYMMDD>-<seq>/`, never to an incident id.** Two reasons, and the
+second is the one that matters: a fake `inc_...` entry would sit in the evidence namespace, locked
+and undeletable for a year, for a responder to distinguish from a real incident under stress. **An
+evidence store whose only contents for its first year are fabrications is a hazard**, not a
+rehearsal artifact. Outside `incidents/` the drill is unlocked and cleanly deletable, and the
+rehearsal record is worth keeping as the cp#117 acceptance evidence.
+
+**But a drill that never writes under `incidents/` has not tested the lock, it has tested a bucket.**
+The lock is part of what is being rehearsed: that it **permits** the write and **refuses** the
+delete. That cannot be proven from outside the prefix it binds.
+
+So exactly one object goes under the lock: **`incidents/_locktest/`**, a small benign file, written
+once. The name is deliberate, since incident ids are `inc_<YYYYMMDD>_<6 hex>`; a leading underscore
+sorts apart and can never be mistaken for one. **It will persist for the retention period, and that
+is the point rather than a side effect.** The proof required is both directions: the write succeeds,
+and a delete attempt is **refused** and watched failing, per the project's verification doctrine.
+Record the deviation and its reason in the rehearsal's custody log.
 
 **Templates for the three record files are committed** at
 [`preservation-templates/`](preservation-templates/), so an incident starts from a form rather than
@@ -181,6 +243,16 @@ two buckets: the one tenant bucket named in the incident, and `vivijure-preserva
 **Checksums are recorded at copy time** (the object checksum reported by R2, plus size and source
 key) into `manifest.json`. A preserved object nobody can prove is the object that was reported is a
 weaker artifact than one they can.
+
+**Two steps that exist because there is no automatic multipart cleanup** (Section 3.2.1):
+
+1. **The source is NEVER released until the destination object is complete and its checksum is
+   recorded.** An incomplete multipart upload is not a readable object: if a copy stalls and the
+   source is released on the assumption it was copied, the material is simply gone. This is the real
+   safety property, and it is more important than any lifecycle setting.
+2. **The copy procedure ends by listing in-progress multipart uploads and aborting any left behind**,
+   with the abort recorded in `custody.log`. This is the housekeeping the removed default rule used
+   to do silently, moved into the open where every other deletion on this bucket already lives.
 
 ---
 
@@ -335,8 +407,15 @@ cp#117 is done when every one of these is demonstrably true. Each is stated so i
 2. `grep -ri preservation` across the plane, dispatcher, and studio configuration finds **no R2
    binding** to it. The negative test is the artifact.
 3. A bucket lock rule over `incidents/` with retention of at least 1 year is configured, read back
-   from the API rather than from the dashboard.
-4. No lifecycle rule exists on the bucket, read back the same way.
+   from the API rather than from the dashboard. **The lock is proven in both directions on the
+   prefix it binds** (Section 3.3.1): a write to `incidents/_locktest/` succeeds, and a delete of it
+   is **refused and watched failing**. A lock read back but never exercised is a configuration, not
+   a control.
+4. **`rules == []`.** No lifecycle rule exists on the bucket, read back the same way, **including
+   R2's auto-created Default Multipart Abort Rule, which is removed rather than tolerated**
+   (RULED, Section 3.2.1). The criterion is deliberately the empty list and not "no rule capable of
+   deleting a completed object": the second version is accurate and requires an argument, and an
+   invariant that requires an argument is one somebody eventually loses.
 
 **Access**
 
@@ -353,8 +432,9 @@ cp#117 is done when every one of these is demonstrably true. Each is stated so i
 **Mechanism**
 
 8. A rehearsal, on a **synthetic tenant with benign content**, of the full tier 2 path: open hold ->
-   server-side copy -> manifest written with checksums -> custody log line. Never rehearsed on real
-   material and never on real reported material.
+   server-side copy -> manifest written with checksums -> custody log line -> stale multipart
+   uploads listed and aborted. Written to `rehearsals/<YYYYMMDD>-<seq>/`, **never under an incident
+   id** (Section 3.3.1). Never rehearsed on real material and never on real reported material.
 9. In the same rehearsal, teardown of the held tenant is attempted and **refused** (the cp#118
    interlock firing against a live tenant rather than in unit tests), and a positive control tenant
    with no hold tears down normally.
@@ -363,8 +443,9 @@ cp#117 is done when every one of these is demonstrably true. Each is stated so i
 
 **Record**
 
-11. `RECORD.md`, `manifest.json`, and `custody.log` exist for the rehearsal incident and carry no
-    payload.
+11. `RECORD.md`, `manifest.json`, and `custody.log` exist for the rehearsal and carry no payload.
+    The custody log records the two deliberate deviations: that this was a drill, and that
+    `incidents/_locktest/` was written under the lock on purpose and will persist.
 12. This document, the runbook, and `PRIVACY-DELTA.md` Section 5 agree on the retention statement,
     with no third place stating a fourth thing.
 
