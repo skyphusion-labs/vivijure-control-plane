@@ -725,7 +725,32 @@ The 200 body:
 | `reaped` | the columns that went from set to NULL, read back off the row. Not the teardown return value: columns blank only on their own resource successful deletion, so this is the plane record of the reap rather than an opinion about it. |
 | `refused` | what the referential guard would not touch, each naming the referring row and its status. **A refusal is the guard working, not a failure.** |
 | `failed` | calls that did not work. Opposite follow-up from a refusal: retry these, investigate those. |
+| `absent` | resources that were **already gone** when we went to delete them (cp#110). Not a failure and not a reap: nothing to retry, but this plane is not what removed them. |
 | `status` | where the row IS now, read back after the write. |
+
+### ALREADY GONE is success-equivalent (cp#110)
+
+A delete that answers *not found* reached its goal, earlier, by something else. Teardown blanks that
+column exactly as it would on a delete it performed, so the row can reach provably-reaped and a
+re-run can clear a stale entry. Before this, a guarded sweep that met two rows whose studio script
+had already been removed recorded each as a retryable failure: the column kept claiming a worker
+that does not exist, `teardown_failures` kept an entry no re-run could ever clear, and the row could
+never reach the state the record exists to make reachable.
+
+What makes this narrow rather than "swallow everything":
+
+- The classifier requires **HTTP 404 AND CF code 10007** together (`isScriptAbsent`, `cf-api.ts`),
+  live-probed on 2026-07-25 against both dispatch namespaces rather than read off a docs page. A
+  403, a 500, or a 404 carrying no code at all is still a failure, because a namespace that does not
+  exist is a config fault, not an absent script. CF prose is never matched: the numeric code is the
+  invariant worth parsing.
+- Absence is **recorded, never swallowed** -- `absent` in the response, `absent` in the admin-action
+  audit row, and a `teardown.worker_absent` / `teardown.module_absent` log line. "We deleted it" and
+  "it was not there when we looked" are different facts, and the second usually means something
+  removed a script out of band, which an operator may want to know about.
+- `reaped` cannot carry the distinction on its own, and that is by design: it is a column diff, and
+  an already-gone resource blanks its column too. That is precisely why absence is reported beside
+  it rather than folded into it.
 
 ### "deleted" means "provably reaped", and nothing else
 

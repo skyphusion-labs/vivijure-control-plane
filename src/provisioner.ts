@@ -15,7 +15,7 @@
 // /retry answers 409 runpod_key_required instead of quietly re-running with a key it kept.
 
 import type { CfApi } from "./cf-api";
-import { CfApiError } from "./cf-api";
+import { CfApiError, isScriptAbsent } from "./cf-api";
 import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
 import type { TenantR2Creds } from "./runpod";
@@ -1205,12 +1205,29 @@ async function uploadAssets(
  * persisted. Every failure is collected and reported rather than thrown, because a teardown that
  * stops at the first error leaves the most dangerous leftovers (a live credential) behind.
  */
+export interface TeardownOutcome {
+  /** True when nothing FAILED. Absence is not a failure (cp#110), so it does not clear this flag. */
+  ok: boolean;
+  /** What refused (the guard) or did not work (a real error). Retry or investigate. */
+  failures: { resource: string; error: string }[];
+  /**
+   * What was already gone when we went to delete it (cp#110). Not a failure and not a reap: the
+   * resource is in the state teardown wanted, but this plane is not the thing that put it there.
+   */
+  absent: { resource: string; detail: string }[];
+}
+
 export async function teardownTenant(
   deps: ProvisionDeps,
   tenant: Tenant,
   opts: { deleteData: boolean },
-): Promise<{ ok: boolean; failures: { resource: string; error: string }[] }> {
+): Promise<TeardownOutcome> {
   const failures: { resource: string; error: string }[] = [];
+  // ALREADY GONE is not a failure, and it is not a reap either (cp#110). It gets its own list so
+  // the failure list stays clean -- the row can reach "provably reaped" -- while the fact that we
+  // found nothing to delete survives into the response and the audit record instead of reading
+  // identically to a delete we performed.
+  const absent: { resource: string; detail: string }[] = [];
 
   // ---- THE REFERENTIAL GUARD (#23) -------------------------------------------------------------
   //
@@ -1249,7 +1266,7 @@ export async function teardownTenant(
     deps.log("teardown.guard_failed", { tenant: tenant.id, error: String(e) });
     const only = [{ resource: "guard", error }];
     await recordTeardownSafely(deps, tenant.id, only);
-    return { ok: false, failures: only };
+    return { ok: false, failures: only, absent };
   }
 
   /**
@@ -1279,20 +1296,41 @@ export async function teardownTenant(
    * gone. Blanking ONLY on success is the whole point: a row that blanks on failure would read as
    * reaped while a customer's bucket is still there.
    */
-  const attempt = async (resource: string, fn: () => Promise<unknown>, clears?: TenantResourceKind) => {
+  const clearColumn = async (resource: string, clears: TenantResourceKind) => {
+    try {
+      await deps.store.clearTenantResource(tenant.id, clears);
+    } catch (e) {
+      // The resource IS gone; only the bookkeeping failed. Recorded distinctly so it is never
+      // read as "the delete failed" -- the two need opposite follow-up actions.
+      failures.push({ resource: `${resource}_record`, error: String(e) });
+      deps.log("teardown.record_failed", { tenant: tenant.id, resource, error: String(e) });
+    }
+  };
+
+  /**
+   * absentWhen is how a leg says which error PROVES the resource is already gone (cp#110). Such a
+   * delete reached this call goal earlier, by something else, so the column blanks exactly as it
+   * would on a success -- but the fact is pushed to `absent`, never swallowed, because "we deleted
+   * it" and "it was not there when we looked" are different facts and the second usually means a
+   * resource was removed out of band, which an operator may want to know about.
+   */
+  const attempt = async (
+    resource: string,
+    fn: () => Promise<unknown>,
+    clears?: TenantResourceKind,
+    absentWhen?: (e: unknown) => boolean,
+  ) => {
     try {
       await fn();
-      if (clears) {
-        try {
-          await deps.store.clearTenantResource(tenant.id, clears);
-        } catch (e) {
-          // The resource IS gone; only the bookkeeping failed. Recorded distinctly so it is never
-          // read as "the delete failed" -- the two need opposite follow-up actions.
-          failures.push({ resource: `${resource}_record`, error: String(e) });
-          deps.log("teardown.record_failed", { tenant: tenant.id, resource, error: String(e) });
-        }
-      }
+      if (clears) await clearColumn(resource, clears);
     } catch (e) {
+      if (absentWhen?.(e)) {
+        // Event name is teardown.<resource>_absent, matching the teardown.r2_token_absent line below.
+        absent.push({ resource, detail: String(e) });
+        deps.log(`teardown.${resource}_absent`, { tenant: tenant.id, error: String(e) });
+        if (clears) await clearColumn(resource, clears);
+        return;
+      }
       failures.push({ resource, error: String(e) });
       deps.log("teardown.failed", { tenant: tenant.id, resource, error: String(e) });
     }
@@ -1363,13 +1401,25 @@ export async function teardownTenant(
   // before something makes it live. Caught by Strummer during the reclaim-lease seam review.
   const scriptToDelete = tenant.script_name ?? deps.tenantScriptName(tenant.slug);
   if (!guarded("worker")) {
-    await attempt("worker", () => deps.cf.deleteUserWorker(deps.namespace, scriptToDelete), "worker");
+    // cp#110: a not-found on THIS delete is success-equivalent. Before it, the guarded sweep that
+    // met two already-gone tenant scripts recorded each as a retryable failure, so the column kept
+    // claiming a worker that does not exist, teardown_failures kept a permanent entry no re-run
+    // could clear, and the row could never reach the provably-reaped state #23 exists to make
+    // reachable. The classifier is narrow (404 AND code 10007) precisely so this does not become
+    // "swallow everything", which would be worse than the bug.
+    await attempt(
+      "worker",
+      () => deps.cf.deleteUserWorker(deps.namespace, scriptToDelete),
+      "worker",
+      isScriptAbsent,
+    );
   }
   // Module scripts next (cf#99): the studio (discovery) is already gone, so sweeping the tenant's
   // module scripts cannot tear a /poll out from under a live studio. Prefix sweep + census; every
   // failure is surfaced (a live-configured module worker is exactly what must not be left behind).
   const moduleTeardown = await teardownTenantModules(deps, tenant.id);
   for (const f of moduleTeardown.failures) failures.push(f);
+  for (const a of moduleTeardown.absent) absent.push(a);
 
   // Credential BEFORE bucket/D1 (cf#91): kill the live grant, then the resources it points at.
   // Prefer the persisted id; always attempt by-name as well when id is missing OR revoke-by-id
@@ -1428,7 +1478,9 @@ export async function teardownTenant(
   // and "no teardown has ever run" are different facts and the data has to be able to tell them
   // apart -- that indistinguishability is what forced the cf#103 Tier B refusal.
   await recordTeardownSafely(deps, tenant.id, failures);
-  return { ok: failures.length === 0, failures };
+  // ok is about FAILURES only. An already-gone resource did not fail, so a pass whose only finding
+  // is absence is a clean pass -- which is the whole point of cp#110.
+  return { ok: failures.length === 0, failures, absent };
 }
 
 /**

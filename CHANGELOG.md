@@ -6,6 +6,27 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.7.1 -- 2026-07-25
+
+PATCH: fix/deploy class, no feature surface.
+
+### fix(teardown): a 404 worker delete is success-equivalent, so the column blanks (#110)
+
+- A delete that answers *not found* reached its goal earlier, by something else. Teardown now blanks
+  that column exactly as it would on a delete it performed, so the row can reach provably-reaped and
+  a re-run can clear a stale entry. Previously the two already-gone rows a guarded sweep met kept a
+  `teardown_failures` entry no re-run could ever clear, over a worker that does not exist.
+- **Narrow by construction:** the classifier requires HTTP 404 **and** CF code 10007 together, and
+  that shape was live-probed against both dispatch namespaces rather than read off a docs page. A
+  403, a 500, or a 404 with no code stays a failure (a missing namespace is a config fault, not an
+  absent script). CF prose is never matched.
+- **Recorded, not swallowed:** a new `absent` list on the teardown outcome, surfaced in the
+  `POST /api/admin/tenants/{id}/teardown` body and in the admin-action audit row, plus
+  `teardown.worker_absent` / `teardown.module_absent` log lines. `reaped` is still read back off the
+  row and cannot carry the distinction, which is why absence is reported beside it.
+- Same treatment on the module-script sweep, where it is a list-then-delete race rather than the
+  common case; the census remains the witness that nothing is left resident.
+
 ## v1.7.0 -- 2026-07-25
 
 MINOR: the cf#118 tenant-side binding (#109) is feature-class.

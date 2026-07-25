@@ -27,6 +27,7 @@ import {
   type ModuleUpgradeContext,
   type ModuleUpgradePreflight,
   type ProvisionDeps,
+  type TeardownOutcome,
 } from "./provisioner";
 import { createTenantEndpoints } from "./runpod";
 import type { ControlPlaneStore, Tenant } from "./store";
@@ -94,10 +95,7 @@ export interface ProvisionerWiring {
    * tenant resource name derives from the SLUG rather than the attempt, so two callers issuing
    * these deletes concurrently would delete each other resources.
    */
-  teardown(tenant: Tenant, opts: { deleteData: boolean }): Promise<{
-    ok: boolean;
-    failures: { resource: string; error: string }[];
-  }>;
+  teardown(tenant: Tenant, opts: { deleteData: boolean }): Promise<TeardownOutcome>;
   /**
    * Check everything a module upgrade needs WITHOUT writing anything (cf#103), so the route can
    * refuse before it creates a job. Split from upgradeModules for exactly that reason: the refusal
