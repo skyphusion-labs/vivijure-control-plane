@@ -603,6 +603,38 @@ describe("POST /api/tenant/provision", () => {
     expect(wiring.start).not.toHaveBeenCalled();
   });
 
+  it("ALREADY-GONE pieces do not block the reclaim: an absent-only reap COMPLETES it (cp#110)", async () => {
+    const { cookie, account } = await ready();
+    await halfBuilt(account.id);
+    // The live strand, at this route: the studio worker was NEVER created (the provision yielded
+    // before wfp_upload), so the delete 404s on a derived name. Nothing failed -- there was nothing
+    // to delete -- and a gate that read that as failure refused the ONLY recovery path the code
+    // names, permanently, on a real customer FIRST attempt (vivijure-cf#240, Lane V).
+    wiring.teardown = vi.fn(async () => {
+      const row = (await store.getTenantById("ten_halfbuilt"))!;
+      row.script_name = null;
+      row.d1_database_id = null;
+      row.r2_bucket_name = null;
+      row.r2_token_id = null;
+      return {
+        ok: true,
+        failures: [],
+        absent: [{ resource: "worker", detail: "wfp.deleteScript: This Worker does not exist on your account." }],
+      };
+    });
+
+    const res = await handle(
+      jsonReq("/api/tenant/provision", { slug: "hero", runpod_api_key: "rpa_x" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+
+    expect(res.status, "an absent-only reap must not read as reclaim_teardown_failed").toBe(202);
+    expect((await res.json() as Record<string, unknown>).reclaimed).toBe(true);
+    // The row is freed and provisioning restarted on it: the customer is unstuck.
+    expect((await store.getTenantById("ten_halfbuilt"))?.status).toBe("pending");
+    expect(wiring.start).toHaveBeenCalledTimes(1);
+  });
+
   it("PARTIAL teardown failure: does NOT complete the reclaim, and surfaces the real errors", async () => {
     const { cookie, account } = await ready();
     await halfBuilt(account.id);

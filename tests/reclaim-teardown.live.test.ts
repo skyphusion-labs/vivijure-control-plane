@@ -455,6 +455,70 @@ describe.skipIf(!LIVE)("cp#110: a studio worker that is already gone", () => {
 
 
 // ---------------------------------------------------------------------------------------------
+// THE NEVER-CREATED WORKER, END TO END (cp#110 severity upgrade).
+//
+// The strand Rollins hit live on Lane V: a provision that yields BEFORE wfp_upload leaves
+// script_name NULL, teardown falls back to the DERIVED name, and the delete 404s on a worker that
+// was never created. Recorded as a failure, that gated the reclaim -- which is the only recovery
+// the code names -- so the account was stuck permanently on its first attempt.
+//
+// This drives the recovery sequence (claimReclaim -> teardownTenant -> reclaimSlug) with a REAL
+// store and REAL Cloudflare, on a slug whose worker genuinely does not exist. It is the JOIN the
+// unit suites cannot make: teardown-guard.test.ts proves the ok flag over a recording proxy,
+// routes.test.ts proves the route gate over a fake teardown, and only this proves both against the
+// answer Cloudflare actually gives.
+//
+// SPEND: $0 and, unusually, ZERO resources created -- the whole point is that nothing was ever
+// there. Nothing to sweep.
+// ---------------------------------------------------------------------------------------------
+describe.skipIf(!LIVE)("cp#110: a worker that was NEVER created does not strand the reclaim", () => {
+  it("claims, reaps clean over a 404 on a derived name, and frees the row", async () => {
+    const slug = `${NAME_PREFIX}cp110nc-${RUN}`;
+    const script = `tenant-${slug}-studio`;
+    const store = new D1Store(d1Over(freshMigratedDb()));
+    await store.createAccount("acct_nc", "nc@example.com");
+    await store.createTenant("ten_nc", slug, "acct_nc", "failed");
+
+    // The row this population carries: no script_name ever written.
+    const seeded = (await store.getTenantById("ten_nc"))!;
+    expect(seeded.script_name, "the population under test never got a script_name").toBeNull();
+    // And the derived name really is absent on the account, so the 404 below is the real thing
+    // rather than a fixture. Witnessed by the namespace listing, not by the client under test.
+    expect(await scriptExists(NAMESPACE, script)).toBe(false);
+
+    const ncDeps = {
+      cf,
+      tokenMinter: minter,
+      namespace: NAMESPACE,
+      moduleNamespace: MODULE_NAMESPACE,
+      tenantScriptName: (s: string) => `tenant-${s}-studio`,
+      log: (event: string, fields: Record<string, unknown>) => void logged.push({ event, fields }),
+      store,
+      r2Endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
+      now: () => Date.now(),
+      sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+      fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+    } as unknown as ProvisionDeps;
+
+    // 1. The owner claims the row (the serialization point the route uses).
+    const claimed = await store.claimReclaim("ten_nc", "acct_nc", 120);
+    expect(claimed, "a Tier A failed row must be reclaimable by its owner").not.toBeNull();
+
+    // 2. The reap. THE FLAG THE ROUTE GATES ON: ok. False here is the permanent strand.
+    const reaped = await teardownTenant(ncDeps, claimed!.tenant, { deleteData: true });
+    expect(reaped.ok, `teardown failures: ${JSON.stringify(reaped.failures)}`).toBe(true);
+    expect(reaped.absent.map((a) => a.resource)).toContain("worker");
+
+    // 3. Completion, which the strand never reached.
+    const reclaimed = await store.reclaimSlug("ten_nc", "acct_nc", claimed!.lease_token);
+    expect(reclaimed, "the reclaim must complete: this is the recovery the customer needs").not.toBeNull();
+    expect(reclaimed!.status).toBe("pending");
+    expect(reclaimed!.script_name).toBeNull();
+  }, 120_000);
+});
+
+
+// ---------------------------------------------------------------------------------------------
 // THE SEQUENCE, END TO END (#38).
 //
 // Everything above proves the DESTRUCTIVE half against real Cloudflare. #32 proved the STORE half
