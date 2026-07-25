@@ -4,6 +4,24 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
+## Unreleased
+
+### feat(hosted): tenant studios carry the video-finish binding (vivijure-cf#118)
+
+- `VIDEO_FINISH_VPC_SERVICE_ID` set -> every tenant studio is provisioned with the `vpc_service`
+  binding, so assemble and mux work for tenants instead of degrading to per-shot clips. Unset ->
+  no binding and the honest degrade, exactly as before.
+- **Second credential, by constraint not preference:** `CF_WORKER_UPLOAD_TOKEN` owns tenant script
+  upload (the call that attaches bindings), because CF will not let an API-created token mint one
+  carrying Connectivity Directory scope. Optional; absent it falls back to the provisioner
+  credential and nothing changes. The asset-upload session runs on the same credential as the
+  script PUT that redeems its JWT.
+- **Refuses honestly:** a configured tier that cannot be attached FAILS the provision at
+  `wfp_upload` with a message naming the plane's credential. It never drops the binding and
+  continues -- that would ship a tenant silently missing a tier the operator configured.
+- Isolation on the shared tier documented as what it is: the container never receives a credential
+  (per-object presigned URLs), so it is by construction, not by policy.
+
 ## v1.5.0 -- 2026-07-25
 
 ### feat(teardown): the production caller, and empty-then-delete wired in (#23, cf#72)
