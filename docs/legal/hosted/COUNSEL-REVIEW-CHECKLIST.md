@@ -235,12 +235,28 @@ material. Our design says only named responders may look, and `ABUSE-RESPONSE-RU
 - But provisioning needs **account-wide R2 rights** to create per-tenant buckets on demand, and R2
   token scoping **cannot express "everything except this one bucket."** So an account-scoped
   administrative credential can reach it.
-- **Open question, deliberately not answered by me:** whether any credential the crew holds has
-  account-scoped R2 reach. I hold no such credential and did not go looking for a wider one, because
-  hunting for a credential to test a hypothesis is the exact behavior our own rules forbid. **The
-  test that settles it is acceptance criterion 7** in `PRESERVATION-PATH.md`: a crew credential is
-  refused on the bucket, **with the positive control** that the responder credential succeeds. Infra
-  runs it during the cp#117 rehearsal, and the answer is evidence rather than assertion.
+- **THE QUESTION SPLITS IN TWO, and the split is the useful part** (established during the cp#117
+  rehearsal, 2026-07-25):
+  - **(a) Can a non-responder READ preserved material? UNPROVEN.** The first evidence offered (a crew
+    key refused 401 on the bucket) was **retracted**: the control showed the same key refused on
+    every bucket including one it was entitled to reach, so it measured a dead credential rather than
+    an access boundary. Acceptance criterion 7 remains the test and remains unrun in both halves.
+    **We are not claiming the comfortable answer.**
+  - **(b) Can a non-responder REMOVE THE PROTECTION on the store? YES, and it is MEASURED.** A
+    crew-held Cloudflare token created the bucket, removed R2's default lifecycle rule, applied the
+    lock, **removed the lock**, and restored it, on the live bucket, deliberately, as a measurement.
+  **These answer different statutes.** (a) is the access-minimisation question under 2258A(h)(3) and
+  2258B(c). (b) is a **durability** question under 2258A(h)(1) and (h)(5) and 2258B(c): a credential
+  that cannot read the evidence but can remove what stops its deletion is a preservation risk, not a
+  privacy one. **Counsel should be asked about both, separately.**
+- **The product stance is RULED and is not counsel's to set** (Conrad, 2026-07-25): **disclosure, not
+  technical pretense.** We tell users what we are capable of and why, in `PRIVACY-DELTA.md` Section
+  2.2 and in the in-force privacy policy at launch, and we point at self-hosting as the first-class
+  alternative. **The question for counsel is narrower and sharper as a result: does disclosure plus a
+  written rule plus an audit trail satisfy "appropriate steps to limit access" under 2258A(h)(3), or
+  does that phrase require technical exclusion?** If it requires technical exclusion, say so plainly,
+  because the remedy (a separate Cloudflare account) has a real cost: the preservation copy stops
+  being server-side and human possession comes back.
 - **The argument in our favor, which counsel should judge rather than adopt:** the person holding
   the privileged credential and the person named as authorized responder are expected to be the
   **same human** (Conrad). If the sets are identical, minimization may be satisfied in substance.

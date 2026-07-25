@@ -98,6 +98,33 @@ scandal when someone reads the architecture. Say the true thing instead. It is s
 - **And if you want a studio we genuinely cannot see, self-host it.** That option is free, fully
   featured, and we point at it rather than bury it. The hosted tier sells convenience, not secrecy.
 
+**The same honesty, applied to material we are legally required to preserve.** If we ever have to
+preserve content under a legal obligation (`ABUSE-AND-NCMEC.md`, `PRESERVATION-PATH.md`), it goes to
+a separate store that no part of the running service can reach. We are still technically capable of
+**administering** that store: the credentials that let us build and operate the platform also let us
+change its configuration, including removing the protection that prevents preserved material being
+deleted. **We have demonstrated that capability to ourselves deliberately, so this sentence is a
+measurement rather than a guess.** What limits it is a written rule, an audit trail, and a small
+named set of people, not a technical impossibility, and we would rather say so than let the word
+"locked" do work it cannot do.
+
+**What IS settled: no part of the running service can reach that store.** There is no binding from
+any of our code to it, which is an absent mechanism rather than a promise about one.
+
+**What is NOT settled: whether a person holding an operator credential could read preserved
+material.** We have not proven the comfortable answer. The first test we ran was invalid and **we
+retracted it rather than counting it.** Until it is settled, assume the capability exists.
+
+**Why the capability exists at all**, since a disclosure without a reason is just a warning: running
+a multi-tenant platform means holding credentials that can create and administer per-tenant storage
+on demand, and preservation duties under 18 U.S.C. 2258A require us to keep material that a tenant
+cannot be allowed to delete. Those two facts together are the whole of it.
+
+**And the exit is the same one:** self-host, and no platform operator is in your custody chain at
+all. That is not us being generous; it is the AGPL and the parity commitment making the alternative
+real. (It removes **us**. Anyone wiring their own GPU provider, cloud AI endpoint, or third-party
+storage still has those parties in their own chain, under their own contracts.)
+
 ---
 
 ## 3. Key custody, and the claim it puts on the build
@@ -243,6 +270,7 @@ Specified here so the launch-gate flip is mechanical rather than a rewrite under
 | Section 6 | "the operator (Conrad) has determined that it does not fall under the GDPR ... not offered to the public" | **Must change or the EU must be blocked.** See Section 6 above. |
 | Section 7 | retention | Add the hosted table from Section 5 above, including the acceptance-record and preservation carve-outs. |
 | Section 9 | children | Add: on the hosted surface, reporting is a statutory duty under 2258A, not only a moral one. |
+| Section 2 or 7 (new) | nothing today | **ADD the operator-capability disclosure**, per Conrad's ruling 2026-07-25 (disclosure, not technical pretense). This is the row that **executes** the ruling: Section 2.2 above and `PRESERVATION-PATH.md` Section 4.3 are internal documents, and **a disclosure that never reaches a signed-up human is documentation, not notification.** The customer-facing text must carry, in plain words: (1) preserved material goes to a separate store the running service cannot reach; (2) we remain technically able to **administer** that store, including removing the deletion-protection, and that is **measured**, not theoretical; (3) whether an operator credential can **read** preserved material is unsettled and we are not claiming it cannot; (4) **why** the capability exists (multi-tenant provisioning needs account-scoped storage rights; 2258A requires preserving material a tenant must not be able to delete); (5) what limits it (a written rule, an audit trail, a small named set of people, not a technical barrier); and (6) **self-hosting as a first-class alternative, not a footnote** -- self-host and no platform operator is in your custody chain at all, which is credible because the studio and the control plane are both AGPL and the control plane is not needed to self-host. Scope (6) honestly: it removes **us**, not every third party the self-hoster chooses to wire. |
 
 ### `vivijure-cf docs/legal/TERMS.md`
 | Location | Current text | Required change |
