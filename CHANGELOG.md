@@ -6,6 +6,25 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(hosted): an operator can give an EXISTING tenant a studio binding (cp#112)
+
+- `POST /api/admin/tenants/:id/refresh-studio-bindings`: admin-gated, per-tenant, inline, and
+  idempotent by convergence. Closes the gap where cf#118 could reach only tenants provisioned after
+  the knob was set, because the studio upload happens in exactly one place (`runProvisionJob`).
+- **Bindings only, on purpose.** It sends a settings PATCH carrying `{ "type": "inherit", "name" }`
+  for everything it keeps, so it handles no binding VALUE at all. A re-upload cannot: two of a
+  tenant studio four secrets (`R2_S3_SECRET_ACCESS_KEY`, `RUNPOD_API_KEY`) are unreproducible by
+  this plane by design, and restating the binding set without them would stop the tenant rendering.
+  Studio bytes, `studio_release` and `tenants.status` are untouched; a live tenant serves throughout.
+- **Refuses before it writes:** `not_provisioned`, `video_finish_unconfigured` (cp#109 honest
+  refusal), `job_in_progress` (no racing a provision that owns the binding set), and a named
+  `vpc_binding_unauthorized` that points at `CF_WORKER_UPLOAD_TOKEN` rather than at the tenant.
+- **Answers with a READBACK, not a success flag,** taken through a different credential than the one
+  that wrote; a binding or secret missing afterwards answers 409 with the names.
+- Unverified seam recorded rather than assumed: the settings-PATCH shape and `inherit` over a
+  `secret_text` binding are read off Cloudflare docs and are exercised by no test in this repo. One
+  live probe against a throwaway script settles it before the first tenant runs it.
+
 ## v1.7.1 -- 2026-07-25
 
 PATCH: fix/deploy class, no feature surface.

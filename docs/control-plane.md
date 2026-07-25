@@ -218,6 +218,72 @@ Naming: **"control-plane", never "platform"**. The Studio's
 There is no `src/platform/` in THIS repo, and there should not be: reusing the name across the two
 repositories would be a trap for the next reader moving between them.
 
+## Giving a LIVE tenant a studio BINDING (cp#112)
+
+`VIDEO_FINISH_VPC` (cf#118) is attached in the studio-script upload, and that upload happens in
+exactly one place: `runProvisionJob`. `continueProvisionJob` refuses anything short of `wfp_upload`,
+the module upgrade deliberately never touches the studio, and teardown deletes. So the video-finish
+tier reached tenants provisioned AFTER the knob was set and **nobody else**, permanently, with no
+operator action in the plane that changed it.
+
+`POST /api/admin/tenants/:id/refresh-studio-bindings` closes that. Operator-only, one tenant per
+call, runs inline (the answer IS the evidence), and it changes **bindings only**.
+
+```
+POST /api/admin/tenants/ten_abc123/refresh-studio-bindings
+Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN
+```
+
+### Why it is a binding PATCH and not a re-upload
+
+The section above already states the constraint for the module lane: re-uploading the studio worker
+means re-declaring its full binding set including `R2_S3_SECRET_ACCESS_KEY`, a value this system
+deliberately never stores. The same is true of `RUNPOD_API_KEY` (key B, transient by ruling). A live
+tenant studio carries four secrets and the plane can reconstruct two of them, so a re-upload cannot
+put the other two back: the tenant would stop rendering (presign throws without the R2 secret,
+dispatch dies without key B) and recovery would need the tenant to re-paste key B plus an R2 token
+re-mint with a matching RunPod template rewrite.
+
+So this route sends `PATCH .../scripts/<script>/settings` with the full desired binding set, where
+everything being kept travels as `{ "type": "inherit", "name": ... }`. No binding VALUE is handled
+at any point, which is what makes it safe on a tenant whose secrets the plane cannot reproduce. It
+also means the studio BYTES and `studio_release` are untouched: moving a tenant to a new studio pin
+stays a separate operation with its own custody shape, exactly as documented above.
+
+### Refusals, all before anything is written
+
+| Refusal | When |
+| --- | --- |
+| `provisioner_unconfigured` (503) | no provisioner wiring on this deploy |
+| `not_found` (404) | unknown tenant |
+| `job_in_progress` (409) | a provision or upgrade holds a LIVE lease on the row; a binding patch must not race an upload that owns the binding set |
+| `not_provisioned` (409) | the tenant has no studio script recorded; it needs a provision, not this |
+| `video_finish_unconfigured` (409) | `VIDEO_FINISH_VPC_SERVICE_ID` is unset, so the plane has no tier to deliver (cp#109 honest refusal) |
+| `vpc_binding_unauthorized` (409) | the plane SCRIPT UPLOAD credential lacks Connectivity Directory access. Names `CF_WORKER_UPLOAD_TOKEN` so the operator does not go looking at the tenant |
+
+### What comes back
+
+The response is a READBACK, taken through a different credential than the one that wrote (the PATCH
+echoes no bindings, and `success: true` is the writing client opinion of its own work):
+`bindings_before` / `bindings_after`, `secrets_before` / `secrets_after`, `missing_bindings` /
+`missing_secrets`, `already_present`, and `ok`.
+
+**A short readback answers 409, not 200.** A 200 carrying `ok: false` reads as success to anything
+that checks status codes, and a tenant that lost a binding or a secret is the one outcome this route
+exists to make impossible to miss.
+
+It is idempotent by CONVERGENCE, not by skipping: a tenant that already carries the binding is
+patched anyway with the currently configured service id, because the bindings endpoint returns names
+and types and never the id, so "already present" cannot mean "already correct".
+
+### The unverified seam (read before the first live run)
+
+The settings-PATCH body shape and `inherit` over a `secret_text` binding are read off the Cloudflare
+API reference. **No test in this repo hands that request to Cloudflare**, and by the standing rule a
+layer exercised only through a fake is untested. One live probe against a THROWAWAY script in the
+tenants namespace (upload with a secret, PATCH with `inherit` plus a new binding, census, delete)
+settles it; the readback above is the runtime guard for the same doubt.
+
 ## Upgrading the modules of a LIVE tenant (cf#103)
 
 A tenant provisioned last month runs the module bytes that were published then. Shipping a new

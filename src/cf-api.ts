@@ -144,6 +144,23 @@ export interface VpcServiceBinding {
   name: string;
   service_id: string;
 }
+/**
+ * Carry an EXISTING binding forward without restating it (cp#112).
+ *
+ * This is the only way to change one binding on a live tenant studio without holding the VALUES of
+ * every other one. Two of a tenant studio secrets are unreproducible by this plane on purpose
+ * (R2_S3_SECRET_ACCESS_KEY is the SHA-256 of an R2 token value we never store, RUNPOD_API_KEY is
+ * key B, transient by ruling), so a binding set restated from what we know would silently drop them
+ * and stop the tenant rendering. `inherit` names the binding and nothing else.
+ *
+ * CONTRACT SOURCE: Cloudflare API reference for dispatch-namespace script settings ("inherit the
+ * binding from the latest version"). NOT exercised against Cloudflare by any test in this repo --
+ * see the live-probe note in tenant-studio-bindings.ts before trusting it.
+ */
+export interface InheritBinding {
+  type: "inherit";
+  name: string;
+}
 export type WorkerBinding =
   | D1Binding
   | R2Binding
@@ -152,7 +169,8 @@ export type WorkerBinding =
   | AssetsBinding
   | RatelimitBinding
   | DispatchNamespaceBinding
-  | VpcServiceBinding;
+  | VpcServiceBinding
+  | InheritBinding;
 
 /** An asset in the upload manifest: the path plus a 32-hex hash and byte size. */
 export interface AssetManifestEntry {
@@ -512,6 +530,29 @@ export class CfApi {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name, text, type: "secret_text" }),
+      },
+    );
+  }
+
+  /**
+   * Change a resident script BINDINGS without re-uploading the worker (cp#112).
+   *
+   * The body carries the FULL desired binding set: bindings to keep are sent as
+   * `{ type: "inherit", name }`, and anything omitted is not kept. That is why the caller censuses
+   * first and reads back after -- an omission here is a silent loss, and the readback is what turns
+   * it into a reported one.
+   *
+   * Distinct from putScriptSecret (one secret, no binding-set semantics) and from uploadUserWorker
+   * (new bytes, new release). This one touches neither the studio bytes nor the release.
+   */
+  async patchScriptSettings(namespace: string, scriptName: string, bindings: WorkerBinding[]): Promise<void> {
+    await this.call<unknown>(
+      "wfp.patchSettings",
+      `/accounts/${this.accountId}/workers/dispatch/namespaces/${namespace}/scripts/${scriptName}/settings`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ bindings }),
       },
     );
   }

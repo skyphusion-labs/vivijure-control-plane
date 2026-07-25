@@ -15,6 +15,7 @@ import { sha256Hex } from "../src/crypto";
 import { MemoryStore } from "./memory-store";
 import type { Tenant } from "../src/store";
 import { TenantModuleError } from "../src/tenant-modules";
+import { StudioBindingError } from "../src/tenant-studio-bindings";
 // Cross-lane (authorized by the lead, control-plane#20 client fix): the CANONICAL invoke-key
 // response shapes, shared with the client suite that reads them
 // (tests/onboarding-invoke-key.test.ts). Asserting them HERE is what stops the browser client from
@@ -25,6 +26,24 @@ import {
   LIVE_KEYS, LIVE_UNVERIFIED_KEYS, UNCONFIRMED_KEYS, MESSAGE_MUST_SAY, READINESS_CLAIMS,
   expectExactKeys,
 } from "./invoke-key-shapes";
+
+/**
+ * cp#112: the shape the provisioner returns for a clean refresh. Declared once, at the top, so the
+ * route tests below assert the ROUTE contract (status, body key set, audit) against a fixture that
+ * cannot drift silently from the module suite that owns the behaviour.
+ */
+const CLEAN_REFRESH = {
+  ok: true,
+  script: "tenant-hero-studio",
+  service_id: "019ecbe6-9fc1-70a0-9946-14bbec0f51bc",
+  already_present: false,
+  bindings_before: ["ASSETS", "DB"],
+  bindings_after: ["ASSETS", "DB", "VIDEO_FINISH_VPC"],
+  secrets_before: ["STUDIO_API_TOKEN"],
+  secrets_after: ["STUDIO_API_TOKEN"],
+  missing_bindings: [] as string[],
+  missing_secrets: [] as string[],
+};
 
 const ROOT_HOST = "studio.vivijure.com";
 const ORIGIN = `https://${ROOT_HOST}`;
@@ -41,6 +60,7 @@ let wiring: {
   teardown: ReturnType<typeof vi.fn>;
   preflightUpgrade: ReturnType<typeof vi.fn>;
   upgradeModules: ReturnType<typeof vi.fn>;
+  refreshStudioBindings: ReturnType<typeof vi.fn>;
 };
 
 const env = (over: Partial<ControlPlaneEnv> = {}): ControlPlaneEnv =>
@@ -90,6 +110,8 @@ beforeEach(() => {
     })),
     // Reclaim reaps through this. Default is a clean teardown; the failure cases override it.
     teardown: vi.fn(async () => ({ ok: true, failures: [], absent: [] })),
+    // cp#112: default is a clean binding refresh; the refusal and short-readback cases override it.
+    refreshStudioBindings: vi.fn(async () => ({ ok: true, result: CLEAN_REFRESH })),
     // cf#103: the upgrade route preflights through the seam, then hands the context to the runner.
     // Default is a PASSING preflight; the refusal cases override it.
     preflightUpgrade: vi.fn(async () => ({
@@ -1663,5 +1685,140 @@ describe("POST /api/admin/tenants/:id/upgrade-modules", () => {
         env(), ctx, deps,
       )).status,
     ).toBe(401);
+  });
+});
+
+// ---- cp#112: operator-driven studio binding refresh ----
+//
+// The ROUTE contract only. What is actually sent to Cloudflare, and the readback that decides ok, is
+// owned by tests/tenant-studio-bindings.test.ts; duplicating it here would produce two fixtures that
+// agree with each other and with nothing else.
+describe("POST /api/admin/tenants/:id/refresh-studio-bindings (cp#112)", () => {
+  const admin = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${ADMIN_TOKEN}`, ...extra });
+  const call = (id = "ten_abc123", d: ControlPlaneDeps = deps) =>
+    handle(jsonReq(`/api/admin/tenants/${id}/refresh-studio-bindings`, {}, { headers: admin() }), env(), ctx, d);
+
+  /** A D1-shaped timestamp against the HARNESS clock (deps.now()), never the wall clock. */
+  const stamp = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+
+  async function existingTenant(): Promise<Tenant> {
+    const t = await store.createTenant("ten_abc123", "hero", "acct_1", "live");
+    t.live_at = "t0";
+    t.script_name = "tenant-hero-studio";
+    t.studio_release = "v1.6.0";
+    return t;
+  }
+
+  it("REFUSES without the admin token: this is an operator action on someone else studio", async () => {
+    await existingTenant();
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/refresh-studio-bindings", {}),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(401);
+    expect(wiring.refreshStudioBindings).not.toHaveBeenCalled();
+  });
+
+  it("refuses 503 when the plane has no provisioner wiring, rather than looking present", async () => {
+    await existingTenant();
+    const res = await call("ten_abc123", { ...deps, provisioner: undefined });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "provisioner_unconfigured" });
+  });
+
+  it("404s an unknown tenant", async () => {
+    expect((await call("ten_nope")).status).toBe(404);
+    expect(wiring.refreshStudioBindings).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES while a job holds a live lease: a binding patch must not race an upload", async () => {
+    await existingTenant();
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    running.status = "running";
+    // Stamped off deps.now(), NOT Date.now(). The harness clock is fixed in the past, so a lease
+    // built from the wall clock is "live" no matter what it was meant to express -- which is how a
+    // dead-lease control silently tests nothing. Caught by watching the control fail.
+    running.lease_until = stamp(deps.now() + 60_000);
+
+    const res = await call();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "job_in_progress", job_id: "job_running", kind: "provision" });
+    expect(wiring.refreshStudioBindings).not.toHaveBeenCalled();
+  });
+
+  it("POSITIVE CONTROL: a dead lease does NOT block, or the guard would wedge every tenant", async () => {
+    await existingTenant();
+    const stale = await store.createProvisionJob("job_stale", "ten_abc123", "provision");
+    stale.status = "running";
+    stale.lease_until = stamp(deps.now() - 60_000);
+
+    expect((await call()).status).toBe(200);
+    expect(wiring.refreshStudioBindings).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the READBACK and audits the action, changing no tenant state", async () => {
+    await existingTenant();
+    const res = await call();
+    expect(res.status).toBe(200);
+    // Exact key set: a field appearing or vanishing here is a contract change an operator tool sees.
+    expectExactKeys(await res.json(), [
+      "tenant_id", "slug", "ok", "script", "service_id", "already_present",
+      "bindings_before", "bindings_after", "secrets_before", "secrets_after",
+      "missing_bindings", "missing_secrets",
+    ]);
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.refresh_studio_bindings"]);
+    // The care standard cp#112 sets: a live tenant keeps serving, on the same release.
+    const after = await store.getTenantById("ten_abc123");
+    expect(after?.status).toBe("live");
+    expect(after?.studio_release).toBe("v1.6.0");
+  });
+
+  it("answers 409, not 200, when the readback came back SHORT", async () => {
+    // A 200 carrying ok:false reads as success to anything that checks status codes, and a tenant
+    // that lost a secret is the one outcome this route exists to make impossible to miss.
+    await existingTenant();
+    wiring.refreshStudioBindings = vi.fn(async () => ({
+      ok: true,
+      result: { ...CLEAN_REFRESH, ok: false, missing_secrets: ["R2_S3_SECRET_ACCESS_KEY"] },
+    }));
+    const res = await call();
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { missing_secrets: string[] }).toMatchObject({
+      missing_secrets: ["R2_S3_SECRET_ACCESS_KEY"],
+    });
+    // Still audited: the failed attempt is exactly the one an operator must be able to find later.
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.refresh_studio_bindings"]);
+  });
+
+  it("passes a preflight refusal through with its own code, having written nothing", async () => {
+    await existingTenant();
+    wiring.refreshStudioBindings = vi.fn(async () => ({
+      ok: false,
+      refusal: {
+        code: "video_finish_unconfigured",
+        status: 409,
+        message: "this plane is not configured for video finishing (VIDEO_FINISH_VPC_SERVICE_ID is unset)",
+      },
+    }));
+    const res = await call();
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "video_finish_unconfigured" });
+    expect(store.audit).toEqual([]);
+  });
+
+  it("surfaces a NAMED credential failure instead of a bare 500", async () => {
+    await existingTenant();
+    wiring.refreshStudioBindings = vi.fn(async () => {
+      throw new StudioBindingError(
+        "vpc_binding_unauthorized",
+        409,
+        "video-finish binding refused: fix CF_WORKER_UPLOAD_TOKEN and re-run.",
+      );
+    });
+    const res = await call();
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("vpc_binding_unauthorized");
+    expect(body.message).toMatch(/CF_WORKER_UPLOAD_TOKEN/);
   });
 });

@@ -39,6 +39,7 @@ import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
 import { RECLAIM_LEASE_SECONDS, jobHasLiveDriver } from "./store";
+import { StudioBindingError } from "./tenant-studio-bindings";
 import type { Account, Tenant, ProvisionJob, SmokeRender } from "./store";
 import {
   advanceSmokeRender,
@@ -1010,6 +1011,63 @@ async function adminRoutes(
     // 202 without ok:true (cp#20): this has been ACCEPTED, not completed, and a body claiming
     // success before the work has run is the exact shape that ruling exists to forbid.
     return json({ job_id: job.id, from_release: tenant.modules_release, to_release: release }, 202);
+  }
+
+  // ---- cp#112: give an EXISTING tenant a studio-level binding ----------------------------------
+  //
+  // WHY ADMIN-GATED: it is an operator action on someone else studio, exactly like teardown and
+  // upgrade-modules. The tenant asked for nothing and sees no new surface.
+  //
+  // WHY INLINE rather than a job: the answer IS the evidence (the before/after binding and secret
+  // census), it is one API call plus two reads, and a job row would put the readback somewhere the
+  // operator has to go looking for. Same reasoning the teardown route records.
+  //
+  // WHY NO confirm_slug: this is not destructive. It adds a binding, changes no bytes, no release,
+  // and no status. The refusals below are what keep it from running where it makes no sense.
+  const bindings = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/refresh-studio-bindings$/.exec(path);
+  if (request.method === "POST" && bindings) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(bindings[1]);
+    if (!tenant) return err("not_found", 404);
+
+    // One writer at a time on this row. A provision or module upgrade with a live driver is already
+    // PUTting at this tenant scripts; a binding patch landing mid-provision would race the upload
+    // that owns the binding set.
+    const latest = await deps.store.getLatestJobForTenant(tenant.id);
+    if (latest && jobHasLiveDriver(latest, deps.now())) {
+      return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
+    }
+
+    let outcome;
+    try {
+      outcome = await deps.provisioner.refreshStudioBindings(tenant);
+    } catch (e) {
+      // A NAMED failure (the plane credential cannot attach a VPC binding) answers with its own
+      // code and message rather than falling into the generic 500, which would hide the one fact
+      // the operator needs: nothing about the tenant is wrong.
+      if (e instanceof StudioBindingError) return err(e.code, e.status, { message: e.message });
+      throw e;
+    }
+    if (!outcome.ok) return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
+
+    const result = outcome.result;
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.refresh_studio_bindings",
+      tenant.id,
+      JSON.stringify({
+        ok: result.ok,
+        already_present: result.already_present,
+        service_id: result.service_id,
+        missing_bindings: result.missing_bindings,
+        missing_secrets: result.missing_secrets,
+      }),
+    );
+
+    // 409 when the readback is short. A 200 carrying ok:false reads as success to anything that
+    // checks status codes, and a tenant that lost a binding or a secret is the one outcome this
+    // route exists to make impossible to miss.
+    return json({ tenant_id: tenant.id, slug: tenant.slug, ...result }, result.ok ? 200 : 409);
   }
 
   // ---- operator verification (cp#45) ------------------------------------------------------------
