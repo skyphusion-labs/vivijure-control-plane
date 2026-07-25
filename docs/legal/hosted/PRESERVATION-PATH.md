@@ -128,7 +128,9 @@ because somebody complained about it would be a privacy defect wearing an eviden
 | **Account** | The same Cloudflare account as the tenant buckets | So the copy in Section 3.4 can be **server-side**. A separate account would isolate better but would force the bytes through a human machine, and avoiding possession outweighs account isolation. The residual is stated in Section 4.3. |
 
 **On the bucket lock, honestly:** R2 bucket locks are removable by anyone holding a credential that
-can configure them, and R2 documents no governance/compliance mode distinction. So the lock is a
+can configure them, and R2 documents no governance/compliance mode distinction. **This is now
+measured, not predicted:** a crew-held token removed and restored the lock on the live bucket on
+2026-07-25 (Section 4.3). So the lock is a
 control against **accident and haste**, not against a determined administrator. That is the correct
 strength here anyway: 2258B(c) requires us to be **able** to destroy material on a law enforcement
 request, and a lock nobody can lift would put us in breach of that duty instead of in compliance
@@ -278,32 +280,84 @@ statement true rather than aspirational is the credential custody rule below.
 | **Escrowed** so a single lost laptop does not strand a statutory duty | An escrow the responders can open, not one the crew can. |
 | **Every use recorded** in the incident `custody.log` | Section 5. |
 
-### 4.3 The residual, stated rather than glossed
+### 4.3 The residual: what is MEASURED, what is UNPROVEN, and what we disclose
 
-**An account-scoped Cloudflare credential with R2 admin rights can reach this bucket**, because the
+**RULED (Conrad, 2026-07-25): disclosure, not technical pretense.** We state plainly what the
+platform operator is technically capable of reaching and why the capability exists, rather than
+implying a technical impossibility we have not established. The stance is the same one
+`PRIVACY-DELTA.md` Section 2.2 already takes about tenant studio data, applied to the preservation
+store.
+
+**Two different questions live here, and collapsing them is both scarier and less accurate:**
+
+| Question | Statute it answers | Status |
+|---|---|---|
+| Can someone who is not a named responder **READ preserved material**? | 2258A(h)(3) "limit access... to that access necessary"; 2258B(c) minimise employees with access | **UNPROVEN.** Not "no". See below. |
+| Can someone who is not a named responder **REMOVE THE PROTECTION** on the store? | 2258A(h)(1) and (h)(5) (preserve; do not delete early); 2258B(c) (destruction on law enforcement request) | **YES, MEASURED.** Demonstrated 2026-07-25. |
+
+#### The access half: UNPROVEN, and the first attempt to prove it was retracted
+
+An account-scoped Cloudflare credential with R2 admin rights **can** reach this bucket, because the
 provisioner needs account-wide R2 rights to create per-tenant buckets on demand and R2 token scoping
-cannot express "everything except this one bucket." The compensating controls are that (a) **no code
-path names any bucket except `tenant.r2_bucket_name`**, verified by reading the teardown and
-provision paths, (b) the bucket lock stops casual deletion, and (c) the privileged minting
-credential is Conrad rather than the crew.
+cannot express "everything except this one bucket."
 
-**Whether any credential the CREW holds has that reach is an open question, and it is the one that
-matters most.** The residual above is tolerable if the only credential that can reach the bucket is
-Conrad, who is also expected to be a named responder: if the two sets are the same human,
-minimisation is satisfied in substance. It stops being tolerable the moment a credential held by
-somebody who is **not** a responder can reach it, because 2258A(h)(3) asks for "appropriate steps to
-limit access" and a written rule is not obviously a step.
+Whether a credential the **crew** holds can read preserved objects is **still open**. The first
+evidence offered for it (a crew R2 key refused HTTP 401 on the preservation bucket) was **retracted
+by Strummer on cp#117**, because the control showed the same key was refused on **every** bucket
+including one it is entitled to reach: a dead credential refuses everything, so the refusal said
+nothing about this bucket's access control. **Criterion 7 is UNPROVEN in both halves**, not
+half-measured.
 
-**This document does not answer that question, deliberately.** Ernst holds no such credential and
-did not go looking for a wider one to test the hypothesis; hunting for a credential to prove a point
-is the exact behavior our own operating rules forbid. **Acceptance criterion 7 is the test that
-settles it**, run by infra during the cp#117 rehearsal, and it produces evidence rather than an
-assertion. Until it runs, treat the answer as unknown rather than as fine.
+**Treat the answer as unknown rather than as fine**, and do not close this section on the strength of
+a credential refusal, least of all a retracted one.
 
-**This is the weakest joint in the design and it should be reviewed rather than assumed acceptable.**
-If counsel or infra want true isolation, the option is a separate Cloudflare account, and the cost
-is that the copy in Section 3.4 stops being server-side. That trade is a decision, not a detail.
-Counsel item: **T1-13** in [`COUNSEL-REVIEW-CHECKLIST.md`](COUNSEL-REVIEW-CHECKLIST.md).
+#### The durability half: MEASURED, and it cuts against the comfortable reading
+
+**A crew-held Cloudflare API token fully controls this bucket's configuration.** Under cp#117 item 1,
+on 2026-07-25, one created the bucket, removed R2's default lifecycle rule, applied the lock,
+**removed the lock**, and restored it. That removability was demonstrated deliberately, as a
+measurement.
+
+**This directly weakens a compensating control this document previously claimed.** The original three
+were: (a) no code path names any bucket except `tenant.r2_bucket_name`, verified by reading the
+teardown and provision paths; (b) **the bucket lock stops casual deletion**; (c) the privileged
+minting credential is Conrad rather than the crew. **(b) is worth less than it reads.** The lock
+stops an accident and a hasty command; it does not stop the credential class this section is about,
+and we have proven that on the live bucket rather than reasoning about it. Section 3.2 already said
+locks are removable by anyone who can configure them; it is now measured rather than predicted.
+
+**What actually protects preserved material from deletion today is a written rule, an audit trail,
+and a small number of people. Not a technical barrier.** That is a legitimate control and it is the
+one most organisations rely on. It is not the thing a reader would assume from the word "locked",
+which is why we say it out loud.
+
+#### What we disclose, and where
+
+Because the stance is disclosure, this is stated to the people it affects rather than only to
+ourselves: `PRIVACY-DELTA.md` Section 2.2 (the honest access statement) and Section 7 (the specified
+edit to the **in-force** privacy policy at launch, which is the only one of the three a signed-up
+human ever reads). **A disclosure that never reaches a user is documentation, not notification.**
+
+#### The alternative, stated as a first-class option rather than a footnote
+
+**Self-host and we are not in your custody chain at all.** Your hardware, your storage, no platform
+operator with administrative reach over anything. That sentence is credible only because the parity
+commitment is structural rather than promised: the studio **and** the hosted control plane are
+AGPL-3.0-only, the control plane is not needed to self-host, and a local-GPU path exists. There is no
+feature behind the hosted door.
+
+**Precisely scoped, because overclaiming here would be the exact failure this document exists to
+avoid:** self-hosting removes **us**. It does not make a self-hoster free of third parties. Anyone
+who wires a GPU provider, a cloud AI endpoint, or third-party storage has those parties in their
+chain, by their own choice and under their own contracts.
+
+#### Still the weakest joint, and still a counsel question
+
+If counsel or infra want true isolation, the option is a separate Cloudflare account, and the cost is
+that the copy in Section 3.4 stops being server-side, which reintroduces human possession. That trade
+is a decision, not a detail. Counsel item: **T1-13** in
+[`COUNSEL-REVIEW-CHECKLIST.md`](COUNSEL-REVIEW-CHECKLIST.md), now split into a measurable access half
+and a durability half that disclosure alone must carry.
 
 ---
 
