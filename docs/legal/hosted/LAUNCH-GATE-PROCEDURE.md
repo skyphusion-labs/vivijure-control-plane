@@ -134,6 +134,77 @@ and knowable, which is exactly what the phrase families are not:
 **A served page is a public statement in exactly the way a policy file is**, and it is the one a
 stranger actually reads. A census that reads only the repository docs has not read what we published.
 
+#### The directory IS the served set: VERIFIED 2026-07-25, not assumed
+
+Step 1 says "list every served page", which is written as a **directory** walk while the thing that
+matters is the **served** set. Those are equal only if nothing is reachable that is not a file, and
+that was an assumption until Joan checked it against the routing (cp#130 review). Re-derived here
+before recording, because it is about to be relied on:
+
+| Fact | Where |
+|---|---|
+| Both workers end their router in `env.ASSETS.fetch(request)`, after the `/api/*` gate | control plane `src/index.ts`, vivijure-cf `src/index.ts` |
+| Both bind `assets = { directory = "./public", ... }` | both `wrangler.toml.example` |
+| Neither worker synthesises an HTML body (content-type checks only, no HTML responses) | grep, both repos |
+
+**So every file under `public/` is reachable unauthenticated at its literal path, and nothing
+outside `public/` is served as a page.** Recorded as a dated equivalence rather than a standing
+truth: **re-verify it whenever either router's tail or either `assets` binding changes.**
+
+#### There are TWO bundles and they are different sets
+
+| Bundle | What it is | Size at 2026-07-25 |
+|---|---|---|
+| control plane `public/` | the hosted front door | 19 files, 3 HTML (`index`, `onboarding`, `report-abuse`) |
+| vivijure-cf `public/` | the studio, which also ships to every self-hoster | 51 files, 4 HTML (`planner`, `cast`, `modules`, `settings`) |
+
+**A census that says "the served pages" without naming the worker will silently cover one and miss
+the other**, and the studio is the larger surface. Walk both, name both in the output.
+
+#### If a census step checks a URL, it goes through the MAP, never a guess
+
+The two bundles handle pretty URLs **differently and deliberately**:
+
+- **vivijure-cf pins `html_handling = "none"`** (exact paths only, to avoid a redirect loop) and maps
+  pretty URLs itself in `STUDIO_PAGE_ASSETS`: **ten URLs onto four files.** Note `/` and
+  `/index.html` both serve `modules.html`, and **in DEMO mode `/` remaps to `planner.html`**, so the
+  same URL serves a different page by config.
+- **the control plane leaves `html_handling` at the default** on purpose, so it gets platform
+  pretty-URL behaviour on top of its file set.
+
+**Census by FILE, which is what step 1 says, is the right unit and none of this affects it.** But a
+step that verifies a URL must resolve it through `STUDIO_PAGE_ASSETS` (and the demo remap), because
+checking `/planner` proves nothing about `/planner/` and checking `/` proves nothing about what `/`
+serves in the other mode.
+
+#### Two things we serve that are NOT files in either bundle
+
+The inverse of the hole above: a walk of both directories will never see these, and "we read every
+served page" reads as covering them.
+
+**1. The AUP text, and it is the most legally load-bearing text we serve.** `AUP_URL` is an
+**external** pinned repository permalink; the onboarding page fetches it and renders it into the
+signup gate. The words a user actually accepts live in **neither bundle**. **CLAIMED by this
+census**, with a concrete step rather than a reminder to be careful:
+
+- `AUP_URL` resolves to an **immutable ref** (a tag or commit SHA, never a branch). A branch means
+  the text a tenant reads changes whenever the branch does while the recorded version label does
+  not, and nothing detects the drift.
+- The version it serves matches the pinned `AUP_VERSION`.
+- **Record the SHA-256 of the served bytes.** The plane already computes it (`fetchAupSha256`), so
+  this is a value to read and record, not a thing to build.
+
+**2. `/welcome` on the studio, which 301s to `https://vivijure.com/`.** Our surface actively sends
+people to a **fourth property**, in a different repository, on a different deploy, that this
+procedure's scope line ("all three repositories") does not reach.
+
+> **EXPLICITLY DISCLAIMED, and named rather than quietly omitted.** This census does **not** cover
+> the `vivijure.com` storefront. That is a scope statement, not a finding that it is fine: a
+> marketing site is exactly where pre-launch claims live ("coming soon", "not yet available"), and
+> ours is one 301 away from a page we do census. **Whether the storefront joins this procedure is
+> the launch owner's call**, and it should be made deliberately before launch rather than discovered
+> after. Flagged for Conrad and the lead.
+
 Known surfaces at the time of writing, listed as a starting point and **not as the whole set** (the
 walk in step 1 is authoritative, because this table ages):
 
@@ -141,7 +212,7 @@ walk in step 1 is authoritative, because this table ages):
 |---|---|
 | `public/report-abuse.html` (control plane) | Says signups have not opened; makes process commitments; states the 2258A reporting position. Must stay identical in substance to `REPORT-ABUSE.md`, its source of truth. It also carries a **literal tenant hostname** (`*.studio.vivijure.com`) that the plane reads from config, deliberately, so a reader recognises the shape: a suffix change makes this page wrong and this row is what catches it. |
 | `public/index.html`, `public/onboarding.html` footers | Carry the intake link; a dead link here is worse than no link. |
-| The tenant studio panel intake link (vivijure-cf) | Hosted-only by construction. Verify it renders on a hosted tenant and **does not** render in a self-hosted install, because a self-hoster advertising our abuse address is a false statement about who can act. **This row is a NEGATIVE check**; passing it means seeing nothing. |
+| The tenant studio panel intake link (vivijure-cf) | Hosted-only by construction. Verify it renders on a hosted tenant and **does not** render in a self-hosted install, because a self-hoster advertising our abuse address is a false statement about who can act. **This row is a NEGATIVE check**; passing it means seeing nothing, which is easy to score backwards under time pressure. **An absent link has TWO causes and they look identical:** (a) the var is unset, which is the pass; (b) the studio bundle is too old to read the var at all, which is a **silent no-op** and is worse than a failure, because a hosted tenant is then showing no intake path while the census records green. **On a self-host install (a) is the only possible cause, so that check is unambiguous. On a hosted tenant it is not**, and the row needs a positive discriminator: proof that this bundle can read the var (the same bundle rendering the link when the var IS set, or the field's presence in the panel's own projection). Joan identified `GET /api/modules` as a way to discriminate without a render; **confirm the exact request and the two expected shapes against the shipped panel at census time rather than trusting this sentence.** |
 
 **Parked, deliberately, and not built here:** a machine-checkable status declaration on every
 user-facing page (a meta tag or data attribute the census asserts on) would beat both the phrase
