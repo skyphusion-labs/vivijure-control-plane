@@ -46,6 +46,20 @@ describe("the report-abuse page exists and carries what a reporter needs", () =>
     expect(page).toMatch(/describe it and tell us where it is/i);
   });
 
+  it("promises ORDERING, which we control, and never LATENCY, which we do not", () => {
+    // Ernst caught this in review of the first draft, and the bad line came from the source doc:
+    // the page said serious reports jump the queue "at any hour". Per cp#115 there is no alerting,
+    // no webhook, no on-call rota and no out-of-hours path; the mailbox is monitored when somebody
+    // looks. Ordering is a real commitment. Round-the-clock latency would be a promise we cannot
+    // keep, on the one page a person reaches while something urgent is happening.
+    expect(page).toMatch(/jump every other queue/);
+    expect(page).not.toMatch(/at any hour|24\/7|around the clock|any time of day/i);
+    // And the honest consequence has to be stated, not merely omitted: if it is urgent, do not wait
+    // on us. That is the same parallel-reporting advice the page gives at the top.
+    expect(page).toMatch(/not a\s+24-hour desk/i);
+    expect(page).toMatch(/rather than waiting on us/i);
+  });
+
   it("says plainly what we CANNOT reach, so a report is not wasted on us", () => {
     expect(page).toMatch(/own hardware/i);
     expect(page).toMatch(/RunPod/);
