@@ -425,6 +425,72 @@ describe("teardown idempotent delete (cp#110)", () => {
     expect((await row()).d1_database_id).toBeNull();
   });
 
+  // ---- THE NEVER-CREATED POPULATION (cp#110 severity upgrade) --------------------------------
+  //
+  // HIT LIVE on the Lane V verify leg, and it is the reason this stopped being teardown hygiene.
+  // A provision that yields BEFORE wfp_upload (the cp#18 keyless boundary) leaves script_name NULL.
+  // Teardown then falls back to the DERIVED name, deleteScript 404s on a worker that never existed,
+  // and before this fix that throw was recorded as a failure -- so teardown returned ok:false, the
+  // reclaim path refused, and re-provisioning (the ONLY recovery the code itself names) was refused
+  // forever, while a different slug was refused with tenant_exists because the account already owned
+  // the failed row. A real customer could permanently strand their account on their FIRST attempt.
+  //
+  // Live repro: tenant ten_28e86133ba1f32055a95546a, job job_850faa33cc35a15b4595c8f3, reclaim 409
+  // reclaim_teardown_failed carrying exactly the worker 404 (vivijure-cf#240).
+  //
+  // WHAT THESE TESTS PROVE AND WHAT THEY DO NOT. teardownTenant returning ok is what the reclaim
+  // route gates on (index.ts: `if (!reaped.ok) return err("reclaim_teardown_failed", 409)`), so
+  // that flag is asserted here against a REAL store; the route gate itself is proven in
+  // routes.test.ts, and the JOIN between them against real Cloudflare in reclaim-teardown.live.test.ts.
+  describe("a worker that was NEVER created (script_name NULL, derived name)", () => {
+    beforeEach(async () => {
+      // The population exactly: the row reached d1/bucket/token and died before wfp_upload.
+      await store.createTenant("ten_never", "never-uploaded", "acct_1", "failed");
+      await store.setTenantD1("ten_never", "db-never");
+      await store.setTenantBucket("ten_never", "bkt-never");
+    });
+
+    const neverRow = async () => (await store.getTenantById("ten_never"))!;
+
+    it("does not strand the row: the derived-name 404 is absence, so the reap reads CLEAN", async () => {
+      setDelete(async () => {
+        throw scriptGone();
+      });
+
+      const row = await neverRow();
+      expect(row.script_name, "the population under test never got a script_name").toBeNull();
+
+      const res = await teardownTenant(deps, row, { deleteData: true });
+
+      // The DERIVED name is what was attempted -- the fallback the live strand went through.
+      expect(log.deleteUserWorker).toEqual(["tenant-never-uploaded-studio"]);
+      // THE FLAG THE RECLAIM ROUTE GATES ON. False here is the permanent strand.
+      expect(res.ok, JSON.stringify(res.failures)).toBe(true);
+      expect(res.absent.map((a) => a.resource)).toEqual(["worker"]);
+      // And the half-built resources this population DOES own are really reaped, which is what
+      // makes the recovery leave zero orphans behind.
+      expect(log.deleteD1).toEqual(["db-never"]);
+      expect(log.deleteR2Bucket).toEqual(["bkt-never"]);
+      const after = await neverRow();
+      expect(after.d1_database_id).toBeNull();
+      expect(after.r2_bucket_name).toBeNull();
+    });
+
+    it("POSITIVE CONTROL: a REAL failure on that same delete still refuses the reap", async () => {
+      // If this went green, the fix would have turned "cannot delete the studio worker" into a
+      // free pass, and the reclaim would blank the row over a worker that is still serving.
+      setDelete(async () => {
+        throw new CfApiError("wfp.deleteScript", 500, [{ code: 10013, message: "Internal error" }]);
+      });
+
+      const res = await teardownTenant(deps, await neverRow(), { deleteData: true });
+
+      expect(res.ok, "a real failure must still gate the reclaim").toBe(false);
+      expect(res.absent).toEqual([]);
+      expect(res.failures.map((f) => f.resource)).toContain("worker");
+    });
+  });
+
   it("MODULE SCRIPTS: one that vanished between the list and the delete is absent, not failed", async () => {
     const script = `${tenantModuleScriptPrefix("ten_gone")}keyframe`;
     // Listing sees it, the delete says it is gone, and the census afterwards agrees -- the race a
