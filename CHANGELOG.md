@@ -6,6 +6,10 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.10.0 -- 2026-07-26
+
+MINOR: the studio bytes-move capability (cp#139) -- the operation that was missing between `refresh-studio-bindings` (bindings, never bytes) and `upgrade-modules` (module bytes, never the studio).
+
 ### feat(hosted): `studio_upgrade` -- move a LIVE tenant onto a newer studio release (cp#139)
 
 - **The gap:** no operation in this plane moved a live tenant's studio bytes. `runProvisionJob`
