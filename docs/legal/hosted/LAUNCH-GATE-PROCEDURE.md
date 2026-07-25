@@ -112,6 +112,20 @@ Also grep the hub `PRIVACY-COMMITMENT.md` on `main` for the Section 4.2 pre-laun
 launch and do not exist yet". Every hit must be edited or deliberately retained with a reason. A
 Section 4.2 sentence that still describes pre-launch facts after signups are open is a launch defect.
 
+**Also census the SERVED public surfaces, not only the markdown.** The hosted front door now ships
+a public `report-abuse.html` (cp#130) that states pre-launch facts to strangers, and the grep
+families above **would not catch it**: it says "has not opened to signups yet", which is none of the
+phrases listed. Add that phrase, and check these by name:
+
+| Surface | Why it is in the census |
+|---|---|
+| `public/report-abuse.html` (control plane) | Says signups have not opened; makes process commitments; states the 2258A reporting position. Its wording must stay identical in substance to `REPORT-ABUSE.md`, which is its source of truth. |
+| `public/index.html`, `public/onboarding.html` footers | Carry the intake link; a dead link here is worse than no link. |
+| The tenant studio panel intake link (vivijure-cf) | Hosted-only by construction. Verify it renders on a hosted tenant and **does not** render in a self-hosted install, because a self-hoster advertising our abuse address is a false statement about who can act. |
+
+**A served page is a public statement in exactly the way a policy file is**, and it is the one a
+stranger actually reads. A census that reads only the repository docs has not read what we published.
+
 Every hit must be either (a) edited, or (b) deliberately retained with a reason (some are true of
 self-hosting and stay true). **A hit that is neither is a false public statement, and the launch is
 not complete while one exists.** Record the census output, including the deliberate retentions and
