@@ -53,8 +53,11 @@ to it now rather than wait.
 |---|---|---|
 | **Report** | Report to the NCMEC CyberTipline "as soon as reasonably possible after obtaining **actual knowledge** of any facts or circumstances" indicating an apparent violation (the child-exploitation offenses listed in the statute). | 2258A(a)(1) |
 | **No duty to monitor** | "Nothing in this section shall be construed to require a provider to (1) monitor any user, subscriber, or customer; (2) monitor the content of any communication; or (3) **affirmatively search, screen, or scan** for facts or circumstances." | 2258A(f) |
-| **Preserve** | A completed CyberTipline report "shall be treated as a request to preserve the contents provided in the report for **1 year** after the submission." (This was **extended from 90 days** by the 2024 amendment. Anyone working from the old 90-day number is wrong.) | 2258A(h) |
-| **Point of contact** | The provider must supply mailing address, telephone, and an individual point of contact to the CyberTipline. | 2258A(a)(1)(B)(i) |
+| **Preserve** | A completed CyberTipline report "shall be treated as a request to preserve the contents provided in the report for **1 year** after the submission." (Extended from 90 days by **Pub. L. 118-59**, the 2024 REPORT Act, which substituted "1 year" for "90 days" in (h)(1). Anyone working from the old 90-day number is quoting repealed text.) | 2258A(h)(1) |
+| **Preserve: the OTHER 90 days** | Do not conflate the above with **18 U.S.C. 2703(f)**, a **different duty on a different trigger**: on a *governmental entity's* preservation request, records are retained **90 days**, extended a further 90 on a renewed request. Our report starts a 1-year clock; their request starts a 90-day one. Both can run at once, and 2258A(h)(4) says (h) does not limit 2703. | 2703(f) |
+| **Liability shield** | Civil claims and criminal charges arising from performing these reporting and preservation duties are barred, **unless** the provider engaged in intentional misconduct or acted with actual malice, with reckless disregard of a substantial risk of physical injury, or **for a purpose unrelated** to performing those responsibilities. Reporting in good faith is protected; rummaging is not. | 2258B(a), (b) |
+| **Minimize access** | The provider must minimize the number of employees with access to reported material, and **permanently destroy** depictions upon law enforcement request. | 2258B(c) |
+| **Point of contact** | The provider must supply, to the CyberTipline, its **mailing address, telephone number, facsimile number, electronic mail address, and an individual point of contact**. A named, reachable human, not a role alias. | 2258A(a)(1)(B)(i) |
 | **Penalties for knowing and willful failure to report** | For a provider with **fewer than 100 million monthly active users**: **$600,000** first offense, **$850,000** for a second or subsequent offense. (Increased effective 2024; the older $150k/$300k figures are stale.) | 2258A(e) |
 
 **The two halves that matter, together:** we are **not required to go looking**, and we **are
@@ -104,7 +107,11 @@ it should be defended with this argument rather than a shrug.
 
 ## 3. The runbook: what happens when a report arrives
 
-This is the operational path. It should be a real runbook before launch, not a paragraph.
+**The real runbook now exists: [`ABUSE-RESPONSE-RUNBOOK.md`](ABUSE-RESPONSE-RUNBOOK.md).** It owns
+the procedure (intake, triage, the bounded investigation and its limits, the freeze/preserve
+mechanics as actually built, the NCMEC and law enforcement path, and the incident record). This
+section stays as the summary of the posture; **where the two differ, the runbook governs the
+procedure and this document governs the why.**
 
 **Trigger:** a report to `abuse@skyphusion.org`, a provider notice (Cloudflare/RunPod), a law
 enforcement contact, or something a human on the crew sees incidentally.
@@ -131,7 +138,9 @@ enforcement contact, or something a human on the crew sees incidentally.
 
 ### 3.1 The pre-launch actions this implies
 
-These are concrete, small, and **must not slip past launch**:
+**Superseded as the operative list by [`ABUSE-RESPONSE-RUNBOOK.md`](ABUSE-RESPONSE-RUNBOOK.md)
+Section 11**, which carries the same items split into blocking vs non-blocking with a named owner
+each. Kept here because the reasoning belongs with the posture:
 
 - [ ] **Register with NCMEC as an ESP** and designate the individual point of contact required by
       2258A(a)(1)(B)(i). This is a form and an identified human. Doing it after the first incident
