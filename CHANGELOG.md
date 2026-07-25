@@ -6,6 +6,62 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.9.0 -- 2026-07-25
+
+MINOR: the KEK rotation capability (cp#95), and the studio release pin advanced off a release that
+predates the hooks channel (cf#243 Lane S).
+
+### feat(hosted): KEK rotation capability with a dual-read window (cp#95)
+
+- **The gap:** `tenants.studio_token_enc` is the only customer credential this plane stores as a
+  usable value, and the key protecting it could not be changed at all. Rotation was an incident
+  rather than maintenance, a lost key had no migration path, and the absence distorted a real
+  decision during the 2026-07-25 recovery: re-key looked expensive because the capability did not
+  exist.
+- **A two-key RING.** Reads try BOTH installed keys, always, so a row opens whether it was written
+  before, during, or after a rotation and dispatcher-injected auth keeps serving through the window.
+  Writes use exactly ONE key, named by `STUDIO_TOKEN_KEK_ENCRYPT_SLOT`.
+- **The write slot is config, not runtime state**, for two load-bearing reasons: the sweep and the
+  live provision path must write under the same key or the sweep is outrun by provisions forever;
+  and flipping the write direction of every stored customer credential should be a reviewable deploy
+  rather than a toggle. A slot naming `next` with no next key installed REFUSES to encrypt; it never
+  falls back to the primary, because that would write live credentials under a key the operator
+  believes is retired.
+- **Two admin routes:** `GET /api/admin/kek/status` (census) and `POST /api/admin/kek/reencrypt`
+  (sweep; idempotent, resumable, compare-and-set so a mid-sweep re-mint wins and is reported as
+  `raced`). The sweep answers 200 only when a FRESH census says the outgoing key can be dropped.
+- **The census is three buckets** because AES-GCM cannot distinguish a wrong key from a corrupt one:
+  `on_target` / `needs_rotation` / `unreadable`, and an unreadable row holds `safe_to_promote` false
+  rather than being retried forever as if it were work.
+- **Operationally inert on this deploy.** With no `STUDIO_TOKEN_KEK_NEXT` installed the ring is a
+  ring of one and the write slot is `primary`, which is byte-for-byte the previous behaviour.
+  Nothing rotates until an operator starts a rotation.
+- Escrow companion shipped in `crew-secrets` (#222): escrow the new key BEFORE installing it.
+  Procedure: `docs/deploy.md`, "Rotating `STUDIO_TOKEN_KEK`".
+
+### chore(hosted): STUDIO_RELEASE advanced v1.6.0 -> v1.9.0
+
+- **The defect this closes:** the plane shipped studio **v1.6.0** to every tenant it provisioned.
+  The hooks channel (`hooks_unavailable`) first appears in vivijure-cf **v1.8.0**, so every tenant
+  was born unable to report which hooks it cannot serve, permanently, and no copy change could
+  reach them. Found during the cf#243 live-tenant parity work: the one live tenant carries the
+  `VIDEO_FINISH_VPC` binding but emits no hooks channel at all.
+- **Why it mattered beyond one tenant:** with signups closed the estate is a single testbed, so this
+  read as a per-tenant curiosity. It is not. Every FUTURE tenant would have arrived the same way,
+  which breaks the three-population reach model at the source rather than at the edges.
+- The target bundle was read back from the `vivijure-studio-releases` mirror before the pin moved
+  (worker.js 530770 bytes, manifest, 48 assets, 6 modules including `finish-rife`, which v1.6.0
+  lacks entirely). A pin pointing at an absent or partial bundle fails every future provision at
+  `wfp_upload`, so the read-back is a prerequisite and not a formality.
+- **NOTE, two version lines:** this is control-plane v1.9.0 pinning vivijure-cf v1.9.0. The
+  coincidence is not a relationship; the repos version independently and the numbers will diverge
+  again.
+
+### docs
+
+- `docs/legal/hosted/PRESERVATION-PATH.md` acceptance criterion 7 quote closed (cp#117).
+- Abuse intake latency promise corrected (cp#130).
+
 ## v1.8.1 -- 2026-07-25
 
 PATCH: the tenant satellite pins and the mechanism that keeps them honest (cp#126), plus the
