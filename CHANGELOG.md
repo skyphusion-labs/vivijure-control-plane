@@ -57,10 +57,29 @@ predates the hooks channel (cf#243 Lane S).
   coincidence is not a relationship; the repos version independently and the numbers will diverge
   again.
 
+### feat(abuse): a public report-abuse page on the hosted front door (cp#130)
+
+- **The gap:** enforcement here is report-driven by ruling, so intake is the ENTIRE detection
+  surface -- and it had no placement a stranger could reach. It lived in
+  `docs/legal/hosted/REPORT-ABUSE.md` (a file in a repo) and in the AUP served behind the signup
+  gate. The person most likely to report is someone who came across a hosted render and has no
+  account; they can read neither.
+- `/report-abuse.html` on the front door, unauthenticated by construction (only `/api/*` is gated;
+  pages fall through to `ASSETS`), plus a persistent footer link on both front-door pages.
+- **Deliberately static:** no script tag, no form, no analytics, no third-party asset. A reporter
+  should not have to run our JavaScript, or be counted, to tell us something is wrong.
+- **The only outbound links are the NCMEC CyberTipline (`report.cybertip.org`) and INHOPE
+  (`www.inhope.org`)**, asserted as the complete external set.
+- **Promises ordering, not latency** (Ernst's cp#115-consistent wording): the page commits to what
+  happens and in what order, not to a response time we have no staffed clock behind.
+- **Ships with this worker deploy** because its `public/` assets ride the bundle. Documented here
+  rather than left to be discovered after the tag.
+
 ### docs
 
 - `docs/legal/hosted/PRESERVATION-PATH.md` acceptance criterion 7 quote closed (cp#117).
 - Abuse intake latency promise corrected (cp#130).
+- Served-surface census done by enumeration rather than by grep (cp#130).
 
 ## v1.8.1 -- 2026-07-25
 
