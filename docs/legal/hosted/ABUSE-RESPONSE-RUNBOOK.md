@@ -267,9 +267,25 @@ that the preservation subsection does not limit authority under 2703. Track them
 schedule, and any "right to be forgotten" claim (`PRIVACY-DELTA.md` Section 5). The privacy policy
 already says deletion has a limit; this is that limit.
 
-> **GAP (filed, not fixed here).** The **segregated preservation path does not exist yet**: there is
-> no defined location for preserved material, no access control on it, and no mechanism tracking the
-> 1-year clock. It must exist before it is needed, which means before signups. See Section 11.
+### 5.4 Where preserved material actually lives
+
+**The path is designed; the store is not built yet.** See
+[`PRESERVATION-PATH.md`](PRESERVATION-PATH.md) for the full design, the acceptance criteria, and the
+implementation checklist (cp#117). The three facts a responder needs in the moment:
+
+1. **The default is freeze in place, and it moves nothing.** Suspend (stops the tenant deleting)
+   plus an open preservation hold (stops us tearing down) turns the tenant into a frozen store. Both
+   levers are real and shipped; neither substitutes for the other.
+2. **A copy out to the segregated store fires only on a 2258A or law enforcement trigger**, never
+   for ordinary abuse, and it is a server-side copy. **A responder never downloads the material**
+   (Section 4.5).
+3. **The clock tracking is the `preservation_holds` table** (shipped, cp#118). An elapsed clock does
+   NOT release a hold; destruction happens only on a law enforcement request under 2258B(c).
+
+> **GAP (still open, and it is now a build rather than a design question).** The store itself, its
+> credential, and the rehearsal do not exist yet. Until they do, **tier 1 is the whole path**: it is
+> genuinely sufficient for preserving material in a tenant we still control, and it is genuinely
+> insufficient the moment a copy has to leave the tenant. See Section 11 and cp#117.
 
 ---
 
@@ -400,10 +416,10 @@ this document.
 
 | # | Gap | Owner | Issue |
 |---|---|---|---|
-| 1 | **`abuse@skyphusion.org` is not verified as deliverable or monitored.** It is already published in the **in-force** hub AUP and the hosted AUP `1.0.0`. We are advertising an intake address nobody has proven receives mail. | Infra (Strummer), with Conrad on the monitoring commitment | [#115](https://github.com/skyphusion-labs/vivijure-control-plane/issues/115) |
+| 1 | **`abuse@skyphusion.org`: delivery PROVEN, monitoring NOT.** An external third-party message was delivered and read (2026-07-25, SPF/DKIM/DMARC all pass), and role-address visibility was fixed at the postern delivery layer (`FILE_ALSO_UNDER`, postern v1.0.6). What remains is that **no named human is on a clock**: no alerting, no out-of-hours path, so a report can sit unread for an unbounded time. Against 2258A(a)(1) and 2258A(e) that is the exposure. | Conrad (the monitoring commitment) | [#115](https://github.com/skyphusion-labs/vivijure-control-plane/issues/115) |
 | 2 | **NCMEC ESP registration not started**, and the 2258A(a)(1)(B)(i) individual point of contact not designated. | Conrad (human step; cannot be delegated to code) | [#116](https://github.com/skyphusion-labs/vivijure-control-plane/issues/116) |
-| 3 | **No segregated preservation path.** No defined location, no access control, no 1-year clock tracking. | Conrad + Infra | [#117](https://github.com/skyphusion-labs/vivijure-control-plane/issues/117) |
-| 4 | **No teardown interlock on a preservation hold.** Irreversible evidence destruction is currently prevented only by an operator's memory. | Control-plane owner | [#118](https://github.com/skyphusion-labs/vivijure-control-plane/issues/118) |
+| 3 | **Segregated preservation path DESIGNED, not built.** The design, acceptance criteria and implementation checklist are in [`PRESERVATION-PATH.md`](PRESERVATION-PATH.md); the bucket, the responder credential and the rehearsal do not exist yet. Clock tracking is no longer a gap (see row 4). | Conrad + Infra | [#117](https://github.com/skyphusion-labs/vivijure-control-plane/issues/117) |
+| 4 | ~~No teardown interlock on a preservation hold.~~ **SHIPPED** in control-plane **v1.8.0**: the `preservation_holds` table, the admin open/release routes, and a teardown that checks the hold FIRST and refuses the whole pass. An elapsed clock does not release. | Control-plane owner | [#118](https://github.com/skyphusion-labs/vivijure-control-plane/issues/118) CLOSED |
 | 5 | **Named authorized responder list does not exist.** Section 4.2 requires it; 2258B(c) makes minimizing access a statutory matter. | Conrad | [#119](https://github.com/skyphusion-labs/vivijure-control-plane/issues/119) |
 
 **Non-blocking (should follow soon), all three tracked on
@@ -413,17 +429,21 @@ this document.
 |---|---|---|
 | 6 | **No content-access log.** Admin actions are audited; a human reading tenant content is not. | Control-plane owner |
 | 7 | **Suspend lever never watched fire end to end** against a real tenant studio, with a positive control proving a healthy tenant still works. Per the project's verification doctrine, a lever nobody has watched fire is not a lever. | Control-plane owner |
-| 8 | 2258A(h)(6) NIST CSF posture for the preservation store: unassessed. | Infra, with counsel |
+| 8 | 2258A(h)(6) NIST CSF posture for the preservation store: **still unassessed, and the phase-in has expired.** The paragraph gave providers 1 year from enactment (2024-05-07), so the deadline passed 2025-05-07: the duty attaches the first time we preserve, with no grace period left. Mapped, not assessed, in [`PRESERVATION-PATH.md`](PRESERVATION-PATH.md) Section 7. | Infra, with counsel |
 
 ---
 
 ## Appendix: primary sources
 
 Verified against the current statute text (Cornell LII, which reflects the Pub. L. 118-59
-amendments). `uscode.house.gov` was unreachable at the time of writing, so a second-source check
-against the official House text is worth doing before this leaves draft; the **2023 print edition
-predates the 2024 amendment and will show the repealed 90-day figure**, so do not use it as the
-check.
+amendments).
+
+**The second-source check is now DONE** (2026-07-25): the amendment was verified against the
+**official Public Law text on govinfo** (`PLAW-118publ59`), whose SEC. 3 strikes "90 days" and
+inserts "1 year" in 2258A(h)(1), enacted 2024-05-07. `uscode.house.gov` was unreachable again
+(connection refused), and it is no longer worth chasing, because the Public Law text is the better
+source for an amendment. The **2023 print edition predates the amendment and will show the repealed
+90-day figure**, so it must never be used as the check: it would appear to confirm the error.
 
 | Cite | Holds |
 |---|---|

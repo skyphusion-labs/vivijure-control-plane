@@ -1,0 +1,21 @@
+{
+  "incident_id": "inc_YYYYMMDD_xxxxxx",
+  "tenant_id": "ten_...",
+  "created_at": "YYYY-MM-DDTHH:MM:SSZ",
+  "created_by": "named authorized responder",
+  "trigger": "2258A submission | 2703(f) request | tier 1 cannot hold",
+  "copy_method": "server-side R2 CopyObject, same account",
+  "objects": [
+    {
+      "source_bucket": "vivijure-tenant-<slug>",
+      "source_key": "",
+      "dest_key": "incidents/inc_YYYYMMDD_xxxxxx/payload/",
+      "size_bytes": 0,
+      "checksum": "",
+      "checksum_algo": "sha256 | etag",
+      "copied_at": "YYYY-MM-DDTHH:MM:SSZ",
+      "copied_by": ""
+    }
+  ],
+  "notes": "Identifiers and integrity data only. No descriptions of content."
+}
