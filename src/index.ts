@@ -40,6 +40,7 @@ import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
 import { RECLAIM_LEASE_SECONDS, jobHasLiveDriver } from "./store";
 import { StudioBindingError } from "./tenant-studio-bindings";
+import type { PreservationHoldKind } from "./store";
 import type { Account, Tenant, ProvisionJob, SmokeRender } from "./store";
 import {
   advanceSmokeRender,
@@ -854,6 +855,108 @@ async function adminRoutes(
       await deps.store.recordAdminAction(actor, "tenant.resume", tenant.id, null);
     }
     return new Response(null, { status: 204 });
+  }
+
+  // ---- preservation holds: the interlock on the irreversible lever (cp#118) --------------------
+  //
+  // ABUSE-RESPONSE-RUNBOOK.md Section 5.2 forbids teardown on a tenant with an open report or
+  // preservation duty, and until these routes existed the only thing enforcing that was an operator
+  // remembering the paragraph. A hold is the technical control: teardownTenant refuses while one is
+  // open (see provisioner.ts), and only an explicit, audited human release lifts it.
+  //
+  // WHY OPENING IS CHEAP AND RELEASING IS DELIBERATE. Opening a hold costs an operator one call and
+  // destroys nothing, so it should happen the moment a report arrives, before triage, before
+  // anyone knows whether it is real. Releasing is the decision that lets evidence be destroyed, so
+  // it demands its own reason and its own audit row naming who decided the duty was over.
+  const holds = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/preservation-holds$/.exec(path);
+  if (holds && (request.method === "GET" || request.method === "POST")) {
+    const tenant = await deps.store.getTenantById(holds[1]);
+    if (!tenant) return err("not_found", 404);
+
+    if (request.method === "GET") {
+      // Every hold, not just the open ones: a released hold is the record of a duty that ENDED, and
+      // an operator asking "why can this be torn down now" needs to see it.
+      return json({ tenant_id: tenant.id, holds: await deps.store.listPreservationHolds(tenant.id) });
+    }
+
+    const body = (await readJson(request)) as
+      | { kind?: unknown; reason?: unknown; expires_at?: unknown }
+      | null;
+    const reason = String(body?.reason ?? "").trim();
+    // Same rule as suspend: a hold nobody can explain is not auditable, and this one blocks a lever.
+    if (!reason) return err("reason_required", 400);
+
+    const kind = String(body?.kind ?? "").trim() as PreservationHoldKind;
+    if (kind !== "ncmec_2258a_h" && kind !== "le_2703_f" && kind !== "internal") {
+      return err("invalid_kind", 400, {
+        message:
+          "kind must be ncmec_2258a_h (our CyberTipline submission, 1 year), le_2703_f (a " +
+          "governmental preservation request, 90 days renewable), or internal (an open report with " +
+          "no statutory clock yet)",
+      });
+    }
+
+    // THE CLOCK IS EXPLICIT OR DEFAULTED FROM THE STATUTE, never guessed silently. The default is
+    // computed here rather than in SQL so the stored value is a fact an operator can read back and
+    // argue with, and so the two statutory periods are written down in one place next to their
+    // citations. An `internal` hold gets no clock: it has not started one.
+    let expiresAt: string | null = null;
+    if (typeof body?.expires_at === "string" && body.expires_at.trim()) {
+      expiresAt = body.expires_at.trim();
+    } else if (kind === "ncmec_2258a_h" || kind === "le_2703_f") {
+      const days = kind === "ncmec_2258a_h" ? 365 : 90;
+      expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    }
+
+    const hold = await deps.store.openPreservationHold({
+      id: newId("hold"),
+      tenant_id: tenant.id,
+      kind,
+      reason,
+      opened_by: actor,
+      expires_at: expiresAt,
+    });
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.preservation_hold.open",
+      tenant.id,
+      JSON.stringify({ hold_id: hold.id, kind, expires_at: expiresAt, reason }),
+    );
+    return json({ hold }, 201);
+  }
+
+  const release = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/preservation-holds\/(hold_[a-f0-9]+)\/release$/.exec(
+    path,
+  );
+  if (request.method === "POST" && release) {
+    const tenant = await deps.store.getTenantById(release[1]);
+    if (!tenant) return err("not_found", 404);
+
+    const body = (await readJson(request)) as { reason?: unknown } | null;
+    const reason = String(body?.reason ?? "").trim();
+    // The release reason is the one an auditor reads first: it is the moment we decided destruction
+    // was permissible. 2258B(c) puts that call on law enforcement, so this is usually where their
+    // instruction gets written down.
+    if (!reason) return err("reason_required", 400);
+
+    // Belt and braces: the hold must belong to THIS tenant. releasePreservationHold keys on the hold
+    // id alone, and an operator working from a pasted id must not be able to lift a hold off a
+    // different customer row by way of a typo in the path.
+    const existing = (await deps.store.listPreservationHolds(tenant.id)).find((h) => h.id === release[2]);
+    if (!existing) return err("not_found", 404);
+
+    const released = await deps.store.releasePreservationHold(release[2], actor, reason);
+    // Null means it was ALREADY released. Reporting that honestly matters: the audit row for the
+    // first release is the record of who decided, and a second one must not read as a fresh call.
+    if (!released) return err("already_released", 409, { hold_id: release[2] });
+
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.preservation_hold.release",
+      tenant.id,
+      JSON.stringify({ hold_id: released.id, kind: released.kind, reason }),
+    );
+    return json({ hold: released });
   }
 
   // ---- teardown: THE production caller teardownTenant never had (#23) -------------------------

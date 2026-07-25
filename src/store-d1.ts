@@ -10,6 +10,8 @@ import type {
   ControlPlaneStore,
   LoginToken,
   OAuthState,
+  PreservationHold,
+  PreservationHoldKind,
   ProvisionJob,
   Session,
   SlugClaim,
@@ -715,6 +717,66 @@ export class D1Store implements ControlPlaneStore {
       .prepare("UPDATE tenants SET teardown_at = datetime('now'), teardown_failures = ?2 WHERE id = ?1")
       .bind(id, JSON.stringify(failures))
       .run();
+  }
+
+  // ---- preservation holds (cp#118) -------------------------------------------------------------
+
+  async openPreservationHold(hold: {
+    id: string;
+    tenant_id: string;
+    kind: PreservationHoldKind;
+    reason: string;
+    opened_by: string;
+    expires_at: string | null;
+  }): Promise<PreservationHold> {
+    await this.db
+      .prepare(
+        "INSERT INTO preservation_holds (id, tenant_id, kind, reason, opened_by, expires_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+      )
+      .bind(hold.id, hold.tenant_id, hold.kind, hold.reason, hold.opened_by, hold.expires_at)
+      .run();
+    // Read back rather than reconstruct: opened_at is written by SQLite (datetime(now)), so the
+    // returned row is the stored fact instead of this process idea of what it stored.
+    const row = await this.db
+      .prepare("SELECT * FROM preservation_holds WHERE id = ?1")
+      .bind(hold.id)
+      .first<PreservationHold>();
+    if (!row) throw new Error(`preservation hold ${hold.id} vanished immediately after insert`);
+    return row;
+  }
+
+  async listPreservationHolds(tenantId: string, opts?: { openOnly?: boolean }): Promise<PreservationHold[]> {
+    // OPEN is released_at IS NULL and nothing else. Note what is NOT in this WHERE clause: any
+    // comparison of expires_at to now. An elapsed preservation floor still blocks (2258A(h)(5)
+    // permits longer; 2258B(c) puts destruction on a law-enforcement request), so a clock can never
+    // silently unblock a destructive pass.
+    const sql = opts?.openOnly
+      ? "SELECT * FROM preservation_holds WHERE tenant_id = ?1 AND released_at IS NULL ORDER BY opened_at DESC"
+      : "SELECT * FROM preservation_holds WHERE tenant_id = ?1 ORDER BY opened_at DESC";
+    const res = await this.db.prepare(sql).bind(tenantId).all<PreservationHold>();
+    return res.results ?? [];
+  }
+
+  async releasePreservationHold(
+    holdId: string,
+    releasedBy: string,
+    reason: string,
+  ): Promise<PreservationHold | null> {
+    // released_at IS NULL in the WHERE is the single-use guard: a second release changes no rows and
+    // returns null, so it cannot overwrite who decided the duty was over, or when.
+    // RETURNING rather than a changes count, matching every other single-use write in this file:
+    // the row IS the evidence the update happened, and no-row-returned is the unambiguous answer
+    // for "already released" without depending on a driver meta field.
+    return (
+      (await this.db
+        .prepare(
+          "UPDATE preservation_holds SET released_at = datetime('now'), released_by = ?2, release_reason = ?3 " +
+            "WHERE id = ?1 AND released_at IS NULL RETURNING *",
+        )
+        .bind(holdId, releasedBy, reason)
+        .first<PreservationHold>()) ?? null
+    );
   }
 
   async findResourceReferrers(

@@ -294,6 +294,40 @@ export interface ResourceReferrer {
   resource: TenantResourceKind;
 }
 
+/**
+ * Which preservation duty a hold represents (cp#118). The vocabulary is statutory, and the two
+ * statutory kinds run on DIFFERENT clocks that can be live at the same time on the same tenant
+ * (ABUSE-RESPONSE-RUNBOOK.md Section 5.3):
+ *
+ * - ncmec_2258a_h -- OUR CyberTipline submission, 1 YEAR (18 U.S.C. 2258A(h)(1), as amended by
+ *   Pub. L. 118-59; anything still saying 90 days for THIS clock quotes repealed text).
+ * - le_2703_f -- a GOVERNMENTAL ENTITY preservation request, 90 days, renewable for a further 90
+ *   (18 U.S.C. 2703(f)). 2258A(h)(4) says the two do not limit each other.
+ * - internal -- an open report with no statutory clock attached yet, which is the state most
+ *   incidents start in and the one an operator most needs to be able to record immediately.
+ */
+export type PreservationHoldKind = "ncmec_2258a_h" | "le_2703_f" | "internal";
+
+/**
+ * A preservation obligation on a tenant. OPEN means released_at is null, and nothing else.
+ *
+ * expires_at is the FLOOR of the duty, never a trigger: 2258A(h)(5) permits preserving longer and
+ * 2258B(c) puts destruction on a law-enforcement request rather than on a timer of ours. An elapsed
+ * clock therefore still blocks, and says so.
+ */
+export interface PreservationHold {
+  id: string;
+  tenant_id: string;
+  kind: PreservationHoldKind;
+  reason: string;
+  opened_at: string;
+  opened_by: string;
+  expires_at: string | null;
+  released_at: string | null;
+  released_by: string | null;
+  release_reason: string | null;
+}
+
 export interface ControlPlaneStore {
   // accounts + identities
   getAccountById(id: string): Promise<Account | null>;
@@ -432,6 +466,37 @@ export interface ControlPlaneStore {
 
   /** Record that a teardown ran and what it failed to reap ('[]' when it reaped everything). */
   recordTeardown(id: string, failures: { resource: string; error: string }[]): Promise<void>;
+
+  // ---- preservation holds (cp#118) -------------------------------------------------------------
+  //
+  // The technical half of "never run teardown on a tenant with an open abuse report" (runbook
+  // Section 5.2). Suspend stays the lever for an open incident: instant, reversible, audited, and it
+  // destroys nothing. These three calls exist so teardown can REFUSE rather than rely on the
+  // operator having read that paragraph recently.
+
+  /** Open a hold. The reason is mandatory upstream; a hold nobody can explain is not auditable. */
+  openPreservationHold(hold: {
+    id: string;
+    tenant_id: string;
+    kind: PreservationHoldKind;
+    reason: string;
+    opened_by: string;
+    expires_at: string | null;
+  }): Promise<PreservationHold>;
+
+  /**
+   * Every hold on a tenant, newest first. openOnly asks the interlock question -- and it is answered
+   * by released_at IS NULL ALONE, never by comparing a clock to now: an elapsed preservation floor
+   * is not permission to delete.
+   */
+  listPreservationHolds(tenantId: string, opts?: { openOnly?: boolean }): Promise<PreservationHold[]>;
+
+  /**
+   * Release a hold. Returns null if it does not exist or was ALREADY released -- a second release
+   * must not read as a fresh one, because the audit row is the record of who decided the duty was
+   * over. Releasing is the only way a hold stops blocking.
+   */
+  releasePreservationHold(holdId: string, releasedBy: string, reason: string): Promise<PreservationHold | null>;
 
   /**
    * Every OTHER tenant row that still points at any of these resources (#23).

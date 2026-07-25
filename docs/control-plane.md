@@ -780,6 +780,56 @@ What that does NOT prove is that a tenant studio can REACH the container at rend
 reachability are different facts; the second needs a real render through a tenant carrying the
 binding, and that is the gate before the tier is considered live for tenants.
 
+## Preservation holds: the interlock on the irreversible lever (cp#118)
+
+`ABUSE-RESPONSE-RUNBOOK.md` Section 5.2 forbids teardown on a tenant with an open report or
+preservation duty. Until this existed, the only thing enforcing that was an operator remembering the
+paragraph, which is a procedural control where a technical one belongs: destroying material held
+under 18 U.S.C. 2258A(h) is crime-adjacent, not merely embarrassing.
+
+**Suspend remains the lever for an open incident** (instant, reversible, audited, destroys nothing).
+A hold is what stops the OTHER lever from being pulled by mistake.
+
+| route | does |
+| --- | --- |
+| `GET /api/admin/tenants/{id}/preservation-holds` | every hold, released ones included -- a closed duty is part of the record |
+| `POST /api/admin/tenants/{id}/preservation-holds` | opens one. `reason` **mandatory**, `kind` validated, audited as `tenant.preservation_hold.open` |
+| `POST /api/admin/tenants/{id}/preservation-holds/{hold_id}/release` | releases one. `reason` **mandatory**, single-use, audited as `tenant.preservation_hold.release` |
+
+### The kinds, and why this is a table rather than a column
+
+Two statutory clocks can run on the SAME tenant at the SAME time, and 2258A(h)(4) says they do not
+limit each other. One column cannot carry two clocks, two reasons and two openers.
+
+| kind | clock | starts |
+| --- | --- | --- |
+| `ncmec_2258a_h` | **1 year** (2258A(h)(1) as amended by Pub. L. 118-59; 90 days is repealed text for this clock) | our CyberTipline submission |
+| `le_2703_f` | **90 days**, renewable for a further 90 (2703(f)) | a governmental preservation request |
+| `internal` | none until one attaches | a report arriving, before triage |
+
+`expires_at` defaults from the kind and can be supplied explicitly; an `internal` hold gets none
+rather than an invented one.
+
+### An elapsed clock does NOT release the hold
+
+The interlock keys on `released_at IS NULL` alone. `expires_at` is the **floor** of the duty, not an
+instruction to delete: 2258A(h)(5) permits preserving longer and 2258B(c) puts destruction on a law
+enforcement request rather than on a timer of ours. An elapsed hold still refuses, and the refusal
+says so, because a clock that silently unblocked evidence destruction would be the same defect this
+interlock closes, wearing a calendar.
+
+### What teardown does while a hold is open
+
+`teardownTenant` checks FIRST, before the referential guard and before any delete, and refuses the
+**whole pass** -- not the data legs only. The runbook does not say tear down carefully while a report
+is open; it says do not tear down. Pulling the worker while sparing the bucket would also remove the
+studio an investigation may still need to reach.
+
+The refusal uses the guard vocabulary (`refused:`), so the teardown route reports it under `refused`
+rather than `failed`: it is the interlock working, and there is nothing to retry. The only way past
+is a human releasing the hold, with a reason, in an audit row. If the store cannot answer whether a
+hold is open, teardown **fails closed** and reaps nothing.
+
 ## Tearing a tenant down (`POST /api/admin/tenants/{id}/teardown`)
 
 The production caller `teardownTenant` spent its whole life without (#23). Admin-token gated,

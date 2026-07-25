@@ -1229,6 +1229,57 @@ export async function teardownTenant(
   // identically to a delete we performed.
   const absent: { resource: string; detail: string }[] = [];
 
+  // ---- THE PRESERVATION INTERLOCK (cp#118) ----------------------------------------------------
+  //
+  // FIRST, BEFORE THE REFERENTIAL GUARD AND BEFORE ANY DELETE. An open preservation hold means this
+  // tenant is under a statutory duty to keep material we would otherwise destroy here: 18 U.S.C.
+  // 2258A(h) after our own CyberTipline submission, 2703(f) after a governmental request, or an
+  // internal hold on a report that has not reached either yet.
+  //
+  // WHY IT REFUSES THE WHOLE PASS rather than just the data legs. ABUSE-RESPONSE-RUNBOOK.md
+  // Section 5.2 does not say "tear down carefully" while a report is open, it says teardown is
+  // NEVER permitted and SUSPEND is the lever (instant, reversible, audited, destroys nothing).
+  // Pulling the worker while refusing the bucket would be a partial teardown nobody asked for, and
+  // it would also remove the studio an investigation may still need to reach. So: touch nothing.
+  //
+  // WHY IT IS A REFUSAL AND NOT A FAILURE. Same vocabulary as the referential guard (#23): the
+  // route splits `refused:` out of the failure list because they need opposite follow-up. A
+  // refusal here is the interlock WORKING, and there is nothing to retry -- the only way past it is
+  // a human releasing the hold, which is its own audited admin action.
+  //
+  // FAIL CLOSED, and note which direction that is: if the store cannot answer whether a hold
+  // exists, we refuse. An un-run teardown is recoverable by running it again; destroying preserved
+  // evidence is not, and 2258A(h) makes the well-meant version of that mistake crime-adjacent.
+  try {
+    const held = await deps.store.listPreservationHolds(tenant.id, { openOnly: true });
+    if (held.length > 0) {
+      const who = held
+        .map((h) => {
+          // The clock is REPORTED, never enforced. An elapsed floor still blocks: 2258A(h)(5)
+          // permits preserving longer and 2258B(c) puts destruction on a law-enforcement request,
+          // so "the year is up" is a fact for a human to weigh, not a release.
+          const clock = h.expires_at ? `preserve-until ${h.expires_at}` : "no clock set";
+          return `${h.id} (${h.kind}, ${clock}, opened ${h.opened_at} by ${h.opened_by}: ${h.reason})`;
+        })
+        .join("; ");
+      const error =
+        `refused: ${held.length} open preservation hold(s) on this tenant, teardown is NEVER ` +
+        `permitted while one is open -- suspend instead, and release the hold explicitly if the ` +
+        `duty is genuinely over: ${who}`;
+      deps.log("teardown.preservation_hold", { tenant: tenant.id, holds: held.length });
+      const only = [{ resource: "preservation_hold", error }];
+      await recordTeardownSafely(deps, tenant.id, only);
+      return { ok: false, failures: only, absent };
+    }
+  } catch (e) {
+    const error =
+      `refused: could not determine whether a preservation hold is open, refusing every deletion: ${String(e)}`;
+    deps.log("teardown.preservation_hold_unknown", { tenant: tenant.id, error: String(e) });
+    const only = [{ resource: "preservation_hold", error }];
+    await recordTeardownSafely(deps, tenant.id, only);
+    return { ok: false, failures: only, absent };
+  }
+
   // ---- THE REFERENTIAL GUARD (#23) -------------------------------------------------------------
   //
   // A resource id on this row does NOT mean the object is this tenant's to delete. Resource names
