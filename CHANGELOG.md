@@ -6,6 +6,24 @@ is a separate product on a separate cadence).
 
 ## v1.5.0 -- 2026-07-25
 
+### feat(teardown): the production caller, and empty-then-delete wired in (#23, cf#72)
+
+- `POST /api/admin/tenants/{id}/teardown` -- admin-gated, audited, runs INLINE because the response
+  IS the evidence: `reaped` (read back off the row, not from the return value), `refused` (the
+  referential guard working) and `failed` (calls to retry) are three separate lists.
+- `confirm_slug` required; `delete_data` defaults to FALSE (worker + module scripts + credential go,
+  the data stays). `deleted` is written ONLY on a clean pass that was allowed to take the data, so
+  the status keeps meaning "provably reaped".
+- `beginTeardown` / `finishTeardown`: ONE destructive lease per row, shared with the reclaim path
+  (overlapping teardowns issue the SAME slug-derived deletes). A tombstone being re-swept stays a
+  tombstone; `deleted_at` is preserved, never rewritten.
+- Teardown now EMPTIES a tenant bucket before deleting it: it mints its own bucket-scoped credential
+  and revokes it before returning on every path, and the referential guard runs BEFORE the mint --
+  emptying is the irreversible half, so a bucket another row references is never opened at all.
+  A bucket too large for one budget reports an honest re-run-to-continue instead of failing.
+- `ProvisionDeps` gains `now` / `sleep` / `fetch` (the emptying loop is budgeted); production wires
+  the real three in `productionDeps`, unit tests script S3 and THROW on any other fetch.
+
 ### feat(hosted): tenant programmatic API token endpoints (vivijure-cf#94)
 
 - `GET/POST/DELETE /api/tenant/{id}/api-token`. Separate credential from the dispatcher-injected

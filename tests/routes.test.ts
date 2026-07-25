@@ -1285,6 +1285,151 @@ describe("admin switches", () => {
 
 // ---- the module-upgrade route (cf#103 half two) ----
 
+// ---- the teardown caller (#23) ----
+//
+// These prove the ROUTE contract: what it refuses, what it promotes, and that the answer carries the
+// evidence. teardownTenant itself (the guard, the blanking, the emptying cycle) is proven in
+// provisioner.test.ts and teardown-guard.test.ts against a REAL store and a recording proxy; a route
+// test that also re-proved the reaping would be asserting a stub.
+describe("POST /api/admin/tenants/:id/teardown", () => {
+  const admin = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${ADMIN_TOKEN}`, ...extra });
+
+  async function provisionedTenant(status: "live" | "failed" = "live") {
+    const t = await store.createTenant("ten_abc123", "hero", "acct_1", status);
+    if (status === "live") t.live_at = "t0";
+    t.script_name = "tenant-hero-studio";
+    t.d1_database_id = "db-1";
+    t.r2_bucket_name = "vivijure-tenant-hero";
+    t.r2_token_id = "tok-1";
+    return t;
+  }
+
+  /** What a real teardown does to the row: blank the columns whose resource it actually reaped. */
+  function reaps(cols: ("script_name" | "d1_database_id" | "r2_bucket_name" | "r2_token_id")[], failures: { resource: string; error: string }[] = []) {
+    wiring.teardown = vi.fn(async () => {
+      const row = (await store.getTenantById("ten_abc123"))!;
+      for (const c of cols) row[c] = null;
+      return { ok: failures.length === 0, failures };
+    });
+  }
+
+  it("REFUSES without the slug typed back: an opaque id is not a confirmation", async () => {
+    await provisionedTenant();
+    reaps(["script_name"]);
+    const res = await handle(jsonReq("/api/admin/tenants/ten_abc123/teardown", {}, { headers: admin() }), env(), ctx, deps);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "slug_confirmation_required", slug: "hero" });
+    expect(wiring.teardown).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES a confirmation for a DIFFERENT slug", async () => {
+    await provisionedTenant();
+    reaps(["script_name"]);
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/teardown", { confirm_slug: "hero-old" }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(400);
+    expect(wiring.teardown).not.toHaveBeenCalled();
+  });
+
+  it("defaults to KEEPING the data, and does not call the row deleted for a partial reap", async () => {
+    await provisionedTenant();
+    // No delete_data: the worker and the credential go, the D1 and the bucket stay.
+    reaps(["script_name", "r2_token_id"]);
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/teardown", { confirm_slug: "hero" }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { delete_data: boolean; reaped: string[]; status: string };
+    expect(body.delete_data).toBe(false);
+    expect(wiring.teardown).toHaveBeenCalledWith(expect.objectContaining({ id: "ten_abc123" }), { deleteData: false });
+    expect(body.reaped.sort()).toEqual(["r2_token_id", "script_name"]);
+    // THE POINT OF #23: the data is still there, so the row must NOT say deleted.
+    expect(body.status).toBe("deleting");
+    expect((await store.getTenantById("ten_abc123"))!.deleted_at).toBeNull();
+  });
+
+  it("promotes to deleted ONLY on a clean pass that was allowed to take the data", async () => {
+    await provisionedTenant();
+    reaps(["script_name", "d1_database_id", "r2_bucket_name", "r2_token_id"]);
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/teardown", { confirm_slug: "hero", delete_data: true }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    const body = (await res.json()) as { status: string; reaped: string[]; refused: unknown[]; failed: unknown[] };
+    expect(body.status).toBe("deleted");
+    expect(body.reaped).toHaveLength(4);
+    expect(body.refused).toEqual([]);
+    expect(body.failed).toEqual([]);
+    const row = (await store.getTenantById("ten_abc123"))!;
+    expect(row.status).toBe("deleted");
+    expect(row.deleted_at).not.toBeNull();
+  });
+
+  it("splits REFUSALS from FAILURES, and a refusal keeps the row out of deleted", async () => {
+    await provisionedTenant();
+    // The live-plane shape: the guard refuses an aliased bucket, an unrelated call fails.
+    reaps(["script_name"], [
+      { resource: "r2_bucket", error: "refused: r2_bucket is still referenced by 1 other tenant row(s): ten_live (hero, status=live) -- AT LEAST ONE IS NOT DELETED, this resource is in use" },
+      { resource: "d1", error: "Error: D1 delete failed" },
+    ]);
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/teardown", { confirm_slug: "hero", delete_data: true }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    const body = (await res.json()) as {
+      status: string;
+      reaped: string[];
+      refused: { resource: string }[];
+      failed: { resource: string }[];
+    };
+    // They need opposite follow-up, so they must not arrive as one list.
+    expect(body.refused.map((f) => f.resource)).toEqual(["r2_bucket"]);
+    expect(body.failed.map((f) => f.resource)).toEqual(["d1"]);
+    expect(body.reaped).toEqual(["script_name"]);
+    expect(body.status).toBe("deleting");
+    expect((await store.getTenantById("ten_abc123"))!.status).not.toBe("deleted");
+  });
+
+  it("REFUSES a second pass while one holds the lease (same-name deletes must not overlap)", async () => {
+    await provisionedTenant();
+    reaps(["script_name"]);
+    // Somebody already holds the destructive lease on this row.
+    await store.beginTeardown("ten_abc123", 300);
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/teardown", { confirm_slug: "hero", delete_data: true }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "teardown_in_progress" });
+    expect(wiring.teardown).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES without the admin token, like every other lever on this surface", async () => {
+    await provisionedTenant();
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/teardown", { confirm_slug: "hero", delete_data: true }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("records an admin action, because an unaudited destructive lever is not an operator tool", async () => {
+    await provisionedTenant();
+    reaps(["script_name", "d1_database_id", "r2_bucket_name", "r2_token_id"]);
+    await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/teardown", { confirm_slug: "hero", delete_data: true }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    const entry = store.audit.find((a) => a.action === "tenant.teardown" && a.target === "ten_abc123");
+    expect(entry, "the teardown must be audited").toBeDefined();
+    // The detail has to carry WHAT happened, not just that something did.
+    expect(JSON.parse(entry!.detail!)).toMatchObject({ delete_data: true, refused: 0, failed: 0 });
+  });
+});
+
 describe("POST /api/admin/tenants/:id/upgrade-modules", () => {
   const admin = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${ADMIN_TOKEN}`, ...extra });
 

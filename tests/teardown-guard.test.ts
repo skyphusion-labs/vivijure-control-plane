@@ -37,6 +37,10 @@ interface CallLog {
   deleteUserWorker: string[];
   revoke: string[];
   revokeByName: string[];
+  /** Buckets a teardown cycle minted an EMPTYING credential for (cf#72). */
+  mint: string[];
+  /** Every S3 request the emptying loop issued. A refused bucket must never be OPENED. */
+  s3: string[];
 }
 
 function recordingDeps(store: D1Store, log: CallLog): { deps: ProvisionDeps; log: CallLog } {
@@ -57,6 +61,10 @@ function recordingDeps(store: D1Store, log: CallLog): { deps: ProvisionDeps; log
       },
     },
     tokenMinter: {
+      async mintBucketToken(_name: string, bucket: string) {
+        log.mint.push(bucket);
+        return { id: `emptycred-${bucket}`, value: "TEARDOWN_CREDENTIAL_SECRET" };
+      },
       async revoke(id: string) {
         log.revoke.push(id);
       },
@@ -65,6 +73,20 @@ function recordingDeps(store: D1Store, log: CallLog): { deps: ProvisionDeps; log
         return false;
       },
     },
+    r2Endpoint: "https://acct.r2.cloudflarestorage.com",
+    now: () => 1_000_000,
+    sleep: async () => {},
+    // Scripted S3: an EMPTY listing, so the emptying loop reaches its terminal state from an
+    // observed read (its own rule) and the bucket delete that follows is what is under test. Every
+    // request is recorded because these tests assert a refused bucket was never OPENED, which is a
+    // stronger claim than never deleted -- emptying is the irreversible half.
+    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      log.s3.push(`${init?.method ?? "GET"} ${String(input)}`);
+      return new Response(
+        `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`,
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch,
     namespace: "vivijure-tenants",
     moduleNamespace: "vivijure-tenant-modules",
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
@@ -74,7 +96,7 @@ function recordingDeps(store: D1Store, log: CallLog): { deps: ProvisionDeps; log
 }
 
 function emptyLog(): CallLog {
-  return { deleteD1: [], deleteR2Bucket: [], deleteUserWorker: [], revoke: [], revokeByName: [] };
+  return { deleteD1: [], deleteR2Bucket: [], deleteUserWorker: [], revoke: [], revokeByName: [], mint: [], s3: [] };
 }
 
 describe("teardown referential guard", () => {
@@ -108,7 +130,12 @@ describe("teardown referential guard", () => {
     expect(log.deleteD1).toEqual(["db-solo"]);
     expect(log.deleteR2Bucket).toEqual(["bkt-solo"]);
     expect(log.deleteUserWorker).toEqual(["scr-solo"]);
-    expect(log.revoke).toEqual(["tok-solo"]);
+    // The tenant own credential first, then the ephemeral emptying credential this cycle minted.
+    // Both being here is the POSITIVE CONTROL for every never-opened assertion below: the recorder
+    // does see mints, S3 requests and revokes when the guard lets the work happen.
+    expect(log.revoke).toEqual(["tok-solo", "emptycred-bkt-solo"]);
+    expect(log.mint).toEqual(["bkt-solo"]);
+    expect(log.s3.length, "the emptying loop really did open the bucket").toBeGreaterThan(0);
   });
 
   it("REFUSES every resource a LIVE row still references, and issues no delete at all", async () => {
@@ -137,6 +164,11 @@ describe("teardown referential guard", () => {
     expect(log.deleteUserWorker).toEqual([]);
     expect(log.revoke).toEqual([]);
     expect(log.revokeByName).toEqual([]);
+    // AND THE IRREVERSIBLE HALF: no credential was minted and the bucket was never listed. A guard
+    // that refused the DELETE but let the emptying run first would pass every assertion above while
+    // having already destroyed the live tenant films.
+    expect(log.mint).toEqual([]);
+    expect(log.s3).toEqual([]);
 
     // And the live tenant's row is untouched: still owns everything it owned.
     const live = (await store.getTenantById("ten_live"))!;
@@ -227,5 +259,41 @@ describe("teardown referential guard", () => {
     expect(log.deleteR2Bucket).toEqual([]);
     expect(log.deleteUserWorker).toEqual([]);
     expect(log.revoke).toEqual([]);
+    expect(log.mint).toEqual([]);
+    expect(log.s3).toEqual([]);
+  });
+
+  it("a bucket it could not empty is NOT deleted, NOT blanked, and the credential is still revoked", async () => {
+    await store.createTenant("ten_big", "big", "acct_1", "failed");
+    await own("ten_big", { bucket: "bkt-big" });
+    const big = (await store.getTenantById("ten_big"))!;
+
+    // A bucket with objects whose DeleteObjects fails: the loop stalls rather than emptying. This is
+    // the shape a real oversized or erroring bucket takes, and the whole point of the cycle design.
+    (deps as unknown as { fetch: typeof fetch }).fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      log.s3.push(`${method} ${String(input)}`);
+      if (method === "POST") return new Response("<Error><Code>InternalError</Code></Error>", { status: 500 });
+      return new Response(
+        `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>renders/film-1/out.mp4</Key></Contents></ListBucketResult>`,
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const res = await teardownTenant(deps, big, { deleteData: true });
+
+    expect(res.ok).toBe(false);
+    const bucketFailure = res.failures.find((f) => f.resource === "r2_bucket")!;
+    expect(bucketFailure.error).toContain("re-run teardown to continue");
+
+    // Not emptied means not deleted, and not deleted means the row keeps claiming it. A row that
+    // blanked here would read as reaped while the customer objects are still there.
+    expect(log.deleteR2Bucket).toEqual([]);
+    expect((await store.getTenantById("ten_big"))!.r2_bucket_name).toBe("bkt-big");
+
+    // MINT -> WORK -> REVOKE holds on the failure path too. This is the assertion that a stranded
+    // bucket-scoped grant cannot be left behind by a cycle that did not finish.
+    expect(log.mint).toEqual(["bkt-big"]);
+    expect(log.revoke).toEqual(["emptycred-bkt-big"]);
   });
 });

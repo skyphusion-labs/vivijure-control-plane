@@ -186,6 +186,12 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     moduleBundle: r2ModuleBundleSource(STUDIO_RELEASES),
     tokenMinter: new CfTokenMinter(cf),
     r2Endpoint: `https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    // The teardown bucket-emptying loop is budgeted, so its clock, sleep and fetch are injected
+    // (#23 / cf#72) rather than reached for globally. Production takes the real three here; a test
+    // replaces the whole bundle, same as every other dep.
+    now: () => Date.now(),
+    sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
     namespace: DISPATCH_NAMESPACE,
     moduleNamespace: TENANT_MODULE_NAMESPACE,
     release: STUDIO_RELEASE,

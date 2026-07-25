@@ -451,6 +451,37 @@ export interface ControlPlaneStore {
     resources: TenantResourceRefs,
   ): Promise<ResourceReferrer[]>;
   /**
+   * Take the DESTRUCTIVE lease on a tenant, so exactly one teardown runs at a time (#23).
+   *
+   * Same serialization point as claimReclaim and for the same reason: every tenant resource name
+   * derives from the SLUG rather than the attempt, so two concurrent teardowns issue the SAME
+   * delete calls, and the loser can land its deletes on whatever was rebuilt under those names. It
+   * shares the reclaim lease columns deliberately: there is ONE destructive lease per row, and two
+   * independent ones would not exclude each other.
+   *
+   * Unlike claimReclaim this is NOT account-scoped and NOT Tier-A-scoped. An operator teardown has
+   * to run on a LIVE tenant and on a row a previous pass left half-reaped, which are the two
+   * populations claimReclaim exists to exclude.
+   *
+   * It writes status='deleting' -- a destructive pass is in flight -- but NEVER on a row that is
+   * already 'deleted'. A tombstone being re-swept (the orphan module-script sweep) must not lose
+   * its tombstone because a sweep ran. Promotion to 'deleted' belongs to finishTeardown, and only
+   * when the reap actually completed.
+   */
+  beginTeardown(id: string, leaseSeconds: number): Promise<{ tenant: Tenant; lease_token: string } | null>;
+  /**
+   * Release the teardown lease, and promote the row ONLY if the reap actually happened.
+   *
+   * `reaped` true writes status='deleted' + deleted_at (preserving an existing deleted_at, so a
+   * re-sweep does not rewrite history). False leaves the status exactly as it was, with
+   * teardown_at / teardown_failures carrying what refused or failed -- because the entire point of
+   * #23 is that "deleted" must never mean anything but "provably reaped".
+   *
+   * Holding the TOKEN is the proof this caller took the lease; a caller whose lease was taken over
+   * gets null and writes nothing.
+   */
+  finishTeardown(id: string, leaseToken: string, reaped: boolean): Promise<Tenant | null>;
+  /**
    * Set (or deliberately CLEAR, with null) the tenant module release.
    *
    * Takes null rather than exposing a separate clear method because the two calls are one
