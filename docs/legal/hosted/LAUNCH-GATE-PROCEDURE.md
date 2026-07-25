@@ -112,19 +112,41 @@ Also grep the hub `PRIVACY-COMMITMENT.md` on `main` for the Section 4.2 pre-laun
 launch and do not exist yet". Every hit must be edited or deliberately retained with a reason. A
 Section 4.2 sentence that still describes pre-launch facts after signups are open is a launch defect.
 
-**Also census the SERVED public surfaces, not only the markdown.** The hosted front door now ships
-a public `report-abuse.html` (cp#130) that states pre-launch facts to strangers, and the grep
-families above **would not catch it**: it says "has not opened to signups yet", which is none of the
-phrases listed. Add that phrase, and check these by name:
+### The served surfaces are ENUMERATED, not grepped
 
-| Surface | Why it is in the census |
-|---|---|
-| `public/report-abuse.html` (control plane) | Says signups have not opened; makes process commitments; states the 2258A reporting position. Its wording must stay identical in substance to `REPORT-ABUSE.md`, which is its source of truth. |
-| `public/index.html`, `public/onboarding.html` footers | Carry the intake link; a dead link here is worse than no link. |
-| The tenant studio panel intake link (vivijure-cf) | Hosted-only by construction. Verify it renders on a hosted tenant and **does not** render in a self-hosted install, because a self-hoster advertising our abuse address is a false statement about who can act. |
+**A phrase list is always one phrasing behind whoever writes the next page** (Joan's point on
+cp#130, and she is right). The greps above hunt for sentences somebody already thought of; the next
+true-sounding sentence nobody enumerated passes clean. A served page that says "has not opened to
+signups yet" is caught only because that phrase is now listed, which is luck dressed as process.
+
+**So served surfaces are censused by WALKING THE LIST, not by matching text.** The set is bounded
+and knowable, which is exactly what the phrase families are not:
+
+1. **List every served page** in each repository (`public/*.html` in the control plane and in
+   `vivijure-cf`, plus anything else the front door or a tenant studio serves).
+2. **Read each one, in full, at launch.** Not grep it. Read it.
+3. **Each page is then either (a) edited, or (b) deliberately retained with a recorded reason.**
+   Same disposition rule as a doc hit, and the same failure condition: a page that is neither is a
+   false public statement.
+4. **A page added since the last census is a census failure until it has been read**, whatever it
+   says. New surfaces are how this gate gets bypassed without anyone deciding to bypass it.
 
 **A served page is a public statement in exactly the way a policy file is**, and it is the one a
 stranger actually reads. A census that reads only the repository docs has not read what we published.
+
+Known surfaces at the time of writing, listed as a starting point and **not as the whole set** (the
+walk in step 1 is authoritative, because this table ages):
+
+| Surface | What to check |
+|---|---|
+| `public/report-abuse.html` (control plane) | Says signups have not opened; makes process commitments; states the 2258A reporting position. Must stay identical in substance to `REPORT-ABUSE.md`, its source of truth. It also carries a **literal tenant hostname** (`*.studio.vivijure.com`) that the plane reads from config, deliberately, so a reader recognises the shape: a suffix change makes this page wrong and this row is what catches it. |
+| `public/index.html`, `public/onboarding.html` footers | Carry the intake link; a dead link here is worse than no link. |
+| The tenant studio panel intake link (vivijure-cf) | Hosted-only by construction. Verify it renders on a hosted tenant and **does not** render in a self-hosted install, because a self-hoster advertising our abuse address is a false statement about who can act. **This row is a NEGATIVE check**; passing it means seeing nothing. |
+
+**Parked, deliberately, and not built here:** a machine-checkable status declaration on every
+user-facing page (a meta tag or data attribute the census asserts on) would beat both the phrase
+list and the human walk. It is the right long-term answer and it is a build, not a doc edit. Filed
+rather than smuggled into a documentation change.
 
 Every hit must be either (a) edited, or (b) deliberately retained with a reason (some are true of
 self-hosting and stay true). **A hit that is neither is a false public statement, and the launch is
