@@ -193,7 +193,7 @@ not a third-party email vendor.
 | Account record | While the account exists, plus a short tail after deletion. |
 | **AUP acceptance records** | **Retained after account deletion.** They are the evidence of what was agreed and are useless if deleted with the account. Retention should be set to a defensible limitations-period tail rather than "forever"; **counsel sets the number** (T1-5). The IP and user-agent fields are the privacy-sensitive part and should age out earlier than the acceptance fact itself. |
 | Provision job records | Short. They exist to make a failed provision resumable and debuggable. |
-| CSAM-related preservation | **1 year** from CyberTipline submission, per 18 U.S.C. 2258A(h), on a segregated path. See `ABUSE-AND-NCMEC.md`. This overrides deletion requests. |
+| CSAM-related preservation | **1 year** from CyberTipline submission, per 18 U.S.C. 2258A(h), on a segregated path (`PRESERVATION-PATH.md`; posture in `ABUSE-AND-NCMEC.md`, procedure in `ABUSE-RESPONSE-RUNBOOK.md`). The year is the **floor** of the duty, not an expiry: preserving longer is permitted (2258A(h)(5)) and destruction happens on a law enforcement request (2258B(c)), never on a timer of ours. This overrides deletion requests. |
 | Operational logs | As today: render-state, not creative payload, on our own Loki, up to 90 days. |
 
 **Deletion has a limit and the policy must say so:** an AUP acceptance record, and anything under a
