@@ -98,8 +98,26 @@
     },
     capacity() { return { quota: 10, existing_worker_sum: 0 }; },
     provision() { return { tenant_id: "ten_mock", job_id: "job_mock" }; },
+    // The REAL step vocabulary (provisioner PROVISION_STEPS), not a friendly
+    // parallel one. The old mock reported d1/r2/runpod/studio/verify, which no
+    // real job ever says, so the preview looked right while the shipped build
+    // screen matched almost nothing. A mock that invents its own shape is how a
+    // client drifts from the contract without anyone noticing.
     job() {
-      return { status: "succeeded", step: "verify", steps_done: ["d1", "r2", "runpod", "studio", "verify"] };
+      return {
+        kind: "provision",
+        status: "succeeded",
+        step: "verify",
+        steps_done: [
+          "d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints",
+          "wfp_upload", "modules_upload", "modules_install", "verify",
+        ],
+        error_step: null,
+        error_message: null,
+        from_release: null,
+        to_release: null,
+        finished_at: "2026-07-25T00:00:00Z",
+      };
     },
     // Mirrors the REAL 200 go-live body. A mock that invents its own shape is
     // how a client drifts from the contract without anyone noticing.

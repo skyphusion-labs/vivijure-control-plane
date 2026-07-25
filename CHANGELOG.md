@@ -6,6 +6,33 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(onboarding): the build screen waits out the provision poll boundary (cp#124)
+
+- **The defect:** the page started polling the job immediately after `POST /api/tenant/provision`.
+  A poll before the plane records `wfp_upload` cannot drive the provision (the RunPod setup key is
+  never stored, so the keyless continuation refuses by design, cp#18); the only thing it can do is
+  win the job lease and write that refusal, which marks a HEALTHY in-flight provision `failed` and
+  rolls the half-built tenant back, leaving a customer to reclaim out of it. Seen live on
+  2026-07-25 (vivijure-cf#240): attempt 1 polled immediately and declared the failure, attempt 2
+  waited about 90 seconds past the boundary and completed 9/9.
+- **The fix, in two halves.** The first poll waits `PROVISION_FIRST_POLL_MS` (90s, the cadence
+  proven live) behind a counting-down wait row that says why the screen is quiet; the wait is the
+  page own clock and is labelled as such, never a claim that a step is done. After that the cadence
+  comes from the JOB, not from a timer: slow (15s) while `steps_done` has not recorded the boundary
+  step, fast (2.5s) once the poll genuinely is the engine. A clock says what we hoped happened,
+  `steps_done` says what did.
+- **Also fixed, same screen:** the build rows matched on `d1`, `r2`, `runpod`, `studio`, `verify`,
+  and a real job reports `d1_create, d1_migrate, r2_bucket, r2_token, runpod_endpoints, wfp_upload,
+  modules_upload, modules_install, verify`. Only the last one ever matched, so a live provision
+  rendered as five untouched rows and then a tick. Rows now map onto the real step names, and the
+  test pins that set against `PROVISION_STEPS` imported from `src/provisioner.ts`, so a renamed or
+  added step fails CI instead of quietly rendering as a row that never lights up. The preview mock
+  reported the same invented vocabulary and now carries the real payload shape.
+- **A failure the screen cannot place is no longer dropped:** an error on a PRECONDITION step
+  (`bundle_fetch`, which is exactly what a bad release pin produces) gets its own row.
+- Server-side behaviour is UNCHANGED: this is the client half. The plane can still be walked into
+  the same refusal by any other caller that polls early (recorded on cp#124).
+
 ## v1.8.0 -- 2026-07-25
 
 MINOR: two feature-class changes (cp#112, cp#118).
