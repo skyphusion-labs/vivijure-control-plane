@@ -154,7 +154,9 @@ any LE correspondence all carry it.
 
 **Templates for the three record files are committed** at
 [`preservation-templates/`](preservation-templates/), so an incident starts from a form rather than
-from a blank page at the worst possible moment.
+from a blank page at the worst possible moment. The custody template is checked in as
+`custody.log.template` because `*.log` is gitignored in this repository; the live file inside an
+incident prefix is `custody.log`.
 
 ### 3.4 How material gets there
 

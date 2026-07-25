@@ -1,0 +1,9 @@
+# Chain of custody: inc_YYYYMMDD_xxxxxx
+# APPEND ONLY. A correction is a NEW line stating what it corrects; nothing is edited or removed.
+# Format: <UTC timestamp> | <responder> | <action> | <object or scope> | <detail>
+# Actions: open copy access submit-ncmec le-request le-response hold-open hold-release destroy close
+# Identifiers and findings, never payload. An access line names the EXACT artifact, not "the tenant material".
+#
+# 2026-01-01T00:00:00Z | <responder> | open | inc_YYYYMMDD_xxxxxx | report received via abuse@, P0
+# 2026-01-01T00:04:00Z | <responder> | hold-open | ten_... | hold_..., kind=internal
+# 2026-01-01T00:06:00Z | <responder> | access | <artifact id> | bounded look, stop rule applied at knowledge
