@@ -276,6 +276,15 @@ export class RunPodClient {
     await this.call<unknown>("endpoints.delete", "DELETE", `/endpoints/${id}`);
   }
 
+  /** Read a template back. The live gate uses it to verify the pin RunPod HOLDS, not the one we sent. */
+  async getTemplate(templateId: string): Promise<{ id: string; imageName: string }> {
+    return await this.call<{ id: string; imageName: string }>(
+      "templates.get",
+      "GET",
+      `/templates/${templateId}`,
+    );
+  }
+
   async deleteTemplate(id: string): Promise<void> {
     await this.call<unknown>("templates.delete", "DELETE", `/templates/${id}`);
   }

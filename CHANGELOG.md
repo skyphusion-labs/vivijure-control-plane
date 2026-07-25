@@ -6,6 +6,12 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.8.1 -- 2026-07-25
+
+PATCH: the tenant satellite pins and the mechanism that keeps them honest (cp#126), plus the
+onboarding poll-boundary fix (cp#124) -- its `public/` assets ship with this worker deploy, so
+it is documented here rather than left under Unreleased while the tag deploys it.
+
 ### fix(hosted): tenant satellite pins have ONE source of truth (cp#126)
 
 - **The defect:** the provisioner pinned backend 1.0.2 / upscale 0.2.7 / musetalk 0.1.0 /

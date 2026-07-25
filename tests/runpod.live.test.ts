@@ -17,6 +17,7 @@
 
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import { PROVISION_PLAN, RunPodClient, preflightQuota, parseQuotaError, templateEnv } from "../src/runpod";
+import { imageRef } from "../src/satellite-pins";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -87,7 +88,9 @@ describe.skipIf(!LIVE)("RunPod port against the real API (scratch account)", () 
 
     const tpl = await client.createTemplate(
       name,
-      `ghcr.io/skyphusion-labs/${spec.imageRepo}:${spec.tag}`,
+      // The SAME call production provisions with (cp#126): a literal here would let the live gate
+      // pass while the plane creates tenants on a different image.
+      imageRef(spec.key),
       templateEnv(spec.key, {
         endpoint: "https://example.r2.cloudflarestorage.com",
         accessKeyId: "livetest-not-a-real-key",
@@ -97,6 +100,11 @@ describe.skipIf(!LIVE)("RunPod port against the real API (scratch account)", () 
     );
     made.templates.push(tpl.id);
     expect(tpl.id).toBeTruthy();
+
+    // Ask RunPod what it STORED. Our own create payload is not evidence about the pinned image.
+    const readBack = await client.getTemplate(tpl.id);
+    expect(readBack.imageName, "template did not land on the pinned image").toBe(imageRef(spec.key));
+    console.log(`  template pin as RunPod holds it: ${readBack.imageName}`);
 
     const ep = await client.createEndpoint({
       name,

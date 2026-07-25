@@ -32,6 +32,10 @@ describe("satellite pins (cp#126)", () => {
     expect(plan).not.toMatch(/tag:\s*"/);
     expect(plan).not.toMatch(/imageRepo:\s*"/);
     expect(RUNPOD_TS).not.toContain("ghcr.io");
+    // The live gate provisions real endpoints; a literal there would let it pass while the plane
+    // builds tenants on something else.
+    const liveTs = readFileSync(join(HERE, "runpod.live.test.ts"), "utf8");
+    expect(liveTs).not.toContain("ghcr.io");
   });
 
   it("pins bare release tags only", () => {
