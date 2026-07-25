@@ -26,6 +26,23 @@ is a separate product on a separate cadence).
   would have failed on every call; `inherit` does preserve a `secret_text` binding; and a binding
   omitted from the patch is DROPPED, which is undocumented and is why the full desired set is sent
   every time. The wire shape now has its own regression test.
+### feat(abuse): interlock teardown against an open preservation hold (#118)
+
+- **New `preservation_holds` table (migration 0010) + three admin routes**, and teardown refuses the
+  whole pass while any hold on the tenant is open. Before this, nothing in the code stopped an
+  irreversible teardown of a tenant under an open abuse report; the control was an operator
+  remembering ABUSE-RESPONSE-RUNBOOK.md Section 5.2. Suspend stays the lever for an open incident.
+- **A table, not a column, because two statutory clocks can run at once on one tenant:**
+  `ncmec_2258a_h` (1 year, 18 U.S.C. 2258A(h)(1) as amended by Pub. L. 118-59) and `le_2703_f`
+  (90 days, renewable, 2703(f)); 2258A(h)(4) says they do not limit each other. `internal` covers a
+  report that has not started either clock.
+- **An elapsed clock does NOT release a hold.** The interlock keys on `released_at IS NULL` alone:
+  `expires_at` is the floor of the duty (2258A(h)(5) permits longer, 2258B(c) puts destruction on a
+  law-enforcement request). Releasing is an explicit, single-use, audited human act with a mandatory
+  reason.
+- The refusal uses the referential-guard vocabulary, so the teardown route reports it under
+  `refused` rather than `failed` -- the interlock working, with nothing to retry. If the store
+  cannot answer whether a hold is open, teardown fails closed.
 
 ## v1.7.1 -- 2026-07-25
 

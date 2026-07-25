@@ -38,7 +38,7 @@ export function randomToken(): string {
 }
 
 /** A public id with a type prefix: acct_, ten_, job_, smk_. 96 bits is ample and keeps ids short. */
-export function newId(prefix: "acct" | "ten" | "job" | "smk"): string {
+export function newId(prefix: "acct" | "ten" | "job" | "smk" | "hold"): string {
   const buf = new Uint8Array(12);
   crypto.getRandomValues(buf);
   return `${prefix}_${[...buf].map((b) => b.toString(16).padStart(2, "0")).join("")}`;

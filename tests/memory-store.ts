@@ -14,6 +14,8 @@ import type {
   ControlPlaneStore,
   LoginToken,
   OAuthState,
+  PreservationHold,
+  PreservationHoldKind,
   ProvisionJob,
   Session,
   Tenant,
@@ -38,6 +40,7 @@ export class MemoryStore implements ControlPlaneStore {
   jobs = new Map<string, ProvisionJob>();
   settings = new Map<string, string>([["signups_enabled", "true"]]);
   audit: { actor: string; action: string; target: string | null; detail: string | null }[] = [];
+  holds = new Map<string, PreservationHold>();
 
   private key(p: AuthProvider, s: string) {
     return `${p}:${s}`;
@@ -371,6 +374,51 @@ export class MemoryStore implements ControlPlaneStore {
     if (!t) return;
     t.teardown_at = new Date().toISOString();
     t.teardown_failures = JSON.stringify(failures);
+  }
+
+  // ---- preservation holds (cp#118) -------------------------------------------------------------
+  //
+  // MIRRORS D1Store SEMANTICS, and is NOT evidence about the shipped SQL -- the interlock query
+  // itself is proven against real SQLite in preservation-hold.test.ts. What it copies deliberately:
+  // OPEN is released_at === null with NO clock comparison (an elapsed floor still blocks), and the
+  // release is SINGLE-USE (a second release returns null rather than overwriting who decided).
+  async openPreservationHold(hold: {
+    id: string;
+    tenant_id: string;
+    kind: PreservationHoldKind;
+    reason: string;
+    opened_by: string;
+    expires_at: string | null;
+  }): Promise<PreservationHold> {
+    const row: PreservationHold = {
+      ...hold,
+      opened_at: new Date().toISOString(),
+      released_at: null,
+      released_by: null,
+      release_reason: null,
+    };
+    this.holds.set(row.id, row);
+    return { ...row };
+  }
+
+  async listPreservationHolds(tenantId: string, opts?: { openOnly?: boolean }): Promise<PreservationHold[]> {
+    return [...this.holds.values()]
+      .filter((h) => h.tenant_id === tenantId && (!opts?.openOnly || h.released_at === null))
+      .sort((a, b) => (a.opened_at < b.opened_at ? 1 : -1))
+      .map((h) => ({ ...h }));
+  }
+
+  async releasePreservationHold(
+    holdId: string,
+    releasedBy: string,
+    reason: string,
+  ): Promise<PreservationHold | null> {
+    const h = this.holds.get(holdId);
+    if (!h || h.released_at !== null) return null;
+    h.released_at = new Date().toISOString();
+    h.released_by = releasedBy;
+    h.release_reason = reason;
+    return { ...h };
   }
 
   async findResourceReferrers(
