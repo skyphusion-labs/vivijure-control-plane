@@ -1,6 +1,6 @@
 {
   "name": "vivijure-control-plane",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "private": true,
   "description": "Hosted control plane for Vivijure Studio: tenancy, onboarding, provisioning",
   "license": "AGPL-3.0-only",
