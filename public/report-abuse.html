@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Report abuse -- Vivijure hosted studio</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="favicon-16.png" type="image/png" sizes="16x16" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" sizes="180x180" />
+    <meta name="theme-color" content="#0E1730" />
+    <link rel="stylesheet" href="platform.css" />
+    <!--
+      cp#130. This page is the PUBLIC half of an intake channel that had none: the abuse address
+      existed only in a markdown file in a repo and in the AUP behind the signup gate, so the person
+      most likely to report (someone who came across a hosted render, not someone signing up) had
+      nowhere in the product to find us. Our enforcement is report-driven by ruling, which makes
+      intake the entire detection surface.
+
+      DELIBERATELY STATIC. No script tag, no fetch, no form, no analytics: a reporter should not
+      have to run our JavaScript or be counted to tell us something is wrong, and a form here would
+      collect more than an email does while working less well from a phone. The content mirrors
+      docs/legal/hosted/REPORT-ABUSE.md, which stays the source of truth.
+    -->
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Vivijure">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Vivijure</span>
+      </a>
+      <span class="tag">hosted studio</span>
+    </header>
+
+    <main class="shell">
+      <section class="panel">
+        <h1>Reporting abuse on the hosted Vivijure studio</h1>
+
+        <div class="callout callout-bad">
+          <p>
+            <strong>If a child is in immediate danger, call your local emergency number first.</strong>
+            Do not wait for us.
+          </p>
+        </div>
+
+        <p class="lede">
+          Write to <strong><a href="mailto:abuse@skyphusion.org">abuse@skyphusion.org</a></strong>.
+          That address reaches a human. You do not need an account with us to use it, and you do not
+          need to be the person affected.
+        </p>
+
+        <div class="callout callout-warn">
+          <p>
+            For suspected child sexual abuse material, <strong>please also report directly to the
+            NCMEC CyberTipline</strong> at
+            <a href="https://report.cybertip.org" rel="noopener noreferrer">report.cybertip.org</a>
+            or 1-800-843-5678, and to law enforcement. Do not wait for us to relay it. Outside the
+            United States, your national hotline is listed at
+            <a href="https://www.inhope.org" rel="noopener noreferrer">inhope.org</a>. Reporting to
+            them and to us at the same time is the right move; there is no reason to choose.
+          </p>
+        </div>
+
+        <p class="small muted">
+          Status: the hosted studio has not opened to signups yet. The address on this page works
+          today, so if you have something to report, send it now rather than waiting.
+        </p>
+
+        <p class="small muted">
+          If your issue is not abuse: <a href="mailto:privacy@skyphusion.org">privacy@skyphusion.org</a>
+          for privacy questions and data requests about yourself,
+          <a href="mailto:legal@skyphusion.org">legal@skyphusion.org</a> for policy questions,
+          copyright notices, and legal process.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>Why your report matters more here than on most platforms</h2>
+        <p>
+          <strong>We do not monitor what our users create.</strong> We run no content scanning, no
+          classifiers, and no automated review of prompts or generated output. That is a deliberate
+          privacy commitment, not an oversight, and we are not going to quietly change it.
+        </p>
+        <p>
+          The direct consequence: <strong>a report from a person is our primary way of learning that
+          something is wrong.</strong> We are not watching, so when you tell us, you are usually
+          telling us something we did not know. We treat it that way.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>What to include</h2>
+        <p class="muted">
+          You do not need all of this. Send what you have. An incomplete report is far better than
+          no report.
+        </p>
+        <ol>
+          <li><strong>A link or address</strong>: the studio URL (something like
+            <code>name.studio.vivijure.com</code>), or a link to the specific content.</li>
+          <li><strong>What you believe is wrong with it</strong>, in your own words. You do not need
+            to cite a policy section or use legal language.</li>
+          <li><strong>When you saw it</strong> (a date and rough time, with your time zone).</li>
+          <li><strong>How you came across it</strong>, if you are comfortable saying. It helps us
+            judge how the material is being distributed.</li>
+          <li><strong>A contact address</strong>, if you want acknowledgement or follow-up questions.</li>
+        </ol>
+
+        <div class="callout callout-bad">
+          <p>
+            <strong>Please do NOT attach suspected child sexual abuse material to your report.</strong>
+            Describe it and tell us where it is. Sending it forwards it, which we do not want you to
+            do and which creates legal problems for you and for us. A link and a description are
+            enough.
+          </p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What we do when a report arrives</h2>
+        <ol>
+          <li><strong>We log it</strong>, with the time it arrived.</li>
+          <li><strong>We triage it.</strong> Suspected child sexual abuse material and any imminent
+            risk of physical harm jump every other queue, at any hour.</li>
+          <li><strong>We suspend first when the report is serious.</strong> Suspension takes the
+            studio offline immediately and is reversible. It destroys nothing, which matters,
+            because evidence has to survive.</li>
+          <li><strong>We look only as far as we have to.</strong> We check the specific thing you
+            identified, and nothing else. We do not search the account, we do not read through
+            unrelated projects, and we stop the moment we know what we are dealing with.</li>
+          <li><strong>For child sexual abuse material we report to the NCMEC CyberTipline and
+            cooperate with law enforcement.</strong> In the United States this is a legal
+            obligation, not a favor we choose to do.</li>
+          <li><strong>We preserve the evidence</strong> for as long as the law requires, and we do
+            not delete it to be helpful to anyone.</li>
+          <li><strong>We terminate</strong> accounts that violate the bright-line rules,
+            permanently.</li>
+        </ol>
+        <p class="small muted">
+          We will not tell you what we found, what we did about it, or whether an account exists.
+          That is not evasiveness; an abuse channel that reports back on other people accounts is a
+          tool for harassment. If you gave us a contact address we will acknowledge that we received
+          your report.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>What we can and cannot reach</h2>
+        <p class="muted">
+          We would rather be plain about this than have you send a report to the wrong place.
+        </p>
+        <div class="row">
+          <div class="row-head"><span class="row-name">A studio we host at *.studio.vivijure.com</span>
+            <span class="row-meta">We can act</span></div>
+          <p class="row-why">We can suspend and terminate it.</p>
+        </div>
+        <div class="row">
+          <div class="row-head"><span class="row-name">Someone running Vivijure on their own hardware</span>
+            <span class="row-meta">We cannot act</span></div>
+          <p class="row-why">
+            Vivijure is free open-source software. A self-hosted instance never talks to us, we
+            cannot see it, and we cannot switch it off. Report it to whoever hosts it, or to law
+            enforcement.
+          </p>
+        </div>
+        <div class="row">
+          <div class="row-head"><span class="row-name">GPU rendering on a user own RunPod account</span>
+            <span class="row-meta">Partly</span></div>
+          <p class="row-why">
+            We can shut down the studio we host. The GPU endpoints are on their RunPod account under
+            their contract with RunPod, and we cannot touch them. Law enforcement and RunPod can.
+          </p>
+        </div>
+        <p class="small muted">
+          This is a real limit of an open-source, bring-your-own-compute product, and pretending
+          otherwise would waste your time at the moment you are trying to get something stopped.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>If you are the person in the content</h2>
+        <p>
+          Write to <a href="mailto:abuse@skyphusion.org">abuse@skyphusion.org</a> and say so.
+          Reports about non-consensual intimate imagery or sexual deepfakes of yourself go to the
+          front of the queue alongside the other serious categories, and we do not require you to
+          prove your identity before we act on a credible report.
+        </p>
+        <p class="muted">
+          You do not have to describe the material in detail. A link and "this is me and I did not
+          consent" is enough to start.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>Retaliation and good faith</h2>
+        <p class="muted">
+          We do not share reporter identities with the accounts reported on. We do not act on
+          reports as a way of settling scores between users, and a pattern of bad-faith reports is
+          itself an acceptable-use problem.
+        </p>
+        <p class="small muted">
+          The full policy is the hosted Acceptable Use Policy, shown when you sign up and published
+          in the source repository. This page mirrors
+          <code>docs/legal/hosted/REPORT-ABUSE.md</code>, which is the source of truth.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-foot">
+      <a href="/">Home</a>
+      <span aria-hidden="true">|</span>
+      <a href="mailto:abuse@skyphusion.org">abuse@skyphusion.org</a>
+    </footer>
+  </body>
+</html>

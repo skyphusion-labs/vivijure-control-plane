@@ -156,3 +156,20 @@ input[type="password"], input[type="text"] {
   .shell { padding: 18px 14px 60px; }
   .panel { padding: 16px; }
 }
+
+/* cp#130: the persistent abuse-report path. A footer rather than a panel because it has to be
+   reachable from every state of the front door, including the ones a reporter lands in without an
+   account (signed out, suspended, unknown), and those states swap the MAIN content. */
+.site-foot {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 22px 36px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+.site-foot a { color: var(--muted); }
+.site-foot a:hover { color: var(--ink); }
