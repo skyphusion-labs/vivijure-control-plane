@@ -89,7 +89,7 @@ beforeEach(() => {
       elapsedMs: 12,
     })),
     // Reclaim reaps through this. Default is a clean teardown; the failure cases override it.
-    teardown: vi.fn(async () => ({ ok: true, failures: [] })),
+    teardown: vi.fn(async () => ({ ok: true, failures: [], absent: [] })),
     // cf#103: the upgrade route preflights through the seam, then hands the context to the runner.
     // Default is a PASSING preflight; the refusal cases override it.
     preflightUpgrade: vi.fn(async () => ({
@@ -607,6 +607,7 @@ describe("POST /api/tenant/provision", () => {
     const { cookie, account } = await ready();
     await halfBuilt(account.id);
     wiring.teardown = vi.fn(async () => ({
+      absent: [],
       ok: false,
       failures: [{ resource: "r2_bucket", error: "bucket is not empty" }],
     }));
@@ -1304,12 +1305,23 @@ describe("POST /api/admin/tenants/:id/teardown", () => {
     return t;
   }
 
-  /** What a real teardown does to the row: blank the columns whose resource it actually reaped. */
-  function reaps(cols: ("script_name" | "d1_database_id" | "r2_bucket_name" | "r2_token_id")[], failures: { resource: string; error: string }[] = []) {
+  /**
+   * What a real teardown does to the row: blank the columns whose resource it actually reaped.
+   *
+   * `absent` (cp#110) blanks its column too -- an already-gone resource IS gone -- which is why it
+   * is expressed as columns here rather than as a separate list of names. That equivalence is the
+   * reason the route cannot tell the two apart from the row alone, and therefore the reason the
+   * route reports absence separately.
+   */
+  function reaps(
+    cols: ("script_name" | "d1_database_id" | "r2_bucket_name" | "r2_token_id")[],
+    failures: { resource: string; error: string }[] = [],
+    absent: { resource: string; detail: string }[] = [],
+  ) {
     wiring.teardown = vi.fn(async () => {
       const row = (await store.getTenantById("ten_abc123"))!;
       for (const c of cols) row[c] = null;
-      return { ok: failures.length === 0, failures };
+      return { ok: failures.length === 0, failures, absent };
     });
   }
 
@@ -1366,6 +1378,30 @@ describe("POST /api/admin/tenants/:id/teardown", () => {
     const row = (await store.getTenantById("ten_abc123"))!;
     expect(row.status).toBe("deleted");
     expect(row.deleted_at).not.toBeNull();
+  });
+
+  it("reports an ALREADY-GONE resource separately from one this pass reaped (cp#110)", async () => {
+    await provisionedTenant();
+    // The live shape: the studio script was already gone, everything else reaped normally. The
+    // column blanks either way, so `reaped` alone cannot say which happened -- and a teardown whose
+    // only finding is absence is a CLEAN pass, which is what lets the row reach deleted at all.
+    reaps(
+      ["script_name", "d1_database_id", "r2_bucket_name", "r2_token_id"],
+      [],
+      [{ resource: "worker", detail: "wfp.deleteScript: This Worker does not exist on your account." }],
+    );
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/teardown", { confirm_slug: "hero", delete_data: true }, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    const body = (await res.json()) as { status: string; reaped: string[]; absent: { resource: string }[] };
+    expect(body.absent.map((a) => a.resource)).toEqual(["worker"]);
+    expect(body.reaped).toContain("script_name");
+    expect(body.status).toBe("deleted");
+    // The audit row carries it too: an operator reading the ledger later sees that this plane did
+    // not delete that script, something else did.
+    const entry = store.audit.find((a) => a.action === "tenant.teardown" && a.target === "ten_abc123")!;
+    expect(JSON.parse(entry.detail!)).toMatchObject({ absent: ["worker"] });
   });
 
   it("splits REFUSALS from FAILURES, and a refusal keeps the row out of deleted", async () => {

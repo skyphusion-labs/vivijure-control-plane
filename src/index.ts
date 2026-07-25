@@ -914,6 +914,13 @@ async function adminRoutes(
     const refused = result.failures.filter((f) => f.error.startsWith("refused:"));
     const failed = result.failures.filter((f) => !f.error.startsWith("refused:"));
 
+    // ABSENT is a third answer, and it needs to be visible (cp#110). The reaped list above is a
+    // column diff, so a resource that was ALREADY GONE lands in it looking exactly like one this
+    // pass deleted. Reporting absence alongside is what keeps those two facts distinguishable: a
+    // script removed out of band is something an operator may want to go ask about, while nothing
+    // here needs a retry.
+    const absent = result.absent;
+
     // Promote to 'deleted' ONLY on a clean pass that was allowed to take the data. Anything else
     // leaves the status where it was, because "deleted" has to keep meaning "provably reaped".
     const finished = await deps.store.finishTeardown(tenant.id, lease.lease_token, result.ok && deleteData);
@@ -922,7 +929,13 @@ async function adminRoutes(
       actor,
       "tenant.teardown",
       tenant.id,
-      JSON.stringify({ delete_data: deleteData, reaped, refused: refused.length, failed: failed.length }),
+      JSON.stringify({
+        delete_data: deleteData,
+        reaped,
+        refused: refused.length,
+        failed: failed.length,
+        absent: absent.map((a) => a.resource),
+      }),
     );
 
     return json({
@@ -935,6 +948,7 @@ async function adminRoutes(
       reaped,
       refused,
       failed,
+      absent,
       teardown_at: finished?.teardown_at ?? after?.teardown_at ?? null,
     });
   }
