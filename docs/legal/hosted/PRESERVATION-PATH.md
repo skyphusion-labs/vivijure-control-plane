@@ -215,9 +215,23 @@ path names any bucket except `tenant.r2_bucket_name`**, verified by reading the 
 provision paths, (b) the bucket lock stops casual deletion, and (c) the privileged minting
 credential is Conrad rather than the crew.
 
+**Whether any credential the CREW holds has that reach is an open question, and it is the one that
+matters most.** The residual above is tolerable if the only credential that can reach the bucket is
+Conrad, who is also expected to be a named responder: if the two sets are the same human,
+minimisation is satisfied in substance. It stops being tolerable the moment a credential held by
+somebody who is **not** a responder can reach it, because 2258A(h)(3) asks for "appropriate steps to
+limit access" and a written rule is not obviously a step.
+
+**This document does not answer that question, deliberately.** Ernst holds no such credential and
+did not go looking for a wider one to test the hypothesis; hunting for a credential to prove a point
+is the exact behavior our own operating rules forbid. **Acceptance criterion 7 is the test that
+settles it**, run by infra during the cp#117 rehearsal, and it produces evidence rather than an
+assertion. Until it runs, treat the answer as unknown rather than as fine.
+
 **This is the weakest joint in the design and it should be reviewed rather than assumed acceptable.**
 If counsel or infra want true isolation, the option is a separate Cloudflare account, and the cost
 is that the copy in Section 3.4 stops being server-side. That trade is a decision, not a detail.
+Counsel item: **T1-13** in [`COUNSEL-REVIEW-CHECKLIST.md`](COUNSEL-REVIEW-CHECKLIST.md).
 
 ---
 
@@ -303,8 +317,9 @@ left implicit.
 | **RC** (recover) | Not applicable in the usual sense: the recovery objective here is that the material is **not** lost, which the lock and the interlock serve. |
 
 **This is an Ernst reading of a statutory cross-reference, and it should be checked by counsel and
-by infra** rather than treated as an assessment. It is added to `COUNSEL-REVIEW-CHECKLIST.md` scope
-by pointer rather than asserted satisfied. The honest position today: **we have not assessed our CSF
+by infra** rather than treated as an assessment. It is now a named counsel item: **T1-12** in
+[`COUNSEL-REVIEW-CHECKLIST.md`](COUNSEL-REVIEW-CHECKLIST.md), in Band T1 because the phase-in has
+expired rather than because signups depend on it. The honest position today: **we have not assessed our CSF
 posture and we should not claim consistency we have not tested.**
 
 ---
@@ -331,7 +346,9 @@ cp#117 is done when every one of these is demonstrably true. Each is stated so i
    never by value.
 7. **Negative test with a positive control:** a crew credential that is not the responder credential
    is refused on the bucket, AND the responder credential succeeds on the same operation. A refusal
-   test alone proves nothing, because a dead capability refuses everything.
+   test alone proves nothing, because a dead capability refuses everything. **This criterion is also
+   the evidence for counsel item T1-13** (Section 4.3): it is the only thing that converts "the crew
+   is not authorized" into "the crew cannot reach it.
 
 **Mechanism**
 
