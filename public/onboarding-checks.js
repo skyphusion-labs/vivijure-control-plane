@@ -589,6 +589,164 @@
     };
   }
 
+  // ---- provisioning: the poll boundary and the build screen (cp#124) ------
+  //
+  // WHY THE UI KNOWS ABOUT A BACKEND BOUNDARY AT ALL
+  // ------------------------------------------------
+  // A provision does not fit in one invocation, so the control plane persists
+  // progress and lets the next POLL drive the rest (cp#112). That makes the
+  // poll the engine, with ONE exception that is custody rather than a bug: the
+  // RunPod setup key is never stored, so a poll-driven continuation can only
+  // carry a job forward from `wfp_upload` onward (cp#18). A poll that lands
+  // BEFORE that step cannot help the job along at all. The only thing it can
+  // do is win the job lease and write the honest refusal, which marks the job
+  // failed and rolls the half-built tenant back.
+  //
+  // So an early poll is not a wasted request, it is the thing that ends a
+  // healthy provision. Live on 2026-07-25 (vivijure-cf#240): attempt 1 polled
+  // immediately and declared the failure; attempt 2 waited about 90 seconds
+  // past the boundary, then polled, and completed 9/9. Waiting is not hope:
+  // the first invocation is built to cross the boundary on its own (the yield
+  // at `runpod_endpoints` is suppressed exactly so it carries through to
+  // `wfp_upload`), so the step we wait for is one the runner always takes.
+  //
+  // Hence two rules, and the second is why this is more than a sleep:
+  //   1. the first poll waits out PROVISION_FIRST_POLL_MS;
+  //   2. the cadence after that is decided by the JOB, not by the clock: fast
+  //      only once steps_done actually reports the boundary step. A clock says
+  //      what we hoped happened, steps_done says what did.
+
+  /** The step after which a keyless poll can drive a provision (cp#18). */
+  const PROVISION_RESUME_BOUNDARY = "wfp_upload";
+
+  /**
+   * How long the page waits before its FIRST poll.
+   *
+   * PROVENANCE, so nobody trims it as a magic number: the whole pre-install
+   * prefix measured about 22 seconds on the finale run, and 90 seconds is the
+   * operator cadence proven live on cf#240 (attempt 2, 9/9 green). It also
+   * clears the runtime window the first invocation runs in, so a job that has
+   * NOT crossed the boundary by then is one no poll could have saved anyway.
+   * Well under the plane own 10-minute lost-driver rule, so nothing here can
+   * outlive the server patience and hide a dead job.
+   */
+  const PROVISION_FIRST_POLL_MS = 90000;
+
+  /** Cadence while the job is still short of the boundary: slow, because every
+   *  such poll is another chance to take the lease from a live driver. */
+  const PROVISION_PRE_BOUNDARY_POLL_MS = 15000;
+
+  /** Cadence past the boundary, where the poll IS the engine and speed helps. */
+  const PROVISION_POLL_MS = 2500;
+
+  /** How long we keep watching after the first poll before saying we stopped. */
+  const PROVISION_WATCH_MS = 600000;
+
+  /**
+   * The build screen, as rows over the control plane REAL step names.
+   *
+   * The `steps` strings are the provisioner PROVISION_STEPS values verbatim,
+   * not a friendly parallel vocabulary: the job payload reports `step`,
+   * `steps_done` and `error_step` in those exact words, so anything else here
+   * silently matches nothing. That is not hypothetical -- this list used to
+   * read d1/r2/runpod/studio/verify, none of which a real job ever reports, so
+   * a live provision rendered as five untouched rows until the last one.
+   * tests/onboarding-checks.test.ts pins these against the server list.
+   */
+  const PROVISION_ROWS = [
+    { key: "database", label: "Creating your database", steps: ["d1_create", "d1_migrate"] },
+    { key: "storage", label: "Creating your storage bucket", steps: ["r2_bucket", "r2_token"] },
+    { key: "endpoints", label: "Creating your 4 RunPod endpoints", steps: ["runpod_endpoints"] },
+    { key: "studio", label: "Deploying your studio", steps: ["wfp_upload"] },
+    { key: "modules", label: "Installing your render modules", steps: ["modules_upload", "modules_install"] },
+    { key: "verify", label: "Checking it all works", steps: ["verify"] },
+  ];
+
+  function provisionStepsDone(job) {
+    return job && Array.isArray(job.steps_done) ? job.steps_done : [];
+  }
+
+  /** True once the job has recorded the step a keyless poll can resume from. */
+  function pastResumeBoundary(job) {
+    return provisionStepsDone(job).indexOf(PROVISION_RESUME_BOUNDARY) !== -1;
+  }
+
+  function provisionTerminal(job) {
+    return !!job && (job.status === "succeeded" || job.status === "failed");
+  }
+
+  /** How long to wait before the NEXT poll of this job. */
+  function provisionPollDelayMs(job) {
+    if (provisionTerminal(job)) return 0;
+    return pastResumeBoundary(job) ? PROVISION_POLL_MS : PROVISION_PRE_BOUNDARY_POLL_MS;
+  }
+
+  /**
+   * Project a job payload onto the build rows. Pure, so the screen is testable.
+   *
+   * An error on a step no row covers (a PRECONDITION such as `bundle_fetch`,
+   * which is named precisely so a bad release pin is attributable) is appended
+   * as its own row rather than dropped. A failure the screen cannot place is
+   * still a failure the tenant must see.
+   */
+  function provisionRows(job) {
+    const done = provisionStepsDone(job);
+    const step = (job && job.step) || null;
+    const errorStep = (job && job.error_step) || null;
+    const rows = PROVISION_ROWS.map(function (row) {
+      let status = "todo";
+      if (errorStep && row.steps.indexOf(errorStep) !== -1) status = "failed";
+      else if (row.steps.every(function (s) { return done.indexOf(s) !== -1; })) status = "done";
+      else if (step && row.steps.indexOf(step) !== -1) status = job && job.status === "failed" ? "failed" : "running";
+      else if (row.steps.some(function (s) { return done.indexOf(s) !== -1; })) status = "running";
+      return {
+        key: row.key,
+        label: row.label,
+        status: status,
+        error: status === "failed" ? (job && job.error_message) || undefined : undefined,
+      };
+    });
+    const covered = PROVISION_ROWS.some(function (row) { return errorStep && row.steps.indexOf(errorStep) !== -1; });
+    if (errorStep && !covered) {
+      rows.push({
+        key: errorStep,
+        label: "Setup stopped at " + errorStep,
+        status: "failed",
+        error: (job && job.error_message) || undefined,
+      });
+    }
+    return rows;
+  }
+
+  /** The waiting row shown before the first poll. Counts OUR clock, and says so. */
+  function provisionWaitCopy(remainingMs) {
+    const secs = Math.max(0, Math.ceil((remainingMs || 0) / 1000));
+    if (secs === 0) return "Checking on your studio now";
+    return "Building your studio: first check in " + secs + (secs === 1 ? " second" : " seconds");
+  }
+
+  /**
+   * Why the screen is quiet. Plain, because the alternative reads as a hang.
+   *
+   * It takes the wait it is describing rather than reading the constant: the
+   * preview compresses the wait, and a note that said 90 while the screen
+   * counted 3 would be a small lie on a screen whose whole job is not telling
+   * them any. Caught in a browser, not by a unit test.
+   */
+  function provisionWaitNote(totalMs) {
+    const ms = typeof totalMs === "number" && totalMs > 0 ? totalMs : PROVISION_FIRST_POLL_MS;
+    return "The first stage of setup runs on our side and cannot be hurried along. Checking too " +
+      "early cannot help it and would cut it short, so we leave it alone for about " +
+      Math.round(ms / 1000) + " seconds and then watch it step by step.";
+  }
+
+  /** No silent cap: when we stop watching we say so, with the real number. */
+  function provisionTimeoutCopy() {
+    const minutes = Math.floor((PROVISION_FIRST_POLL_MS + PROVISION_WATCH_MS) / 60000);
+    return "We stopped watching after more than " + minutes + " minutes. Setup may still be " +
+      "running; reload this page to pick the status back up.";
+  }
+
   return {
     STEPS: STEPS,
     REPRESENTATIVE_PLAN: REPRESENTATIVE_PLAN,
@@ -609,5 +767,18 @@
     formatUsd: formatUsd,
     stepIndex: stepIndex,
     canAdvance: canAdvance,
+    PROVISION_RESUME_BOUNDARY: PROVISION_RESUME_BOUNDARY,
+    PROVISION_FIRST_POLL_MS: PROVISION_FIRST_POLL_MS,
+    PROVISION_PRE_BOUNDARY_POLL_MS: PROVISION_PRE_BOUNDARY_POLL_MS,
+    PROVISION_POLL_MS: PROVISION_POLL_MS,
+    PROVISION_WATCH_MS: PROVISION_WATCH_MS,
+    PROVISION_ROWS: PROVISION_ROWS,
+    provisionWaitNote: provisionWaitNote,
+    pastResumeBoundary: pastResumeBoundary,
+    provisionTerminal: provisionTerminal,
+    provisionPollDelayMs: provisionPollDelayMs,
+    provisionRows: provisionRows,
+    provisionWaitCopy: provisionWaitCopy,
+    provisionTimeoutCopy: provisionTimeoutCopy,
   };
 });

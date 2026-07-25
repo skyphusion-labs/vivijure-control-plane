@@ -18,8 +18,23 @@ import {
   slugHint,
   SLUG_RESERVED,
   stepIndex,
+  PROVISION_FIRST_POLL_MS,
+  PROVISION_PRE_BOUNDARY_POLL_MS,
+  PROVISION_POLL_MS,
+  PROVISION_WATCH_MS,
+  PROVISION_ROWS,
+  pastResumeBoundary,
+  provisionWaitNote,
+  provisionPollDelayMs,
+  provisionRows,
+  provisionWaitCopy,
+  provisionTimeoutCopy,
   type PlannedEndpoint,
+  type ProvisionJobView,
 } from "../public/onboarding-checks.js";
+// The SERVER list, imported rather than restated: the point of the pin below is
+// that the UI cannot drift from it.
+import { PROVISION_STEPS } from "../src/provisioner";
 
 // The hosted onboarding front door (#58). These helpers carry the claims the
 // flow makes to a stranger about their money and their RunPod account, so the
@@ -485,5 +500,167 @@ describe("STEPS / stepIndex", () => {
 
   it("returns -1 for an unknown step", () => {
     expect(stepIndex("nope")).toBe(-1);
+  });
+});
+
+// ---- cp#124: the provision poll boundary --------------------------------
+//
+// The defect these cover is not cosmetic. A poll that lands before the plane
+// records `wfp_upload` cannot drive the job (the setup key is never stored, so
+// the keyless continuation refuses by design, cp#18); all it can do is take the
+// job lease and write that refusal, which marks a HEALTHY provision failed and
+// rolls the half-built tenant back. Live on 2026-07-25 (vivijure-cf#240):
+// attempt 1 polled immediately and declared the failure, attempt 2 waited past
+// the boundary and went 9/9.
+
+const PRE_BOUNDARY: ProvisionJobView = {
+  kind: "provision",
+  status: "running",
+  step: "r2_token",
+  steps_done: ["d1_create", "d1_migrate", "r2_bucket", "r2_token"],
+};
+
+const PAST_BOUNDARY: ProvisionJobView = {
+  kind: "provision",
+  status: "running",
+  step: "modules_upload",
+  steps_done: [
+    "d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints",
+    "wfp_upload", "modules_upload",
+  ],
+};
+
+describe("pastResumeBoundary (the fact the cadence is decided by)", () => {
+  it("is FALSE for a job that has not recorded the boundary step", () => {
+    expect(pastResumeBoundary(PRE_BOUNDARY)).toBe(false);
+  });
+
+  it("is false for a job with no progress at all, and for nothing at all", () => {
+    expect(pastResumeBoundary({ status: "queued", steps_done: [] })).toBe(false);
+    expect(pastResumeBoundary(null)).toBe(false);
+    expect(pastResumeBoundary(undefined)).toBe(false);
+    // A malformed payload must not read as "past the boundary": that would be
+    // the optimistic direction, and the optimistic direction kills provisions.
+    expect(pastResumeBoundary({ status: "running" } as ProvisionJobView)).toBe(false);
+  });
+
+  it("is true once steps_done carries the boundary step", () => {
+    expect(pastResumeBoundary(PAST_BOUNDARY)).toBe(true);
+  });
+
+  it("reads steps_done, NOT the elapsed clock or the step field", () => {
+    // A job whose CURRENT step is past the boundary but whose recorded progress
+    // is not: we believe the record, because the record is what the resume
+    // reads. Anything else is the UI guessing on the tenant behalf.
+    expect(pastResumeBoundary({ status: "running", step: "verify", steps_done: ["d1_create"] })).toBe(false);
+  });
+});
+
+describe("provisionPollDelayMs (slow before the boundary, fast after)", () => {
+  it("waits the slow cadence while the poll cannot drive anything", () => {
+    expect(provisionPollDelayMs(PRE_BOUNDARY)).toBe(PROVISION_PRE_BOUNDARY_POLL_MS);
+    expect(PROVISION_PRE_BOUNDARY_POLL_MS).toBeGreaterThan(PROVISION_POLL_MS);
+  });
+
+  it("polls fast once the poll IS the engine", () => {
+    expect(provisionPollDelayMs(PAST_BOUNDARY)).toBe(PROVISION_POLL_MS);
+  });
+
+  it("does not wait at all on a terminal job", () => {
+    expect(provisionPollDelayMs({ status: "succeeded", steps_done: [] })).toBe(0);
+    expect(provisionPollDelayMs({ status: "failed", steps_done: [] })).toBe(0);
+  });
+
+  it("the first poll waits long enough to clear the boundary, and not so long it outlives the server patience", () => {
+    // The plane calls a driver lost after 10 minutes (MAX_JOB_STALE_MS in
+    // src/index.ts) and the whole pre-install prefix measured about 22s.
+    expect(PROVISION_FIRST_POLL_MS).toBeGreaterThanOrEqual(60000);
+    expect(PROVISION_FIRST_POLL_MS).toBeLessThan(10 * 60 * 1000);
+  });
+});
+
+describe("provisionRows (the build screen speaks the plane OWN step names)", () => {
+  it("every step the provisioner can record is covered by exactly one row", () => {
+    // THE ANTI-DRIFT PIN. PROVISION_STEPS is imported from the shipped server
+    // source, so a renamed or added step fails here instead of silently
+    // rendering as a row that never lights up (which is what shipped: the rows
+    // read d1/r2/runpod/studio/verify and only "verify" ever matched).
+    const covered = PROVISION_ROWS.flatMap((row) => row.steps);
+    expect([...covered].sort()).toEqual([...PROVISION_STEPS].sort());
+    expect(new Set(covered).size).toBe(covered.length);
+  });
+
+  it("marks a row done only when ALL of its steps are done", () => {
+    const rows = provisionRows({ status: "running", step: "d1_migrate", steps_done: ["d1_create"] });
+    const db = rows.find((r) => r.key === "database");
+    expect(db?.status).toBe("running");
+    const done = provisionRows({ status: "running", step: "r2_bucket", steps_done: ["d1_create", "d1_migrate"] });
+    expect(done.find((r) => r.key === "database")?.status).toBe("done");
+  });
+
+  it("renders a real in-flight job as progress, not as five untouched rows", () => {
+    const rows = provisionRows(PAST_BOUNDARY);
+    expect(rows.find((r) => r.key === "database")?.status).toBe("done");
+    expect(rows.find((r) => r.key === "storage")?.status).toBe("done");
+    expect(rows.find((r) => r.key === "endpoints")?.status).toBe("done");
+    expect(rows.find((r) => r.key === "studio")?.status).toBe("done");
+    expect(rows.find((r) => r.key === "modules")?.status).toBe("running");
+    expect(rows.find((r) => r.key === "verify")?.status).toBe("todo");
+  });
+
+  it("shows the REAL step error verbatim, on the row that failed", () => {
+    const rows = provisionRows({
+      status: "failed",
+      step: "runpod_endpoints",
+      steps_done: ["d1_create", "d1_migrate", "r2_bucket", "r2_token"],
+      error_step: "runpod_endpoints",
+      error_message: "your RunPod worker quota is 10 and this plan needs 12",
+    });
+    const ep = rows.find((r) => r.key === "endpoints");
+    expect(ep?.status).toBe("failed");
+    expect(ep?.error).toBe("your RunPod worker quota is 10 and this plan needs 12");
+  });
+
+  it("never drops a failure it cannot place: a PRECONDITION failure gets its own row", () => {
+    // bundle_fetch is deliberately not a PROVISION_STEP (it creates nothing),
+    // and it is exactly the failure a bad release pin produces.
+    const rows = provisionRows({
+      status: "failed",
+      step: "d1_create",
+      steps_done: [],
+      error_step: "bundle_fetch",
+      error_message: "no bundle for release v9.9.9",
+    });
+    const extra = rows.find((r) => r.key === "bundle_fetch");
+    expect(extra?.status).toBe("failed");
+    expect(extra?.error).toBe("no bundle for release v9.9.9");
+  });
+
+  it("renders nothing-yet as all todo rather than throwing", () => {
+    expect(provisionRows(null).every((r) => r.status === "todo")).toBe(true);
+  });
+});
+
+describe("the waiting screen says what it is doing", () => {
+  it("counts down in seconds and never claims a step is done", () => {
+    expect(provisionWaitCopy(90000)).toContain("90 seconds");
+    expect(provisionWaitCopy(1000)).toContain("1 second");
+    expect(provisionWaitCopy(0)).toBe("Checking on your studio now");
+    expect(provisionWaitCopy(null)).toBe("Checking on your studio now");
+  });
+
+  it("describes the wait it is ACTUALLY doing, not the constant", () => {
+    // The preview compresses the wait; a note reading 90 over a screen counting
+    // 3 is a small lie on the one screen that must not tell any.
+    expect(provisionWaitNote(3000)).toContain("3 seconds");
+    expect(provisionWaitNote(PROVISION_FIRST_POLL_MS)).toContain("90 seconds");
+    expect(provisionWaitNote(null)).toContain("90 seconds");
+  });
+
+  it("stops watching out loud, with the real number of minutes", () => {
+    const copy = provisionTimeoutCopy();
+    const minutes = Math.floor((PROVISION_FIRST_POLL_MS + PROVISION_WATCH_MS) / 60000);
+    expect(copy).toContain(String(minutes));
+    expect(copy).toContain("reload this page");
   });
 });

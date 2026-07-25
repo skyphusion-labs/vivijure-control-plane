@@ -92,12 +92,18 @@ export interface ProvisionStarted {
   job_id: string;
 }
 
+/** The job payload as the route reports it (cp#43). `step`, `steps_done` and
+ *  `error_step` carry the provisioner OWN step names, never a UI vocabulary. */
 export interface JobStatus {
+  kind?: string;
   status: string;
-  step?: string;
+  step?: string | null;
   steps_done?: string[];
-  error_step?: string;
-  error_message?: string;
+  error_step?: string | null;
+  error_message?: string | null;
+  from_release?: string | null;
+  to_release?: string | null;
+  finished_at?: string | null;
 }
 
 /** An error thrown by json(): carries the REAL status and parsed body so the
