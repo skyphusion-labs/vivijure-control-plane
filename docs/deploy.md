@@ -86,7 +86,8 @@ Repository **variables**:
 
 Worker **secrets** (`wrangler secret put`, never in Actions): `POSTERN_SEND_TOKEN`,
 `GOOGLE_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `APPLE_PRIVATE_KEY`,
-`CONTROL_PLANE_ADMIN_TOKEN`, `CF_PROVISIONER_TOKEN`, `STUDIO_TOKEN_KEK`.
+`CONTROL_PLANE_ADMIN_TOKEN`, `CF_PROVISIONER_TOKEN`, `STUDIO_TOKEN_KEK`, and -- only while a
+rotation is in progress -- `STUDIO_TOKEN_KEK_NEXT` (cp#95).
 
 These are `secret_text` bindings on the worker and they **persist across `wrangler deploy`**, so the
 pipeline does not carry them and a deploy does not need them staged in Actions. They are set once,
@@ -111,6 +112,85 @@ So: **a worker secret is not considered set until this table names its owner and
 | `GOOGLE_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `APPLE_PRIVATE_KEY` | unset (SSO not offered) | n/a |
+| `STUDIO_TOKEN_KEK_NEXT` | whoever runs the rotation; escrow: Mackaye | **Only exists while a rotation window is open** (cp#95). Generated on an operator box, escrowed to crew-secrets tier `secrets-vivijure-kek` BEFORE it is installed, removed from the worker when the window closes |
+
+### Rotating `STUDIO_TOKEN_KEK` (cp#95)
+
+`tenants.studio_token_enc` is the only customer credential this plane stores as a usable value, so
+the key protecting it has to be changeable on a calm day. The capability is product code
+(`src/kek-rotation.ts`, two admin routes), not a script, because the day you need it is the worst
+possible day to be writing it.
+
+**The plane never mints its own KEK.** A key generated inside the platform is precisely how the
+current one came to exist with no owner and no escrow (the section above). The new key is born on an
+operator box and escrowed BEFORE it is installed.
+
+The two routes, both admin-gated:
+
+| Route | Does |
+| --- | --- |
+| `GET /api/admin/kek/status` | Read-only census. Counts stored tokens by WHICH installed key opens them, and answers `safe_to_promote` |
+| `POST /api/admin/kek/reencrypt` | Re-encrypts stale rows under the write slot. Idempotent, resumable, bounded by an optional `limit`. Answers 200 only when a FRESH census says the old key can be dropped, 409 otherwise |
+
+The sweep is safe to re-run: the work list is derived from the data every time (a row is work iff it
+does not open under the write slot), so there is no cursor to go stale and a second run is a no-op.
+
+#### The procedure
+
+1. **Generate the new key on an operator box** and write it straight to a `chmod 600` file. Never
+   render it.
+
+   ```bash
+   umask 077
+   head -c 32 /dev/urandom | base64 > ~/.vivijure-studio-token-kek-next
+   ```
+
+2. **Escrow it BEFORE installing it**, to crew-secrets tier `secrets-vivijure-kek` (mackaye +
+   conrad-operator recipients only -- this key decrypts live customer credentials, so the every-member
+   `shared` tier was rejected by ruling). Runbook:
+   `crew-secrets/docs/vivijure-kek-escrow-recovery.md`, section "Rotation: escrow the NEW key first".
+   A rotation that produces a key with one copy has recreated the original defect.
+
+3. **Install it as the second binding.** Reads now try both keys, so nothing has changed for any
+   tenant and the step is reversible by deleting the binding.
+
+   ```bash
+   npx wrangler secret put STUDIO_TOKEN_KEK_NEXT   # paste from the chmod 600 file
+   ```
+
+   Confirm the window is open and see where you stand:
+
+   ```bash
+   curl -sS -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
+     https://studio.vivijure.com/api/admin/kek/status
+   ```
+
+4. **Flip the write direction**: set `STUDIO_TOKEN_KEK_ENCRYPT_SLOT = "next"` in the wrangler config
+   and deploy. From here new tokens are written under the new key, which is what lets the sweep
+   converge instead of chasing live writes.
+
+5. **Sweep**, and re-run until it answers 200:
+
+   ```bash
+   curl -sS -X POST -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
+     -H 'content-type: application/json' -d '{}' \
+     https://studio.vivijure.com/api/admin/kek/reencrypt
+   ```
+
+   A 409 means work is left (or a row is unreadable). Read `census`, not `sweep`: the sweep report is
+   the writer describing its own work, the census is a fresh read of what is stored.
+
+6. **Promote only on `safe_to_promote: true`.** Move the new value into `STUDIO_TOKEN_KEK`, set the
+   slot back to `primary`, deploy, then delete `STUDIO_TOKEN_KEK_NEXT` and update the owners table
+   above. Do not reorder these: the slot must stop naming `next` before the next binding goes away,
+   or provisioning refuses (by design -- it will not silently write under the primary).
+
+#### What blocks a promotion, and why it is not a bug
+
+`safe_to_promote` is false while ANY row is `unreadable` -- a row no installed key opens. The sweep
+never touches those: re-encrypting a row we could not read would destroy the only ciphertext, and the
+value may still be recoverable from an escrowed key nobody has tried. Investigate the row before you
+drop a key; dropping one with an unreadable row outstanding is how a tenant loses its token for good.
 
 ### Minted, not yet bound
 

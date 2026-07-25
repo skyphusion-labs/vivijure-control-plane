@@ -258,6 +258,9 @@ is a variable, which is a secret, and which are allowed to be empty.
 | `APPLE_PRIVATE_KEY` | secret | The Apple `.p8`, parked with the rest of the seam |
 | `CONTROL_PLANE_ADMIN_TOKEN` | secret | The admin gate. **Unset means no admin surface** |
 | `CF_PROVISIONER_TOKEN` | secret | Mints tenant databases, storage, and scoped credentials |
+| `STUDIO_TOKEN_KEK` | secret | Encrypts every tenant's stored studio token at rest |
+| `STUDIO_TOKEN_KEK_NEXT` | secret | The INCOMING key during a rotation window (cp#95). Absent = no window open |
+| `STUDIO_TOKEN_KEK_ENCRYPT_SLOT` | var | Which installed KEK new ciphertext is written under: `primary` (default) or `next` |
 
 **Provisioning refuses politely when it is not fully wired.** If any of `CF_PROVISIONER_TOKEN`,
 `CF_ACCOUNT_ID`, `DISPATCH_NAMESPACE`, `TENANT_MODULE_NAMESPACE`, `STUDIO_RELEASE`, or the

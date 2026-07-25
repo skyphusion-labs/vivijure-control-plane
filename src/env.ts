@@ -7,6 +7,8 @@
 // studio are separate Workers with disjoint bindings: the control plane never touches a tenant's
 // D1 or R2, and the studio does not know the control plane exists.
 
+import { kekRing, type KekRing } from "./token-crypto";
+
 /** CF rate-limit binding (same shape the studio uses in src/rate-limit.ts). */
 export interface RateLimiter {
   limit(options: { key: string }): Promise<{ success: boolean }>;
@@ -134,6 +136,19 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    *  dispatcher-injected auth model: absent -> provisioning refuses 503, same as this whole block. */
   STUDIO_TOKEN_KEK?: string;
 
+  /** cp#95: the INCOMING KEK during a rotation window. Present -> the plane can read ciphertext
+   *  written under either key, so a rotation never interrupts dispatcher-injected auth. Absent ->
+   *  no window is open and the sweep route refuses. A worker secret, exactly like the primary. */
+  STUDIO_TOKEN_KEK_NEXT?: string;
+
+  /** cp#95: which installed KEK NEW ciphertext is written under -- "primary" (default) or "next".
+   *  A plain VAR, not a secret: it names a key, it is not one. It is config rather than D1 state so
+   *  that the re-encryption sweep and the live provision path cannot disagree about the write
+   *  direction (that disagreement is what makes a sweep never converge), and so that flipping the
+   *  direction of every customer credential is a reviewable deploy rather than a hidden toggle.
+   *  "next" with no STUDIO_TOKEN_KEK_NEXT installed REFUSES to encrypt; it never falls back. */
+  STUDIO_TOKEN_KEK_ENCRYPT_SLOT?: string;
+
   // ---- optional ----
 
   /** Per-tenant daily spend ceiling ($) set as the tenant studio's SPEND_DAILY_CEILING at provision
@@ -143,6 +158,21 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   /** Throttles the outbound-email amplifier (/api/auth/email/start) and provisioning. */
   CP_RATE_LIMIT?: RateLimiter;
 }
+
+/**
+ * cp#95: the KEK ring this deploy runs on, DERIVED in one place.
+ *
+ * Every reader of the studio-token keys goes through here -- dispatch injection (routing.ts), the
+ * provisioner, the smoke client, and the rotation routes. One derivation means the write direction
+ * cannot be read differently by two call sites, and two call sites disagreeing about which key is
+ * being written is exactly what makes a rotation sweep chase its own tail.
+ *
+ * `STUDIO_TOKEN_KEK` is optional in this interface, so an unconfigured plane yields a ring with an
+ * empty primary. That is safe rather than lucky: the provisioner wiring returns undefined without
+ * the secret, and dispatch injection tests the secret before it ever builds a ring.
+ */
+export const studioKekRing = (env: ControlPlaneEnv): KekRing =>
+  kekRing(env.STUDIO_TOKEN_KEK ?? "", env.STUDIO_TOKEN_KEK_NEXT, env.STUDIO_TOKEN_KEK_ENCRYPT_SLOT);
 
 /** The front door origin. Derived, so it can never disagree with routing's root host. */
 export const publicOrigin = (env: ControlPlaneEnv): string => `https://${env.CONTROL_PLANE_HOST}`;

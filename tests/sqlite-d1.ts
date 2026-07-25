@@ -34,7 +34,16 @@ export function d1Over(db: DatabaseSync): any {
           return (stmt.get(...(bound as never[])) as T) ?? null;
         },
         async run() {
-          return stmt.run(...(bound as never[]));
+          // D1 answers { success, meta: { changes, last_row_id, ... } }; node:sqlite answers
+          // { changes, lastInsertRowid }. The COUNT is projected into D1's shape rather than left in
+          // node's, because a statement whose correctness IS its row count (the cp#95 compare-and-set)
+          // cannot otherwise be proven against a real engine at all. Still a pipe: the number is the
+          // engine's, only the envelope is translated.
+          const res = stmt.run(...(bound as never[]));
+          return {
+            success: true,
+            meta: { changes: Number(res.changes ?? 0), last_row_id: Number(res.lastInsertRowid ?? 0) },
+          };
         },
         // Added when the #23 referential guard needed a multi-row read. D1's all() answers
         // { results }, so the shim answers the same shape -- the point of this thing is to be a pipe,

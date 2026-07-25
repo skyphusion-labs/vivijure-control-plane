@@ -28,6 +28,7 @@
 
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import { CfApi } from "../src/cf-api";
+import { kekRing } from "../src/token-crypto";
 import { CfTokenMinter } from "../src/token-minter";
 import {
   runProvisionJob,
@@ -120,7 +121,10 @@ beforeAll(async () => {
     moduleNamespace: env.moduleNamespace,
     release: tag,
     tenantScriptName: (s: string) => `tenant-${s}-studio`,
-    kek: env.studioTokenKek,
+    // cp#95: the live e2e runs on a SINGLE-key ring, which is the shape production runs in
+    // outside a rotation window. Exercising the window belongs in the unit suite; this suite
+    // proves the production wiring, and a fixture that quietly opened a window would not.
+    kek: kekRing(env.studioTokenKek),
     spendDailyCeiling: env.spendDailyCeiling,
     callTenantStudio: dispatch.callTenantStudio,
     callTenantModule: dispatch.callTenantModule,

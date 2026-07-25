@@ -210,6 +210,19 @@ TENANT_MODULE_NAMESPACE = "${TENANT_MODULE_NAMESPACE}"
 # The pinned studio release every new tenant gets (the golden-checkpoint pin; see the Q4 ruling).
 STUDIO_RELEASE = "${STUDIO_RELEASE}"
 
+# cp#95: which installed studio-token KEK NEW ciphertext is written under -- "primary" (the default,
+# and the only correct value outside a rotation) or "next". It NAMES a key; it is not one, so it is a
+# var rather than a secret.
+#
+# WHY THIS IS CONFIG AND NOT A RUNTIME TOGGLE. The re-encryption sweep and the live provision path
+# must write under the SAME key or the rotation never converges (sweep a row forward, let a provision
+# write the next one backward, forever). Making it a deploy-time fact gives that question one home,
+# and makes flipping the write direction of every stored customer credential a reviewable change in
+# git rather than an unlogged click. Leave it unset until a rotation is actually in progress; setting
+# it to "next" with no STUDIO_TOKEN_KEK_NEXT installed REFUSES to encrypt rather than falling back.
+# Full procedure: docs/deploy.md, "Rotating STUDIO_TOKEN_KEK".
+# STUDIO_TOKEN_KEK_ENCRYPT_SLOT = "primary"
+
 # Throttles the outbound-email amplifier (/api/auth/email/start).
 [[unsafe.bindings]]
 name = "CP_RATE_LIMIT"
