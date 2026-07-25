@@ -6,6 +6,31 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(hosted): tenant satellite pins have ONE source of truth (cp#126)
+
+- **The defect:** the provisioner pinned backend 1.0.2 / upscale 0.2.7 / musetalk 0.1.0 /
+  audio-upscale 0.1.0 while production rendered on 1.0.11 / 1.0.4 / 1.0.5 / 1.0.7, so every hosted
+  tenant was provisioned onto images several release lines behind anything the estate verifies.
+  Nobody was careless: "pin BOTH panels on a release" never grew a third leg for the plane, and
+  there was no place a wrong pin could be SEEN. Found live during the vivijure-cf#240 verify render.
+- **The pins now mirror production, not the newest tag.** All four move to what the production
+  endpoints actually run (read off `t9wcvlxh8rc5la`, `4q8idwbk6tyqbq`, `zw6pt4lymf69pk`,
+  `sj0btgpjdtswa7` on 2026-07-25), and each pin records the endpoint it mirrors and the date it was
+  read. Deliberately NOT the newest published tags: production had not adopted them, and musetalk
+  1.0.6 carries an HTTP serve path production has never run. A paying tenant is not where that gets
+  discovered.
+- `src/satellite-pins.ts` is the one place a version lives; `src/runpod.ts` decides layout, labels,
+  GPU class and worker counts, and a test keeps image literals out of it.
+- **Drift is loud now.** `npm run check:pins` (creds-free GHCR resolution by image name) runs in CI
+  on every PR, so a pin at a tag nobody pushed cannot merge. `npm run check:pins:prod` compares the
+  pins to the live production endpoints and is the third leg of a satellite release. Exit 2 (check
+  could not be performed) is never treated as a pass.
+- Docs: the release rule, and what a pin change does NOT reach -- a live tenant keeps the pins it
+  was provisioned with, because the plane holds no key that could repin it (KEY A is used once and
+  never stored). Plus the cycle-the-workers requirement after any repin.
+
+No behavior change for existing tenants; this changes what a NEW tenant is provisioned onto.
+
 ### fix(onboarding): the build screen waits out the provision poll boundary (cp#124)
 
 - **The defect:** the page started polling the job immediately after `POST /api/tenant/provision`.

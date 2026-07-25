@@ -11,6 +11,8 @@
 // RunPod console AFTER these exist (RunPod has no key-creation API, and a key cannot be scoped to
 // endpoints that do not exist yet -- which is what forces two-phase onboarding).
 
+import { SATELLITE_PINS, type SatelliteKey, imageRef } from "./satellite-pins";
+
 const RUNPOD_API = "https://rest.runpod.io/v1";
 
 /** GPU classes for the render backend. Same-class (sm_90+) only; see runpod-provision.py section 4. */
@@ -20,10 +22,14 @@ const SATELLITE_GPUS = ["NVIDIA RTX 6000 Ada Generation", "NVIDIA L40S"];
 
 export interface PlannedEndpoint {
   /** Stable key the UI and the studio secrets use. */
-  key: "backend" | "upscale" | "lipsync" | "audio-upscale";
+  key: SatelliteKey;
   label: string;
+  /**
+   * Image repo + pinned tag, RESOLVED from `satellite-pins.ts` -- never written here. A literal in
+   * this file is what let the pins rot six releases behind production (cp#126), so the plan carries
+   * the pin it was built from rather than declaring one.
+   */
   imageRepo: string;
-  /** The pinned release tag. Explicit config, reviewed at release; NOT the python default. */
   tag: string;
   /**
    * Pinned EXPLICITLY on every endpoint, never left to RunPod's default of 3.
@@ -42,40 +48,41 @@ export interface PlannedEndpoint {
  *
  * Joan's onboarding renders from this rather than hardcoding a list (the registry-projection rule),
  * so what the tenant is shown is what actually gets built. 2+1+1+1 = 5 workers.
+ *
+ * The IMAGE half of every entry comes from `SATELLITE_PINS` (cp#126); this file decides layout,
+ * labels, GPU class and worker counts, and never decides a version.
  */
+const pinned = (key: SatelliteKey) => ({
+  key,
+  imageRepo: SATELLITE_PINS[key].repo,
+  tag: SATELLITE_PINS[key].tag,
+});
+
 export const PROVISION_PLAN: PlannedEndpoint[] = [
   {
-    key: "backend",
+    ...pinned("backend"),
     label: "Render (keyframes, video, cast LoRA training)",
-    imageRepo: "vivijure-backend",
-    tag: "1.0.2",
     maxWorkers: 2,
     gpuTypeIds: BACKEND_GPUS,
     endpointVar: "RUNPOD_ENDPOINT_ID",
   },
   {
-    key: "upscale",
+    ...pinned("upscale"),
     label: "Video upscale",
-    imageRepo: "vivijure-upscale",
-    tag: "0.2.7",
     maxWorkers: 1,
     gpuTypeIds: SATELLITE_GPUS,
     endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID",
   },
   {
-    key: "lipsync",
+    ...pinned("lipsync"),
     label: "Lip sync",
-    imageRepo: "vivijure-musetalk",
-    tag: "0.1.0",
     maxWorkers: 1,
     gpuTypeIds: SATELLITE_GPUS,
     endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID",
   },
   {
-    key: "audio-upscale",
+    ...pinned("audio-upscale"),
     label: "Audio upscale",
-    imageRepo: "vivijure-audio-upscale",
-    tag: "0.1.0",
     maxWorkers: 1,
     gpuTypeIds: SATELLITE_GPUS,
     endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID",
@@ -445,7 +452,7 @@ export async function createTenantEndpoints(
       );
     } else {
       templateId = (
-        await client.createTemplate(name, `ghcr.io/skyphusion-labs/${spec.imageRepo}:${spec.tag}`, env)
+        await client.createTemplate(name, imageRef(spec.key), env)
       ).id;
     }
 
