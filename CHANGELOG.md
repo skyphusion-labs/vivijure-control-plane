@@ -4,7 +4,7 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
-## Unreleased
+## v1.5.0 -- 2026-07-25
 
 ### feat(teardown): the production caller, and empty-then-delete wired in (#23, cf#72)
 
