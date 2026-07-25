@@ -178,3 +178,47 @@ export function costCeilingUsd(
 export function formatUsd(amount: number | null | undefined): string | null;
 export function stepIndex(key: string): number;
 export function canAdvance(key: string, state: OnboardingState | null | undefined): boolean;
+
+/**
+ * The provision job payload as GET /api/tenant/:id/job reports it (cp#43).
+ * `step`, `steps_done` and `error_step` carry the provisioner OWN step names.
+ */
+export interface ProvisionJobView {
+  kind?: string;
+  status?: string;
+  step?: string | null;
+  steps_done?: string[];
+  error_step?: string | null;
+  error_message?: string | null;
+  from_release?: string | null;
+  to_release?: string | null;
+  finished_at?: string | null;
+}
+
+/** One row of the build screen, over one or more real provisioner steps. */
+export interface ProvisionRowSpec {
+  key: string;
+  label: string;
+  steps: string[];
+}
+
+export interface ProvisionRow {
+  key: string;
+  label: string;
+  status: "todo" | "running" | "done" | "failed";
+  error?: string;
+}
+
+export const PROVISION_RESUME_BOUNDARY: string;
+export const PROVISION_FIRST_POLL_MS: number;
+export const PROVISION_PRE_BOUNDARY_POLL_MS: number;
+export const PROVISION_POLL_MS: number;
+export const PROVISION_WATCH_MS: number;
+export const PROVISION_ROWS: ProvisionRowSpec[];
+export function pastResumeBoundary(job: ProvisionJobView | null | undefined): boolean;
+export function provisionTerminal(job: ProvisionJobView | null | undefined): boolean;
+export function provisionPollDelayMs(job: ProvisionJobView | null | undefined): number;
+export function provisionRows(job: ProvisionJobView | null | undefined): ProvisionRow[];
+export function provisionWaitNote(totalMs?: number | null): string;
+export function provisionWaitCopy(remainingMs: number | null | undefined): string;
+export function provisionTimeoutCopy(): string;

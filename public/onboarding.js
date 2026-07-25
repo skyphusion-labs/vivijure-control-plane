@@ -291,7 +291,10 @@
     }
   }
 
-  function renderProgress(steps) {
+  // `note` is the screen own voice (why it is quiet, what happens next), kept
+  // separate from the step rows so nothing the SERVER said can be confused
+  // with something we made up about it.
+  function renderProgress(steps, note) {
     const ol = $("#build-progress");
     if (!ol) return;
     ol.innerHTML = "";
@@ -313,6 +316,12 @@
       li.appendChild(body);
       ol.appendChild(li);
     });
+    if (note) {
+      const p = document.createElement("p");
+      p.className = "small muted";
+      p.textContent = note;
+      ol.appendChild(p);
+    }
   }
 
   // ---- flow -------------------------------------------------------------
@@ -495,8 +504,8 @@
   // the #52 contract, and conflating them is how a UI ends up lying: a job can
   // succeed and the tenant still not be live, which is exactly the
   // awaiting_invoke_key case.
-  const POLL_MS = 2500;
-  const POLL_CEILING = 240; // ~10 minutes, then we stop and say so.
+  // The cadence, the boundary rule and the copy all live in onboarding-checks
+  // (cp#124), where they are pure and tested. Nothing here re-decides them.
 
   async function runProvision() {
     renderProgress([{ key: "start", label: "Starting setup", status: "running" }]);
@@ -504,19 +513,28 @@
       const job = await PlatformApi.provision(state.slug, runpodKey);
       state.tenantId = job.tenant_id;
 
+      // THE BOUNDARY (cp#124). The job is now running on the plane side, and
+      // until it records `wfp_upload` a poll cannot drive it -- it can only
+      // take the lease and write the honest keyless refusal, which kills a
+      // healthy provision. So we leave it alone first, then watch it.
+      await waitOutProvisionBoundary();
+
       let last = null;
-      for (let i = 0; i < POLL_CEILING; i++) {
+      const stopAt = Date.now() + checks.PROVISION_WATCH_MS;
+      while (Date.now() < stopAt) {
         last = await PlatformApi.job(state.tenantId);
         renderJobProgress(last);
-        if (last.status === "succeeded" || last.status === "failed") break;
-        await sleep(POLL_MS);
+        if (checks.provisionTerminal(last)) break;
+        // Cadence from the JOB, not from our clock: slow while it is still
+        // short of the boundary, fast once the poll is genuinely the engine.
+        await sleep(checks.provisionPollDelayMs(last));
       }
 
-      if (!last || (last.status !== "succeeded" && last.status !== "failed")) {
+      if (!checks.provisionTerminal(last)) {
         // No silent cap: if we stop watching, say so rather than spin forever.
         renderProgress([{
           key: "timeout", label: "Setup is taking longer than we expected", status: "failed",
-          error: "We stopped watching after 10 minutes. Setup may still be running; reload this page to pick the status back up.",
+          error: checks.provisionTimeoutCopy(),
         }]);
         return;
       }
@@ -562,6 +580,34 @@
     }
   }
 
+  /**
+   * Hold the first poll until the plane has had time to cross the resume
+   * boundary (cp#124). The wait is OUR clock and is labelled as such: the
+   * screen never claims a step is done, it says when it will look.
+   *
+   * Preview mode compresses the wait so the mock flow stays walkable. The mock
+   * has no job to kill, and the banner already says loudly that nothing in the
+   * preview is real.
+   */
+  async function waitOutProvisionBoundary() {
+    const total = USE_MOCK ? 3000 : checks.PROVISION_FIRST_POLL_MS;
+    const until = Date.now() + total;
+    let remaining = total;
+    while (remaining > 0) {
+      renderBoundaryWait(remaining, total);
+      await sleep(Math.min(1000, remaining));
+      remaining = until - Date.now();
+    }
+    renderBoundaryWait(0, total);
+  }
+
+  function renderBoundaryWait(remainingMs, totalMs) {
+    renderProgress(
+      [{ key: "boundary", label: checks.provisionWaitCopy(remainingMs), status: "running" }],
+      checks.provisionWaitNote(totalMs),
+    );
+  }
+
   function finishAndShowDone() {
     // Both keys stop existing here. Key A was already dropped when the
     // endpoints appeared; key B lives on the tenant's own studio now, not in
@@ -580,30 +626,18 @@
     return new Promise(function (resolve) { setTimeout(resolve, ms); });
   }
 
-  // Render the contract's job payload. error_message is the REAL step error and
-  // is shown verbatim: if RunPod says the worker quota is 10 and we need 12,
-  // the tenant reads exactly that, not "provisioning failed".
+  // Render the job payload the API contract carries. error_message is the REAL
+  // step error and is shown verbatim: if RunPod says the worker quota is 10 and
+  // we need 12, the tenant reads exactly that, not "provisioning failed".
+  //
+  // The row-to-step mapping lives in onboarding-checks (cp#124) because it is
+  // the half that was wrong and could not be tested from here: this function
+  // used to match on d1/r2/runpod/studio/verify, and a real job reports
+  // d1_create, d1_migrate, r2_bucket, r2_token, runpod_endpoints, wfp_upload,
+  // modules_upload, modules_install, verify. Only the last one ever matched, so
+  // a live provision rendered as five untouched rows and then a tick.
   function renderJobProgress(job) {
-    const done = Array.isArray(job.steps_done) ? job.steps_done : [];
-    const known = [
-      { key: "d1", label: "Creating your database" },
-      { key: "r2", label: "Creating your storage bucket" },
-      { key: "runpod", label: "Creating your 4 RunPod endpoints" },
-      { key: "studio", label: "Deploying your studio" },
-      { key: "verify", label: "Checking it all works" },
-    ];
-    renderProgress(known.map(function (st) {
-      let status = "todo";
-      if (done.indexOf(st.key) !== -1) status = "done";
-      else if (job.error_step === st.key) status = "failed";
-      else if (job.step === st.key) status = job.status === "failed" ? "failed" : "running";
-      return {
-        key: st.key,
-        label: st.label,
-        status: status,
-        error: job.error_step === st.key ? job.error_message : undefined,
-      };
-    }));
+    renderProgress(checks.provisionRows(job));
   }
 
   function offerRetry(job) {

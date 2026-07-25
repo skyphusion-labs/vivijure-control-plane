@@ -41,6 +41,36 @@ Job status (`queued|running|succeeded|failed`) and tenant status
 (`provisioning|awaiting_invoke_key|live`) are different machines. The flow polls the job, then reads
 tenant status from `/api/me`. A succeeded job is NOT "live".
 
+#### The poll boundary (cp#124) -- the page waits before it watches
+
+A poll is not free, and before one particular step it is actively destructive. The provision is
+driven by polls (cp#112), but the RunPod setup key is never stored, so a poll-driven continuation
+can only carry a job forward from **`wfp_upload`** onward (cp#18). A poll landing before that step
+cannot help the job at all: all it can do is win the job lease and write the honest keyless refusal,
+which marks a HEALTHY provision failed and rolls the half-built tenant back. Live on 2026-07-25
+(vivijure-cf#240): attempt 1 polled immediately and declared the failure, attempt 2 waited about 90
+seconds past the boundary and went 9/9.
+
+So the build screen:
+
+1. **waits `PROVISION_FIRST_POLL_MS` (90s) before its first poll**, showing a counting-down wait row
+   plus a note saying why it is quiet. The wait is OUR clock and is labelled as such; the screen
+   never claims a step is done. The number is the cadence proven live on cf#240, it clears the
+   window the first invocation runs in, and it stays well under the 10-minute lost-driver rule in
+   `src/index.ts`, so nothing here can outlive the server patience and hide a dead job;
+2. **takes its cadence from the JOB, not the clock:** `provisionPollDelayMs` is slow
+   (`PROVISION_PRE_BOUNDARY_POLL_MS`, 15s) while `steps_done` has not recorded the boundary step,
+   because every such poll is another chance to take the lease from a live driver, and fast
+   (`PROVISION_POLL_MS`, 2.5s) once the poll genuinely IS the engine. A clock says what we hoped
+   happened; `steps_done` says what did.
+
+The build rows are a projection of the REAL step names (`PROVISION_ROWS` maps rows onto
+`d1_create .. verify` verbatim), and `tests/onboarding-checks.test.ts` pins that set against
+`PROVISION_STEPS` imported from `src/provisioner.ts`. That pin exists because the rows used to read
+`d1/r2/runpod/studio/verify`, which no job ever reports: a live provision rendered as five untouched
+rows and then a tick. A failure on a step no row covers (a PRECONDITION such as `bundle_fetch`) is
+appended as its own row rather than dropped.
+
 ### Requested, not yet in the contract (raised on #52; NOT invented facts)
 
 | Want | Why the UI needs it |
