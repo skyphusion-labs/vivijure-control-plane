@@ -108,9 +108,12 @@ measurement rather than a guess.** What limits it is a written rule, an audit tr
 named set of people, not a technical impossibility, and we would rather say so than let the word
 "locked" do work it cannot do.
 
-**Whether an operator credential can READ preserved material is a separate question and we have not
-proven the comfortable answer to it.** The first test we ran was invalid and we retracted it rather
-than counting it. Until it is settled, assume the capability exists.
+**What IS settled: no part of the running service can reach that store.** There is no binding from
+any of our code to it, which is an absent mechanism rather than a promise about one.
+
+**What is NOT settled: whether a person holding an operator credential could read preserved
+material.** We have not proven the comfortable answer. The first test we ran was invalid and **we
+retracted it rather than counting it.** Until it is settled, assume the capability exists.
 
 **Why the capability exists at all**, since a disclosure without a reason is just a warning: running
 a multi-tenant platform means holding credentials that can create and administer per-tenant storage

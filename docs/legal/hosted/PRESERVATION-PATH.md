@@ -295,11 +295,24 @@ store.
 | Can someone who is not a named responder **READ preserved material**? | 2258A(h)(3) "limit access... to that access necessary"; 2258B(c) minimise employees with access | **UNPROVEN.** Not "no". See below. |
 | Can someone who is not a named responder **REMOVE THE PROTECTION** on the store? | 2258A(h)(1) and (h)(5) (preserve; do not delete early); 2258B(c) (destruction on law enforcement request) | **YES, MEASURED.** Demonstrated 2026-07-25. |
 
-#### The access half: UNPROVEN, and the first attempt to prove it was retracted
+#### The access half: DESIGN-INTENDED and PARTLY VERIFIED, with the decisive test still unrun
 
-An account-scoped Cloudflare credential with R2 admin rights **can** reach this bucket, because the
-provisioner needs account-wide R2 rights to create per-tenant buckets on demand and R2 token scoping
-cannot express "everything except this one bucket."
+**Two things are already verified and they are not nothing**, so this half must not be written as
+uniformly unknown. Being pessimistic beyond the evidence damages the same credibility as being
+optimistic beyond it:
+
+| Verified | How | What it means |
+|---|---|---|
+| **No Worker binding to this bucket anywhere** | grep across configuration and `src/` in the plane, the dispatcher and the studio (criterion 2, confirmed again during cp#117 item 1) | **The RUNNING SERVICE has no path to preserved material at all.** Not a rule about it, an absence of the mechanism. |
+| **No code path names any bucket except `tenant.r2_bucket_name`** | reading the teardown and provision paths | Nothing automated can name this bucket even by accident |
+
+**So the open question is narrower than "can we see it".** It is specifically: **can a HUMAN holding
+an account-scoped credential read preserved objects?** The service cannot; a person with the right
+credential is the question.
+
+And the honest answer there is **yes in principle**: an account-scoped Cloudflare credential with R2
+admin rights **can** reach this bucket, because the provisioner needs account-wide R2 rights to create
+per-tenant buckets on demand and R2 token scoping cannot express "everything except this one bucket."
 
 Whether a credential the **crew** holds can read preserved objects is **still open**. The first
 evidence offered for it (a crew R2 key refused HTTP 401 on the preservation bucket) was **retracted
@@ -309,7 +322,10 @@ nothing about this bucket's access control. **Criterion 7 is UNPROVEN in both ha
 half-measured.
 
 **Treat the answer as unknown rather than as fine**, and do not close this section on the strength of
-a credential refusal, least of all a retracted one.
+a credential refusal, least of all a retracted one. **Criterion 7 is what converts the written rule
+into a measurement**, and it needs two things that do not exist yet: Conrad's durable responder
+credential (the positive control) and a **working** crew credential (the negative half, which the
+retraction showed we do not currently have, since the key tested was dead).
 
 #### The durability half: MEASURED, and it cuts against the comfortable reading
 
