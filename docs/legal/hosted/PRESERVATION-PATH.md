@@ -287,9 +287,34 @@ statement true rather than aspirational is the credential custody rule below.
 | Rule | |
 |---|---|
 | A **dedicated** R2 credential scoped to `vivijure-preservation` alone | Not the shared crew `CLOUDFLARE_API_TOKEN`, not the plane provisioning credential. |
-| **Custody: the named responders only** | It does **not** go into the shared crew secret tier. If crew members can decrypt it, the access-minimisation statement is false. |
+| **Custody: the named responder, plus the automation he directs** | **RULED 2026-07-25 (Conrad), superseding the original text.** It does not go into the SHARED crew tier; it lives in a dedicated escrow tier (`vivijure-preservation`) whose recipients are the operator and the lead agent. See 4.2.1 -- the original sentence here said crew decryptability would falsify access minimisation, and that is no longer our posture or our reasoning. |
 | **Escrowed** so a single lost laptop does not strand a statutory duty | An escrow the responders can open, not one the crew can. |
 | **Every use recorded** in the incident `custody.log` | Section 5. |
+
+#### 4.2.1 Why the automation holding this credential does not break minimisation
+
+**The original design said the responder credential must not be crew-decryptable.** Conrad ruled
+otherwise on 2026-07-25 (cp#119) and the reasoning is recorded here rather than left as a bare
+instruction, because it is the kind of thing counsel will want to interrogate.
+
+**The operator's position:** `2258A(h)(3)` limits access by "agents or employees of the service", and
+both terms describe **human** roles. Automation is an **extension of** the human who directs it, not a
+separate agent: classical agency doctrine is a relationship between legal persons, which is precisely
+why `UETA` had to coin "electronic agent" as a defined term -- an unnecessary coinage if software were
+already an agent. On that reading the automation holding this credential is an instrument of the sole
+responder rather than an additional person with access.
+
+**And the conclusion does not depend on winning that argument.** Stated as a fact rather than an
+interpretation: **the set of HUMANS who can decrypt this credential is one.** The escrow recipients
+are the operator's own key and the lead agent's, and the lead agent's key lives on a machine the
+operator roots, so every path to the plaintext terminates at the same person. **If counsel disagrees
+about what "agent" means, minimisation still holds by arithmetic.** That is the fallback, and it is
+deliberately written down so a definitional disagreement costs a paragraph rather than the position.
+
+**What this does NOT claim:** it is not a claim that no automation can ever reach preserved material,
+and it is not a claim that the arrangement is invisible. It is disclosed, in the same register as
+everything else in Section 4.3 -- the operator uses automation for this work deliberately, so that a
+human does not have to look at the material, and says so.
 
 ### 4.3 The residual: what is MEASURED, what is UNPROVEN, and what we disclose
 
@@ -502,7 +527,9 @@ cp#117 is done when every one of these is demonstrably true. Each is stated so i
 
 5. A dedicated R2 credential scoped to that bucket exists, and its custody is recorded in the
    responder list (cp#119).
-6. The credential is **not** present in the shared crew secret tier. Presence-checked by name only,
+6. The credential is **not** present in the SHARED crew secret tier; it lives in the dedicated
+   `vivijure-preservation` escrow tier (recipients: the operator and the lead agent, per 4.2.1).
+   Presence-checked by name only,
    never by value.
 7. **RULED AND REFRAMED 2026-07-25** (Strummer's proposal, adopted). As originally written this
    criterion was **not satisfiable**: it asked for a crew credential to be refused, and a refusal is
