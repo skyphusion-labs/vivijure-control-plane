@@ -385,10 +385,14 @@ call, and deliberately narrow: it re-runs the three MODULE steps (`modules_uploa
 ### What it does NOT do, and why
 
 It does not touch the studio. The tenant keeps running the studio bytes it was provisioned with, and
-`studio_release` is not written. Moving a tenant to a new STUDIO pin means re-uploading the studio
-worker, which means re-declaring its full binding set including `R2_S3_SECRET_ACCESS_KEY` -- a value
-this system deliberately never stores (see "Key custody"). That is a different job with a different
-custody shape, and it is not this route.
+`studio_release` is not written. Moving a tenant to a new STUDIO pin is a different job with a
+different custody shape, and it is **`POST /api/admin/tenants/:id/upgrade-studio`** (cp#139, below).
+
+The custody objection that once made the studio move look impossible -- re-uploading means
+re-declaring the full binding set including `R2_S3_SECRET_ACCESS_KEY`, a value this system
+deliberately never stores (see "Key custody") -- was MEASURED AWAY rather than argued away: an
+upload can carry a binding forward as `inherit`, without the caller ever holding its value. The
+measurements are in the studio-upgrade section.
 
 It does not write `tenants.status`. Not on entry, not on success, not on failure. This is the whole
 safety story rather than an implementation detail: `routingStatusFor` maps any non-`live` status to
@@ -487,6 +491,85 @@ here. That is a release-discipline defect which would break a full re-provision 
 | `tenant_studio_not_serving` | 422 | the studio was already 5xx BEFORE the upgrade |
 | `module_bundle_unavailable` | 422 | the release is missing a module bundle |
 | `provisioner_unconfigured` | 503 | the deploy lacks the provisioner env |
+
+
+## Moving a LIVE tenant onto a newer STUDIO release (cp#139)
+
+`POST /api/admin/tenants/:id/upgrade-studio` moves a live tenant's STUDIO BYTES in place, preserving
+its bindings and its secrets. It is the sibling of the module upgrade above and shares its shape:
+admin-gated, one tenant per call, explicit required release, job row carrying `from_release` /
+`to_release`, and it NEVER writes `tenants.status`.
+
+### Why this could not exist before, and what changed
+
+`refresh-studio-bindings` (cp#112) changes bindings and deliberately not bytes; the module upgrade
+changes module bytes and deliberately not the studio. So a tenant could be given the BINDING for a
+feature and never the CODE that projects it, which is exactly the state cp#139 records for the
+testbed tenant.
+
+The blocker was secret custody. A live studio carries secrets the plane cannot reproduce
+(`R2_S3_SECRET_ACCESS_KEY` is the SHA-256 of an R2 token value that was never stored;
+`RUNPOD_API_KEY` is key B, transient by ruling), so a re-upload that re-stated the binding set would
+strand the tenant. Three probes against throwaway scripts settled it:
+
+| Probe | Result |
+|---|---|
+| `inherit` on the UPLOAD endpoint (not just the settings PATCH) | New bytes land, `secret_text` survives, the caller never holds the value |
+| Omitting a binding from an upload | `plain_text` (and every non-secret) is **DROPPED**; `secret_text` installed via `PUT /secrets` **SURVIVES** |
+| New assets + `inherit` bindings on the same PUT | Coexist; nothing lost |
+
+The omission rule is why the implementation censuses first and carries **every** non-secret binding
+forward as `inherit`. That is correctness, not caution: a binding this route forgets to name is a
+binding the tenant loses.
+
+### Ordering, and why each position is load-bearing
+
+1. **Preflight (all reads, no writes).** Not deleted; not suspended; status `live`; `script_name`
+   present; `d1_database_id` present; `studio_token_enc` present and decryptable; the studio answers
+   a non-5xx root probe; the target bundle FETCHES and passes its integrity checks; the release's
+   `required_vars` are all covered by this plane's disposition table. It also captures the served
+   `/api/modules` host object as the BEFORE marker. A refusal here has written nothing at all.
+2. **`studio_release` is NULLed** before the first write (see the ledger below).
+3. **Migrations, before bytes.** The release's own migrations are applied to the tenant D1 first,
+   tracked per-migration, so new code never meets an old schema. This is not theoretical: the
+   v1.6.0 -> v1.8.0 move adds `0012_wan_lora_keys.sql`. A release that adds none applies none.
+4. **Assets, then the script PUT** that redeems the completion JWT, both through the upload
+   credential (one credential owns both legs).
+5. **Readback through the OTHER credential**, plus a re-probe of the studio. `success: true` is the
+   writing client's opinion of its own work.
+
+### What the job records, and what decides `ok`
+
+The result is a readback, not a success flag: bindings and secret names before/after, anything
+missing, the required-vars re-check on the POST state, the sha256 and size of the bytes shipped, the
+migrations applied, the serving status, and the served host-object keys before and after.
+
+`ok` is false -- and the job FAILS -- if any binding or secret went missing, if a required var is
+absent from the post-state, or if the studio stops serving. **A short readback fails the job even
+though every API call returned 200**, because that is the exact outcome this route exists to make
+impossible to miss.
+
+`served_shape_changed` reports whether the served host object actually moved. A same-release
+convergence run is ALLOWED (re-shipping is how a half-finished move is finished) and honestly
+reports `false` rather than dressing a no-op as a move.
+
+### The release ledger, same discipline as modules
+
+| `tenants.studio_release` | meaning |
+|---|---|
+| a tag | the studio bytes are that release |
+| `NULL` | not known to be at any one release; consult the latest `studio_upgrade` job |
+
+Cleared before the first write, written only on full success, so a partial move cannot leave a tag
+standing that claims it completed. Rollback is re-running the route at `from_release`, which the job
+row preserves precisely because the column was cleared.
+
+### Operator note: the plane pin is a separate decision
+
+This route takes an explicit release and never defaults to `STUDIO_RELEASE`. Advancing that
+plane-wide pin is its own decision: it governs every FUTURE provision, not just one upgrade, and it
+should follow the same rule the satellite pins follow (mirror what production has proven, not the
+newest tag).
 
 ## Tenant satellite image pins (cp#126)
 

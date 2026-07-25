@@ -6,6 +6,35 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(hosted): `studio_upgrade` -- move a LIVE tenant onto a newer studio release (cp#139)
+
+- **The gap:** no operation in this plane moved a live tenant's studio bytes. `runProvisionJob`
+  uploads once at creation, `continueProvisionJob` refuses anything short of `wfp_upload`,
+  `upgradeTenantModules` deliberately never touches the studio, `refreshStudioBindings` (cp#112)
+  changes bindings and explicitly not bytes, and teardown deletes. A tenant could therefore be handed
+  the BINDING for a feature and never the CODE that projects it.
+- **The custody objection was measured away, not argued away.** cp#112 refused a re-upload because a
+  live studio carries secrets the plane cannot reproduce. Probes settled three facts: `inherit` works
+  on the UPLOAD endpoint (new bytes land, `secret_text` survives, the caller never holds the value); a
+  non-secret binding OMITTED from an upload is DROPPED while a `secret_text` one survives; and new
+  assets coexist with `inherit` bindings on the same PUT. Hence census-then-inherit-everything, which
+  is correctness rather than caution.
+- **`POST /api/admin/tenants/:id/upgrade-studio`**, admin-gated, one tenant per call, explicit
+  required release with NO default to the plane pin (the same refusal the module upgrade makes, for
+  the same reason). New `studio_upgrade` job kind on the existing release-pair columns.
+- **Migrations run BEFORE the bytes**, tracked per-migration and idempotent. Not theoretical: the
+  v1.6.0 -> v1.8.0 move adds `0012_wan_lora_keys.sql`, so bytes-without-schema would have been a
+  defect on the first real upgrade.
+- **NEVER writes `tenants.status`,** on any path. A live tenant stays live and keeps serving; progress
+  and failure live on the job row. `studio_release` is CLEARED before the first write and set only on
+  full success, so a partial move cannot leave a tag standing that claims it finished.
+- **The result is a readback, not a success flag:** bindings/secrets before and after, anything
+  missing, the required-vars re-check, the sha256 of the bytes shipped, and the served `/api/modules`
+  host keys before and after. A short readback FAILS the job even though every call returned 200.
+- In place only, no automatic rollback (rollback is a re-run at `from_release`), and a same-release
+  convergence run is allowed and honestly reports `served_shape_changed: false`.
+- Docs: `docs/control-plane.md`, "Moving a LIVE tenant onto a newer STUDIO release".
+
 ## v1.9.0 -- 2026-07-25
 
 MINOR: the KEK rotation capability (cp#95), and the studio release pin advanced off a release that

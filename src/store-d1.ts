@@ -417,6 +417,13 @@ export class D1Store implements ControlPlaneStore {
       .run();
   }
 
+  async setTenantStudioRelease(id: string, release: string | null): Promise<void> {
+    // Same nullable-on-purpose shape as setTenantModulesRelease, for the same reason: a studio
+    // upgrade CLEARS this before its first write so a partial move cannot leave a release value
+    // standing (cp#139). Binds null straight through; clearing is a state, not a skipped write.
+    await this.db.prepare("UPDATE tenants SET studio_release = ?2 WHERE id = ?1").bind(id, release).run();
+  }
+
   async setTenantModulesRelease(id: string, release: string | null): Promise<void> {
     // Binds null straight through: clearing is a real state here (see the column comment in
     // migration 0006), not the absence of a write.
@@ -475,14 +482,38 @@ export class D1Store implements ControlPlaneStore {
     fromRelease: string | null,
     toRelease: string,
   ): Promise<ProvisionJob> {
+    return await this.insertUpgradeJob("module_upgrade", id, tenantId, fromRelease, toRelease);
+  }
+
+  async createStudioUpgradeJob(
+    id: string,
+    tenantId: string,
+    fromRelease: string | null,
+    toRelease: string,
+  ): Promise<ProvisionJob> {
+    return await this.insertUpgradeJob("studio_upgrade", id, tenantId, fromRelease, toRelease);
+  }
+
+  /**
+   * The one INSERT both upgrade kinds share. The kind is a closed union from this file, never a
+   * caller string, so widening it is a compile-time decision rather than a runtime value that could
+   * write a kind nothing reads.
+   */
+  private async insertUpgradeJob(
+    kind: "module_upgrade" | "studio_upgrade",
+    id: string,
+    tenantId: string,
+    fromRelease: string | null,
+    toRelease: string,
+  ): Promise<ProvisionJob> {
     const row = await this.db
       .prepare(
         "INSERT INTO provision_jobs (id, tenant_id, kind, status, from_release, to_release) " +
-          "VALUES (?1, ?2, 'module_upgrade', 'queued', ?3, ?4) RETURNING *",
+          "VALUES (?1, ?2, ?3, 'queued', ?4, ?5) RETURNING *",
       )
-      .bind(id, tenantId, fromRelease, toRelease)
+      .bind(id, tenantId, kind, fromRelease, toRelease)
       .first<ProvisionJob>();
-    if (!row) throw new Error("createModuleUpgradeJob: insert returned no row");
+    if (!row) throw new Error(kind + ": insert returned no row");
     return row;
   }
 

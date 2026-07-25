@@ -1117,6 +1117,72 @@ async function adminRoutes(
     return json({ job_id: job.id, from_release: tenant.modules_release, to_release: release }, 202);
   }
 
+  // ---- cp#139: move a LIVE tenant's STUDIO BYTES onto a newer release ---------------------------
+  //
+  // WHY ADMIN-GATED: it is an operator action on someone else's studio, exactly like teardown and
+  // upgrade-modules. The tenant asked for nothing.
+  //
+  // WHY A JOB AND NOT INLINE (the split from refresh-studio-bindings): this MOVES BYTES and changes
+  // the release a live tenant runs. cp#112 could be inline because it changes bindings only and its
+  // answer IS its evidence; a release change is the operation this plane already insists must carry
+  // a from_release/to_release record, so it gets a job row like the module upgrade it is a sibling of.
+  //
+  // WHY NO confirm_slug: it is not destructive. In place, bindings preserved, status untouched, the
+  // tenant serving throughout. The preflight refusals are what keep it from running where it makes
+  // no sense.
+  const studioUpgrade = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/upgrade-studio$/.exec(path);
+  if (request.method === "POST" && studioUpgrade) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(studioUpgrade[1]);
+    if (!tenant) return err("not_found", 404);
+
+    const body = (await readJson(request)) as { release?: unknown } | null;
+    // REQUIRED, with no fallback to STUDIO_RELEASE, for the same reason the module upgrade refuses
+    // one: a default would not save typing, it would ship bytes at "whatever the plane happened to
+    // be pinned to" with nobody having said so. The operator names the release or gets a 400.
+    const release = typeof body?.release === "string" ? body.release.trim() : "";
+    if (!release) return err("release_required", 400);
+
+    // ONE writer at a time on this row. Two drivers PUTting different bytes into the same studio
+    // script is the one way to reach a state nothing recorded.
+    const latest = await deps.store.getLatestJobForTenant(tenant.id);
+    if (latest && jobHasLiveDriver(latest, deps.now())) {
+      return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
+    }
+
+    // Preflight FIRST: a refusal here has written nothing at all -- no job, no cleared release, no
+    // uploaded byte.
+    const pre = await deps.provisioner.preflightStudioUpgrade(tenant, release);
+    if (!pre.ok) return err(pre.refusal.code, pre.refusal.status, { message: pre.refusal.message });
+
+    const job = await deps.store.createStudioUpgradeJob(
+      newId("job"),
+      tenant.id,
+      // Where it is moving FROM, captured before the run NULLs it. This is what makes a failed move
+      // rollback-able: re-run at from_release.
+      tenant.studio_release,
+      release,
+    );
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.upgrade_studio",
+      tenant.id,
+      JSON.stringify({ from: tenant.studio_release, to: release, job: job.id }),
+    );
+    await deps.store.setJobRunning(job.id);
+    // upgradeStudio writes its own terminal job state for every failure it can see. This handler
+    // only catches something thrown OUTSIDE that, where the job would otherwise be stranded
+    // "running" forever with no record of why.
+    ctx.waitUntil(
+      deps.provisioner.upgradeStudio(job.id, tenant, pre.context).catch(async (e: unknown) => {
+        console.error("studio_upgrade.unhandled", { tenant: tenant.id, error: String(e) });
+        await deps.store.finishJob(job.id, "failed", null, `studio upgrade driver threw: ${String(e)}`);
+      }),
+    );
+    // 202 without ok:true (cp#20): ACCEPTED, not completed. The readback lands on the job row.
+    return json({ job_id: job.id, from_release: tenant.studio_release, to_release: release }, 202);
+  }
+
   // ---- cp#112: give an EXISTING tenant a studio-level binding ----------------------------------
   //
   // WHY ADMIN-GATED: it is an operator action on someone else studio, exactly like teardown and

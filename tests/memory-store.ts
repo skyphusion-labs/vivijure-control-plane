@@ -321,6 +321,11 @@ export class MemoryStore implements ControlPlaneStore {
     if (t) t.modules_release = release;
   }
 
+  async setTenantStudioRelease(id: string, release: string | null) {
+    const t = this.tenants.get(id);
+    if (t) t.studio_release = release;
+  }
+
   // ---- #23: teardown record + referential guard ------------------------------------------------
   async clearTenantResource(id: string, resource: TenantResourceKind) {
     const t = this.tenants.get(id);
@@ -442,6 +447,28 @@ export class MemoryStore implements ControlPlaneStore {
       id,
       tenant_id,
       kind: "module_upgrade",
+      status: "queued",
+      step: null,
+      steps_done: "[]",
+      error_step: null,
+      error_message: null,
+      attempts: 0,
+      lease_until: null,
+      from_release: fromRelease,
+      to_release: toRelease,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      finished_at: null,
+    };
+    this.jobs.set(id, j);
+    return j;
+  }
+
+  async createStudioUpgradeJob(id: string, tenant_id: string, fromRelease: string | null, toRelease: string) {
+    const j: ProvisionJob = {
+      id,
+      tenant_id,
+      kind: "studio_upgrade",
       status: "queued",
       step: null,
       steps_done: "[]",
