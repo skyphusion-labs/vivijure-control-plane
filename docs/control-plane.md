@@ -273,8 +273,10 @@ that checks status codes, and a tenant that lost a binding or a secret is the on
 exists to make impossible to miss.
 
 It is idempotent by CONVERGENCE, not by skipping: a tenant that already carries the binding is
-patched anyway with the currently configured service id, because the bindings endpoint returns names
-and types and never the id, so "already present" cannot mean "already correct".
+patched anyway with the currently configured service id. The CF bindings endpoint does return
+`service_id` for a `vpc_service` binding (verified live 2026-07-25), but the `getScriptBindings`
+wrapper surfaces type and name only, so the deciding code cannot see the id and "already present"
+cannot mean "already correct".
 
 ### The unverified seam (read before the first live run)
 

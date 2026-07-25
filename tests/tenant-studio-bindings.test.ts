@@ -189,8 +189,9 @@ describe("cp#112: refreshing an existing tenant studio bindings", () => {
 
   it("is idempotent by CONVERGENCE: an already-bound tenant is re-patched with the CONFIGURED id", async () => {
     // Skipping when the name is already present would leave a tenant pinned to a stale service id
-    // after the plane is re-pointed, and report that as success. getScriptBindings returns names and
-    // types, never the id, so "already present" cannot mean "already correct".
+    // after the plane is re-pointed, and report that as success. The CF endpoint does return
+    // service_id (verified live 2026-07-25); our getScriptBindings wrapper does not surface it, so
+    // the code here cannot see it and "already present" cannot mean "already correct".
     const t = await tenant();
     const already = census({
       before: [...LIVE_BINDINGS, { type: "vpc_service", name: VIDEO_FINISH_BINDING }],

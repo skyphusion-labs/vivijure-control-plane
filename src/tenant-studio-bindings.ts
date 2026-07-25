@@ -139,7 +139,13 @@ export function preflightStudioBindings(
  * Idempotent by CONVERGENCE rather than by skipping: a tenant that already carries the binding is
  * patched anyway, with the currently configured service id, so a plane that was re-pointed at a new
  * Connectivity Directory service heals the tenant instead of reporting "already present" over a
- * stale id we never read.
+ * stale id.
+ *
+ * Precise about WHY that matters, because the loose version of this sentence is wrong: the CF
+ * bindings endpoint DOES return `service_id` on a vpc_service binding (read live 2026-07-25). It is
+ * our `getScriptBindings` wrapper that surfaces type and name only, so the code deciding here cannot
+ * see the id. Re-patching converges regardless, which is why this does not depend on widening the
+ * wrapper; if a future change does widen it, this stays correct.
  *
  * NEVER writes tenants.status, tenants.studio_release, or the studio bytes. A live tenant is serving
  * throughout.
