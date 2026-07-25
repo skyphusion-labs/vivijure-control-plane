@@ -32,6 +32,12 @@ import {
 import { createTenantEndpoints } from "./runpod";
 import type { ControlPlaneStore, Tenant } from "./store";
 import {
+  preflightStudioBindings,
+  refreshTenantStudioBindings,
+  type StudioBindingRefresh,
+  type StudioBindingRefusal,
+} from "./tenant-studio-bindings";
+import {
   canonicalStoryboard,
   SMOKE_PROJECT_NAME,
   SMOKE_PROMPT,
@@ -108,6 +114,18 @@ export interface ProvisionerWiring {
    * is the blast-radius gate on this whole route.
    */
   upgradeModules(jobId: string, tenant: Tenant, context: ModuleUpgradeContext): Promise<void>;
+  /**
+   * Deliver a studio-level BINDING to a tenant that already exists (cp#112).
+   *
+   * Split preflight/work for the same reason as the module upgrade: the refusal must not have
+   * written anything. Never changes tenants.status, the studio release, or the studio bytes, so a
+   * live tenant keeps serving throughout; the return value is a READBACK through a different
+   * credential than the one that wrote, not a success flag.
+   */
+  refreshStudioBindings(tenant: Tenant): Promise<
+    | { ok: false; refusal: StudioBindingRefusal }
+    | { ok: true; result: StudioBindingRefresh }
+  >;
   /**
    * The operator verification client (cp#45): four typed calls against THIS tenant's own studio.
    *
@@ -270,6 +288,13 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       revoke: (tenant) => revokeTenantApiToken(apiTokenDeps, tenant),
     },
     smokeClient: tenantStudioSmokeClient(env, STUDIO_TOKEN_KEK),
+    async refreshStudioBindings(tenant) {
+      // Preflight FIRST and separately: a refusal must leave the tenant untouched, and this route
+      // has no job row to record one on.
+      const pre = preflightStudioBindings(deps, tenant);
+      if (!pre.ok) return { ok: false, refusal: pre.refusal };
+      return { ok: true, result: await refreshTenantStudioBindings(deps, tenant, pre.script, pre.serviceId) };
+    },
     async start(jobId, tenant, runpodApiKey) {
       // runProvisionJob records every outcome on the job row; the return value is the same fact.
       // A "yielded" outcome is normal under #112: progress is persisted and the next poll resumes.

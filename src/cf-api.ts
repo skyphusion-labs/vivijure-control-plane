@@ -144,6 +144,23 @@ export interface VpcServiceBinding {
   name: string;
   service_id: string;
 }
+/**
+ * Carry an EXISTING binding forward without restating it (cp#112).
+ *
+ * This is the only way to change one binding on a live tenant studio without holding the VALUES of
+ * every other one. Two of a tenant studio secrets are unreproducible by this plane on purpose
+ * (R2_S3_SECRET_ACCESS_KEY is the SHA-256 of an R2 token value we never store, RUNPOD_API_KEY is
+ * key B, transient by ruling), so a binding set restated from what we know would silently drop them
+ * and stop the tenant rendering. `inherit` names the binding and nothing else.
+ *
+ * CONTRACT SOURCE: Cloudflare API reference for dispatch-namespace script settings ("inherit the
+ * binding from the latest version"). NOT exercised against Cloudflare by any test in this repo --
+ * see the live-probe note in tenant-studio-bindings.ts before trusting it.
+ */
+export interface InheritBinding {
+  type: "inherit";
+  name: string;
+}
 export type WorkerBinding =
   | D1Binding
   | R2Binding
@@ -152,7 +169,8 @@ export type WorkerBinding =
   | AssetsBinding
   | RatelimitBinding
   | DispatchNamespaceBinding
-  | VpcServiceBinding;
+  | VpcServiceBinding
+  | InheritBinding;
 
 /** An asset in the upload manifest: the path plus a 32-hex hash and byte size. */
 export interface AssetManifestEntry {
@@ -513,6 +531,33 @@ export class CfApi {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name, text, type: "secret_text" }),
       },
+    );
+  }
+
+  /**
+   * Change a resident script BINDINGS without re-uploading the worker (cp#112).
+   *
+   * MULTIPART, NOT JSON, AND THAT IS MEASURED. This endpoint answers a JSON body with
+   * `10001 Content-Type must be one of: multipart/form-data`. The first version of this method sent
+   * `application/json` (which is what the API reference reads like) and would have failed on EVERY
+   * call; the live probe on a throwaway script caught it before it reached a tenant. The settings
+   * travel as one `settings` part, exactly as the script upload sends its `metadata` part.
+   *
+   * THE FULL DESIRED SET GOES IN EVERY TIME. Also measured, not assumed: a binding omitted from the
+   * patch is DROPPED (probe step 3 removed a plain_text binding by leaving it out). Bindings to keep
+   * are therefore sent as `{ type: "inherit", name }`, which carries them forward without their
+   * values -- proven to preserve a `secret_text` binding across the patch.
+   *
+   * Distinct from putScriptSecret (one secret, no binding-set semantics) and from uploadUserWorker
+   * (new bytes, new release). This one touches neither the studio bytes nor the release.
+   */
+  async patchScriptSettings(namespace: string, scriptName: string, bindings: WorkerBinding[]): Promise<void> {
+    const form = new FormData();
+    form.append("settings", new Blob([JSON.stringify({ bindings })], { type: "application/json" }));
+    await this.call<unknown>(
+      "wfp.patchSettings",
+      `/accounts/${this.accountId}/workers/dispatch/namespaces/${namespace}/scripts/${scriptName}/settings`,
+      { method: "PATCH", body: form },
     );
   }
 
