@@ -34,7 +34,14 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { CfApi } from "../src/cf-api";
 import { CfTokenMinter } from "../src/token-minter";
-import { teardownTenant, type ProvisionDeps } from "../src/provisioner";
+import {
+  teardownTenant,
+  tenantR2TokenName,
+  tenantR2TeardownTokenName,
+  type ProvisionDeps,
+} from "../src/provisioner";
+import { signSigV4 } from "../src/sigv4";
+import { emptyBucketBounded } from "../src/r2-empty";
 import type { Tenant } from "../src/store";
 import { D1Store } from "../src/store-d1";
 import { d1Over, freshMigratedDb } from "./sqlite-d1";
@@ -92,8 +99,16 @@ async function scriptExists(namespace: string, name: string): Promise<boolean> {
   const body = (await res.json()) as { result?: { id?: string }[] };
   return (body.result ?? []).some((s) => s.id === name);
 }
+/**
+ * ACCOUNT tokens, not user tokens. CfApi mints and revokes at `/accounts/{acct}/tokens`, and the
+ * original version of this helper asked `/user/tokens/{id}` -- a different collection, which answers
+ * 404 for a live account token and would have reported every revoke as successful without one having
+ * happened. Fixed here rather than left as a trap now that the revoke leg is actually exercised.
+ */
 async function tokenExists(id: string): Promise<boolean> {
-  const res = await fetch(`${API}/user/tokens/${id}`, { headers: { authorization: `Bearer ${TOKEN}` } });
+  const res = await fetch(`${API}/accounts/${ACCOUNT}/tokens/${id}`, {
+    headers: { authorization: `Bearer ${TOKEN}` },
+  });
   return res.status === 200;
 }
 
@@ -111,6 +126,13 @@ const notSupplied = (field: string): never => {
  * first; the sweep works from this, never from the happy path.
  */
 const created: { d1: string[]; buckets: string[]; scripts: string[] } = { d1: [], buckets: [], scripts: [] };
+
+/**
+ * Minted tokens, registered the instant they exist, for the same reason as `created`: a run that
+ * dies mid-assertion must not leave a live bucket-scoped credential on the account. A stranded
+ * grant is the worst leftover this file can produce.
+ */
+const createdTokens: string[] = [];
 
 let cf: CfApi;
 let minter: CfTokenMinter;
@@ -140,10 +162,16 @@ beforeAll(() => {
     // refused). The aliasing refusals are proven in teardown-guard.test.ts against the same real
     // SQL, where the referring rows can be constructed deliberately.
     store: rehearsalStore,
+    // cf#72: teardown now EMPTIES a bucket over the S3 API before deleting it, so these four are
+    // load-bearing here and are the real ones. The notSupplied getter for r2Endpoint fired the
+    // moment that leg landed, exactly as designed, which is how this file learned it needed them.
+    r2Endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
+    now: () => Date.now(),
+    sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
     get runpod() { return notSupplied("runpod"); },
     get bundle() { return notSupplied("bundle"); },
     get moduleBundle() { return notSupplied("moduleBundle"); },
-    get r2Endpoint() { return notSupplied("r2Endpoint"); },
     get release() { return notSupplied("release"); },
     get kek() { return notSupplied("kek"); },
     get spendDailyCeiling() { return notSupplied("spendDailyCeiling"); },
@@ -152,29 +180,40 @@ beforeAll(() => {
   } as unknown as ProvisionDeps;
 });
 
-/** Build the four resources a half-built Tier A tenant carries, for real. */
-async function buildHalfBuiltTenant(): Promise<Tenant> {
-  const db = await cf.createD1(D1_NAME);
+/**
+ * Build the four resources a half-built Tier A tenant carries, for real.
+ *
+ * `slug` is a PARAMETER, and that is a fix rather than a flourish: every test in this file used to
+ * share one set of slug-derived names, so a test that deleted the bucket and the next test that
+ * re-created it under the SAME name raced R2 own create-after-delete consistency. It passed alone
+ * and failed in the full run, which is the worst way for a fixture to be wrong. Each test that wants
+ * its own resources now says so.
+ */
+async function buildHalfBuiltTenant(slug: string = SLUG): Promise<Tenant> {
+  const d1Name = `vivijure-tenant-${slug}`;
+  const bucket = `vivijure-tenant-${slug}`;
+  const script = `tenant-${slug}-studio`;
+  const db = await cf.createD1(d1Name);
   created.d1.push(db.uuid);
-  await cf.createR2Bucket(BUCKET);
-  created.buckets.push(BUCKET);
+  await cf.createR2Bucket(bucket);
+  created.buckets.push(bucket);
   await cf.uploadUserWorker({
     namespace: NAMESPACE,
-    scriptName: SCRIPT,
+    scriptName: script,
     mainModule: "index.js",
     moduleText: "export default { async fetch() { return new Response(`rehearsal`); } };",
     compatibilityDate: "2026-06-01",
     bindings: [],
   });
-  created.scripts.push(SCRIPT);
+  created.scripts.push(script);
   return {
-    id: `ten_rehearsal_${RUN}`,
-    slug: SLUG,
+    id: `ten_rehearsal_${slug}`,
+    slug,
     account_id: "acct_rehearsal",
     status: "failed",
-    script_name: SCRIPT,
+    script_name: script,
     d1_database_id: db.uuid,
-    r2_bucket_name: BUCKET,
+    r2_bucket_name: bucket,
     // NULL on purpose: see the header. Minting needs a dashboard-created credential we do not hold,
     // and teardown skips the revoke on a null. Leaving a FAKE id here would be worse than skipping:
     // teardown would try to revoke a token that never existed, Cloudflare would answer, and the leg
@@ -194,25 +233,113 @@ async function buildHalfBuiltTenant(): Promise<Tenant> {
   } as unknown as Tenant;
 }
 
+/**
+ * THE SWEEP, and TWO defects it is the fix for -- both found by verifying the ACCOUNT after a run
+ * rather than by trusting the run (2026-07-25, cf#224 Lane A2).
+ *
+ *  1. It lived INSIDE the first describe, so vitest scoped it there. The block added for the
+ *     emptying leg has its own resources and its own deliberately-surviving ones (the guard refusal
+ *     test must leave the bucket alive to prove the objects are still there), and NOTHING swept
+ *     them. Three runs stranded three D1s, two buckets, three workers and TWO LIVE BUCKET-SCOPED
+ *     CREDENTIALS on the account. File-level now, so it covers every block.
+ *  2. It deleted buckets with a bare deleteR2Bucket, which CANNOT remove a bucket that has objects
+ *     -- the exact constraint this file now exercises. A rehearsal that writes objects and sweeps
+ *     with a call that refuses non-empty buckets strands the bucket every time.
+ *
+ * It also sweeps BY NAME PREFIX, not only the in-process registry: a previous run that died before
+ * its sweep is invisible to the registry, and the whole point is that nothing this file created is
+ * left alive. Anything it cannot remove is printed LOUDLY rather than swallowed -- a silent cleanup
+ * failure is how the credentials got stranded in the first place.
+ */
+const NAME_PREFIX = "rollins-rehearsal-";
+const RESOURCE_PREFIX = `vivijure-tenant-${NAME_PREFIX}`;
+
+afterAll(async () => {
+  if (!LIVE) return;
+  const leftovers: string[] = [];
+
+  for (const id of createdTokens) {
+    try { await cf.revokeToken(id); } catch { /* already revoked */ }
+  }
+
+  // Tokens first: a live grant is the worst thing to leave behind, and it is also what the bucket
+  // sweep below needs to not collide with.
+  try {
+    for (const t of await cf.listAccountTokens()) {
+      if (!t.name.includes(NAME_PREFIX)) continue;
+      try { await cf.revokeToken(t.id); } catch (e) { leftovers.push(`token ${t.name}: ${String(e).slice(0, 120)}`); }
+    }
+  } catch (e) {
+    leftovers.push(`token census failed: ${String(e).slice(0, 120)}`);
+  }
+
+  try {
+    const res = await fetch(`${API}/accounts/${ACCOUNT}/r2/buckets`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    const body = (await res.json()) as { result?: { buckets?: { name: string }[] } };
+    for (const b of body.result?.buckets ?? []) {
+      if (!b.name.startsWith(RESOURCE_PREFIX)) continue;
+      try {
+        // EMPTY THEN DELETE, the same cycle the code under test runs, because a bare delete cannot
+        // remove a bucket this file deliberately filled.
+        const cred = await minter.mintBucketToken(`${b.name}-sweep`, b.name);
+        try {
+          await emptyBucketBounded({
+            endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
+            bucket: b.name,
+            credential: { accessKeyId: cred.id, secretAccessKey: await sha256Hex(cred.value) },
+            budgetMs: 30_000,
+            now: () => Date.now(),
+            sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+            fetch,
+            log: () => {},
+          });
+          await cf.deleteR2Bucket(b.name);
+        } finally {
+          await cf.revokeToken(cred.id).catch(() => leftovers.push(`SWEEP CREDENTIAL ${cred.id} NOT REVOKED`));
+        }
+      } catch (e) {
+        leftovers.push(`bucket ${b.name}: ${String(e).slice(0, 120)}`);
+      }
+    }
+  } catch (e) {
+    leftovers.push(`bucket census failed: ${String(e).slice(0, 120)}`);
+  }
+
+  try {
+    const res = await fetch(`${API}/accounts/${ACCOUNT}/d1/database?per_page=100`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    const body = (await res.json()) as { result?: { uuid: string; name: string }[] };
+    for (const db of body.result ?? []) {
+      if (!db.name.startsWith(RESOURCE_PREFIX)) continue;
+      try { await cf.deleteD1(db.uuid); } catch (e) { leftovers.push(`d1 ${db.name}: ${String(e).slice(0, 120)}`); }
+    }
+  } catch (e) {
+    leftovers.push(`d1 census failed: ${String(e).slice(0, 120)}`);
+  }
+
+  for (const ns of [NAMESPACE, MODULE_NAMESPACE]) {
+    try {
+      const res = await fetch(`${API}/accounts/${ACCOUNT}/workers/dispatch/namespaces/${ns}/scripts`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      });
+      const body = (await res.json()) as { result?: { id: string }[] };
+      for (const script of body.result ?? []) {
+        if (!script.id.includes(NAME_PREFIX)) continue;
+        try { await cf.deleteUserWorker(ns, script.id); } catch (e) { leftovers.push(`script ${script.id}: ${String(e).slice(0, 120)}`); }
+      }
+    } catch (e) {
+      leftovers.push(`script census failed on ${ns}: ${String(e).slice(0, 120)}`);
+    }
+  }
+
+  if (leftovers.length > 0) {
+    console.error(`LEFTOVERS THIS SWEEP COULD NOT REMOVE (reap them by hand):\n  ${leftovers.join("\n  ")}`);
+  }
+}, 300_000);
+
 describe.skipIf(!LIVE)("reclaim teardown, live against real Cloudflare", () => {
   let tenant: Tenant;
-
-  afterAll(async () => {
-    if (!LIVE) return;
-    // Sweeps the REGISTRY, not the happy-path tenant object, so a failure part-way through building
-    // still cleans up everything that got as far as existing. Best effort and silent: cleanup, not
-    // assertion. Anything it cannot remove is reported by the run that follows, because the account
-    // listing is checked out of band.
-    for (const id of created.d1) {
-      try { await cf.deleteD1(id); } catch { /* already gone */ }
-    }
-    for (const name of created.buckets) {
-      try { await cf.deleteR2Bucket(name); } catch { /* already gone */ }
-    }
-    for (const name of created.scripts) {
-      try { await cf.deleteUserWorker(NAMESPACE, name); } catch { /* already gone */ }
-    }
-  }, 120_000);
 
   it("reaps a real half-built tenant, and the resources are ACTUALLY gone", async () => {
     tenant = await buildHalfBuiltTenant();
@@ -321,6 +448,10 @@ describe.skipIf(!LIVE)("the reclaim SEQUENCE against a real store and real cloud
       tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
       log: (event: string, fields: Record<string, unknown>) => void logged.push({ event, fields }),
       store,
+      r2Endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
+      now: () => Date.now(),
+      sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+      fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
     } as unknown as ProvisionDeps;
 
     const reaped = await teardownTenant(seqDeps, claimed!.tenant, { deleteData: true });
@@ -351,5 +482,188 @@ describe.skipIf(!LIVE)("the reclaim SEQUENCE against a real store and real cloud
     const job = await store.createProvisionJob("job_seq", "ten_seq", "provision");
     expect(job.tenant_id).toBe("ten_seq");
     expect(["queued", "running"]).toContain(job.status);
+  }, 300_000);
+});
+
+
+// ---------------------------------------------------------------------------------------------
+// THE POPULATION THAT COULD NOT BE REAPED (#23 caller work, cf#72, and #38's narrower gaps).
+//
+// Everything above tears down buckets that are EMPTY. That is the tenant who never rendered, and a
+// tenant that was ever live is precisely the tenant who HAS rendered: R2 refuses to delete a
+// non-empty bucket, so the real population was unreachable. This block builds a bucket with objects
+// in it and reaps it for real.
+//
+// It also closes the two narrower gaps #38 recorded:
+//   - the R2 token REVOKE leg, unexercised because nothing here ever minted one. It does now, with a
+//     real minted token, and absence is proven by raw REST at the ACCOUNT token path.
+//   - the ephemeral emptying credential: MINT -> WORK -> REVOKE has to hold against real Cloudflare,
+//     not just against a recording proxy, or a teardown strands a live bucket-scoped grant.
+//
+// AND THE GUARD, LIVE. teardown-guard.test.ts proves the refusal against real SQL with a recording
+// proxy; what it structurally cannot prove is that a refused bucket still HAS ITS OBJECTS afterwards.
+// Emptying is the irreversible half, so that is the assertion that matters, and it needs real R2.
+// ---------------------------------------------------------------------------------------------
+
+/** R2 S3 semantics: access key id = token id, secret = SHA-256 hex of the token VALUE. */
+async function sha256Hex(v: string): Promise<string> {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const amzNow = (): string => new Date().toISOString().replace(/[:-]|\.\d{3}/g, "");
+
+async function s3Request(
+  cred: { accessKeyId: string; secretAccessKey: string },
+  args: { method: string; url: string; body?: string },
+): Promise<Response> {
+  const signed = await signSigV4({
+    method: args.method,
+    url: args.url,
+    headers: {},
+    body: args.body,
+    accessKeyId: cred.accessKeyId,
+    secretAccessKey: cred.secretAccessKey,
+    region: "auto",
+    service: "s3",
+    amzDate: amzNow(),
+  });
+  return await fetch(args.url, { method: args.method, headers: signed.headers, body: args.body });
+}
+
+/** Objects, written with the TENANT's own credential -- the same way a render writes them. */
+async function fillBucket(bucket: string, cred: { accessKeyId: string; secretAccessKey: string }): Promise<number> {
+  const endpoint = `https://${ACCOUNT}.r2.cloudflarestorage.com`;
+  const keys = ["renders/film-1/out.mp4", "keyframes/shot-1.png", "weird &<>\'\" key.txt"];
+  // A freshly minted R2 credential is not usable immediately (~3s measured), so the first write waits.
+  for (let i = 0; i < 25; i++) {
+    const r = await s3Request(cred, {
+      method: "PUT",
+      url: `${endpoint}/${bucket}/${keys[0].split("/").map(encodeURIComponent).join("/")}`,
+      body: "x",
+    });
+    if (r.status < 300) break;
+    await new Promise((res) => setTimeout(res, 1500));
+  }
+  for (const k of keys.slice(1)) {
+    const r = await s3Request(cred, {
+      method: "PUT",
+      url: `${endpoint}/${bucket}/${k.split("/").map(encodeURIComponent).join("/")}`,
+      body: "x",
+    });
+    expect(r.status, `PUT ${k}`).toBeLessThan(300);
+  }
+  return keys.length;
+}
+
+/** How many objects a bucket holds RIGHT NOW, read with a signed request rather than inferred. */
+async function objectCount(bucket: string, cred: { accessKeyId: string; secretAccessKey: string }): Promise<number> {
+  const res = await s3Request(cred, {
+    method: "GET",
+    url: `https://${ACCOUNT}.r2.cloudflarestorage.com/${bucket}?list-type=2`,
+  });
+  const xml = await res.text();
+  return [...xml.matchAll(/<Contents>/g)].length;
+}
+
+describe.skipIf(!LIVE)("a bucket that was RENDERED INTO, live (#23 caller, cf#72, #38 revoke leg)", () => {
+  it("empties it, deletes it, and revokes BOTH credentials -- proven by raw REST", async () => {
+    const tenant = await buildHalfBuiltTenant(`${SLUG}-full`);
+
+    // A REAL minted token, which is the leg #38 recorded as unexercised. It is also what makes the
+    // objects below real: they are written with the tenant own credential, not a test shortcut.
+    const token = await minter.mintBucketToken(tenantR2TokenName(tenant.slug), tenant.r2_bucket_name!);
+    createdTokens.push(token.id);
+    const cred = { accessKeyId: token.id, secretAccessKey: await sha256Hex(token.value) };
+    const written = await fillBucket(tenant.r2_bucket_name!, cred);
+
+    // POSITIVE CONTROLS, both of them. Presence first, because absence at the end proves nothing
+    // otherwise; and then the OLD BEHAVIOUR STILL BITING, so "the delete worked" cannot be true for
+    // the boring reason that the bucket was empty all along.
+    expect(await objectCount(tenant.r2_bucket_name!, cred)).toBe(written);
+    expect(await tokenExists(token.id), "the minted token must exist before the revoke leg runs").toBe(true);
+    await expect(cf.deleteR2Bucket(tenant.r2_bucket_name!)).rejects.toThrow(/not empty/i);
+
+    const withToken = { ...tenant, r2_token_id: token.id } as Tenant;
+    const result = await teardownTenant(deps, withToken, { deleteData: true });
+    expect(result.ok, `teardown failures: ${JSON.stringify(result.failures)}`).toBe(true);
+
+    // Absence witnessed independently of the client that did the deleting.
+    expect(await bucketExists(tenant.r2_bucket_name!), "the bucket must be GONE").toBe(false);
+    expect(await d1Exists(tenant.d1_database_id!)).toBe(false);
+    expect(await scriptExists(NAMESPACE, tenant.script_name!)).toBe(false);
+
+    // THE REVOKE LEG (#38): the tenant credential is gone, by id, at the account token path.
+    expect(await tokenExists(token.id), "the tenant R2 token must be revoked").toBe(false);
+
+    // AND THE EPHEMERAL ONE. A teardown that reaps everything but strands its own bucket-scoped
+    // grant has rebuilt the orphaned-credential class the cycle design exists to close.
+    const leftover = await cf.findTokenByName(tenantR2TeardownTokenName(tenant.slug));
+    expect(leftover, "the emptying credential must not outlive the cycle").toBeNull();
+  }, 300_000);
+
+  it("the GUARD refuses an aliased bucket, and the objects are STILL THERE afterwards", async () => {
+    const store = new D1Store(d1Over(freshMigratedDb()));
+    await store.createAccount("acct_alias", "alias@example.com");
+
+    const built = await buildHalfBuiltTenant(`${SLUG}-alias`);
+    const token = await minter.mintBucketToken(tenantR2TokenName(built.slug), built.r2_bucket_name!);
+    createdTokens.push(token.id);
+    const cred = { accessKeyId: token.id, secretAccessKey: await sha256Hex(token.value) };
+    const written = await fillBucket(built.r2_bucket_name!, cred);
+
+    // THE LIVE-PLANE SHAPE, rebuilt: a LIVE row and a tombstone renamed off the slug, both still
+    // carrying the same ids. Slug reuse is resource reuse.
+    await store.createTenant("ten_alias_live", built.slug, "acct_alias", "live");
+    await store.setTenantD1("ten_alias_live", built.d1_database_id!);
+    await store.setTenantBucket("ten_alias_live", built.r2_bucket_name!);
+    await store.setTenantScript("ten_alias_live", built.script_name!, "test");
+    // The TOKEN has to be on both rows too, and getting this wrong the first time was instructive:
+    // the guard asks whether another ROW references the resource, so a token id passed in the tenant
+    // object but absent from every row has no referrer and is correctly NOT refused. The alias must
+    // exist in the data, not just in the argument.
+    await store.setTenantR2Token("ten_alias_live", token.id);
+    await store.createTenant("ten_alias_dead", `${built.slug}-old`, "acct_alias", "failed");
+    await store.setTenantStatus("ten_alias_dead", "deleted");
+    await store.setTenantD1("ten_alias_dead", built.d1_database_id!);
+    await store.setTenantBucket("ten_alias_dead", built.r2_bucket_name!);
+    await store.setTenantScript("ten_alias_dead", built.script_name!, "test");
+    await store.setTenantR2Token("ten_alias_dead", token.id);
+    const dead = (await store.getTenantById("ten_alias_dead"))!;
+
+    const aliasDeps = {
+      cf,
+      tokenMinter: minter,
+      namespace: NAMESPACE,
+      moduleNamespace: MODULE_NAMESPACE,
+      tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
+      log: (event: string, fields: Record<string, unknown>) => void logged.push({ event, fields }),
+      store,
+      r2Endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
+      now: () => Date.now(),
+      sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+      fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+    } as unknown as ProvisionDeps;
+
+    const result = await teardownTenant(aliasDeps, dead, { deleteData: true });
+
+    expect(result.ok).toBe(false);
+    const refused = Object.fromEntries(result.failures.map((f) => [f.resource, f.error]));
+    for (const r of ["d1", "r2_bucket", "worker", "r2_token"]) {
+      expect(refused[r], `${r} must be refused`).toMatch(/^refused:/);
+      expect(refused[r]).toContain("AT LEAST ONE IS NOT DELETED");
+    }
+
+    // THE ASSERTION THIS FILE EXISTS FOR, and the one no mocked suite can make: the live tenant
+    // resources are still there, and the bucket still holds every object. A guard that refused the
+    // DELETE but let the emptying run first would leave an intact-looking bucket with nothing in it.
+    expect(await bucketExists(built.r2_bucket_name!)).toBe(true);
+    expect(await d1Exists(built.d1_database_id!)).toBe(true);
+    expect(await scriptExists(NAMESPACE, built.script_name!)).toBe(true);
+    expect(await objectCount(built.r2_bucket_name!, cred), "the films must still be there").toBe(written);
+    expect(await tokenExists(token.id), "a refused credential is not revoked").toBe(true);
+
+    // And no emptying credential was ever minted: the refusal short-circuits before the mint.
+    expect(await cf.findTokenByName(tenantR2TeardownTokenName(built.slug))).toBeNull();
   }, 300_000);
 });
