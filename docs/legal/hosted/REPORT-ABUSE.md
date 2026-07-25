@@ -2,6 +2,10 @@
 
 > **Status: DRAFT, not in force.** This page describes the hosted studio, which has not opened to
 > signups yet. It takes effect the day it does.
+>
+> **That status is about this document, not about the address.** `abuse@skyphusion.org` is live
+> today, it is published in the in-force Acceptable Use Policy, and mail sent to it reaches a human.
+> If you have something to report, send it now. Nothing on this page is a reason to wait.
 
 **If a child is in immediate danger, call your local emergency number first. Do not wait for us.**
 
@@ -67,7 +71,8 @@ problems for you and for us. A link and a description are enough.
 
 1. **We log it**, with the time it arrived.
 2. **We triage it.** Suspected child sexual abuse material and any imminent risk of physical harm
-   jump every other queue, at any hour.
+   jump every other queue. **We are a small team and not a 24-hour desk:** if it is urgent, report
+   to the CyberTipline and to law enforcement at the same time rather than waiting on us.
 3. **We suspend first when the report is serious.** Suspension takes the studio offline immediately
    and is reversible. It destroys nothing, which matters, because evidence has to survive.
 4. **We look only as far as we have to.** We check the specific thing you identified, and nothing

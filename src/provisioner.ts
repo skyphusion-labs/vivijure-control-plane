@@ -26,6 +26,7 @@ import type {
   TenantResourceKind,
 } from "./store";
 import { emptyBucketBounded, type EmptyBucketResult } from "./r2-empty";
+import type { KekRing } from "./token-crypto";
 import { decryptStudioToken, encryptStudioToken } from "./token-crypto";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
 import type { TokenMinter } from "./token-minter";
@@ -196,8 +197,11 @@ export interface ProvisionDeps {
   moduleNamespace: string;
   release: string;
   tenantScriptName(slug: string): string;
-  /** Base64 KEK for encrypting the tenant STUDIO_API_TOKEN value at rest (token-crypto.ts). */
-  kek: string;
+  /**
+   * The studio-token KEK RING (cp#95). Writes use the configured write slot; reads open under
+   * either installed key, so provisioning keeps working throughout a rotation window.
+   */
+  kek: KekRing;
   /** Optional per-tenant daily spend ceiling set as SPEND_DAILY_CEILING; null -> studio default. */
   spendDailyCeiling: string | null;
   /**

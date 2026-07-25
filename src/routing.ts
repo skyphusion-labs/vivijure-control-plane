@@ -18,7 +18,7 @@
 import { resolveSession, SESSION_COOKIE } from "./auth";
 import type { ControlPlaneDeps } from "./deps";
 import type { ControlPlaneEnv } from "./env";
-import { publicOrigin, tenantDomainSuffix } from "./env";
+import { publicOrigin, studioKekRing, tenantDomainSuffix } from "./env";
 import type { Tenant } from "./store";
 import { validateSlug } from "./tenants";
 import { decryptStudioToken } from "./token-crypto";
@@ -214,7 +214,10 @@ export async function routeTenantRequest(
   let injectedToken: string | null = null;
   if (isOwner && env.STUDIO_TOKEN_KEK && tenant.studio_token_enc) {
     try {
-      injectedToken = await decryptStudioToken(env.STUDIO_TOKEN_KEK, tenant.studio_token_enc);
+      // cp#95: the RING opens ciphertext under EITHER installed key, so dispatcher-injected auth
+      // survives a rotation window rather than becoming its blast radius. The catch below is
+      // unchanged and still the fail-closed answer for a row no installed key opens.
+      injectedToken = await decryptStudioToken(studioKekRing(env), tenant.studio_token_enc);
     } catch {
       // A token we cannot decrypt is a misconfiguration, never an auth grant. Fall through with no
       // token; the studio's own fail-closed 403 answers rather than us guessing at access.

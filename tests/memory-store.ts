@@ -463,6 +463,22 @@ export class MemoryStore implements ControlPlaneStore {
     if (t) t.studio_token_enc = encValue;
   }
 
+  async listEncryptedStudioTokens() {
+    // Mirrors the D1 query: no status filter, ordered by id. A fake that quietly filtered would let
+    // a rotation test pass while the real sweep skipped parked rows.
+    return [...this.tenants.values()]
+      .filter((t) => t.studio_token_enc !== null && t.studio_token_enc !== "")
+      .map((t) => ({ id: t.id, slug: t.slug, studio_token_enc: t.studio_token_enc as string }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  async setTenantStudioTokenIfUnchanged(id: string, expectedEnc: string, newEnc: string) {
+    const t = this.tenants.get(id);
+    if (!t || t.studio_token_enc !== expectedEnc) return false;
+    t.studio_token_enc = newEnc;
+    return true;
+  }
+
   async getJob(id: string) {
     return this.jobs.get(id) ?? null;
   }

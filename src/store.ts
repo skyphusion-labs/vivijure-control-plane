@@ -556,6 +556,23 @@ export interface ControlPlaneStore {
   setTenantModulesRelease(id: string, release: string | null): Promise<void>;
   /** The encrypted per-tenant STUDIO_API_TOKEN value (dispatcher-injected auth). Value, not a hash. */
   setTenantStudioToken(id: string, encValue: string): Promise<void>;
+  /**
+   * cp#95: EVERY row carrying an encrypted studio token, whatever its status.
+   *
+   * Deliberately not filtered to live tenants. A parked or deleted row still holds a customer
+   * credential encrypted under the key a rotation is about to retire, and the house pattern is
+   * park-and-rename rather than delete, so a status filter here would leave real ciphertext behind
+   * and let a census answer "safe to promote" while it was not.
+   */
+  listEncryptedStudioTokens(): Promise<{ id: string; slug: string; studio_token_enc: string }[]>;
+  /**
+   * cp#95: compare-and-set on the ciphertext, for the rotation sweep.
+   *
+   * The sweep holds a decrypted token across an await, so a provision that re-minted the token in
+   * that gap would be silently reverted by a blind UPDATE -- leaving the tenant authenticating with
+   * a token its own studio no longer accepts. Returns whether the row was written.
+   */
+  setTenantStudioTokenIfUnchanged(id: string, expectedEnc: string, newEnc: string): Promise<boolean>;
 
   // provision jobs
   createProvisionJob(id: string, tenantId: string, kind: "provision" | "deprovision"): Promise<ProvisionJob>;

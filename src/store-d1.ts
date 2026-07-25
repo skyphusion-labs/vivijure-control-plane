@@ -427,6 +427,31 @@ export class D1Store implements ControlPlaneStore {
     await this.db.prepare("UPDATE tenants SET studio_token_enc = ?2 WHERE id = ?1").bind(id, encValue).run();
   }
 
+  async listEncryptedStudioTokens(): Promise<{ id: string; slug: string; studio_token_enc: string }[]> {
+    // NO status filter, by design (see the interface comment): a parked or deleted row still holds
+    // ciphertext under the outgoing key. Ordered by id so a bounded sweep walks the same sequence
+    // every run and its "complete" flag means what it says.
+    const rs = await this.db
+      .prepare(
+        "SELECT id, slug, studio_token_enc FROM tenants WHERE studio_token_enc IS NOT NULL " +
+          "AND studio_token_enc != '' ORDER BY id",
+      )
+      .all<{ id: string; slug: string; studio_token_enc: string }>();
+    return rs.results ?? [];
+  }
+
+  async setTenantStudioTokenIfUnchanged(id: string, expectedEnc: string, newEnc: string): Promise<boolean> {
+    // The WHERE clause IS the lock. D1 has no transaction to hold across the decrypt/encrypt gap, so
+    // the guard travels in the statement: write only if the ciphertext is still the one we read.
+    const res = await this.db
+      .prepare("UPDATE tenants SET studio_token_enc = ?3 WHERE id = ?1 AND studio_token_enc = ?2")
+      .bind(id, expectedEnc, newEnc)
+      .run();
+    // meta.changes is the only honest signal here: a 0-row UPDATE is a SUCCESSFUL statement that did
+    // nothing, so reporting success off the absence of an error would call a race a rotation.
+    return (res.meta?.changes ?? 0) > 0;
+  }
+
   // ---- provision jobs ----
 
   async createProvisionJob(

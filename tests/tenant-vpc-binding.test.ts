@@ -14,6 +14,7 @@
 // cf), because "it probably uses the right client" is how a second credential quietly does nothing.
 
 import { describe, expect, it, beforeEach, vi } from "vitest";
+import { kekRing } from "../src/token-crypto";
 import { runProvisionJob, type ProvisionDeps } from "../src/provisioner";
 import { CfApiError, type CfApi, type WorkerBinding } from "../src/cf-api";
 import { MemoryStore } from "./memory-store";
@@ -78,7 +79,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     moduleNamespace: "vivijure-tenant-modules",
     release: "v1.0.0",
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
-    kek: btoa("0123456789abcdef0123456789abcdef"),
+    kek: kekRing(btoa("0123456789abcdef0123456789abcdef")),
     spendDailyCeiling: null,
     now: () => 1_000_000,
     sleep: async () => {},

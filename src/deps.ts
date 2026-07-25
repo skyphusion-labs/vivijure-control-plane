@@ -9,6 +9,7 @@ import { r2StudioBundleSource } from "./bundle-r2";
 import { r2ModuleBundleSource } from "./module-bundle-r2";
 import { CfApi } from "./cf-api";
 import type { ControlPlaneEnv } from "./env";
+import { studioKekRing } from "./env";
 import type { MailSender } from "./email";
 import { posternSender } from "./email";
 import {
@@ -47,6 +48,7 @@ import {
   type TenantStudioSmokeClient,
 } from "./smoke-render";
 import { D1Store } from "./store-d1";
+import type { KekRing } from "./token-crypto";
 import { decryptStudioToken } from "./token-crypto";
 import { CfTokenMinter } from "./token-minter";
 import {
@@ -222,7 +224,10 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     moduleNamespace: TENANT_MODULE_NAMESPACE,
     release: STUDIO_RELEASE,
     tenantScriptName: (slug) => `tenant-${slug}-studio`,
-    kek: STUDIO_TOKEN_KEK,
+    // cp#95: the RING, not a key. Provision writes under the configured write slot, and anything
+    // this deps bundle decrypts opens under EITHER installed key, so a provision landing mid
+    // rotation is neither refused nor written under a key the sweep has already walked past.
+    kek: studioKekRing(env),
     // Always set a ceiling: a hosted tenant with no daily cap has no cost bound. Operator-tunable.
     spendDailyCeiling: env.TENANT_SPEND_DAILY_CEILING ?? "25",
     // Prove SERVING at verify: dispatch straight to the tenant worker (bypassing the control-plane
@@ -287,7 +292,7 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       issue: (tenant) => issueTenantApiToken(apiTokenDeps, tenant),
       revoke: (tenant) => revokeTenantApiToken(apiTokenDeps, tenant),
     },
-    smokeClient: tenantStudioSmokeClient(env, STUDIO_TOKEN_KEK),
+    smokeClient: tenantStudioSmokeClient(env, studioKekRing(env)),
     async refreshStudioBindings(tenant) {
       // Preflight FIRST and separately: a refusal must leave the tenant untouched, and this route
       // has no job row to record one on.
@@ -355,7 +360,7 @@ const SMOKE_ARTIFACT_TIMEOUT_MS = 25_000;
  * Every path below is a CONSTANT. The client takes no caller-supplied path or body, so it cannot be
  * turned into a general operator proxy into customer studios.
  */
-export function tenantStudioSmokeClient(env: ControlPlaneEnv, kek: string): TenantStudioSmokeClient {
+export function tenantStudioSmokeClient(env: ControlPlaneEnv, kek: KekRing): TenantStudioSmokeClient {
   const dispatch = async (
     tenant: Tenant,
     init: { method: string; path: string; body?: string; timeoutMs: number; accept?: string },

@@ -296,6 +296,81 @@ page. Three findings, and the first one was a defect caught before it reached a 
 The throwaway script was deleted and the namespace re-censused through a DIFFERENT credential
 afterwards: zero `rehearsal-` prefixed residents.
 
+## Rotating the studio-token KEK (cp#95)
+
+`tenants.studio_token_enc` is the one credential this plane stores as a usable value rather than a
+hash (see "Key custody"), and until cp#95 the key protecting it could not be changed at all. That
+made rotation an incident rather than maintenance: any reason to rotate meant an unplanned project
+under time pressure, and there was no migration path either, so a lost key meant re-minting every
+tenant's studio token by hand.
+
+The capability is deliberately shaped as **a ring plus two operator routes**, not a script.
+
+### The ring
+
+`STUDIO_TOKEN_KEK` (in force) and, only during a window, `STUDIO_TOKEN_KEK_NEXT` (incoming). The two
+directions are separated:
+
+- **Reads try BOTH keys, always.** A row opens whether it was written before, during, or after a
+  rotation, so dispatcher-injected auth keeps working throughout the window instead of becoming its
+  blast radius.
+- **Writes use exactly ONE key**, named by the `STUDIO_TOKEN_KEK_ENCRYPT_SLOT` var.
+
+The write slot is CONFIG rather than runtime state for two reasons. First, convergence: the sweep and
+the live provision path must write under the same key, or a sweep can be outrun by provisions forever.
+Second, change control: flipping the write direction of every stored customer credential is a
+reviewable deploy, not an unlogged toggle.
+
+A slot naming `next` with no next key installed **refuses to encrypt**. It does not fall back. A
+silent fallback would write live customer credentials under a key the operator believes is retired,
+and that failure stays invisible until somebody deletes the wrong binding.
+
+### The routes
+
+```
+GET  /api/admin/kek/status      -> census (read-only, safe any time)
+POST /api/admin/kek/reencrypt   -> sweep; body { "limit": <n> } optional
+```
+
+| Refusal | When |
+| --- | --- |
+| `unauthorized` (401) | not the admin token. This is an operator surface |
+| `kek_unconfigured` (503) | no `STUDIO_TOKEN_KEK` on this deploy. Answering a census here would report every row unreadable and read like a catastrophe instead of a missing binding |
+| `rotation_window_closed` (409) | the sweep was called with no `STUDIO_TOKEN_KEK_NEXT` installed. There is nothing to rotate toward, and re-encrypting every row under the key it already carries is not harmless |
+
+### The census is three buckets, and the third one is an alarm
+
+AES-GCM cannot distinguish "wrong key" from "tampered ciphertext"; both are an auth-tag failure. A
+two-bucket census would therefore file a CORRUPT row under "still needs rotating", the sweep would
+retry it forever, and a shrinking backlog would read as progress while one row never converged.
+
+| Bucket | Meaning |
+| --- | --- |
+| `on_target` | opens under the write-slot key. Nothing to do |
+| `needs_rotation` | opens under the OTHER installed key. The sweep's work list |
+| `unreadable` | opens under NEITHER. Never touched by the sweep, and it holds `safe_to_promote` false |
+
+`total` is always reported alongside, so an empty estate answers `safe_to_promote: true` **with the
+count that makes it true**. An empty answer must never be readable as a passing answer.
+
+### What the sweep guarantees
+
+- **Idempotent.** The work list is derived from the data on every run, so a second run is a no-op.
+- **Resumable.** `limit` bounds a run; re-running finishes the job. No cursor to persist or go stale.
+- **Non-destructive under a race.** The write is a compare-and-set on the ciphertext that was read.
+  A provision that re-minted a token mid-sweep wins; the sweep reports `raced` and moves on. Without
+  that, a blind write would leave the tenant authenticating with a token its own studio rejects.
+- **Never overwrites what it could not read.** An unreadable row is left byte-identical, because the
+  value may still be recoverable from an escrowed key nobody has tried yet.
+
+The sweep response carries BOTH `sweep` and a fresh `census`, and only the census decides
+`safe_to_promote`. The sweep report is the writer describing its own work; the census is a re-read of
+what is actually stored. Same rule the cp#112 readback follows. **A run that leaves work behind
+answers 409**, so an incomplete rotation cannot read as a finished one.
+
+Full operator procedure, including the escrow-before-install step: `docs/deploy.md`, "Rotating
+`STUDIO_TOKEN_KEK`".
+
 ## Upgrading the modules of a LIVE tenant (cf#103)
 
 A tenant provisioned last month runs the module bytes that were published then. Shipping a new
@@ -413,11 +488,59 @@ here. That is a release-discipline defect which would break a full re-provision 
 | `module_bundle_unavailable` | 422 | the release is missing a module bundle |
 | `provisioner_unconfigured` | 503 | the deploy lacks the provisioner env |
 
+## Tenant satellite image pins (cp#126)
+
+Every tenant endpoint is created from a pinned container image, and all four pins live in exactly one
+place: `src/satellite-pins.ts`. `src/runpod.ts` decides layout, labels, GPU class and worker counts,
+and never decides a version; a test asserts no image literal can come back into it.
+
+**The authority for a pin is what PRODUCTION runs, not what is newest.** A pin mirrors a specific
+production endpoint (recorded on the pin, with the date it was read), so a hosted tenant renders on
+the line the estate has actually proven end to end. The newest published tag is not that line: its
+only evidence is that CI went green. On 2026-07-25 the newest tags were upscale 1.0.5, musetalk 1.0.6
+and audio-upscale 1.0.8, and production ran 1.0.4 / 1.0.5 / 1.0.7 -- musetalk 1.0.6 adds an HTTP
+serve path production has never exercised, and a paying tenant is not where that gets discovered.
+
+Why this file exists at all: the pins sat at backend 1.0.2 / upscale 0.2.7 / musetalk 0.1.0 /
+audio-upscale 0.1.0 for six weeks while production moved on. Nobody was careless; there was simply no
+place where a wrong pin could be SEEN. Two checks now make it visible:
+
+```bash
+npm run check:pins        # creds-free. Every pin must resolve at GHCR by image name. Runs in CI on
+                          # every PR, so a pin at a tag nobody pushed cannot merge.
+RUNPOD_API_KEY=... npm run check:pins:prod   # compares every pin to the LIVE production endpoint
+```
+
+Exit 1 is a real mismatch. **Exit 2 means the check could not be performed** (no key, network, API
+shape) and is never a pass: an unreadable check is an unverified pin.
+
+### The release rule
+
+A satellite release now has a third leg. Pinning both panels is not enough, because the plane pins
+tenants too:
+
+1. release the satellite, 2. pin the production endpoint, 3. **run `check:pins:prod`; when it goes
+red, move `src/satellite-pins.ts` to what production now runs and re-read the `mirrors` dates.**
+
+### What a pin change does and does not reach
+
+A pin change applies to endpoints created AFTER it ships. It does **not** retroactively move a live
+tenant: their endpoints were built from the pins of the day, and the plane cannot repin them, because
+the RunPod key that could (KEY A) is used once at provision and never stored (see key custody above).
+Moving a live tenant onto newer images is therefore a tenant-side or operator-side action against
+that tenant's own account, not something this plane can do on their behalf.
+
+And when any endpoint IS repinned, the repin is half the job: a template change leaves the old
+workers running the old image and squatting the account worker slots (a 50-minute render stall on
+2026-07-25). **Cycle the workers** (`workersMax` to 0 and back), then verify the first job's worker
+image and `isStale` via `GET /v2/serverless/{id}/workers` before trusting the run.
+
 ## Verifying changes
 
 ```bash
 npm run typecheck                 # the CI gate
 npm test                          # the whole suite
+npm run check:pins                # tenant image pins resolve at GHCR
 npm run dev         # live, against a real local D1
 ```
 
