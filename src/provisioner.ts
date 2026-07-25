@@ -161,6 +161,26 @@ export interface ProvisionDeps {
   /** The account S3 endpoint (https://<account>.r2.cloudflarestorage.com) the satellites use. */
   r2Endpoint: string;
   /**
+   * The client that uploads TENANT SCRIPTS, which is the call that attaches bindings (cf#118).
+   *
+   * WHY A SECOND CLIENT AND NOT A WIDER FIRST ONE. Attaching a Workers VPC binding needs
+   * Connectivity Directory access, and Cloudflare will not let an API-created token mint a token
+   * carrying that scope -- so the capability cannot be added to the provisioner credential the way
+   * the R2 mint was. The function is split instead: the provisioner keeps D1 / R2 / token-mint, and
+   * a narrower `vivijure-cp-worker-upload` credential (Workers Scripts Write + Connectivity
+   * Directory) owns script upload. Per-function keys, arrived at by constraint rather than taste.
+   *
+   * DEFAULTS TO `cf` when no upload credential is configured, deliberately: one seam, no second code
+   * path, and a plane without the new credential behaves exactly as it did before this change.
+   */
+  scriptUploadCf: CfApi;
+  /**
+   * The Connectivity Directory service id for the video-finish tier, or null when this plane does
+   * not offer it (cf#118). Null is the honest self-host-parity default: no binding, and the render
+   * degrades to per-shot clips with the reason stated, which is what tenants get today.
+   */
+  videoFinishServiceId: string | null;
+  /**
    * Clock, sleep and fetch, injected rather than reached for globally (#23 / cf#72).
    *
    * Teardown empties a tenant bucket over the S3 API, and that is a BUDGETED loop: it needs a clock
@@ -216,6 +236,13 @@ export const tenantR2TeardownTokenName = (slug: string) => `vivijure-tenant-${sl
  * cycles rather than one call that silently outlives its invocation.
  */
 const TEARDOWN_EMPTY_BUDGET_MS = 15_000;
+
+/**
+ * Cloudflare's code for "this token may not attach that VPC binding" (cf#118). Read off a live
+ * response during the credential probe, not guessed: the same upload succeeded without the binding
+ * and failed with it, on the same token, carrying exactly this code.
+ */
+const CF_VPC_BINDING_UNAUTHORIZED = 10196;
 
 /**
  * The Workers Rate Limiting namespace the tenant spend limiter binds to. Shared across tenant
@@ -487,7 +514,7 @@ export async function runProvisionJob(
     // adding a service is a plan entry, not an edit here.
     const endpointBindings = endpoints.map((e) => ({ type: "plain_text" as const, name: e.endpointVar, text: e.id }));
 
-    await deps.cf.uploadUserWorker({
+    await uploadStudioScript(deps, {
       namespace: deps.namespace,
       scriptName: deps.tenantScriptName(tenant.slug),
       mainModule: built.mainModule,
@@ -542,6 +569,17 @@ export async function runProvisionJob(
         // -- a hosted tenant without a ceiling has no cost bound. Operator-tunable via env.
         ...(deps.spendDailyCeiling
           ? [{ type: "plain_text" as const, name: "SPEND_DAILY_CEILING", text: deps.spendDailyCeiling }]
+          : []),
+        // cf#118: the video-finish tier. Present only when this plane is configured for it; absent
+        // means the tenant degrades to per-shot clips WITH THE REASON STATED, which is exactly what
+        // tenants get today and what self-host gets without the container.
+        //
+        // The tier is SHARED (descendents + badbrains) and that is safe by CONSTRUCTION, not by
+        // policy: the container never receives a credential. The studio presigns per-object R2
+        // GET/PUT URLs with its OWN bucket-scoped credential and passes URLs, so a shared worker
+        // cannot enumerate a tenant's bucket, cannot outlive the URL, and holds nothing to leak.
+        ...(deps.videoFinishServiceId
+          ? [{ type: "vpc_service" as const, name: "VIDEO_FINISH_VPC", service_id: deps.videoFinishServiceId }]
           : []),
       ],
     });
@@ -1088,6 +1126,44 @@ export async function upgradeTenantModules(
 const inferStep = (done: ProvisionStep[]): ProvisionStep =>
   PROVISION_STEPS[Math.min(done.length, PROVISION_STEPS.length - 1)];
 
+/**
+ * Upload the tenant studio script, and REFUSE HONESTLY if the video-finish binding cannot be
+ * attached (cf#118).
+ *
+ * WHY THIS IS NOT A CATCH-AND-CONTINUE. Dropping the binding and provisioning anyway would hand the
+ * operator a tenant that looks fully provisioned while silently lacking a tier the plane is
+ * CONFIGURED to provide -- the render would then degrade to per-shot clips with a reason blaming an
+ * unbound binding, which is true and useless, because the operator set the service id and believes
+ * it is there. That is the isolation-theater / silent-degrade class (#245 / #249): the failure has
+ * to be named at the moment it happens, at the step that owns it.
+ *
+ * The named message exists because CF's own words here ("your credentials are not authorized for the
+ * requested VPC resource") are accurate and point at the wrong owner: the person reading a failed
+ * provision needs to know it is the PLANE's upload credential that is short a scope, not anything
+ * about the tenant.
+ */
+async function uploadStudioScript(
+  deps: ProvisionDeps,
+  args: Parameters<CfApi["uploadUserWorker"]>[0],
+): Promise<void> {
+  try {
+    await deps.scriptUploadCf.uploadUserWorker(args);
+  } catch (e) {
+    const attachingVpc = args.bindings.some((b) => b.type === "vpc_service");
+    const vpcRefusal = e instanceof CfApiError && e.cfErrors.some((c) => c.code === CF_VPC_BINDING_UNAUTHORIZED);
+    if (attachingVpc && vpcRefusal) {
+      throw new ProvisionFailure(
+        "wfp_upload",
+        "video-finish binding refused: the plane's SCRIPT UPLOAD credential is not authorized for " +
+          "Workers VPC (needs Connectivity Directory access). The tenant was NOT provisioned without " +
+          "the tier -- fix CF_WORKER_UPLOAD_TOKEN, or clear VIDEO_FINISH_VPC_SERVICE_ID to run this " +
+          "plane without video finishing on purpose.",
+      );
+    }
+    throw e;
+  }
+}
+
 async function uploadAssets(
   deps: ProvisionDeps,
   slug: string,
@@ -1097,7 +1173,11 @@ async function uploadAssets(
   const manifest: Record<string, { hash: string; size: number }> = {};
   for (const a of assets) manifest[a.path] = { hash: a.hash, size: a.size };
 
-  const session = await deps.cf.createAssetsUploadSession(deps.namespace, script, manifest);
+  // SAME credential as the script PUT that consumes this session's JWT (cf#118). Splitting them
+  // across two tokens would be a seam nobody tested: the completion JWT is minted by one client and
+  // redeemed by another, and "it probably does not care which token" is exactly the assumption this
+  // repo keeps getting burned by. One credential owns the whole studio-script upload.
+  const session = await deps.scriptUploadCf.createAssetsUploadSession(deps.namespace, script, manifest);
   // No buckets to fill means every asset is already resident in the namespace (WfP dedupes assets
   // by hash ACROSS the namespace, so tenant N+1 ships the same UI for free). The session JWT is
   // then already the completion JWT.
@@ -1111,7 +1191,7 @@ async function uploadAssets(
       .filter((a): a is NonNullable<typeof a> => Boolean(a))
       .map((a) => ({ hash: a.hash, base64: a.base64, contentType: a.contentType }));
     if (!files.length) continue;
-    const res = await deps.cf.uploadAssetBucket(session.jwt ?? "", files);
+    const res = await deps.scriptUploadCf.uploadAssetBucket(session.jwt ?? "", files);
     if (res.jwt) completion = res.jwt;
   }
   return completion;

@@ -86,9 +86,11 @@ const ENDPOINTS = [
 ];
 
 function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
+  const cf = fakeCf();
   return {
     store,
-    cf: fakeCf(),
+    cf,
+    videoFinishServiceId: null,
     runpod: { createEndpoints: vi.fn(async () => (calls.push("runpod.createEndpoints"), ENDPOINTS)) },
     tokenMinter: {
       // The id depends on WHICH credential is being minted: the tenant long-lived bucket token, or
@@ -180,6 +182,11 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     }),
     log: (event, fields) => void logs.push({ event, fields }),
     ...over,
+    // scriptUploadCf FOLLOWS cf unless a test names one of its own -- production's fallback, applied
+    // after the override so `deps({ cf: fakeCf({ uploadUserWorker: ... }) })` cannot leave the
+    // upload pointed at a different fake than the one the test is asserting on. Getting this wrong
+    // is silent: the override's call log stays empty and the assertion fails somewhere unrelated.
+    scriptUploadCf: over.scriptUploadCf ?? over.cf ?? cf,
   };
 }
 

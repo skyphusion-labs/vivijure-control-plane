@@ -91,6 +91,26 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    * cannot mint; see token-minter.ts). Provisioning is refused (503) while this is unset.
    */
   CF_PROVISIONER_TOKEN?: string;
+  /**
+   * The SCRIPT-UPLOAD credential (cf#118), separate from the provisioner on purpose.
+   *
+   * Attaching a Workers VPC binding needs Connectivity Directory access, and CF will not let an
+   * API-created token mint a token carrying that scope -- so the capability could not be added to
+   * the provisioner credential the way the R2 mint was, and the function was split instead:
+   * provisioner keeps D1 / R2 / token-mint, `vivijure-cp-worker-upload` owns script upload.
+   *
+   * OPTIONAL, and its absence is not a degraded mode: script upload falls back to the provisioner
+   * credential, which is exactly how this plane worked before the split. It is only REQUIRED when
+   * VIDEO_FINISH_VPC_SERVICE_ID is set, because that is the binding it exists to attach.
+   */
+  CF_WORKER_UPLOAD_TOKEN?: string;
+  /**
+   * Connectivity Directory service id for the video-finish tier (cf#118). Set it and tenant studios
+   * are provisioned with the VIDEO_FINISH_VPC binding, so assemble and mux work for them; leave it
+   * unset and they degrade to per-shot clips with the reason stated -- the same honest degrade a
+   * self-hoster without the container gets.
+   */
+  VIDEO_FINISH_VPC_SERVICE_ID?: string;
 
   // ---- provisioner wiring (#53). ALL of these must be present for provisioning to be offered;
   // a partially configured provisioner refuses (503 provisioner_unconfigured) rather than parking

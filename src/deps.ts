@@ -177,9 +177,19 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
   }
 
   const cf = new CfApi(CF_ACCOUNT_ID, CF_PROVISIONER_TOKEN);
+  // cf#118: script upload runs on its OWN credential when one is configured, and FALLS BACK to the
+  // provisioner otherwise. The fallback is what keeps this a single code path -- a plane without the
+  // new credential behaves exactly as it did before the split, rather than gaining a second mode.
+  const scriptUploadCf = env.CF_WORKER_UPLOAD_TOKEN
+    ? new CfApi(CF_ACCOUNT_ID, env.CF_WORKER_UPLOAD_TOKEN)
+    : cf;
   const deps: ProvisionDeps = {
     store,
     cf,
+    scriptUploadCf,
+    // Trimmed, and empty-means-absent: a whitespace-only value is a config typo, and treating it as
+    // a service id would attach a binding CF cannot resolve.
+    videoFinishServiceId: env.VIDEO_FINISH_VPC_SERVICE_ID?.trim() || null,
     runpod: { createEndpoints: (key, slug, r2) => createTenantEndpoints(key, slug, r2) },
     bundle: r2StudioBundleSource(STUDIO_RELEASES),
     // Module bundles ship in the SAME release mirror, per-module subpath (cf#99).
