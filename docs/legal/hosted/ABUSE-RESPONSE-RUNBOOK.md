@@ -398,15 +398,16 @@ this document.
 
 **Blocking (signups do not open until these are done):**
 
-| # | Gap | Owner |
-|---|---|---|
-| 1 | **`abuse@skyphusion.org` is not verified as deliverable or monitored.** It is already published in the **in-force** hub AUP and the hosted AUP `1.0.0`. We are advertising an intake address nobody has proven receives mail. | Infra (Strummer), with Conrad on the monitoring commitment |
-| 2 | **NCMEC ESP registration not started**, and the 2258A(a)(1)(B)(i) individual point of contact not designated. | Conrad (human step; cannot be delegated to code) |
-| 3 | **No segregated preservation path.** No defined location, no access control, no 1-year clock tracking. | Conrad + Infra |
-| 4 | **No teardown interlock on a preservation hold.** Irreversible evidence destruction is currently prevented only by an operator's memory. | Control-plane owner |
-| 5 | **Named authorized responder list does not exist.** Section 4.2 requires it; 2258B(c) makes minimizing access a statutory matter. | Conrad |
+| # | Gap | Owner | Issue |
+|---|---|---|---|
+| 1 | **`abuse@skyphusion.org` is not verified as deliverable or monitored.** It is already published in the **in-force** hub AUP and the hosted AUP `1.0.0`. We are advertising an intake address nobody has proven receives mail. | Infra (Strummer), with Conrad on the monitoring commitment | [#115](https://github.com/skyphusion-labs/vivijure-control-plane/issues/115) |
+| 2 | **NCMEC ESP registration not started**, and the 2258A(a)(1)(B)(i) individual point of contact not designated. | Conrad (human step; cannot be delegated to code) | [#116](https://github.com/skyphusion-labs/vivijure-control-plane/issues/116) |
+| 3 | **No segregated preservation path.** No defined location, no access control, no 1-year clock tracking. | Conrad + Infra | [#117](https://github.com/skyphusion-labs/vivijure-control-plane/issues/117) |
+| 4 | **No teardown interlock on a preservation hold.** Irreversible evidence destruction is currently prevented only by an operator's memory. | Control-plane owner | [#118](https://github.com/skyphusion-labs/vivijure-control-plane/issues/118) |
+| 5 | **Named authorized responder list does not exist.** Section 4.2 requires it; 2258B(c) makes minimizing access a statutory matter. | Conrad | [#119](https://github.com/skyphusion-labs/vivijure-control-plane/issues/119) |
 
-**Non-blocking (should follow soon):**
+**Non-blocking (should follow soon), all three tracked on
+[#120](https://github.com/skyphusion-labs/vivijure-control-plane/issues/120):**
 
 | # | Gap | Owner |
 |---|---|---|
