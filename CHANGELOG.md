@@ -6,6 +6,10 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.7.0 -- 2026-07-25
+
+MINOR: the cf#118 tenant-side binding (#109) is feature-class.
+
 ### feat(hosted): tenant studios carry the video-finish binding (vivijure-cf#118)
 
 - `VIDEO_FINISH_VPC_SERVICE_ID` set -> every tenant studio is provisioned with the `vpc_service`
