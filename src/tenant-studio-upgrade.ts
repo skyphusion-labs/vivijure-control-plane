@@ -48,6 +48,7 @@ import { applyStudioMigrations } from "./migrate";
 import { type ProvisionDeps, type StudioBundleSource, startLeaseHeartbeat, uploadStudioAssets } from "./provisioner";
 import type { Tenant } from "./store";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
+import { withAbuseReportUrl } from "./tenant-abuse-report";
 import { withVideoFinishTierState } from "./video-finish-tier-state";
 import { decryptStudioToken } from "./token-crypto";
 
@@ -382,14 +383,23 @@ export async function upgradeTenantStudio(
     // was CLEARED would carry VIDEO_FINISH_TIER_STATE across this move and keep displaying a sentence
     // the plane no longer believes. So it is stripped out of the carried set and re-derived from the
     // record, which converges the studio in BOTH directions (omitted = dropped, re-added = set).
-    const bindings = withVideoFinishTierState(
-      [
-        ...before
-          .filter((b) => b.name !== assetsBindingName)
-          .map((b) => ({ type: "inherit" as const, name: b.name })),
-        { type: "assets" as const, name: assetsBindingName },
-      ],
-      tenant,
+    //
+    // The cp#164 var is re-derived for the SAME reason and it is not a second special case, it is
+    // the same one: ABUSE_REPORT_URL is a projection of plane config onto the studio, so carrying it
+    // as `inherit` would preserve a URL from a plane that no longer publishes that page. Re-deriving
+    // converges in both directions, and it is also the door this bytes move opens for cp#164 -- a
+    // tenant that predated the var gets it as a side effect of any studio upgrade.
+    const bindings = withAbuseReportUrl(
+      withVideoFinishTierState(
+        [
+          ...before
+            .filter((b) => b.name !== assetsBindingName)
+            .map((b) => ({ type: "inherit" as const, name: b.name })),
+          { type: "assets" as const, name: assetsBindingName },
+        ],
+        tenant,
+      ),
+      deps.abuseReportUrl,
     );
 
     try {

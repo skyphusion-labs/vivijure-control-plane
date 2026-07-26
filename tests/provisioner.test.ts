@@ -91,6 +91,9 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     store,
     cf,
     videoFinishServiceId: null,
+    // cp#164: the default fixture is a plane that publishes an intake page, because that is what a
+    // configured deploy is. Tests that care about the unconfigured case override it with null.
+    abuseReportUrl: "https://studio.example.com/report-abuse",
     runpod: {
       createEndpoints: vi.fn(async () => (calls.push("runpod.createEndpoints"), ENDPOINTS)),
       convergeTemplateImages: vi.fn(async () => (calls.push("runpod.convergeTemplateImages"), [])),
@@ -247,6 +250,44 @@ describe("runProvisionJob", () => {
     };
     const secret = upload.bindings.find((b) => b.name === "R2_S3_SECRET_ACCESS_KEY");
     expect(secret?.text).toBe(r2.secretAccessKey);
+  });
+
+  it("binds the abuse-report URL onto a NEW tenant studio (cp#164)", async () => {
+    // THE DISCRIMINATING TEST for the provision door. It asserts what the plane SENT to the upload,
+    // which is the claim that fails against the behaviour cp#164 filed: a plane whose reader shipped
+    // in vivijure-cf v1.10.0 and which wrote the var nowhere, so no tenant studio could ever show a
+    // reporter where to go.
+    const t = await tenant();
+    const d = deps();
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+
+    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      bindings: { type: string; name: string; text?: string }[];
+    };
+    expect(upload.bindings.find((b) => b.name === "ABUSE_REPORT_URL")).toEqual({
+      type: "plain_text",
+      name: "ABUSE_REPORT_URL",
+      text: "https://studio.example.com/report-abuse",
+    });
+  });
+
+  it("binds NO abuse-report URL when the plane cannot name its own intake page (cp#164)", async () => {
+    // Unset renders nothing on the panel, which is the deliberate behaviour a self-hoster gets and
+    // the correct state for a plane that does not know its own host. Advertising a guessed page
+    // would send reporters somewhere worse than nowhere.
+    const t = await tenant();
+    const d = deps({ abuseReportUrl: null });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+
+    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      bindings: { type: string; name: string }[];
+    };
+    // CONTROL: the proxy saw a real payload with the rest of the contract on it, so the absence
+    // below is an omission rather than an upload that never happened.
+    expect(upload.bindings.some((b) => b.name === "R2_S3_ENDPOINT")).toBe(true);
+    expect(upload.bindings.some((b) => b.name === "ABUSE_REPORT_URL")).toBe(false);
   });
 
   it("wires ASSETS + the endpoint-id vars + STUDIO_API_TOKEN, and persists the ENCRYPTED token value", async () => {

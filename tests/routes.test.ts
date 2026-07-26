@@ -70,6 +70,24 @@ const CLEAN_TIER_STATE = {
   served_reason_changed: true,
 };
 
+/** A clean cp#164 abuse-report-url readback, shaped like the real one. */
+const CLEAN_ABUSE_URL = {
+  ok: true,
+  script: "tenant-hero-studio",
+  url: "https://studio.example.com/report-abuse",
+  already_present: false,
+  var_present_after: true,
+  bindings_before: ["ASSETS", "DB"],
+  bindings_after: ["ABUSE_REPORT_URL", "ASSETS", "DB"],
+  secrets_before: ["STUDIO_API_TOKEN"],
+  secrets_after: ["STUDIO_API_TOKEN"],
+  missing_bindings: [] as string[],
+  missing_secrets: [] as string[],
+  served_url_before: null as string | null,
+  served_url_after: "https://studio.example.com/report-abuse" as string | null,
+  reader_live: true,
+};
+
 /** A clean cp#136 detach readback, shaped like the real one (same discipline as CLEAN_REFRESH). */
 const CLEAN_DETACH = {
   ok: true,
@@ -126,6 +144,7 @@ let wiring: {
   upgradeModules: ReturnType<typeof vi.fn>;
   refreshStudioBindings: ReturnType<typeof vi.fn>;
   setVideoFinishTierState: ReturnType<typeof vi.fn>;
+  setAbuseReportUrl: ReturnType<typeof vi.fn>;
   detachStudioBinding: ReturnType<typeof vi.fn>;
   preflightReprovisionRunPod: ReturnType<typeof vi.fn>;
   reprovisionRunPod: ReturnType<typeof vi.fn>;
@@ -227,6 +246,8 @@ beforeEach(() => {
     reprovisionRunPod: vi.fn(async () => CLEAN_REBUILD),
     // cp#136: default is a clean declaration; the refusal and short-readback cases override it.
     setVideoFinishTierState: vi.fn(async () => ({ ok: true, result: CLEAN_TIER_STATE })),
+    // cp#164: default is a clean converge; the refusal and reader-floor cases override it.
+    setAbuseReportUrl: vi.fn(async () => ({ ok: true, result: CLEAN_ABUSE_URL })),
     // cp#136 criterion 3: default is a clean detach; the refusal and short-readback cases override.
     detachStudioBinding: vi.fn(async () => ({ ok: true, result: CLEAN_DETACH })),
   };
@@ -2251,6 +2272,104 @@ describe("KEK rotation admin routes (cp#95)", () => {
     expect(action!.detail ?? "").not.toContain(NEXT);
     expect(action!.detail ?? "").not.toContain("tok-alpha");
     expect(JSON.parse(action!.detail!)).toMatchObject({ encrypt_slot: "next", rotated: 1 });
+  });
+});
+
+// cp#164: the route that reaches a tenant ALREADY LIVE.
+//
+// The behaviour that matters here is the ROUTE half: what it refuses, what it audits, and that it
+// never answers 200 over a readback that disagrees with the intent -- including the reader floor,
+// where the var is bound and the studio bundle is too old to project it. What the plane SENDS to
+// Cloudflare, and the derivation of the URL itself, live in tests/tenant-abuse-report.test.ts.
+describe("POST /api/admin/tenants/:id/abuse-report-url (cp#164)", () => {
+  const admin = () => ({ authorization: `Bearer ${ADMIN_TOKEN}` });
+  const call = (id = "ten_abc123", d: ControlPlaneDeps = deps) =>
+    handle(jsonReq(`/api/admin/tenants/${id}/abuse-report-url`, {}, { headers: admin() }), env(), ctx, d);
+
+  async function existingTenant(): Promise<Tenant> {
+    const t = await store.createTenant("ten_abc123", "hero", "acct_1", "live");
+    t.live_at = "t0";
+    t.script_name = "tenant-hero-studio";
+    t.studio_release = "v1.10.0";
+    return t;
+  }
+
+  it("REFUSES without the admin token: it writes to someone else's studio", async () => {
+    await existingTenant();
+    const res = await handle(jsonReq("/api/admin/tenants/ten_abc123/abuse-report-url", {}), env(), ctx, deps);
+    expect(res.status).toBe(401);
+    expect(wiring.setAbuseReportUrl).not.toHaveBeenCalled();
+  });
+
+  it("refuses 503 when the plane has no provisioner wiring, rather than looking present", async () => {
+    await existingTenant();
+    const res = await call("ten_abc123", { ...deps, provisioner: undefined });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "provisioner_unconfigured" });
+  });
+
+  it("404s an unknown tenant", async () => {
+    expect((await call("ten_nope")).status).toBe(404);
+    expect(wiring.setAbuseReportUrl).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES while a job holds a live lease: this patch must not race an upload", async () => {
+    await existingTenant();
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    running.status = "running";
+    running.lease_until = new Date(deps.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
+
+    const res = await call();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "job_in_progress", job_id: "job_running", kind: "provision" });
+    expect(wiring.setAbuseReportUrl).not.toHaveBeenCalled();
+  });
+
+  it("returns the READBACK and audits the action, changing no tenant state", async () => {
+    await existingTenant();
+    const res = await call();
+    expect(res.status).toBe(200);
+    expectExactKeys(await res.json(), [
+      "tenant_id", "slug", "ok", "script", "url", "already_present", "var_present_after",
+      "bindings_before", "bindings_after", "secrets_before", "secrets_after",
+      "missing_bindings", "missing_secrets",
+      "served_url_before", "served_url_after", "reader_live",
+    ]);
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.set_abuse_report_url"]);
+    // The same care standard cp#112 sets: a live tenant keeps serving, on the same release.
+    const after = await store.getTenantById("ten_abc123");
+    expect(after?.status).toBe("live");
+    expect(after?.studio_release).toBe("v1.10.0");
+  });
+
+  it("409s the READER FLOOR: the var is bound and the studio is too old to project it", async () => {
+    // The failure family this route exists not to join: a change that looks applied and reaches
+    // nobody. A 200 here would tell an operator the tenant now advertises an intake path when its
+    // panel cannot render one, and that claim is the whole point of the issue.
+    await existingTenant();
+    // The seam SUCCEEDED (ok:true): the write happened. It is the READBACK that says the studio
+    // shows nobody anything, which is a different fact from a refusal and answers differently.
+    wiring.setAbuseReportUrl = vi.fn(async () => ({
+      ok: true,
+      result: { ...CLEAN_ABUSE_URL, ok: false, reader_live: false, served_url_after: null },
+    }));
+    const res = await call();
+    expect(res.status).toBe(409);
+    expect((await res.json() as { reader_live: boolean }).reader_live).toBe(false);
+    // Still audited: the write HAPPENED, and an operator reading the log needs to see it did.
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.set_abuse_report_url"]);
+  });
+
+  it("passes a REFUSAL through with its own code and status, having written nothing", async () => {
+    await existingTenant();
+    wiring.setAbuseReportUrl = vi.fn(async () => ({
+      ok: false,
+      refusal: { code: "not_provisioned", status: 409, message: "no studio script recorded" },
+    }));
+    const res = await call();
+    expect(res.status).toBe(409);
+    expect((await res.json() as { error: string }).error).toBe("not_provisioned");
+    expect(store.audit).toEqual([]);
   });
 });
 

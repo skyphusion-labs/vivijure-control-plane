@@ -62,6 +62,20 @@ export const TENANT_STUDIO_VAR_DISPOSITION: Record<string, { disposition: VarDis
       "requiring it would fail those provisions outright",
   },
 
+  ABUSE_REPORT_URL: {
+    disposition: "conditional",
+    why:
+      "cp#164: the hosted intake page this deploy publishes, DERIVED from CONTROL_PLANE_HOST and " +
+      "bound by every studio write path (provision, studio upgrade, and the admin converge route). " +
+      "Deliberately NOT `provisioned`, for a reason that is about blast radius rather than about " +
+      "how sure we are it gets bound: `provisioned` joins REQUIRED_TENANT_STUDIO_VARS, which the " +
+      "MODULE upgrade re-checks in its verify census (runModuleSteps), and that path never touches " +
+      "studio bindings -- so requiring it would fail an unrelated module upgrade on every tenant " +
+      "not yet converged, and strand it. A studio without the var is fully functional: the panel " +
+      "renders no link, which is the deliberate self-host behaviour, not a degrade. The write is " +
+      "proven where it is made, by reading host.abuse_report_url back off the studio",
+  },
+
   // ---- deliberately absent, safe default VERIFIED in the reading code -------------------------
   ALLOW_UNAUTHENTICATED: {
     disposition: "default",

@@ -30,6 +30,7 @@ import { emptyBucketBounded, type EmptyBucketResult } from "./r2-empty";
 import type { KekRing } from "./token-crypto";
 import { decryptStudioToken, encryptStudioToken } from "./token-crypto";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
+import { abuseReportUrlBindings } from "./tenant-abuse-report";
 import { videoFinishTierStateBindings } from "./video-finish-tier-state";
 import type { TokenMinter } from "./token-minter";
 import type { ModuleBundle, ModuleBundleSource } from "./tenant-modules";
@@ -214,6 +215,16 @@ export interface ProvisionDeps {
   kek: KekRing;
   /** Optional per-tenant daily spend ceiling set as SPEND_DAILY_CEILING; null -> studio default. */
   spendDailyCeiling: string | null;
+  /**
+   * The hosted abuse-report page this deploy publishes, bound onto every tenant studio as
+   * ABUSE_REPORT_URL (cp#164), or null when the plane cannot name one.
+   *
+   * DERIVED from CONTROL_PLANE_HOST rather than configured, because the page is served by the
+   * control plane itself at a path it ships (src/tenant-abuse-report.ts). Null binds nothing, which
+   * is the same unset-renders-nothing behaviour a self-hoster gets, and the correct state for a
+   * plane that does not know its own host.
+   */
+  abuseReportUrl: string | null;
   /**
    * Dispatch a request to the tenant studio over TENANT_DISPATCH, attaching the studio bearer so
    * the AUTH_MODE=token gate passes. Proves the studio SERVES (GET /) and drives its own module
@@ -649,6 +660,14 @@ export async function runProvisionJob(
         // because a plain_text binding omitted from an upload is DROPPED and the panel would quietly
         // go back to promising "not yet provisioned" to a studio nobody can reach.
         ...videoFinishTierStateBindings(tenant),
+        // cp#164: where a reporter is sent for abuse of THIS studio. The tenant studio is the
+        // surface where hosted content is actually seen, and enforcement here is report-driven by
+        // ruling, so the intake path is part of the product rather than a legal footnote. HOSTED
+        // ONLY, structurally: the value is computed from control-plane config and the studio bytes
+        // uploaded above are the published release unmodified, so nothing here can reach the bundle
+        // a self-hoster installs -- their unset var renders nothing, which is correct because we
+        // cannot act on their content. Absent when the plane cannot name its own page.
+        ...abuseReportUrlBindings(deps.abuseReportUrl),
       ],
     });
     await deps.store.setTenantScript(tenant.id, deps.tenantScriptName(tenant.slug), deps.release);

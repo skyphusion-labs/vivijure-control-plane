@@ -50,6 +50,13 @@ import {
   type StudioBindingRefusal,
 } from "./tenant-studio-bindings";
 import {
+  applyAbuseReportUrl,
+  hostedAbuseReportUrl,
+  preflightAbuseReportUrl,
+  type AbuseReportUrlRefusal,
+  type AbuseReportUrlResult,
+} from "./tenant-abuse-report";
+import {
   preflightStudioUpgrade,
   upgradeTenantStudio,
   type StudioUpgradeContext,
@@ -210,6 +217,19 @@ export interface ProvisionerWiring {
     | { ok: true; result: VideoFinishTierStateResult }
   >;
   /**
+   * Converge an EXISTING tenant studio onto this plane's abuse-report URL (cp#164).
+   *
+   * The other half of the two-door problem cp#112 and cp#136 both hit: the provision path and the
+   * studio upgrade reach new tenants and tenants whose bytes move, and nothing reached the ones
+   * already live. Same split and same reasons as refreshStudioBindings -- the preflight writes
+   * nothing, the tenant keeps serving throughout, and the return is a READBACK through a different
+   * credential than the one that wrote, plus what the STUDIO itself now advertises.
+   */
+  setAbuseReportUrl(tenant: Tenant): Promise<
+    | { ok: false; refusal: AbuseReportUrlRefusal }
+    | { ok: true; result: AbuseReportUrlResult }
+  >;
+  /**
    * The operator verification client (cp#45): four typed calls against THIS tenant's own studio.
    *
    * It lives on ProvisionerWiring because this is where the KEK and the dispatch binding already
@@ -316,6 +336,10 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     kek: studioKekRing(env),
     // Always set a ceiling: a hosted tenant with no daily cap has no cost bound. Operator-tunable.
     spendDailyCeiling: env.TENANT_SPEND_DAILY_CEILING ?? "25",
+    // cp#164: the intake page a reporter is sent to, DERIVED from the one host fact this plane
+    // holds rather than configured beside it. Hosted-only by construction -- it is computed from
+    // control-plane env, and the studio bytes we upload are the published release unmodified.
+    abuseReportUrl: hostedAbuseReportUrl(env),
     // Prove SERVING at verify: dispatch straight to the tenant worker (bypassing the control-plane
     // status gate, which 503s a still-provisioning tenant) and report the status. A Bearer is
     // attached so an auth-gated root also answers; the static root needs none once ASSETS is bound.
@@ -396,6 +420,14 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       const pre = preflightStudioBindingDetach(tenant);
       if (!pre.ok) return { ok: false, refusal: pre.refusal };
       return { ok: true, result: await detachTenantStudioBinding(deps, tenant, pre.script) };
+    },
+    async setAbuseReportUrl(tenant) {
+      // Preflight FIRST and separately: a refusal must leave the tenant untouched, and this route
+      // has no job row to record one on. It also establishes what the studio advertised BEFORE, so
+      // the result carries both sides of the change rather than only our own write.
+      const pre = await preflightAbuseReportUrl(deps, tenant);
+      if (!pre.ok) return { ok: false, refusal: pre.refusal };
+      return { ok: true, result: await applyAbuseReportUrl(deps, tenant, pre.context) };
     },
     async setVideoFinishTierState(tenant, intent) {
       // Preflight FIRST and separately, for the same reason as above, plus one specific to this

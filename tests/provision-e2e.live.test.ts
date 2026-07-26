@@ -102,6 +102,9 @@ beforeAll(async () => {
   deps = {
     store,
     cf,
+    // cp#164: the live harness provisions a real tenant studio, so it binds the same derived intake
+    // URL a real deploy does. Pointed at the live front door, which is where the page is served.
+    abuseReportUrl: "https://studio.vivijure.com/report-abuse",
     runpod: {
       createEndpoints: (key, s, r2) => createTenantEndpoints(key, s, r2),
       convergeTemplateImages: (key, s) => convergeTenantTemplateImages(key, s),
