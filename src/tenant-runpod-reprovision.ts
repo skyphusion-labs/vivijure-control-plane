@@ -352,11 +352,19 @@ export async function reprovisionTenantRunPod(
       modules_release: context.modulesRelease,
       modules_uploaded: moduleScripts,
       status: "awaiting_invoke_key",
+      // WHO does this step is load-bearing, not a detail of phrasing. The install route is
+      // OWNER-authenticated (src/index.ts: the admin bearer is honoured only under /api/admin/,
+      // every other /api/ path resolves a session), so the operator who just ran this repair cannot
+      // perform it. Saying "POST it" to an operator sends them at a route that will answer 401, which
+      // is the same class of defect this issue exists to end: an instruction the system will not
+      // honour. Whether that boundary is RIGHT is a live custody question, filed separately.
       next_step:
         "mint a RESTRICTED RunPod invoke key scoped to exactly these endpoint ids (" +
         endpoints.map((e) => e.id).join(", ") +
-        `) and POST it to /api/tenant/${tenant.id}/invoke-key. The tenant cannot render until then: ` +
-        "the previously stored key is scoped to the endpoints this pass replaced.",
+        "). THE ACCOUNT OWNER must then install it from their own signed-in session, by POSTing it to " +
+        `/api/tenant/${tenant.id}/invoke-key: that route is owner-authenticated, so an operator ` +
+        "holding the admin token cannot complete this step. The tenant cannot render until then: the " +
+        "previously stored key is scoped to the endpoints this pass replaced.",
     };
 
     deps.log("reprovision.done", {

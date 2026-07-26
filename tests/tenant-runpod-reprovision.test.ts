@@ -234,6 +234,11 @@ describe("cp#137 rebuild: order and the record", () => {
     expect((await store.getTenantById("ten_abc"))!.status).toBe("awaiting_invoke_key");
     expect(result.next_step).toContain("new-backend");
     expect(result.next_step).toContain("/invoke-key");
+    // WHO performs it, asserted rather than left to prose drift (cp#169). The install route is
+    // owner-authenticated, so an operator following this sentence with the admin token gets a 401.
+    // The old wording said "POST it to ..." to a caller who cannot; this fails against that wording.
+    expect(result.next_step).toContain("THE ACCOUNT OWNER");
+    expect(result.next_step).toContain("owner-authenticated");
   });
 
   it("leaves the tenant at awaiting_invoke_key when a step dies, never at live or failed", async () => {
