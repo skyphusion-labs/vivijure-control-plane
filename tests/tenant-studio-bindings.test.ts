@@ -15,6 +15,8 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import { CfApiError, type CfApi, type WorkerBinding } from "../src/cf-api";
 import type { ProvisionDeps } from "../src/provisioner";
 import {
+  detachTenantStudioBinding,
+  preflightStudioBindingDetach,
   preflightStudioBindings,
   refreshTenantStudioBindings,
   StudioBindingError,
@@ -22,6 +24,7 @@ import {
 } from "../src/tenant-studio-bindings";
 import { MemoryStore } from "./memory-store";
 import type { Tenant } from "../src/store";
+import { VIDEO_FINISH_TIER_STATE_VAR } from "../src/video-finish-tier-state";
 
 const SERVICE_ID = "019ecbe6-9fc1-70a0-9946-14bbec0f51bc";
 const SCRIPT = "tenant-hero-studio";
@@ -301,5 +304,147 @@ describe("cp#112 preflight: refuses before it writes", () => {
     if (!pre.ok) throw new Error("unreachable");
     expect(pre.script).toBe(SCRIPT);
     expect(pre.serviceId).toBe(SERVICE_ID);
+  });
+});
+
+// cp#136 criterion 3: the DETACH half, and the guard that keeps the two operator statements apart.
+//
+// WHY A DETACH IS TESTABLE AS A NEW FACT rather than a variation: before this, no writer in this
+// plane could produce a payload WITHOUT the tier. The attach path appends it unconditionally, the
+// provision path attaches it whenever the service id is set, and the upgrade path inherits it. The
+// first test below asserts the sent payload omits exactly one binding and carries every other one,
+// which is a payload no pre-existing code path could produce -- the attach assertions earlier in
+// this file are its control, since both run through the same recording proxy.
+describe("cp#136: detaching the video-finish tier from a live tenant", () => {
+  const bound = () => census({ before: [...LIVE_BINDINGS, { type: "vpc_service", name: VIDEO_FINISH_BINDING }] });
+
+  it("SENDS a payload that omits the tier and carries everything else", async () => {
+    const t = await tenant();
+    const d = deps(bound());
+    const pre = preflightStudioBindingDetach(t);
+    expect(pre.ok, JSON.stringify(pre)).toBe(true);
+    if (!pre.ok) return;
+    await detachTenantStudioBinding(d, t, pre.script);
+
+    expect(patched).toHaveLength(1);
+    const sent = patched[0].bindings;
+    // CONTROL: a real payload was recorded, so the absence below is an omission rather than an
+    // empty run.
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent.find((b) => b.name === VIDEO_FINISH_BINDING)).toBeUndefined();
+    for (const b of LIVE_BINDINGS) {
+      expect(sent.find((x) => x.name === b.name), "dropped " + b.name).toEqual({ type: "inherit", name: b.name });
+    }
+    expect(patched[0].via).toBe("scriptUpload");
+  });
+
+  it("never handles a binding VALUE: the custody claim, on this path too", async () => {
+    const t = await tenant();
+    const d = deps(bound());
+    const pre = preflightStudioBindingDetach(t);
+    if (!pre.ok) throw new Error("preflight refused: " + pre.refusal.code);
+    await detachTenantStudioBinding(d, t, pre.script);
+    for (const b of patched[0].bindings as unknown as Record<string, unknown>[]) {
+      expect(b.text).toBeUndefined();
+      expect(b.service_id).toBeUndefined();
+    }
+  });
+
+  it("is idempotent by CONVERGENCE: an already-absent tier is patched anyway and reported", async () => {
+    const t = await tenant();
+    // `after` stated explicitly: the shared census helper defaults it to the ATTACH outcome (the
+    // tier PRESENT), which is the right default for every test above and the wrong one here.
+    const d = deps(census({ after: LIVE_BINDINGS }));
+    const pre = preflightStudioBindingDetach(t);
+    if (!pre.ok) throw new Error("preflight refused: " + pre.refusal.code);
+    const result = await detachTenantStudioBinding(d, t, pre.script);
+    expect(result.already_absent).toBe(true);
+    expect(patched).toHaveLength(1);
+    expect(result.ok).toBe(true);
+  });
+
+  it("reports a binding that went MISSING across the patch instead of reporting success", async () => {
+    const t = await tenant();
+    const lost = LIVE_BINDINGS.filter((b) => b.name !== "AUTH_MODE");
+    const d = deps(census({ before: [...LIVE_BINDINGS, { type: "vpc_service", name: VIDEO_FINISH_BINDING }], after: lost }));
+    const pre = preflightStudioBindingDetach(t);
+    if (!pre.ok) throw new Error("preflight refused: " + pre.refusal.code);
+    const result = await detachTenantStudioBinding(d, t, pre.script);
+    expect(result.missing_bindings).toEqual(["AUTH_MODE"]);
+    expect(result.ok).toBe(false);
+  });
+
+  it("is NOT ok when the tier is still bound after the patch, even though the call returned", async () => {
+    const t = await tenant();
+    const d = deps(bound());
+    const pre = preflightStudioBindingDetach(t);
+    if (!pre.ok) throw new Error("preflight refused: " + pre.refusal.code);
+    const result = await detachTenantStudioBinding(d, t, pre.script);
+    expect(result.ok).toBe(false);
+  });
+
+  it("RE-DERIVES the cp#136 var rather than inheriting it, so a stale one is dropped here too", async () => {
+    const t = await tenant();
+    const d = deps(
+      census({
+        before: [
+          ...LIVE_BINDINGS,
+          { type: "vpc_service", name: VIDEO_FINISH_BINDING },
+          { type: "plain_text", name: VIDEO_FINISH_TIER_STATE_VAR },
+        ],
+      }),
+    );
+    const pre = preflightStudioBindingDetach(t);
+    if (!pre.ok) throw new Error("preflight refused: " + pre.refusal.code);
+    await detachTenantStudioBinding(d, t, pre.script);
+    expect(patched[0].bindings.find((b) => b.name === VIDEO_FINISH_TIER_STATE_VAR)).toBeUndefined();
+  });
+});
+
+describe("cp#136: one truth at a time -- the declaration guard on BOTH directions", () => {
+  const declared = async (): Promise<Tenant> => {
+    const t = await tenant();
+    await store.setTenantVideoFinishUnreachable(t.id, { reason: "the CF account is gone", at: "2026-07-26T12:00:00.000Z" });
+    return { ...t, video_finish_unreachable: 1, video_finish_unreachable_reason: "the CF account is gone" };
+  };
+
+  it("ATTACH refuses while a declaration stands: attaching would make the record false", async () => {
+    const pre = preflightStudioBindings(deps(census()), await declared());
+    expect(pre.ok).toBe(false);
+    if (pre.ok) return;
+    expect(pre.refusal.code).toBe("video_finish_declared");
+    expect(pre.refusal.status).toBe(409);
+    expect(pre.refusal.message).toMatch(/video-finish-tier-state/);
+  });
+
+  it("POSITIVE CONTROL: the SAME preflight passes for an undeclared tenant", async () => {
+    const pre = preflightStudioBindings(deps(census()), await tenant());
+    expect(pre.ok, pre.ok ? "" : pre.refusal.code).toBe(true);
+  });
+
+  it("DETACH refuses while a declaration stands, and says which way to go", async () => {
+    const pre = preflightStudioBindingDetach(await declared());
+    expect(pre.ok).toBe(false);
+    if (pre.ok) return;
+    expect(pre.refusal.code).toBe("video_finish_declared");
+  });
+
+  it("POSITIVE CONTROL: detach preflight passes for an undeclared tenant", async () => {
+    const pre = preflightStudioBindingDetach(await tenant());
+    expect(pre.ok, pre.ok ? "" : pre.refusal.code).toBe(true);
+  });
+
+  it("detach needs NO service id, because it names none", async () => {
+    // Deliberate asymmetry with the attach half: a plane that has lost its tier configuration must
+    // still be able to take the tier OFF a tenant, which is the direction you want to be able to
+    // move in when something is wrong.
+    //
+    // ONE tenant, reused: the memory store enforces the real UNIQUE(slug) constraint, so creating a
+    // second `hero` here throws exactly as D1 would.
+    const t = await tenant();
+    expect(preflightStudioBindingDetach(t).ok).toBe(true);
+    const attach = preflightStudioBindings(deps(census(), { videoFinishServiceId: null }), t);
+    expect(attach.ok).toBe(false);
+    if (!attach.ok) expect(attach.refusal.code).toBe("video_finish_unconfigured");
   });
 });

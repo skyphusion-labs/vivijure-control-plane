@@ -69,6 +69,19 @@ const CLEAN_TIER_STATE = {
   served_reason_changed: true,
 };
 
+/** A clean cp#136 detach readback, shaped like the real one (same discipline as CLEAN_REFRESH). */
+const CLEAN_DETACH = {
+  ok: true,
+  script: "tenant-hero-studio",
+  already_absent: false,
+  bindings_before: ["ASSETS", "DB", "VIDEO_FINISH_VPC"],
+  bindings_after: ["ASSETS", "DB"],
+  secrets_before: ["STUDIO_API_TOKEN"],
+  secrets_after: ["STUDIO_API_TOKEN"],
+  missing_bindings: [] as string[],
+  missing_secrets: [] as string[],
+};
+
 const ROOT_HOST = "studio.vivijure.com";
 const ORIGIN = `https://${ROOT_HOST}`;
 const AUP = "2026-07-17";
@@ -86,6 +99,7 @@ let wiring: {
   upgradeModules: ReturnType<typeof vi.fn>;
   refreshStudioBindings: ReturnType<typeof vi.fn>;
   setVideoFinishTierState: ReturnType<typeof vi.fn>;
+  detachStudioBinding: ReturnType<typeof vi.fn>;
   preflightStudioUpgrade: ReturnType<typeof vi.fn>;
   upgradeStudio: ReturnType<typeof vi.fn>;
 };
@@ -170,6 +184,8 @@ beforeEach(() => {
     upgradeModules: vi.fn(async () => {}),
     // cp#136: default is a clean declaration; the refusal and short-readback cases override it.
     setVideoFinishTierState: vi.fn(async () => ({ ok: true, result: CLEAN_TIER_STATE })),
+    // cp#136 criterion 3: default is a clean detach; the refusal and short-readback cases override.
+    detachStudioBinding: vi.fn(async () => ({ ok: true, result: CLEAN_DETACH })),
   };
   deps = {
     store,
@@ -2237,5 +2253,98 @@ describe("POST /api/admin/tenants/:id/video-finish-tier-state (cp#136)", () => {
     expect((await res.json() as { ok: boolean }).ok).toBe(false);
     // Still audited: the attempt happened and the operator needs the record of it.
     expect(store.audit.map((a) => a.action)).toEqual(["tenant.set_video_finish_tier_state"]);
+  });
+});
+
+// cp#136 criterion 3: the route that can put a live studio into the tier-ABSENT state.
+describe("POST /api/admin/tenants/:id/video-finish-binding (cp#136)", () => {
+  const admin = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${ADMIN_TOKEN}`, ...extra });
+  const call = (body: unknown, id = "ten_abc123", d: ControlPlaneDeps = deps) =>
+    handle(jsonReq(`/api/admin/tenants/${id}/video-finish-binding`, body, { headers: admin() }), env(), ctx, d);
+
+  async function existingTenant(): Promise<Tenant> {
+    const t = await store.createTenant("ten_abc123", "hero", "acct_1", "live");
+    t.live_at = "t0";
+    t.script_name = "tenant-hero-studio";
+    t.studio_release = "v1.9.0";
+    return t;
+  }
+
+  it("REFUSES without the admin token", async () => {
+    await existingTenant();
+    const res = await handle(jsonReq("/api/admin/tenants/ten_abc123/video-finish-binding", { attached: false }), env(), ctx, deps);
+    expect(res.status).toBe(401);
+    expect(wiring.detachStudioBinding).not.toHaveBeenCalled();
+  });
+
+  it("refuses 503 without provisioner wiring, and 404s an unknown tenant", async () => {
+    await existingTenant();
+    expect((await call({ attached: false }, "ten_abc123", { ...deps, provisioner: undefined })).status).toBe(503);
+    expect((await call({ attached: false }, "ten_nope")).status).toBe(404);
+    expect(wiring.detachStudioBinding).not.toHaveBeenCalled();
+  });
+
+  it("400s a body that does not state a direction", async () => {
+    await existingTenant();
+    expect((await call({})).status).toBe(400);
+    expect((await call({ attached: "no" })).status).toBe(400);
+    expect(wiring.detachStudioBinding).not.toHaveBeenCalled();
+  });
+
+  it("DETACHES on attached:false, and never calls the attach path", async () => {
+    await existingTenant();
+    const res = await call({ attached: false });
+    expect(res.status).toBe(200);
+    expect(wiring.detachStudioBinding).toHaveBeenCalledTimes(1);
+    // The direction must not be mixed up: an attach here would put the tier back on.
+    expect(wiring.refreshStudioBindings).not.toHaveBeenCalled();
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.detach_video_finish_binding"]);
+  });
+
+  it("ATTACHES through the EXISTING cp#112 path on attached:true, not a second implementation", async () => {
+    // This is what makes "reattach restores exactly what a refresh produces" true by identity.
+    await existingTenant();
+    const res = await call({ attached: true });
+    expect(res.status).toBe(200);
+    expect(wiring.refreshStudioBindings).toHaveBeenCalledTimes(1);
+    expect(wiring.detachStudioBinding).not.toHaveBeenCalled();
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.attach_video_finish_binding"]);
+  });
+
+  it("REFUSES while a job holds a live lease, in BOTH directions", async () => {
+    await existingTenant();
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    running.status = "running";
+    running.lease_until = new Date(deps.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
+
+    expect((await call({ attached: false })).status).toBe(409);
+    expect((await call({ attached: true })).status).toBe(409);
+    expect(wiring.detachStudioBinding).not.toHaveBeenCalled();
+    expect(wiring.refreshStudioBindings).not.toHaveBeenCalled();
+  });
+
+  it("passes a REFUSAL through with its own code, having audited nothing", async () => {
+    await existingTenant();
+    wiring.detachStudioBinding = vi.fn(async () => ({
+      ok: false,
+      refusal: { code: "video_finish_declared", status: 409, message: "one truth at a time" },
+    }));
+    const res = await call({ attached: false });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "video_finish_declared", message: "one truth at a time" });
+    expect(store.audit).toEqual([]);
+  });
+
+  it("answers 409, not 200, when the readback says the tier is still there", async () => {
+    await existingTenant();
+    wiring.detachStudioBinding = vi.fn(async () => ({
+      ok: true,
+      result: { ...CLEAN_DETACH, ok: false, bindings_after: ["ASSETS", "DB", "VIDEO_FINISH_VPC"] },
+    }));
+    const res = await call({ attached: false });
+    expect(res.status).toBe(409);
+    expect((await res.json() as { ok: boolean }).ok).toBe(false);
+    // Still audited: the attempt happened and the operator needs the record of it.
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.detach_video_finish_binding"]);
   });
 });

@@ -1270,6 +1270,64 @@ async function adminRoutes(
     return json({ tenant_id: tenant.id, slug: tenant.slug, ...result }, result.ok ? 200 : 409);
   }
 
+  // ---- cp#136 (criterion 3): ATTACH or DETACH the video-finish tier binding -------------------
+  //
+  // WHY THIS EXISTS. Every other binding writer in this plane either attaches the tier or preserves
+  // it, so a tenant that HAS it could never be returned to the tier-absent state the panel sentence
+  // describes. The drill proved it on the testbed: the mark refused with `studio_reader_absent`
+  // because the studio serves `{}` -- tier bound, observed available, correctly so. Without a detach
+  // the acceptance criterion (a human READS the sentence on a live studio) has no honest path.
+  //
+  // ONE VERB, TWO DIRECTIONS, and the attach direction is the EXISTING cp#112 call rather than a
+  // second implementation. That is what makes "reattach restores exactly what a refresh produces"
+  // true by identity instead of by imitation, and it means the attach side keeps its own refusals
+  // (an unconfigured plane still cannot attach a tier it has no service id for).
+  //
+  // WHY ADMIN-GATED and WHY INLINE: same answers as the two routes above. The answer IS the
+  // evidence, and it changes no bytes, no release, and no status.
+  const vfBinding = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/video-finish-binding$/.exec(path);
+  if (request.method === "POST" && vfBinding) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(vfBinding[1]);
+    if (!tenant) return err("not_found", 404);
+
+    const body = (await readJson(request)) as { attached?: boolean } | null;
+    if (typeof body?.attached !== "boolean") return err("invalid_body", 400);
+
+    // One writer at a time on this row, exactly as the two routes above guard it.
+    const latest = await deps.store.getLatestJobForTenant(tenant.id);
+    if (latest && jobHasLiveDriver(latest, deps.now())) {
+      return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
+    }
+
+    let outcome;
+    try {
+      outcome = body.attached
+        ? await deps.provisioner.refreshStudioBindings(tenant)
+        : await deps.provisioner.detachStudioBinding(tenant);
+    } catch (e) {
+      if (e instanceof StudioBindingError) return err(e.code, e.status, { message: e.message });
+      throw e;
+    }
+    if (!outcome.ok) return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
+
+    const result = outcome.result;
+    await deps.store.recordAdminAction(
+      actor,
+      body.attached ? "tenant.attach_video_finish_binding" : "tenant.detach_video_finish_binding",
+      tenant.id,
+      JSON.stringify({
+        ok: result.ok,
+        missing_bindings: result.missing_bindings,
+        missing_secrets: result.missing_secrets,
+      }),
+    );
+
+    // 409 when the readback disagrees, for the same reason as its siblings: a 200 carrying ok:false
+    // reads as success to anything that checks status codes.
+    return json({ tenant_id: tenant.id, slug: tenant.slug, attached: body.attached, ...result }, result.ok ? 200 : 409);
+  }
+
   // ---- cp#136: DECLARE a tenant unreachable for the video-finish tier (or un-declare it) --------
   //
   // WHY THE ROUTE EXISTS. vivijure-cf resolves three states for the tier and reads the third off the
