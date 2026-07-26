@@ -6,6 +6,10 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.13.0 -- 2026-07-27
+
+MINOR: the remediation half of cp#137. A live tenant's four RunPod endpoints can now be rebuilt through a plane mechanism rather than a hand-edit of D1, and the tenant's satellite templates are walked onto the pins this plane holds before anything is rebuilt on them. Carries NO schema change. The new route is admin-gated and takes the tenant's own RunPod key A as a transient parameter; the plane still stores no RunPod credential, so the custody boundary is unchanged.
+
 ### feat(hosted): rebuild a tenant RunPod endpoints through a plane mechanism (cp#137)
 
 - **A live tenant can now have its four RunPod endpoints rebuilt without a hand-edit of D1.**
