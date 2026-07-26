@@ -17,6 +17,7 @@ name: changelog
 # can be renamed freely, unlike those three.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
