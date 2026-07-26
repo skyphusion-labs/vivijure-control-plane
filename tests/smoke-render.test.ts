@@ -16,7 +16,9 @@ import type { ControlPlaneEnv } from "../src/env";
 import { handle } from "../src/index";
 import {
   advanceSmokeRender,
+  canonicalStoryboard,
   DEFAULT_SMOKE_BOUNDS,
+  SMOKE_PROJECT_NAME,
   resolveSmokeRenderBounds,
   startSmokeRender,
   type SmokeRenderDeps,
@@ -474,5 +476,46 @@ describe("GET /api/admin/tenants/:id/smoke-render/:smokeId", () => {
     const res = await handle(adminReq(`/api/admin/tenants/${TENANT_ID}/smoke-render/${id}/artifact`), env(), ctx, deps);
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: "no_artifact" });
+  });
+});
+
+// cp#137: the canonical fixture must survive the studio's OWN normalization unchanged.
+//
+// This exists because the fixture shipped a title and a DIFFERENT projectName, and the studio
+// ignores the supplied projectName entirely -- it derives one from the title. The bundle therefore
+// landed under the title while the render was submitted under the project, and backend >=1.0.11
+// refuses that pairing (`check_bundle_key_for_project`). It was invisible until a tenant was moved
+// onto the current pin, which is to say this fixture had never been run against a backend that
+// enforces the rule.
+describe("cp#137: the canonical storyboard is normalization-stable", () => {
+  /**
+   * A LOCAL mirror of the studio's `normalizeProjectName`, used ONLY to prove the fixture is a fixed
+   * point of it. Deliberately not used by src/: mirroring another repo's normalization in shipping
+   * code is only correct until they change it, whereas a value that is unchanged BY the transform
+   * needs no mirror at all. If they tighten the rule, this test is what goes red.
+   */
+  const normalizeProjectName = (title: string) => title.trim().replace(/\s+/g, "_");
+
+  it("names the project and the title with the SAME string", () => {
+    expect(canonicalStoryboard().title).toBe(SMOKE_PROJECT_NAME);
+    expect(canonicalStoryboard().projectName).toBe(SMOKE_PROJECT_NAME);
+  });
+
+  it("is a FIXED POINT of the studio's title -> project normalization", () => {
+    // The property that actually matters: what the studio derives from our title is byte-identical
+    // to what the render submit names as its project, so the bundle key can only ever belong to it.
+    expect(normalizeProjectName(SMOKE_PROJECT_NAME)).toBe(SMOKE_PROJECT_NAME);
+    // and the shapes that would break it are absent
+    expect(SMOKE_PROJECT_NAME).not.toMatch(/\s/);
+    expect(SMOKE_PROJECT_NAME).not.toContain("/");
+  });
+
+  it("CONTROL: the previous fixture title would NOT have been a fixed point", () => {
+    // Without this, the two assertions above pass for any string at all and prove nothing about the
+    // bug they exist for. The old title normalized to something else, which is precisely the
+    // mismatch the backend refused.
+    const previous = "Control Plane Smoke Render";
+    expect(normalizeProjectName(previous)).not.toBe(SMOKE_PROJECT_NAME);
+    expect(normalizeProjectName(previous)).toBe("Control_Plane_Smoke_Render");
   });
 });

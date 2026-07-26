@@ -6,6 +6,28 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(hosted): the smoke render fixture named a project the studio never assigned (cp#137, cp#45)
+
+- **The cp#45 smoke render could not pass against a current-pinned backend, and nobody knew.** The
+  canonical storyboard shipped `title: "Control Plane Smoke Render"` with
+  `projectName: "control-plane-smoke"`. The studio does not accept a caller-supplied projectName at
+  all: `validateStoryboard` DERIVES it from the title and discards the field, then names the bundle
+  `bundles/<projectName>-<contenthash>.tar.gz`. The render submit separately named
+  `project: "control-plane-smoke"`, and backend >= 1.0.11 validates that the bundle key BELONGS to
+  the submitted project (`check_bundle_key_for_project`). Bundle under the TITLE, submit under the
+  PROJECT, refused before any GPU work.
+- **It was masked by a stale image, not by luck.** Backend 1.0.2 had no tenancy check, and the
+  standing testbed was still running 1.0.2, so this fixture has never once been exercised against a
+  backend that enforces the rule. It surfaced the moment cp#137 moved that tenant onto the pin the
+  plane actually holds -- which is the converge step doing exactly its job.
+- Title and project are now the SAME string, chosen to be NORMALIZATION-STABLE (no whitespace, no
+  `/`) so it is a fixed point of the studio's transform. Deliberately not a re-derivation: mirroring
+  another repo's normalization in shipping code is only correct until they change it, whereas a value
+  their transform leaves unchanged needs no mirror. The test asserts the fixed-point property and
+  carries a control proving the previous title was NOT one.
+- **No product exposure.** The real panel submits the projectName the studio itself returned from
+  validation, so live renders were always self-consistent. This was a fixture-only defect.
+
 ### fix(hosted): the reprovision next_step names WHO installs the invoke key (cp#137, cp#169)
 
 - The rebuild route ended by telling its caller to "POST it to `/api/tenant/<id>/invoke-key`". That
