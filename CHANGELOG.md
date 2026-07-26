@@ -6,6 +6,19 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(hosted): the reprovision next_step names WHO installs the invoke key (cp#137, cp#169)
+
+- The rebuild route ended by telling its caller to "POST it to `/api/tenant/<id>/invoke-key`". That
+  route is OWNER-authenticated (the admin bearer is honoured only under `/api/admin/`; every other
+  `/api/` path resolves a session), so the operator who just ran the repair gets a 401 there. Observed
+  live during the cp#137 remediation. The text now names the ACCOUNT OWNER and says plainly that an
+  operator holding the admin token cannot complete the step -- an instruction the system will not
+  honour is the same defect class cp#137 exists to end.
+- Wording only: no behaviour, no route, no custody change. Whether an operator SHOULD be able to
+  finish a repair they started is a real custody question and is filed as cp#169, to be ruled with
+  Conrad rather than patched in flight.
+
+
 ## v1.13.0 -- 2026-07-27
 
 MINOR: the remediation half of cp#137. A live tenant's four RunPod endpoints can now be rebuilt through a plane mechanism rather than a hand-edit of D1, and the tenant's satellite templates are walked onto the pins this plane holds before anything is rebuilt on them. Carries NO schema change. The new route is admin-gated and takes the tenant's own RunPod key A as a transient parameter; the plane still stores no RunPod credential, so the custody boundary is unchanged.
