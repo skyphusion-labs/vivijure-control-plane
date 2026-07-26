@@ -6,6 +6,8 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### test: cp147 guard evidence probe (throwaway, will be reverted before close)
+
 ## v1.12.0 -- 2026-07-26
 
 MINOR: the operator action that was missing under cp#136 -- a studio could be TOLD the video-finish tier is unreachable, but no writer in this plane could make one tier-absent, so the state could not be displayed on a live tenant. Carries NO schema change; migration 0011 shipped with v1.11.0.
