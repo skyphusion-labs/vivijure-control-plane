@@ -86,6 +86,22 @@ export interface Tenant {
   reclaim_lease_until: string | null;
   /** Proves WHICH caller holds the reclaim lease. A timestamp cannot. */
   reclaim_lease_token: string | null;
+  /**
+   * DECLARED unreachable for the video-finish tier (cp#136). 1 = declared, 0 = not.
+   *
+   * The plane RECORD behind the studio var VIDEO_FINISH_TIER_STATE, which the panel reads to pick
+   * between "not yet provisioned" and "cannot be turned on for this studio". It is a declaration
+   * rather than a derivation: no plane-side condition computes it (see src/video-finish-tier-state.ts
+   * for why every derived writer writes `provisionable` forever), so a human sets it, with a reason.
+   *
+   * The COLUMN is the source of truth and the var is a projection re-derived at every write to the
+   * studio, so clearing it here is what un-says the sentence on the next write, in either direction.
+   */
+  video_finish_unreachable: number;
+  /** WHY it was declared. A state nobody can explain is not auditable; the route requires it. */
+  video_finish_unreachable_reason: string | null;
+  /** When it was declared. NULL whenever the flag is 0; the two are written and cleared together. */
+  video_finish_unreachable_at: string | null;
 }
 
 /**
@@ -478,6 +494,18 @@ export interface ControlPlaneStore {
    * because a provision always knows what it uploaded).
    */
   setTenantStudioRelease(id: string, release: string | null): Promise<void>;
+
+  /**
+   * Declare (or un-declare) this tenant unreachable for the video-finish tier (cp#136).
+   *
+   * ONE call for both directions, taking `null` to clear, because the flag, the reason and the
+   * timestamp are one fact and must never be written apart: a flag with no reason is a state nobody
+   * can explain, and a reason left standing under a cleared flag is a label outliving its cause.
+   *
+   * The STUDIO half is not here. This writes the record; projecting it onto the studio var is the
+   * caller job (src/video-finish-tier-state.ts), so the source of truth has exactly one writer.
+   */
+  setTenantVideoFinishUnreachable(id: string, mark: { reason: string; at: string } | null): Promise<void>;
 
   /**
    * Blank ONE resource column, on that resource's successful deletion (#23).

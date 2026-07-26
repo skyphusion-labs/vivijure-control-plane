@@ -30,6 +30,7 @@ import { emptyBucketBounded, type EmptyBucketResult } from "./r2-empty";
 import type { KekRing } from "./token-crypto";
 import { decryptStudioToken, encryptStudioToken } from "./token-crypto";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
+import { videoFinishTierStateBindings } from "./video-finish-tier-state";
 import type { TokenMinter } from "./token-minter";
 import type { ModuleBundle, ModuleBundleSource } from "./tenant-modules";
 import {
@@ -627,6 +628,12 @@ export async function runProvisionJob(
         ...(deps.videoFinishServiceId
           ? [{ type: "vpc_service" as const, name: "VIDEO_FINISH_VPC", service_id: deps.videoFinishServiceId }]
           : []),
+        // cp#136: the finish-tier STATE, projected from the tenant record rather than decided here.
+        // Normally empty -- a tenant being provisioned now is reachable by definition -- but a
+        // re-provision or a resumed provision of a DECLARED-unreachable tenant must re-state the var,
+        // because a plain_text binding omitted from an upload is DROPPED and the panel would quietly
+        // go back to promising "not yet provisioned" to a studio nobody can reach.
+        ...videoFinishTierStateBindings(tenant),
       ],
     });
     await deps.store.setTenantScript(tenant.id, deps.tenantScriptName(tenant.slug), deps.release);

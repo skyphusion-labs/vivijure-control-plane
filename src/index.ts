@@ -1270,6 +1270,79 @@ async function adminRoutes(
     return json({ tenant_id: tenant.id, slug: tenant.slug, ...result }, result.ok ? 200 : 409);
   }
 
+  // ---- cp#136: DECLARE a tenant unreachable for the video-finish tier (or un-declare it) --------
+  //
+  // WHY THE ROUTE EXISTS. vivijure-cf resolves three states for the tier and reads the third off the
+  // studio var VIDEO_FINISH_TIER_STATE. Nothing in this plane wrote that var, so `unprovisionable`
+  // could not occur in production and the sentence written for it (cf#243) could never be displayed.
+  // This is the writer, and it is a DECLARATION: no plane-side condition derives unreachability (see
+  // src/video-finish-tier-state.ts), so a human states it, with a reason, audited like any other
+  // operator action.
+  //
+  // WHY IT IS NOT DERIVED FROM THE TIER BEING DOWN, since that is the tempting wiring: the panel
+  // sentence is permanent ("cannot be turned on for it") and an outage is transient. Wiring the two
+  // together would tell every tenant the tier can never be turned on, and keep saying it afterwards.
+  //
+  // WHY ADMIN-GATED and WHY INLINE rather than a job: same answers as refresh-studio-bindings above.
+  // It is an operator action on someone else studio, the answer IS the evidence (the binding census
+  // plus what the studio now serves), and it changes no bytes, no release, and no status.
+  const tierState = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/video-finish-tier-state$/.exec(path);
+  if (request.method === "POST" && tierState) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(tierState[1]);
+    if (!tenant) return err("not_found", 404);
+
+    const body = (await readJson(request)) as { unreachable?: boolean; reason?: string } | null;
+    if (typeof body?.unreachable !== "boolean") return err("invalid_body", 400);
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+    // A REASON IS MANDATORY when marking. A state nobody can explain is not auditable, and this one
+    // makes a studio tell its user a capability can never be turned on for them; the same standard
+    // 0010_preservation_holds.sql sets for a hold. Clearing needs none: it removes a claim.
+    if (body.unreachable && reason === "") {
+      return err("reason_required", 400, {
+        message:
+          "declaring a studio unreachable requires a reason: it makes the panel tell that tenant the " +
+          "tier can never be turned on for them, and a declaration nobody can explain cannot be reviewed",
+      });
+    }
+
+    // One writer at a time on this row, exactly as the binding refresh guards it: a provision or an
+    // upgrade with a live driver is already PUTting at this tenant scripts, and a settings patch
+    // landing mid-upload would race the write that owns the binding set.
+    const latest = await deps.store.getLatestJobForTenant(tenant.id);
+    if (latest && jobHasLiveDriver(latest, deps.now())) {
+      return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
+    }
+
+    const outcome = await deps.provisioner.setVideoFinishTierState(tenant, {
+      unreachable: body.unreachable,
+      reason: body.unreachable ? reason : null,
+    });
+    if (!outcome.ok) return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
+
+    const result = outcome.result;
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.set_video_finish_tier_state",
+      tenant.id,
+      JSON.stringify({
+        ok: result.ok,
+        unreachable: result.unreachable,
+        reason: result.reason,
+        var_present_before: result.var_present_before,
+        var_present_after: result.var_present_after,
+        served_reason_changed: result.served_reason_changed,
+        missing_bindings: result.missing_bindings,
+        missing_secrets: result.missing_secrets,
+      }),
+    );
+
+    // 409 when the readback disagrees with the intent. A 200 carrying ok:false reads as success to
+    // anything that checks status codes, and "the plane believes it declared something the studio is
+    // not carrying" is the one outcome this route exists to make impossible to miss.
+    return json({ tenant_id: tenant.id, slug: tenant.slug, ...result }, result.ok ? 200 : 409);
+  }
+
   // ---- cp#95: STUDIO_TOKEN_KEK rotation -------------------------------------------------------
   //
   // WHY THESE ROUTES EXIST. `tenants.studio_token_enc` is the only customer credential this plane

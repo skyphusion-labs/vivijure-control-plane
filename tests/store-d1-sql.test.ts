@@ -241,6 +241,34 @@ describe("store-d1 statements execute against real SQLite", () => {
   it("setTenantStudioTokenIfUnchanged REFUSES for a tenant id that does not exist", async () => {
     expect(await store.setTenantStudioTokenIfUnchanged("ten_missing", "enc-old", "enc-new")).toBe(false);
   });
+  // cp#136: the finish-tier declaration, against a REAL engine and the REAL migration ledger. The
+  // memory stub cannot prove that migration 0011 applies, that the column defaults to 0, or that the
+  // three columns move together in one statement.
+  it("setTenantVideoFinishUnreachable writes and clears all three columns together", async () => {
+    const fresh = (await store.getTenantById("ten_1"))!;
+    // The DEFAULT, which is the honest state for every existing row the migration touched: a tenant
+    // nobody has declared anything about is reachable.
+    expect(fresh.video_finish_unreachable).toBe(0);
+    expect(fresh.video_finish_unreachable_reason).toBeNull();
+    expect(fresh.video_finish_unreachable_at).toBeNull();
+
+    await store.setTenantVideoFinishUnreachable("ten_1", {
+      reason: "the CF account holding this studio is gone",
+      at: "2026-07-26T12:00:00.000Z",
+    });
+    const marked = (await store.getTenantById("ten_1"))!;
+    expect(marked.video_finish_unreachable).toBe(1);
+    expect(marked.video_finish_unreachable_reason).toBe("the CF account holding this studio is gone");
+    expect(marked.video_finish_unreachable_at).toBe("2026-07-26T12:00:00.000Z");
+
+    await store.setTenantVideoFinishUnreachable("ten_1", null);
+    const cleared = (await store.getTenantById("ten_1"))!;
+    expect(cleared.video_finish_unreachable).toBe(0);
+    // A reason standing under a cleared flag is a label outliving its cause, which is the failure
+    // mode this whole issue is about.
+    expect(cleared.video_finish_unreachable_reason).toBeNull();
+    expect(cleared.video_finish_unreachable_at).toBeNull();
+  });
 });
 
 

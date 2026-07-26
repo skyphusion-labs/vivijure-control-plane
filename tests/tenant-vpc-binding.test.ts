@@ -18,6 +18,7 @@ import { kekRing } from "../src/token-crypto";
 import { runProvisionJob, type ProvisionDeps } from "../src/provisioner";
 import { CfApiError, type CfApi, type WorkerBinding } from "../src/cf-api";
 import { MemoryStore } from "./memory-store";
+import { VIDEO_FINISH_TIER_STATE_VAR, VIDEO_FINISH_UNPROVISIONABLE } from "../src/video-finish-tier-state";
 import type { Tenant } from "../src/store";
 
 const SERVICE_ID = "019ecbe6-9fc1-70a0-9946-14bbec0f51bc";
@@ -185,5 +186,40 @@ describe("the video-finish binding on a tenant studio (cf#118)", () => {
     expect(res.ok).toBe(false);
     expect(res.message).toMatch(/No such module/);
     expect(res.message).not.toMatch(/SCRIPT UPLOAD credential/);
+  });
+});
+
+// cp#136: the finish-tier STATE var on the provision upload.
+//
+// The provision path is the case that looks unnecessary and is not. A tenant being provisioned now
+// is reachable by definition, so the normal answer is "bind nothing". But a re-provision or a
+// resumed provision of a tenant that was DECLARED unreachable re-states the whole binding set, and a
+// non-secret binding omitted from an upload is DROPPED -- so without this the studio would quietly
+// go back to promising "not yet provisioned" to a tenant nobody can reach.
+describe("the finish-tier state var on a provision upload (cp#136)", () => {
+  it("binds NOTHING for an ordinary tenant: absent IS the reachable state", async () => {
+    await provision(deps({ videoFinishServiceId: SERVICE_ID }));
+    const bindings = studioUpload()!.bindings;
+    // CONTROL: a real payload was recorded, so the absence below is an omission and not an
+    // upload that never happened.
+    expect(bindings.length).toBeGreaterThan(0);
+    expect(bindings.find((b) => b.name === VIDEO_FINISH_TIER_STATE_VAR)).toBeUndefined();
+  });
+
+  it("re-states it for a tenant the plane has DECLARED unreachable", async () => {
+    const t = await store.createTenant("ten_1", "hero", "acct_1", "pending");
+    await store.setTenantVideoFinishUnreachable(t.id, {
+      reason: "the CF account holding this studio is gone",
+      at: "2026-07-26T12:00:00.000Z",
+    });
+    const row = (await store.getTenantById(t.id))!;
+    const job = await store.createProvisionJob("job_1", row.id, "provision");
+    await runProvisionJob(deps({ videoFinishServiceId: SERVICE_ID }), job.id, row, "rpa_keyA");
+
+    expect(studioUpload()!.bindings.find((b) => b.name === VIDEO_FINISH_TIER_STATE_VAR)).toEqual({
+      type: "plain_text",
+      name: VIDEO_FINISH_TIER_STATE_VAR,
+      text: VIDEO_FINISH_UNPROVISIONABLE,
+    });
   });
 });

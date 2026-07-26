@@ -55,6 +55,48 @@ is a separate product on a separate cadence).
 - The first-poll constant is deliberately NOT touched: a later poll changes discovery time, not
   outcome, and an earlier one would have made the old race MORE likely.
 - Docs: `docs/control-plane.md`, "The provision job lease, and why a driver heartbeats it".
+### feat(hosted): the plane WRITES the finish-tier state the panel reads (cp#136)
+
+- **The gap:** `vivijure-cf` resolves three states for the video-finish tier and reads the third off
+  the studio var `VIDEO_FINISH_TIER_STATE`. Nothing in this plane ever wrote it, so
+  `unprovisionable` could not occur in production and the sentence written for it (cf#243) shipped
+  into a state no studio could enter. This is the writer, and it unblocks `vivijure-cf` PR #244.
+- **It is a DECLARATION, not a derivation, and that was the decision the issue asked for.** No
+  plane-side condition computes unreachability: with `VIDEO_FINISH_VPC_SERVICE_ID` set the studio
+  resolves `available` by observation, and with it unset an operator can still reach the studio
+  through `refresh-studio-bindings`, so every derived writer writes `provisionable` forever. The
+  tempting nearby wiring is worse: the tier being DOWN is transient and the panel sentence ("cannot
+  be turned on for it") is permanent, so an outage-driven writer would tell every tenant the tier can
+  never be turned on and keep saying it afterwards.
+- **One writer, one source of truth.** `tenants.video_finish_unreachable` (migration 0011, with its
+  mandatory reason and timestamp) is the record; the studio var is a PROJECTION re-derived at every
+  write to the studio: the provision upload, the studio-upgrade re-upload, and the new route.
+  Re-derived rather than carried, because `inherit` PRESERVES a var: without this a cleared
+  declaration would survive the next bytes move and keep displaying a sentence the plane no longer
+  believes. Omitting a non-secret binding DROPS it, so omission is how a clear reaches the studio.
+- **What clears it, stated because a label that cannot be removed becomes a lie:** the route
+  explicitly, and the binding arriving implicitly (the panel lets a bound tier beat any var).
+- **`POST /api/admin/tenants/:id/video-finish-tier-state`**, admin-gated, inline (the answer IS the
+  evidence), one tenant per call. Changes no bytes, no release, no status; the tenant keeps serving.
+  A reason is mandatory to declare and meaningless to clear.
+- **THE READER FLOOR IS A REFUSAL.** Setting the var on a studio whose bundle predates the reader
+  (`vivijure-cf` `ba61789`, first tagged v1.9.0) is a silent no-op, which is the cf#98 / cf#118 /
+  cp#112 failure family. The route asks the STUDIO what it serves and refuses unless
+  `capability:video-finish` is present in `host.hooks_unavailable`; a served field is the tenant
+  assertion about itself, where a release number is only our claim about it. The floor gates
+  DECLARING only: un-saying something is always allowed.
+- **The readback carries the reader half:** `served_reason_before` / `served_reason_after` /
+  `served_reason_changed`, verbatim and never compared against a local copy of the panel copy. The
+  plane can prove it bound a var; only the studio can prove the panel projection changed. A readback
+  that disagrees with the intent answers 409, not 200.
+- Tests: the discriminating one asserts what was PASSED to the write call (recording proxy) and was
+  watched FAILING against the never-written behaviour, with a positive control proving the proxy
+  records; the reader-floor refusal was watched failing with a positive control that the same path
+  accepts a reader-capable studio; the upgrade drop-guard covers both directions and was watched
+  failing without the reconcile; plus a real-SQLite round trip over migration 0011.
+- **Not done, and tracked rather than implied:** no live studio is in the state yet. That needs a
+  tenant on a v1.9.0-or-later bundle and the sentence read by a human; cp#136 stays open for it.
+- Docs: `docs/control-plane.md`, "Declaring a studio UNREACHABLE for the video-finish tier".
 
 ## v1.10.0 -- 2026-07-26
 

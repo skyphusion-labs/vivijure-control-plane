@@ -46,6 +46,29 @@ const CLEAN_REFRESH = {
   missing_secrets: [] as string[],
 };
 
+/**
+ * A clean cp#136 tier-state readback. Same discipline as CLEAN_REFRESH above: shaped like the real
+ * one so the route contract cannot drift from the module that owns the behaviour.
+ */
+const CLEAN_TIER_STATE = {
+  ok: true,
+  script: "tenant-hero-studio",
+  unreachable: true,
+  reason: "the CF account holding this studio is gone",
+  var_present_before: false,
+  var_present_after: true,
+  bindings_before: ["ASSETS", "DB"],
+  bindings_after: ["ASSETS", "DB", "VIDEO_FINISH_TIER_STATE"],
+  secrets_before: ["STUDIO_API_TOKEN"],
+  secrets_after: ["STUDIO_API_TOKEN"],
+  missing_bindings: [] as string[],
+  missing_secrets: [] as string[],
+  served_reason_before: "Video finishing is not yet provisioned for this studio; finished renders deliver as per-shot clips.",
+  served_reason_after:
+    "Video finishing is not available for this studio and cannot be turned on for it; finished renders deliver as per-shot clips.",
+  served_reason_changed: true,
+};
+
 const ROOT_HOST = "studio.vivijure.com";
 const ORIGIN = `https://${ROOT_HOST}`;
 const AUP = "2026-07-17";
@@ -62,6 +85,7 @@ let wiring: {
   preflightUpgrade: ReturnType<typeof vi.fn>;
   upgradeModules: ReturnType<typeof vi.fn>;
   refreshStudioBindings: ReturnType<typeof vi.fn>;
+  setVideoFinishTierState: ReturnType<typeof vi.fn>;
   preflightStudioUpgrade: ReturnType<typeof vi.fn>;
   upgradeStudio: ReturnType<typeof vi.fn>;
 };
@@ -144,6 +168,8 @@ beforeEach(() => {
       },
     })),
     upgradeModules: vi.fn(async () => {}),
+    // cp#136: default is a clean declaration; the refusal and short-readback cases override it.
+    setVideoFinishTierState: vi.fn(async () => ({ ok: true, result: CLEAN_TIER_STATE })),
   };
   deps = {
     store,
@@ -2079,5 +2105,137 @@ describe("KEK rotation admin routes (cp#95)", () => {
     expect(action!.detail ?? "").not.toContain(NEXT);
     expect(action!.detail ?? "").not.toContain("tok-alpha");
     expect(JSON.parse(action!.detail!)).toMatchObject({ encrypt_slot: "next", rotated: 1 });
+  });
+});
+
+// cp#136: the route that makes the panel `unprovisionable` state reachable at all.
+//
+// The behaviour that matters here is the ROUTE half: what it refuses, what it audits, and that it
+// never answers 200 over a readback that disagrees with the intent. What the plane SENDS to
+// Cloudflare, and the reader floor that stops a write nobody could read, live in
+// tests/video-finish-tier-state.test.ts, which owns that behaviour.
+describe("POST /api/admin/tenants/:id/video-finish-tier-state (cp#136)", () => {
+  const admin = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${ADMIN_TOKEN}`, ...extra });
+  const call = (body: unknown, id = "ten_abc123", d: ControlPlaneDeps = deps) =>
+    handle(jsonReq(`/api/admin/tenants/${id}/video-finish-tier-state`, body, { headers: admin() }), env(), ctx, d);
+  const MARK = { unreachable: true, reason: "the CF account holding this studio is gone" };
+
+  async function existingTenant(): Promise<Tenant> {
+    const t = await store.createTenant("ten_abc123", "hero", "acct_1", "live");
+    t.live_at = "t0";
+    t.script_name = "tenant-hero-studio";
+    t.studio_release = "v1.9.0";
+    return t;
+  }
+
+  it("REFUSES without the admin token: it changes what someone else studio tells its users", async () => {
+    await existingTenant();
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/video-finish-tier-state", MARK),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(401);
+    expect(wiring.setVideoFinishTierState).not.toHaveBeenCalled();
+  });
+
+  it("refuses 503 when the plane has no provisioner wiring, rather than looking present", async () => {
+    await existingTenant();
+    const res = await call(MARK, "ten_abc123", { ...deps, provisioner: undefined });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "provisioner_unconfigured" });
+  });
+
+  it("404s an unknown tenant", async () => {
+    expect((await call(MARK, "ten_nope")).status).toBe(404);
+    expect(wiring.setVideoFinishTierState).not.toHaveBeenCalled();
+  });
+
+  it("REQUIRES a reason to declare, because the declaration must be reviewable", async () => {
+    await existingTenant();
+    const res = await call({ unreachable: true });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("reason_required");
+    expect(wiring.setVideoFinishTierState).not.toHaveBeenCalled();
+
+    // Whitespace is not a reason either: a required field satisfied by a space is not required.
+    expect((await call({ unreachable: true, reason: "   " })).status).toBe(400);
+    expect(wiring.setVideoFinishTierState).not.toHaveBeenCalled();
+  });
+
+  it("POSITIVE CONTROL: clearing needs NO reason, because it removes a claim", async () => {
+    await existingTenant();
+    wiring.setVideoFinishTierState = vi.fn(async () => ({
+      ok: true,
+      result: { ...CLEAN_TIER_STATE, unreachable: false, reason: null, var_present_after: false },
+    }));
+    expect((await call({ unreachable: false })).status).toBe(200);
+    expect(wiring.setVideoFinishTierState).toHaveBeenCalledTimes(1);
+    // And the intent reaches the seam as a CLEAR, with no reason invented on the way.
+    expect(wiring.setVideoFinishTierState.mock.calls[0][1]).toEqual({ unreachable: false, reason: null });
+  });
+
+  it("400s a body that does not state an intent at all", async () => {
+    await existingTenant();
+    expect((await call({})).status).toBe(400);
+    expect((await call({ unreachable: "yes" })).status).toBe(400);
+    expect(wiring.setVideoFinishTierState).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES while a job holds a live lease: this patch must not race an upload", async () => {
+    await existingTenant();
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    running.status = "running";
+    running.lease_until = new Date(deps.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
+
+    const res = await call(MARK);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "job_in_progress", job_id: "job_running", kind: "provision" });
+    expect(wiring.setVideoFinishTierState).not.toHaveBeenCalled();
+  });
+
+  it("returns the READBACK and audits the action, changing no tenant state", async () => {
+    await existingTenant();
+    const res = await call(MARK);
+    expect(res.status).toBe(200);
+    expectExactKeys(await res.json(), [
+      "tenant_id", "slug", "ok", "script", "unreachable", "reason",
+      "var_present_before", "var_present_after",
+      "bindings_before", "bindings_after", "secrets_before", "secrets_after",
+      "missing_bindings", "missing_secrets",
+      "served_reason_before", "served_reason_after", "served_reason_changed",
+    ]);
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.set_video_finish_tier_state"]);
+    // The same care standard cp#112 sets: a live tenant keeps serving, on the same release.
+    const after = await store.getTenantById("ten_abc123");
+    expect(after?.status).toBe("live");
+    expect(after?.studio_release).toBe("v1.9.0");
+  });
+
+  it("passes a module REFUSAL through with its own code and status, having written nothing", async () => {
+    await existingTenant();
+    wiring.setVideoFinishTierState = vi.fn(async () => ({
+      ok: false,
+      refusal: { code: "studio_reader_absent", status: 422, message: "would reach nobody" },
+    }));
+    const res = await call(MARK);
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: "studio_reader_absent", message: "would reach nobody" });
+    // A refusal is not an action: nothing to audit.
+    expect(store.audit).toEqual([]);
+  });
+
+  it("answers 409, not 200, when the readback disagrees with the intent", async () => {
+    // A 200 carrying ok:false reads as success to anything checking status codes, and "the plane
+    // believes it declared something the studio is not carrying" is what this route must not hide.
+    await existingTenant();
+    wiring.setVideoFinishTierState = vi.fn(async () => ({
+      ok: true,
+      result: { ...CLEAN_TIER_STATE, ok: false, var_present_after: false },
+    }));
+    const res = await call(MARK);
+    expect(res.status).toBe(409);
+    expect((await res.json() as { ok: boolean }).ok).toBe(false);
+    // Still audited: the attempt happened and the operator needs the record of it.
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.set_video_finish_tier_state"]);
   });
 });

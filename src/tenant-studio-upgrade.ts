@@ -48,6 +48,7 @@ import { applyStudioMigrations } from "./migrate";
 import { type ProvisionDeps, type StudioBundleSource, uploadStudioAssets } from "./provisioner";
 import type { Tenant } from "./store";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
+import { withVideoFinishTierState } from "./video-finish-tier-state";
 import { decryptStudioToken } from "./token-crypto";
 
 type StudioBundle = Awaited<ReturnType<StudioBundleSource["fetch"]>>;
@@ -359,12 +360,21 @@ export async function upgradeTenantStudio(
     // binding. That exact combination (`inherit` bindings alongside `{assets}`) is the cp#139 probe-3
     // shape, which lost nothing.
     const assetsBindingName = before.find((b) => b.type === "assets")?.name ?? ASSETS_BINDING;
-    const bindings = [
-      ...before
-        .filter((b) => b.name !== assetsBindingName)
-        .map((b) => ({ type: "inherit" as const, name: b.name })),
-      { type: "assets" as const, name: assetsBindingName },
-    ];
+    //
+    // ONE binding does NOT travel as `inherit`, and it is the cp#136 var. `inherit` PRESERVES what is
+    // already bound, which is exactly wrong for a projection: a tenant whose unreachable declaration
+    // was CLEARED would carry VIDEO_FINISH_TIER_STATE across this move and keep displaying a sentence
+    // the plane no longer believes. So it is stripped out of the carried set and re-derived from the
+    // record, which converges the studio in BOTH directions (omitted = dropped, re-added = set).
+    const bindings = withVideoFinishTierState(
+      [
+        ...before
+          .filter((b) => b.name !== assetsBindingName)
+          .map((b) => ({ type: "inherit" as const, name: b.name })),
+        { type: "assets" as const, name: assetsBindingName },
+      ],
+      tenant,
+    );
 
     try {
       await deps.scriptUploadCf.uploadUserWorker({

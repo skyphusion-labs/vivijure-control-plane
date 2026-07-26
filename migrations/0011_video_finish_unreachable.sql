@@ -1,0 +1,34 @@
+-- cp#136: the plane's record of a studio the video-finish tier can no longer be delivered to.
+--
+-- WHAT THIS IS FOR. The studio panel resolves three states for the tier (vivijure-cf
+-- src/video-finish-availability.ts): `available` when VIDEO_FINISH_VPC is bound, `provisionable`
+-- when it is absent but an operator can still attach it, and `unprovisionable` when no operator
+-- action reaches that studio. The panel reads the third off the studio var VIDEO_FINISH_TIER_STATE.
+-- Nothing wrote that var, so the third state could not occur in production at all.
+--
+-- WHY A COLUMN AND NOT A HAND-SET VAR, which is question 3 of the issue. A var set out of band has
+-- no writer of record, cannot be listed, cannot be audited, and cannot be re-asserted after a bytes
+-- move. The column is the SOURCE OF TRUTH and the var is a PROJECTION of it, re-derived at every
+-- write to the studio (provision upload, studio-upgrade re-upload, and the admin route itself). One
+-- writer, one place to read the answer, and a studio that drifts is converged by the next write
+-- rather than left disagreeing with the record.
+--
+-- WHY IT IS DECLARED AND NOT DERIVED, which is question 1. There is no plane-side condition that
+-- computes this. If VIDEO_FINISH_VPC_SERVICE_ID is set the studio gets the binding and resolves
+-- `available` by observation; if it is unset an operator can set it and reach the studio through
+-- cp#112 refresh-studio-bindings, so "not yet" is a promise that can still be kept. Every derived
+-- writer therefore writes `provisionable` forever, which is the bug with more code in front of it.
+-- Unreachability is a fact about the world (a studio outside what this plane can act on), so a human
+-- declares it, with a reason, and the declaration is audited like every other operator action.
+--
+-- WHAT CLEARS IT, which is question 2, because a label that cannot be removed outlives its cause and
+-- becomes a lie the panel repeats. TWO things clear it, deliberately:
+--   1. The same route, explicitly: unreachable -> false drops the column and the studio var with it.
+--   2. The BINDING arriving, implicitly and already: the panel lets a bound tier beat any var
+--      (videoFinishState checks VIDEO_FINISH_VPC first -- an observation beats a label), so a studio
+--      that becomes reachable stops displaying the sentence even before anyone clears the record.
+-- The reason column exists so a state nobody can explain cannot be entered, the same standard
+-- 0010_preservation_holds.sql sets for a hold.
+ALTER TABLE tenants ADD COLUMN video_finish_unreachable INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tenants ADD COLUMN video_finish_unreachable_reason TEXT;
+ALTER TABLE tenants ADD COLUMN video_finish_unreachable_at TEXT;
