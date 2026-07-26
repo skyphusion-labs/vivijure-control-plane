@@ -28,7 +28,7 @@ import type {
   TenantResourceRefs,
   ResourceReferrer,
 } from "../src/store";
-import { classifySlugClaim, leaseIsLive, TIER_A_STATUSES } from "../src/store";
+import { classifySlugClaim, leaseIsLive, JOB_LEASE_SECONDS, TIER_A_STATUSES } from "../src/store";
 
 export class MemoryStore implements ControlPlaneStore {
   accounts = new Map<string, Account>();
@@ -509,15 +509,23 @@ export class MemoryStore implements ControlPlaneStore {
   async getJob(id: string) {
     return this.jobs.get(id) ?? null;
   }
+  /**
+   * The D1 datetime shape, UTC: "YYYY-MM-DD HH:MM:SS". Every lease written here goes through this,
+   * because leaseIsLive (and the SQL it mirrors) reads that shape and NOT an ISO string with a Z --
+   * claimJob used to write ISO and then re-parse it without a zone, which agreed with the rest of
+   * the double only by running on a UTC box.
+   */
+  private stamp(atMs: number) {
+    return new Date(atMs).toISOString().replace("T", " ").slice(0, 19);
+  }
   async setJobRunning(id: string) {
     const j = this.jobs.get(id);
     if (!j) return;
-    const held = j.lease_until !== null && Date.parse(`${j.lease_until.replace(" ", "T")}Z`) > Date.now();
-    if (held) return;
+    if (leaseIsLive(j.lease_until, Date.now())) return;
     j.status = "running";
     j.attempts += 1;
-    j.lease_until = new Date(Date.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
-    j.updated_at = j.lease_until;
+    j.lease_until = this.stamp(Date.now() + JOB_LEASE_SECONDS * 1000);
+    j.updated_at = this.stamp(Date.now());
   }
   /**
    * Mirrors the D1 predicate: win only if nobody holds a LIVE lease. Modelled faithfully because the
@@ -528,19 +536,32 @@ export class MemoryStore implements ControlPlaneStore {
     const j = this.jobs.get(id);
     if (!j) return false;
     if (j.status !== "queued" && j.status !== "running") return false;
-    const held = j.lease_until !== null && Date.parse(j.lease_until) > Date.now();
-    if (held) return false;
-    j.lease_until = new Date(Date.now() + leaseSeconds * 1000).toISOString();
+    if (leaseIsLive(j.lease_until, Date.now())) return false;
+    j.lease_until = this.stamp(Date.now() + leaseSeconds * 1000);
+    j.updated_at = this.stamp(Date.now());
+    return true;
+  }
+  /**
+   * The driver heartbeat (cp#148), mirroring the SQL exactly on both of the properties that carry
+   * the fix: updated_at is NOT touched (liveness is not progress, or a wedged driver becomes
+   * immortal), and a terminal job is refused (a driver that lost its job cannot re-arm the record).
+   */
+  async renewJobLease(id: string, leaseSeconds: number) {
+    const j = this.jobs.get(id);
+    if (!j) return false;
+    if (j.status !== "queued" && j.status !== "running") return false;
+    j.lease_until = this.stamp(Date.now() + leaseSeconds * 1000);
     return true;
   }
   async updateJobProgress(id: string, step: string, stepsDoneJson: string) {
     const j = this.jobs.get(id);
-    if (j) {
-      j.step = step;
-      j.steps_done = stepsDoneJson;
-      j.updated_at = new Date().toISOString().replace("T", " ").slice(0, 19);
-      j.lease_until = new Date(Date.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
-    }
+    if (!j) return;
+    // cp#148: a terminal job is a closed record. Mirrors the status predicate in the D1 statement.
+    if (j.status !== "queued" && j.status !== "running") return;
+    j.step = step;
+    j.steps_done = stepsDoneJson;
+    j.updated_at = this.stamp(Date.now());
+    j.lease_until = this.stamp(Date.now() + JOB_LEASE_SECONDS * 1000);
   }
   async finishJob(id: string, status: "succeeded" | "failed", errorStep: string | null, errorMessage: string | null) {
     const j = this.jobs.get(id);

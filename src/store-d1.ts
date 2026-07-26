@@ -25,13 +25,13 @@ import { classifySlugClaim, TIER_A_STATUSES,
   type TenantResourceKind,
   type TenantResourceRefs,
   type ResourceReferrer,
+  JOB_LEASE_SECONDS,
 } from "./store";
 
-/**
- * How long one driver holds a job (#112). Sized to a single invocation, not to a whole provision:
- * the point is that a driver which dies frees the job quickly enough for the next poll to resume it.
- */
-export const JOB_LEASE_SECONDS = 60;
+// The lease length lives in store.ts beside leaseIsLive and RECLAIM_LEASE_SECONDS, so the one
+// hierarchy (job lease 60s < reclaim lease 300s < job declared lost 600s) is stated once. Re-exported
+// here because that is where callers have always imported it from.
+export { JOB_LEASE_SECONDS };
 
 export class D1Store implements ControlPlaneStore {
   constructor(private readonly db: D1Database) {}
@@ -568,11 +568,33 @@ export class D1Store implements ControlPlaneStore {
    * for ten minutes, which is the eternal-spinner bug wearing a lease. The lease now tracks one
    * invocation, so a lost driver frees the job within a minute and the next poll resumes it.
    */
+  /**
+   * The driving heartbeat (cp#148). Renews the lease and NOTHING else.
+   *
+   * updated_at is deliberately untouched: it is the progress clock MAX_JOB_STALE_MS reads, and a
+   * heartbeat that bumped it would make a live-but-wedged driver immortal. The status predicate is
+   * the other half -- a job someone else already finished must not get a live lease back.
+   */
+  async renewJobLease(id: string, leaseSeconds: number): Promise<boolean> {
+    const res = await this.db
+      .prepare(
+        "UPDATE provision_jobs SET lease_until = datetime('now', '+' || ?2 || ' seconds') " +
+          "WHERE id = ?1 AND status IN ('queued', 'running')",
+      )
+      .bind(id, leaseSeconds)
+      .run();
+    return (res.meta?.changes ?? 0) === 1;
+  }
+
   async updateJobProgress(id: string, step: string, stepsDoneJson: string): Promise<void> {
     await this.db
       .prepare(
         "UPDATE provision_jobs SET step = ?2, steps_done = ?3, updated_at = datetime('now'), " +
-          `lease_until = datetime('now', '+${JOB_LEASE_SECONDS} seconds') WHERE id = ?1`,
+          `lease_until = datetime('now', '+${JOB_LEASE_SECONDS} seconds') ` +
+          // cp#148: a terminal job is a closed record. A driver that lost its job to a poll keeps
+          // running to the end of its invocation, and its next mark used to overwrite the terminal
+          // step / steps_done and re-arm the lease on the failed row.
+          "WHERE id = ?1 AND status IN ('queued', 'running')",
       )
       .bind(id, step, stepsDoneJson)
       .run();

@@ -185,6 +185,23 @@ export const TIER_A_STATUSES: readonly TenantLifecycle[] = [
 ];
 
 /**
+ * How long one driver holds a job (#112, cp#148). Sized to a single invocation, not to a whole
+ * provision: a driver that dies must free the job quickly enough for the next poll to resume it.
+ *
+ * IT MEANS "A DRIVER IS ALIVE" ONLY BECAUSE A LIVE DRIVER RENEWS IT (cp#148). It used to be written
+ * at step boundaries alone, so any STEP longer than this expired the lease under a perfectly healthy
+ * driver and the next poll claimed the job away from it. On a slow RunPod account that is exactly
+ * what happened: createEndpoints ran for ~87s with no mark inside it, the lease lapsed at ~68s, and
+ * the poll that won the now-free claim ran the continuation, which refuses anything short of
+ * wfp_upload and writes a terminal failure plus a destructive rollback. The provisioner now
+ * heartbeats this lease for as long as its invocation lives (renewJobLease), so an expired lease
+ * means a dead driver and nothing else. Every other guard that reads lease_until -- claimReclaim,
+ * beginTeardown, jobHasLiveDriver -- gets that same repair for free, because they were all reading a
+ * column that could only ever say "a step boundary happened recently".
+ */
+export const JOB_LEASE_SECONDS = 60;
+
+/**
  * How long one reclaim attempt owns a row (cf#103). SIZED, not copied from JOB_LEASE_SECONDS.
  *
  * A teardown is ~11 SEQUENTIAL CF API calls: worker delete, module list + up to five module script
@@ -624,6 +641,26 @@ export interface ControlPlaneStore {
    * credentials. Returns true only for the caller that won the claim.
    */
   claimJob(id: string, leaseSeconds: number): Promise<boolean>;
+  /**
+   * Refresh the lease on a job THIS invocation is driving (cp#148).
+   *
+   * The heartbeat behind "lease live == driver alive". Two properties are load-bearing:
+   *
+   *   - it must NOT touch updated_at. That column is the PROGRESS clock the lost-driver rule reads
+   *     (MAX_JOB_STALE_MS), so a heartbeat that bumped it would make a driver that is alive but
+   *     wedged immortal. Liveness and progress are different facts and stay in different columns.
+   *   - it must refuse a TERMINAL job. A driver whose job was already finished by someone else must
+   *     not put a live lease back on that record.
+   *
+   * Returns false when nothing was renewed, which is the honest signal that this driver no longer
+   * owns the job it is still working on.
+   */
+  renewJobLease(id: string, leaseSeconds: number): Promise<boolean>;
+  /**
+   * Record progress. REFUSES a terminal job (cp#148): a late mark from a driver whose job was
+   * already failed by a poll would otherwise overwrite step / steps_done on the terminal record and
+   * re-arm its lease, leaving a failed job that reads as live and progressing.
+   */
   updateJobProgress(id: string, step: string, stepsDoneJson: string): Promise<void>;
   finishJob(id: string, status: "succeeded" | "failed", errorStep: string | null, errorMessage: string | null): Promise<void>;
 

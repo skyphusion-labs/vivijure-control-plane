@@ -242,3 +242,90 @@ describe("store-d1 statements execute against real SQLite", () => {
     expect(await store.setTenantStudioTokenIfUnchanged("ten_missing", "enc-old", "enc-new")).toBe(false);
   });
 });
+
+
+/**
+ * The driver heartbeat, against real S'L (cp#148).
+ *
+ * MemoryStore can only prove the DECISION. These prove the STATEMENTS, and both properties that
+ * carry the fix are S'L properties: the status predicate that refuses a terminal job, and the column
+ * the UPDATE deliberately leaves alone.
+ */
+describe("renewJobLease and the terminal-job guard (cp#148)", () => {
+  let db: DatabaseSync;
+  let store: D1Store;
+
+  beforeEach(async () => {
+    db = freshDb();
+    store = new D1Store(d1Over(db));
+    await store.createAccount("acct_1", "a@b.com");
+    await store.createTenant("ten_1", "rehearsal", "acct_1", "provisioning");
+    await store.createProvisionJob("job_1", "ten_1", "provision");
+  });
+
+  const row = () =>
+    db
+      .prepare(
+        "SELECT status, step, steps_done, lease_until, updated_at, " +
+          "CASE WHEN lease_until > datetime('now') THEN 1 ELSE 0 END AS live " +
+          "FROM provision_jobs WHERE id = 'job_1'",
+      )
+      .get() as {
+      status: string;
+      step: string | null;
+      steps_done: string;
+      lease_until: string | null;
+      updated_at: string;
+      live: number;
+    };
+
+  it("renews a lapsed lease, and the renewed lease really is in the future", async () => {
+    await store.setJobRunning("job_1");
+    // Expire it exactly the way a long unmarked step does, then heartbeat.
+    db.prepare("UPDATE provision_jobs SET lease_until = datetime('now', '-30 seconds') WHERE id = 'job_1'").run();
+    expect(row().live).toBe(0);
+
+    expect(await store.renewJobLease("job_1", 60)).toBe(true);
+    expect(row().live).toBe(1);
+  });
+
+  it("does NOT touch updated_at, so a live-but-wedged driver is still declared lost", async () => {
+    // updated_at is the PROGRESS clock MAX_JOB_STALE_MS reads. A heartbeat that bumped it would make
+    // a driver that is alive and getting nowhere immortal.
+    await store.setJobRunning("job_1");
+    db.prepare("UPDATE provision_jobs SET updated_at = '2020-01-01 00:00:00' WHERE id = 'job_1'").run();
+
+    expect(await store.renewJobLease("job_1", 60)).toBe(true);
+
+    expect(row().updated_at).toBe("2020-01-01 00:00:00");
+    expect(row().live).toBe(1);
+  });
+
+  it("REFUSES a terminal job, so a driver that lost its job cannot re-arm the record", async () => {
+    await store.setJobRunning("job_1");
+    await store.finishJob("job_1", "failed", "runpod_endpoints", "keyless refusal");
+
+    expect(await store.renewJobLease("job_1", 60)).toBe(false);
+    expect(row().lease_until).toBeNull();
+  });
+
+  it("REFUSES a job id that does not exist", async () => {
+    expect(await store.renewJobLease("job_missing", 60)).toBe(false);
+  });
+
+  it("updateJobProgress WRITES on a running job (control) and REFUSES on a terminal one", async () => {
+    await store.setJobRunning("job_1");
+    await store.updateJobProgress("job_1", "r2_token", JSON.stringify(["d1_create", "r2_token"]));
+    expect(row().step).toBe("r2_token");
+
+    await store.finishJob("job_1", "failed", "runpod_endpoints", "keyless refusal");
+    // The losing driver runs on to the end of its invocation and marks its next step.
+    await store.updateJobProgress("job_1", "wfp_upload", JSON.stringify(["d1_create", "r2_token", "wfp_upload"]));
+
+    const after = row();
+    expect(after.status).toBe("failed");
+    expect(after.step).toBe("r2_token");
+    expect(after.steps_done).not.toContain("wfp_upload");
+    expect(after.lease_until).toBeNull();
+  });
+});
