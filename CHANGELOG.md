@@ -6,6 +6,10 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.14.0 -- 2026-07-27
+
+MINOR: two corrections that came out of running the cp#137 remediation end to end on the live testbed. The rebuild route now names WHO installs the invoke key (the account owner, not the operator, whose admin token that route refuses); and the cp#45 smoke render fixture no longer names a project the studio never assigned, which is what stopped the only renderability proof we have from passing against a backend that enforces bundle-key tenancy. Carries NO schema change.
+
 ### fix(hosted): the smoke render fixture named a project the studio never assigned (cp#137, cp#45)
 
 - **The cp#45 smoke render could not pass against a current-pinned backend, and nobody knew.** The
