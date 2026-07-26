@@ -94,8 +94,12 @@ is a separate product on a separate cadence).
   records; the reader-floor refusal was watched failing with a positive control that the same path
   accepts a reader-capable studio; the upgrade drop-guard covers both directions and was watched
   failing without the reconcile; plus a real-SQLite round trip over migration 0011.
-- **Not done, and tracked rather than implied:** no live studio is in the state yet. That needs a
-  tenant on a v1.9.0-or-later bundle and the sentence read by a human; cp#136 stays open for it.
+- **Not done, and tracked rather than implied:** no live studio is in the state yet, and cp#136
+  stays open for that leg. The bundle half of the precondition is already met (the live tenant is at
+  v1.9.0 since cf#248), so what remains is a studio with the tier UNBOUND plus the sentence read by a
+  human. A studio that HAS the binding cannot display the sentence by construction, because the panel
+  lets an observation beat a label, and this route refuses to declare on one rather than writing an
+  inert var.
 - Docs: `docs/control-plane.md`, "Declaring a studio UNREACHABLE for the video-finish tier".
 
 ## v1.10.0 -- 2026-07-26

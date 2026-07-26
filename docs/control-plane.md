@@ -1114,9 +1114,15 @@ for them; the same standard `0010_preservation_holds.sql` sets for a hold.
 ### The reader floor, which is a refusal and not a warning
 
 Setting the var on a studio whose bundle predates the READER is a silent no-op: the reader landed in
-`vivijure-cf` `ba61789`, first tagged **v1.9.0**, and the live tenant runs v1.6.0 (measured in the
-deployed bytes, string absent). That is the cf#98 / cf#118 / cp#112 failure family (a change that
-looks applied and reaches nobody) and this route refuses to join it.
+`vivijure-cf` `ba61789`, first tagged **v1.9.0**. That is the cf#98 / cf#118 / cp#112 failure family
+(a change that looks applied and reaches nobody) and this route refuses to join it.
+
+**Which studios it bites** (checked against prod D1 on 2026-07-26, not assumed from the issue that
+filed this): the live tenant `rollins-e2e` is at v1.9.0, moved in place by cf#248, so the floor does
+not fire on it. That does not make it ornamental. It guards any tenant whose bytes lag the plane,
+which every provision can be between a release and its rollout, and it is written against the
+CAPABILITY rather than against a named tenant so a corrected fact about one studio cannot make it
+wrong.
 
 The check is NOT a version-string comparison. It asks the studio what it serves and requires
 `capability:video-finish` to be present in `host.hooks_unavailable` on `GET /api/modules` before it
@@ -1156,9 +1162,17 @@ throughout: no bytes, no release change, no status write.
 
 ### What this does NOT do
 
-It does not put a live studio into the state. That needs a tenant whose bundle can observe the var
-(v1.9.0 or later), which the live tenant is not yet, and the sentence read by a human. That leg is
-tracked on cp#136 and belongs with the tenant eventual bundle move, not with this mechanism.
+It does not put a live studio into the state. Two things are needed for that, and only one of them
+is now satisfied:
+
+- **A bundle that can observe the var.** Met: the live tenant is at v1.9.0 (cf#248).
+- **The tier UNBOUND on that studio.** NOT met if the studio carries `VIDEO_FINISH_VPC`, and this is
+  a property of the design rather than a gap: the panel lets an observed binding beat any label, so a
+  bound studio cannot display the sentence at all, and this route refuses to declare on one instead
+  of writing a var that would sit there inert. Reading the sentence on a live studio therefore means
+  a tenant whose tier is genuinely absent.
+
+Plus the sentence read by a human. That leg is tracked on cp#136.
 
 ## Preservation holds: the interlock on the irreversible lever (cp#118)
 

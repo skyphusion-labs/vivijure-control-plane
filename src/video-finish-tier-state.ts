@@ -41,9 +41,15 @@
 //
 // THE READER FLOOR, and it is a refusal rather than a warning. Setting this var on a studio whose
 // bundle predates the reader is a silent no-op: the reader landed in vivijure-cf ba61789, first
-// tagged v1.9.0, and the one live tenant runs v1.6.0 (Strummer measured it in the deployed bytes,
-// string absent, count 0). That is the cf#98 / cf#118 / cp#112 failure family -- a change that looks
-// applied and reaches nobody -- and this route refuses to join it. The check is not a version-string
+// tagged v1.9.0. That is the cf#98 / cf#118 / cp#112 failure family -- a change that looks applied
+// and reaches nobody -- and this route refuses to join it.
+//
+// WHICH STUDIOS THIS ACTUALLY BITES, corrected 2026-07-26 against prod D1 rather than left as the
+// example it was written from: the live tenant `rollins-e2e` is at v1.9.0 (moved in place by cf#248,
+// cp#139 acceptance), so the floor does NOT fire on it. It is not therefore ornamental -- it guards
+// any tenant whose bytes lag the plane, which every future provision can be between a release and
+// its rollout. The floor is written against the CAPABILITY rather than that one tenant precisely so
+// a corrected fact about any single studio cannot make it wrong. The check is not a version-string
 // comparison: it asks the STUDIO what it serves, and requires the `capability:video-finish` key to
 // be present in host.hooks_unavailable before it will write. A served field is the tenant assertion
 // about itself; a release number is our claim about it.
