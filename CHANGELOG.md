@@ -6,6 +6,35 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(hosted): rebuild a tenant RunPod endpoints through a plane mechanism (cp#137)
+
+- **A live tenant can now have its four RunPod endpoints rebuilt without a hand-edit of D1.**
+  `POST /api/admin/tenants/:id/reprovision-runpod` (admin-gated, `confirm_slug` required) converges
+  the tenant's templates onto the pins the plane holds, revoke-then-mints a fresh bucket credential,
+  rebuilds the endpoints idempotently by name, re-points the studio bindings and the module scripts
+  at the new ids, and writes `awaiting_invoke_key`. Key A is a parameter: never stored, never logged,
+  never on a response. This is the remediation half of cp#137, whose detection half shipped in
+  v1.11.0 and proved the standing testbed reads `live` while all four endpoints it names are 404.
+- **The status write comes FIRST, deliberately.** From the moment the pass begins, the studio's
+  wiring is being replaced and the stored key B is scoped to endpoints about to be superseded;
+  leaving `live` in place would be exactly the record-presenting-a-capability defect cp#137 exists to
+  end. A failure at any step therefore leaves an honest status rather than one somebody must repair.
+  `failed` is never written: the studio still exists, still serves, and its data is untouched.
+- **A fresh R2 credential is forced, not chosen.** The satellite templates carry the tenant's R2
+  credential in their env, and the plane stored only the token id -- the S3 secret is the SHA-256 of
+  a value deliberately never kept. There is no path by which the old credential reaches new
+  templates, so the mint is part of the repair and the studio secrets are re-stated in the same pass.
+- **`convergeTenantTemplateImages` (new, `src/runpod.ts`): adopt-by-name kept a STALE IMAGE.**
+  `createTenantEndpoints` adopts a template by name and rewrites its `env`, never its `imageName`.
+  Invisible on a fresh provision; on a long-lived tenant it is cp#126 rot -- the testbed's templates
+  were still on backend 1.0.2 / upscale 0.2.7 / musetalk 0.1.0 / audio-upscale 0.1.0 against pins of
+  1.0.11 / 1.0.4 / 1.0.5 / 1.0.7. The new call moves them and READS BACK what RunPod holds; a pin
+  that did not move throws. Scoped to the rebuild path, not to the shared customer provision path.
+- **Every message leaving the module is scrubbed** (`redactSecrets`) before it reaches a caller, an
+  audit row, or a log line: RunPod error text is passed through verbatim by design, and an upstream
+  is quite capable of quoting the request back at us.
+
+
 ### fix(provisioner): honest leases at both ends -- yield hand-back, upgrade heartbeat, no claim before the first driver (cp#158, cp#132)
 
 - **The yield left a lease nobody was holding (cp#158).** A driver that yields is out of invocation

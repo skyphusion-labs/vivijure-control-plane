@@ -91,7 +91,10 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     store,
     cf,
     videoFinishServiceId: null,
-    runpod: { createEndpoints: vi.fn(async () => (calls.push("runpod.createEndpoints"), ENDPOINTS)) },
+    runpod: {
+      createEndpoints: vi.fn(async () => (calls.push("runpod.createEndpoints"), ENDPOINTS)),
+      convergeTemplateImages: vi.fn(async () => (calls.push("runpod.convergeTemplateImages"), [])),
+    },
     tokenMinter: {
       // The id depends on WHICH credential is being minted: the tenant long-lived bucket token, or
       // the ephemeral one a teardown cycle mints to empty the bucket (cf#72). Two ids, so a test can
@@ -537,7 +540,10 @@ describe("auto-teardown on provision failure (cf#91)", () => {
     const t = await tenant();
     const boom = new CfApiError("runpod.create", 400, [{ message: "worker quota" }]);
     const d = deps({
-      runpod: { createEndpoints: vi.fn(async () => { throw boom; }) },
+      runpod: {
+        createEndpoints: vi.fn(async () => { throw boom; }),
+        convergeTemplateImages: vi.fn(async () => []),
+      },
     });
     const job = await store.createProvisionJob("job_1", t.id, "provision");
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA");

@@ -42,6 +42,7 @@ import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
 import { JOB_LEASE_SECONDS, RECLAIM_LEASE_SECONDS, jobAwaitsFirstDriver, jobHasLiveDriver } from "./store";
 import { StudioBindingError } from "./tenant-studio-bindings";
+import { ReprovisionError } from "./tenant-runpod-reprovision";
 import type { PreservationHoldKind } from "./store";
 import type { Account, Tenant, ProvisionJob, SmokeRender } from "./store";
 import {
@@ -1421,6 +1422,101 @@ async function adminRoutes(
     // anything that checks status codes, and "the plane believes it declared something the studio is
     // not carrying" is the one outcome this route exists to make impossible to miss.
     return json({ tenant_id: tenant.id, slug: tenant.slug, ...result }, result.ok ? 200 : 409);
+  }
+
+  // ---- cp#137: rebuild a tenant's RunPod endpoints, through a plane mechanism ------------------
+  //
+  // WHY THIS ROUTE EXISTS AT ALL. cp#137's detection half proved a live tenant can point at four
+  // endpoints that no longer exist, and the standing ruling on that issue is that the fix goes
+  // through a plane mechanism rather than an UPDATE against D1. Correcting the record by hand would
+  // move the ids without making them real; this rebuilds the endpoints, re-points every consumer of
+  // their ids, and writes the record as a consequence of having done so.
+  //
+  // WHY confirm_slug, unlike refresh-studio-bindings: this pass REVOKES a live R2 credential and
+  // replaces the wiring of a running studio. It is not destructive of customer data, but it is not
+  // the kind of thing to run against the tenant one row above the one you meant, and the ids are
+  // opaque where the slug is recognisable. Same reasoning, and the same shape, as teardown.
+  //
+  // KEY A NEVER LANDS ANYWHERE. It arrives in this body, is passed as an argument, and is held by
+  // nothing afterwards: no job row (this route deliberately has none), no audit detail, no log line.
+  // The audit row below records ids and counts. A failure carries a message the module has already
+  // scrubbed of every secret it was holding.
+  const reprovisionRunPod = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/reprovision-runpod$/.exec(path);
+  if (request.method === "POST" && reprovisionRunPod) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(reprovisionRunPod[1]);
+    if (!tenant) return err("not_found", 404);
+
+    const body = (await readJson(request)) as { confirm_slug?: unknown; runpod_api_key?: unknown } | null;
+    if (typeof body?.confirm_slug !== "string" || body.confirm_slug.trim() !== tenant.slug) {
+      return err("slug_confirmation_required", 400, { slug: tenant.slug });
+    }
+    // Checked BEFORE anything else that could change state, for the reason the provision route
+    // states out loud: discovering a missing key after the first write leaves the caller strictly
+    // worse off than the refusal they should have had for free.
+    const runpodApiKey = typeof body.runpod_api_key === "string" ? body.runpod_api_key.trim() : "";
+    if (!runpodApiKey) {
+      return err("runpod_key_required", 400, {
+        message:
+          "this needs the tenant's own RunPod key A (graphql read/write) to create endpoints on their " +
+          "account. It is used once and stored nowhere.",
+      });
+    }
+
+    // One writer at a time on this row: a provision, module upgrade or studio upgrade with a live
+    // driver is already PUTting at these scripts, and a bindings patch landing mid-upload races the
+    // upload that owns the binding set.
+    const latest = await deps.store.getLatestJobForTenant(tenant.id);
+    if (latest && jobHasLiveDriver(latest, deps.now())) {
+      return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
+    }
+
+    // Preflight FIRST and separately: a refusal here has written nothing at all, which is what lets
+    // the honest refusals (not serving, bundle missing, no recorded module release) be cheap.
+    const pre = await deps.provisioner.preflightReprovisionRunPod(tenant);
+    if (!pre.ok) return err(pre.refusal.code, pre.refusal.status, { message: pre.refusal.message });
+
+    let result;
+    try {
+      result = await deps.provisioner.reprovisionRunPod(tenant, pre.context, runpodApiKey);
+    } catch (e) {
+      if (e instanceof ReprovisionError) {
+        // The tenant is at awaiting_invoke_key and its studio is still serving. Say which step died
+        // and stop; the message is already scrubbed, and a re-run of this same route is the retry.
+        await deps.store.recordAdminAction(
+          actor,
+          "tenant.reprovision_runpod.failed",
+          tenant.id,
+          JSON.stringify({ step: e.step, message: e.message }),
+        );
+        return err("reprovision_failed", 409, { step: e.step, message: e.message });
+      }
+      throw e;
+    }
+
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.reprovision_runpod",
+      tenant.id,
+      // IDS AND COUNTS ONLY. Endpoint ids and an R2 token id are identifiers the plane already
+      // stores; neither key A nor the minted credential value appears here or anywhere else.
+      JSON.stringify({
+        endpoints_before: result.endpoints_before.map((e) => e.id),
+        endpoints_after: result.endpoints_after.map((e) => e.id),
+        templates_changed: result.templates.filter((t) => t.changed).length,
+        r2_token_id: result.r2_token_id,
+        previous_r2_token_revoked: result.previous_r2_token_revoked,
+        modules_release: result.modules_release,
+        missing_bindings: result.missing_bindings,
+        missing_secrets: result.missing_secrets,
+      }),
+    );
+
+    // 200 with the readback attached, and NO summary boolean (cp#20): reaching this line already
+    // means the studio census came back whole, because a short readback throws at studio_bindings and
+    // is answered above as a 409 naming that step. The facts a caller should branch on are `status`
+    // (awaiting_invoke_key, every time) and the endpoint ids in `endpoints_after`.
+    return json(result);
   }
 
   // ---- cp#95: STUDIO_TOKEN_KEK rotation -------------------------------------------------------
