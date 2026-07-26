@@ -598,6 +598,21 @@ export class D1Store implements ControlPlaneStore {
     return (res.meta?.changes ?? 0) === 1;
   }
 
+  /**
+   * Hand the lease back at a yield boundary (cp#158). The mirror image of renewJobLease.
+   *
+   * updated_at is untouched for the same reason it is untouched there: it is the PROGRESS clock the
+   * lost-driver rule reads, and a yield is not progress. The status predicate is the same guard too
+   * -- a terminal job is a closed record, and a driver that lost its job must not write to it.
+   */
+  async releaseJobLease(id: string): Promise<boolean> {
+    const res = await this.db
+      .prepare("UPDATE provision_jobs SET lease_until = NULL WHERE id = ?1 AND status IN ('queued', 'running')")
+      .bind(id)
+      .run();
+    return (res.meta?.changes ?? 0) === 1;
+  }
+
   async updateJobProgress(id: string, step: string, stepsDoneJson: string): Promise<void> {
     await this.db
       .prepare(

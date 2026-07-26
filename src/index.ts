@@ -40,7 +40,7 @@ import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "
 import { parseInventoryBody, reconcileRunPod, TENANT_PAGE_LIMIT } from "./reconcile-runpod";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
-import { JOB_LEASE_SECONDS, RECLAIM_LEASE_SECONDS, jobHasLiveDriver } from "./store";
+import { JOB_LEASE_SECONDS, RECLAIM_LEASE_SECONDS, jobAwaitsFirstDriver, jobHasLiveDriver } from "./store";
 import { StudioBindingError } from "./tenant-studio-bindings";
 import type { PreservationHoldKind } from "./store";
 import type { Account, Tenant, ProvisionJob, SmokeRender } from "./store";
@@ -522,6 +522,28 @@ async function driveJobIfNeeded(
     await deps.store.setTenantStatus(tenant.id, "failed");
     return await deps.store.getJob(job.id);
   }
+
+  // A JOB NO DRIVER HAS TAKEN YET IS NOT OURS TO CLAIM (cp#132). This is the server half of cp#124,
+  // and it is the one window the cp#148 heartbeat cannot cover, because it opens BEFORE any driver
+  // exists to beat.
+  //
+  // The provision route INSERTs the job `queued` with a NULL lease and dispatches its driver under
+  // waitUntil in the same request. A poll landing inside that window -- the UI, a second tab, a
+  // curl loop, an operator rehearsal -- wins claimJob outright, and winning is destructive: resume
+  // runs continueProvisionJob, which refuses anything short of wfp_upload by writing
+  // finishJob(failed) + setTenantStatus(failed) + a rollback that DELETES the tenant D1, bucket and
+  // token the real driver is at that moment still building. The claim also makes the driver own
+  // setJobRunning miss its predicate, so the row never records that a driver arrived at all.
+  //
+  // So: report it, drive nothing, write nothing. Declining costs discovery time on the rare job
+  // whose driver never arrives (the stale rule above owns that case and declares it lost with an
+  // attributable message); claiming costs a healthy customer their half-built studio. The asymmetry
+  // decides it, the same way it decides the reclaim lease length.
+  //
+  // A `running` job with a lapsed lease is NOT this case and still gets claimed below: since cp#148
+  // a lapsed lease there means the driver is genuinely gone, so the keyless refusal it walks into is
+  // an honest terminal state rather than a race outcome.
+  if (jobAwaitsFirstDriver(job)) return null;
 
   // Only the winner drives. A lost claim is the normal case for all but one concurrent poll.
   if (!(await deps.store.claimJob(job.id, JOB_CLAIM_SECONDS))) return null;

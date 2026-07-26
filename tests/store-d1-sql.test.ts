@@ -279,6 +279,63 @@ describe("store-d1 statements execute against real SQLite", () => {
  * carry the fix are S'L properties: the status predicate that refuses a terminal job, and the column
  * the UPDATE deliberately leaves alone.
  */
+describe("releaseJobLease, the yield hand-back (cp#158)", () => {
+  let db: DatabaseSync;
+  let store: D1Store;
+
+  beforeEach(async () => {
+    db = freshDb();
+    store = new D1Store(d1Over(db));
+    await store.createAccount("acct_1", "a@b.com");
+    await store.createTenant("ten_1", "rehearsal", "acct_1", "provisioning");
+    await store.createProvisionJob("job_1", "ten_1", "provision");
+  });
+
+  const row = () =>
+    db
+      .prepare(
+        "SELECT status, lease_until, updated_at, " +
+          "CASE WHEN lease_until > datetime('now') THEN 1 ELSE 0 END AS live " +
+          "FROM provision_jobs WHERE id = 'job_1'",
+      )
+      .get() as { status: string; lease_until: string | null; updated_at: string; live: number };
+
+  it("clears a LIVE lease, so the next poll can claim the job with nothing to wait out", async () => {
+    await store.setJobRunning("job_1");
+    expect(row().live).toBe(1); // control: there really was a lease to release
+
+    expect(await store.releaseJobLease("job_1")).toBe(true);
+
+    expect(row().lease_until).toBeNull();
+    expect(row().status).toBe("running");
+    // The consequence, asserted through the shipped statement rather than inferred from the column.
+    expect(await store.claimJob("job_1", 60)).toBe(true);
+  });
+
+  it("does NOT touch updated_at: a yield is not progress", async () => {
+    // Same reason renewJobLease leaves it alone. updated_at is the clock the lost-driver rule reads,
+    // and a yield that bumped it would push out the moment a job nobody resumes is declared lost.
+    await store.setJobRunning("job_1");
+    db.prepare("UPDATE provision_jobs SET updated_at = '2020-01-01 00:00:00' WHERE id = 'job_1'").run();
+
+    expect(await store.releaseJobLease("job_1")).toBe(true);
+
+    expect(row().updated_at).toBe("2020-01-01 00:00:00");
+  });
+
+  it("REFUSES a terminal job: a driver that lost its job cannot write to the closed record", async () => {
+    await store.setJobRunning("job_1");
+    await store.finishJob("job_1", "failed", "runpod_endpoints", "keyless refusal");
+
+    expect(await store.releaseJobLease("job_1")).toBe(false);
+    expect(row().status).toBe("failed");
+  });
+
+  it("REFUSES a job id that does not exist", async () => {
+    expect(await store.releaseJobLease("job_missing")).toBe(false);
+  });
+});
+
 describe("renewJobLease and the terminal-job guard (cp#148)", () => {
   let db: DatabaseSync;
   let store: D1Store;
