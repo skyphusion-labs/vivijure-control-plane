@@ -1,0 +1,62 @@
+name: changelog
+
+# Guards cp#147: three PRs in the v1.9.0 window shipped src/ or public/ changes with no
+# CHANGELOG.md entry, each caught only by a human reading the diff at the release gate rather
+# than by the pipeline. This job fails a PR that touches src/ or public/ without also touching
+# CHANGELOG.md.
+#
+# Deliberately narrow, per cp#147:
+#   - src/ and public/ only. Tests, docs, and workflow-only changes do not need an entry; a
+#     check that fires on everything gets bypassed on reflex, which is worse than no check.
+#   - Touch, not content. No parsing of the entry, no format enforcement. The check exists to
+#     make the author STOP and decide, not to grade prose.
+#   - The escape hatch is LOUD: the `no-changelog` label, so a deliberate skip is a recorded
+#     decision on the PR rather than a silent one.
+#
+# Not part of the aviation-grade-main required-check set (ci / coverage / CodeQL); this job id
+# can be renamed freely, unlike those three.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: CHANGELOG.md entry required for src/ or public/ changes
+        env:
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if echo "$LABELS_JSON" | grep -q "\"no-changelog\""; then
+            echo "no-changelog label present: deliberate skip, recorded on the PR. Passing."
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          echo "Changed files:"
+          echo "$changed"
+
+          if echo "$changed" | grep -qE "^(src|public)/"; then
+            if ! echo "$changed" | grep -qx "CHANGELOG.md"; then
+              echo "::error::This PR touches src/ or public/ but CHANGELOG.md is unchanged. Add an entry under \"## Unreleased\", or apply the \"no-changelog\" label if this is a deliberate skip."
+              exit 1
+            fi
+          fi
+
+          echo "OK: either no src/ or public/ changes, or CHANGELOG.md was updated."
