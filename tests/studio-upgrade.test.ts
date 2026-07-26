@@ -28,6 +28,7 @@ import { jobHasLiveDriver } from "../src/store";
 import { encryptStudioToken, kekRing } from "../src/token-crypto";
 import { TENANT_STUDIO_VAR_DISPOSITION } from "../src/tenant-studio-env";
 import { MemoryStore } from "./memory-store";
+import { ABUSE_REPORT_URL_VAR } from "../src/tenant-abuse-report";
 import { VIDEO_FINISH_TIER_STATE_VAR, VIDEO_FINISH_UNPROVISIONABLE } from "../src/video-finish-tier-state";
 
 const KEK = btoa("0123456789abcdef0123456789abcdef");
@@ -618,6 +619,56 @@ describe("the result is a readback, not a success flag", () => {
 // for every other binding and exactly wrong for a projection of a plane record. A tenant whose
 // unreachable declaration was cleared would otherwise carry VIDEO_FINISH_TIER_STATE across the move
 // and keep telling its user the tier can never be turned on for them.
+// cp#164: the SECOND door of the two-door problem. The provision path reaches new tenants; a bytes
+// move has to reach the ones already here, or the estate splits into studios that can show a
+// reporter where to go and studios that never will.
+describe("the abuse-report URL is RE-DERIVED across a bytes move, not inherited (cp#164)", () => {
+  const sent = (upload: CfApi) =>
+    (upload.uploadUserWorker as unknown as { mock: { calls: [{ bindings: { type: string; name: string; text?: string }[] }][] } })
+      .mock.calls[0][0].bindings;
+
+  it("BINDS the plane's derived URL onto a studio that never had it", async () => {
+    const store = new MemoryStore();
+    const tenant = await seedLiveTenant(store);
+    const upload = fakeCf();
+    const d = deps(store, { scriptUploadCf: upload, abuseReportUrl: "https://studio.example.com/report-abuse" });
+
+    await upgradeTenantStudio(d, "job_1", tenant, await contextFor(d, tenant));
+
+    const bindings = sent(upload);
+    // CONTROL: the proxy saw a real payload, so the assertion below is about an upload that happened.
+    expect(bindings.length).toBeGreaterThan(0);
+    expect(bindings.find((b) => b.name === ABUSE_REPORT_URL_VAR)).toEqual({
+      type: "plain_text",
+      name: ABUSE_REPORT_URL_VAR,
+      text: "https://studio.example.com/report-abuse",
+    });
+  });
+
+  it("DROPS a carried URL when the plane no longer publishes an intake page", async () => {
+    // `inherit` would preserve it, which is exactly wrong for a projection: the studio would keep
+    // advertising a page the plane has stopped serving. Omitted means DROPPED (cp#112 live probe).
+    const store = new MemoryStore();
+    const tenant = await seedLiveTenant(store);
+    const upload = fakeCf();
+    const stale = fakeCf({
+      getScriptBindings: vi.fn(async () => [
+        ...LIVE_BINDINGS.map((b) => ({ ...b })),
+        { type: "plain_text", name: ABUSE_REPORT_URL_VAR },
+      ]),
+    });
+    const d = deps(store, { cf: stale, scriptUploadCf: upload, abuseReportUrl: null });
+
+    await upgradeTenantStudio(d, "job_1", tenant, await contextFor(d, tenant));
+
+    const bindings = sent(upload);
+    expect(bindings.length).toBeGreaterThan(0);
+    expect(bindings.find((b) => b.name === ABUSE_REPORT_URL_VAR)).toBeUndefined();
+    // CONTROL: everything else still travelled, so this is one omission and not a lost binding set.
+    for (const b of LIVE_BINDINGS) expect(bindings.some((x) => x.name === b.name)).toBe(true);
+  });
+});
+
 describe("the finish-tier state is RE-DERIVED across a bytes move, not inherited (cp#136)", () => {
   const staleCf = () =>
     fakeCf({

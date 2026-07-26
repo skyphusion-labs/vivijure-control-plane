@@ -1288,6 +1288,83 @@ is now satisfied:
 
 Plus the sentence read by a human. That leg is tracked on cp#136.
 
+## Where a reporter is sent: the tenant-studio abuse link (cp#164)
+
+Enforcement on the hosted tier is **report-driven by ruling**: nothing is scanned, so a report from
+a person is the entire detection surface. That makes a findable intake path part of the product, and
+the surface where hosted content is actually SEEN is the tenant studio panel.
+
+`vivijure-cf` **v1.10.0** shipped the reader (`src/abuse-contact.ts` validates `ABUSE_REPORT_URL`,
+`src/index.ts` projects `host.abuse_report_url` onto `GET /api/modules`, `public/abuse-link.js`
+renders from that sole signal). This plane wrote the var **nowhere**, so the reader shipped with
+nothing to read.
+
+### The value is DERIVED, not configured
+
+The intake page is served by this Worker, out of `public/report-abuse.html`, at the host this plane
+already holds as a single fact (`CONTROL_PLANE_HOST`). So the URL is a fact of the deploy rather
+than an operator preference, and it is derived through `publicOrigin()` like `PUBLIC_ORIGIN` and the
+tenant domain suffix. A second env var beside it could disagree with the page we actually serve; a
+derivation cannot. It is also what keeps this parity-correct: another operator running this plane on
+their own host gets THEIR intake page, with no hardcoded hostname anywhere in the code.
+
+The canonical path is `/report-abuse` (verified live 2026-07-27: `GET /report-abuse` is 200 and
+`/report-abuse.html` 307s to it). We bind the 200.
+
+### Hosted-only, and it is load-bearing
+
+A self-hosted studio must **never** advertise our abuse address: we are not the provider for a
+self-hoster, we cannot see their studio and cannot act on their content, so sending a reporter to us
+is worse than sending them nowhere. That property is structural rather than remembered: the value is
+computed from control-plane env, inside the control plane, and the studio bytes uploaded to a tenant
+are the published release unmodified. Nothing on this path can reach the bundle a self-hoster
+installs. Their unset var renders nothing, which stays correct mid-rollout for a hosted tenant we
+have not converged yet.
+
+### Three write paths, because one door leaves the estate split
+
+| Path | Reaches |
+|---|---|
+| `runProvisionJob` studio upload | every NEW tenant |
+| `upgradeTenantStudio` (cp#139) | any tenant whose bytes move, as a side effect |
+| `POST /api/admin/tenants/:id/abuse-report-url` | a tenant already LIVE, without moving bytes |
+
+The third is the cp#112 / cp#136 lesson applied: a route that only reaches new tenants leaves every
+existing tenant permanently unable to display the link.
+
+```
+POST /api/admin/tenants/ten_abc123/abuse-report-url
+Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN
+```
+
+No body: there is nothing to choose. The operator is not setting a value, they are asking a studio
+to catch up with the plane. It is a **binding patch, not a re-upload**, for the cp#112 reasons
+above (two of the four tenant secrets cannot be reproduced, and a re-upload would smuggle a release
+change in as a config fix), so it changes no bytes, no release and no status.
+
+The var is **re-derived** at every write, never inherited: `inherit` preserves what is bound, which
+is exactly wrong for a projection, and a studio carrying a URL from a plane that no longer publishes
+that page would keep advertising a dead one. Omitting a non-secret binding DROPS it (measured,
+cp#112), so the studio converges in both directions.
+
+### The reader floor is a READBACK, not a version compare
+
+Setting the var on a studio whose bundle predates the v1.10.0 reader is a silent no-op. cp#136
+guards its var with a PRE-write capability probe; that shape is unavailable here, because the panel
+emits `host.abuse_report_url` **only when the var is already set**, so its absence beforehand proves
+nothing. The honest check runs the other way: write, then ask the studio what it serves. A studio
+that echoes the URL back has proven the reader is live in the bytes it runs.
+
+`reader_live: false` in the response is that fact, and the route answers **409**: the fix is to move
+the studio bytes (`POST .../upgrade-studio`) and re-run, not to set the var again. A 200 there would
+tell an operator the tenant advertises an intake path when its panel cannot render one.
+
+`ABUSE_REPORT_URL` is deliberately `conditional` rather than `provisioned` in
+`src/tenant-studio-env.ts`. `provisioned` joins `REQUIRED_TENANT_STUDIO_VARS`, which the MODULE
+upgrade re-checks in its verify census, and that path never touches studio bindings, so requiring it
+would fail an unrelated module upgrade on every tenant not yet converged. A studio without the var
+is fully functional; the panel renders no link, which is the deliberate behaviour and not a degrade.
+
 ## Preservation holds: the interlock on the irreversible lever (cp#118)
 
 `ABUSE-RESPONSE-RUNBOOK.md` Section 5.2 forbids teardown on a tenant with an open report or

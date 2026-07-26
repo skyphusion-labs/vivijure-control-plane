@@ -6,6 +6,44 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(hosted): the plane sets ABUSE_REPORT_URL on tenant studios, on both doors (cp#164)
+
+- **The reader shipped and had nothing to read.** vivijure-cf v1.10.0 validates `ABUSE_REPORT_URL`
+  and projects `host.abuse_report_url` onto `GET /api/modules`, which `public/abuse-link.js` renders
+  from as its sole signal. This plane wrote that var nowhere (repo-wide grep: zero hits), so no
+  hosted tenant studio could show a reporter where to go -- on the surface where hosted content is
+  actually seen, under an enforcement model that is report-driven by ruling and therefore has intake
+  as its entire detection surface.
+- **The value is DERIVED, never configured.** The intake page is served by this Worker out of
+  `public/report-abuse.html` at `CONTROL_PLANE_HOST`, so the URL is a fact of the deploy: it comes
+  through `publicOrigin()` like `PUBLIC_ORIGIN` and the tenant domain suffix. A second env var beside
+  it could disagree with the page we actually serve. Canonical path `/report-abuse`, verified live
+  (200 direct; `/report-abuse.html` 307s to it), not read off the markup.
+- **HOSTED-ONLY, structurally rather than by policy.** The value is computed from control-plane env,
+  inside the control plane, and the studio bytes uploaded to a tenant are the published release
+  unmodified, so nothing on this path can reach the bundle a self-hoster installs. Their unset var
+  renders nothing, which is correct because we are not their provider and cannot act on their
+  content -- and it stays correct mid-rollout for a hosted tenant not yet converged.
+- **THREE write paths, because one door leaves the estate split** (the cp#112 / cp#136 lesson): the
+  provision upload reaches new tenants, `upgradeTenantStudio` reaches any tenant whose bytes move,
+  and the new `POST /api/admin/tenants/:id/abuse-report-url` reaches a tenant already LIVE without
+  moving bytes. A binding patch, not a re-upload: no bytes, no release, no status, everything else
+  carried as `inherit` so no secret value is handled. Re-derived at every write rather than
+  inherited, so a studio carrying a URL from a plane that no longer publishes that page is converged
+  rather than left advertising a dead one.
+- **The reader floor is a READBACK, not a version compare.** Setting the var on a studio whose
+  bundle predates v1.10.0 is a silent no-op, the cf#98 / cp#112 failure family. cp#136's PRE-write
+  capability probe is unavailable here: the panel emits `host.abuse_report_url` only when the var is
+  already set, so its absence beforehand proves nothing. The route therefore writes, then asks the
+  studio what it serves; `reader_live: false` answers 409, and the fix is to move the studio bytes,
+  not to set the var again.
+- `ABUSE_REPORT_URL` is `conditional` rather than `provisioned` in `src/tenant-studio-env.ts`,
+  deliberately: `provisioned` joins `REQUIRED_TENANT_STUDIO_VARS`, which the MODULE upgrade
+  re-checks in a verify census on a path that never touches studio bindings, so requiring it would
+  fail an unrelated module upgrade on every tenant not yet converged. A studio without the var is
+  fully functional.
+- Carries NO schema change.
+
 ## v1.14.0 -- 2026-07-27
 
 MINOR: two corrections that came out of running the cp#137 remediation end to end on the live testbed. The rebuild route now names WHO installs the invoke key (the account owner, not the operator, whose admin token that route refuses); and the cp#45 smoke render fixture no longer names a project the studio never assigned, which is what stopped the only renderability proof we have from passing against a backend that enforces bundle-key tenancy. Carries NO schema change.

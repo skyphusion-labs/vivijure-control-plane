@@ -1424,6 +1424,71 @@ async function adminRoutes(
     return json({ tenant_id: tenant.id, slug: tenant.slug, ...result }, result.ok ? 200 : 409);
   }
 
+  // ---- cp#164: converge an EXISTING tenant studio onto the abuse-report URL --------------------
+  //
+  // WHY THIS ROUTE EXISTS. vivijure-cf v1.10.0 ships the reader (host.abuse_report_url on
+  // GET /api/modules, rendered by public/abuse-link.js) and this plane wrote the var nowhere, so no
+  // tenant studio could show a reporter where to go. The provision path and the studio upgrade now
+  // bind it, and BOTH of those only reach a tenant that is new or is having its bytes moved. That is
+  // precisely the split-estate shape cp#112 and cp#136 each had to close separately, and closing it
+  // for new tenants alone would leave every live tenant permanently unable to display the link.
+  //
+  // WHY IT IS A BINDING PATCH AND NOT A RE-UPLOAD: the cp#112 answer, unchanged. The plane cannot
+  // reproduce two of the four secrets a live tenant studio carries, and a re-upload would move the
+  // tenant onto whatever release the plane is pinned to -- a release change smuggled in as a config
+  // fix. Bindings only; no bytes, no release, no status.
+  //
+  // WHY NO BODY: there is nothing to choose. The URL is derived from this deploy's own host, so the
+  // operator is not setting a value, they are asking a studio to catch up with the plane.
+  //
+  // WHY ADMIN-GATED and WHY INLINE rather than a job: same answers as refresh-studio-bindings. It is
+  // an operator action on someone else's studio, the tenant asked for nothing, and the answer IS the
+  // evidence (the binding census plus what the studio now advertises).
+  //
+  // WHY NO confirm_slug: it is not destructive. It adds one plain_text binding and changes nothing
+  // else; the refusals below are what keep it from running where it makes no sense.
+  const abuseUrl = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/abuse-report-url$/.exec(path);
+  if (request.method === "POST" && abuseUrl) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(abuseUrl[1]);
+    if (!tenant) return err("not_found", 404);
+
+    // One writer at a time on this row, exactly as the binding refresh and the tier-state write
+    // guard it: a provision or an upgrade with a live driver is already PUTting at this tenant's
+    // scripts, and a settings patch landing mid-upload would race the write that owns the set.
+    const latest = await deps.store.getLatestJobForTenant(tenant.id);
+    if (latest && jobHasLiveDriver(latest, deps.now())) {
+      return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
+    }
+
+    const outcome = await deps.provisioner.setAbuseReportUrl(tenant);
+    if (!outcome.ok) return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
+
+    const result = outcome.result;
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.set_abuse_report_url",
+      tenant.id,
+      JSON.stringify({
+        ok: result.ok,
+        url: result.url,
+        already_present: result.already_present,
+        var_present_after: result.var_present_after,
+        reader_live: result.reader_live,
+        missing_bindings: result.missing_bindings,
+        missing_secrets: result.missing_secrets,
+      }),
+    );
+
+    // 409 when the readback disagrees with the intent, including the READER FLOOR: a studio running
+    // bytes older than the vivijure-cf v1.10.0 reader takes the var and shows nobody anything, and
+    // `reader_live: false` is that fact. A 200 carrying ok:false reads as success to anything that
+    // checks status codes, and "we advertised an intake path that reaches no reader" is exactly the
+    // outcome this route exists to make impossible to miss. The fix is to move the studio bytes
+    // (POST .../upgrade-studio) and re-run; nothing here is repaired by setting the var again.
+    return json({ tenant_id: tenant.id, slug: tenant.slug, ...result }, result.ok ? 200 : 409);
+  }
+
   // ---- cp#137: rebuild a tenant's RunPod endpoints, through a plane mechanism ------------------
   //
   // WHY THIS ROUTE EXISTS AT ALL. cp#137's detection half proved a live tenant can point at four
