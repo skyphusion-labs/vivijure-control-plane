@@ -633,13 +633,24 @@ once. Three rules make that safe, and the third one had to be added.
 
 Rule 3 is what makes `lease_until` mean *a driver is alive*. Before cp#148 the lease was written only
 by `setJobRunning` and by each step `mark()`, so it actually meant *a step boundary happened within
-the last 60 seconds*, and any STEP longer than the lease expired it underneath a perfectly healthy
-driver. `runpod_endpoints` is the one step that can do that: it is a single uninterrupted call that
-creates four RunPod endpoints and marks nothing inside itself. On a slow RunPod account (the cp#117
-rehearsal measured about 87 seconds in that one step) the lease lapsed at about 68 seconds, the next
-poll found a free claim, won it, and ran `continueProvisionJob` -- which refuses anything short of
-`wfp_upload` and writes `finishJob(failed)` plus `setTenantStatus(failed)` plus a destructive
-rollback. The job was not abandoned by its driver; it was taken away from one.
+the last 60 seconds*, and ANY unmarked stretch longer than the lease expired it underneath a
+perfectly healthy driver. Two stretches are long enough to do that in practice: `runpod_endpoints`,
+one uninterrupted call that creates four RunPod endpoints, and the stretch from that mark to
+`wfp_upload`, which uploads the studio assets and the worker script. Neither marks anything inside
+itself.
+
+The cp#117 rehearsal, read back off prod D1 (job `job_1cc93d7e8d7cf62a78d79441`), shows what follows.
+Its `steps_done` runs THROUGH `runpod_endpoints`: the driver survived the slow RunPod call (about 87
+seconds) and recorded it. Its `error_step` is `wfp_upload`, which is `inferStep` over those five
+completed steps, so the poll that killed the job ran AFTER that mark, during the studio upload, with
+the lease lapsed a second time. It won the free claim and ran `continueProvisionJob` -- which refuses
+anything short of `wfp_upload` -- and that refusal wrote `finishJob(failed)` plus
+`setTenantStatus(failed)` plus a destructive rollback, while the driver was in all likelihood still
+uploading. The job was not abandoned by its driver; it was taken away from one.
+
+**That the fatal window was the SECOND long stretch and not the first is why the fix is a general
+heartbeat** rather than anything specific to `runpod_endpoints`. The vulnerable window is any
+unmarked stretch, and a list of which ones are long enough is a thing that stops being true.
 
 ### The two columns are different facts, deliberately
 

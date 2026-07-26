@@ -696,4 +696,66 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
     expect(JSON.parse(after.steps_done) as string[]).not.toContain("wfp_upload");
     expect(after.lease_until).toBeNull();
   });
+
+  /**
+   * THE STRETCH THE LIVE FIXTURE ACTUALLY DIED IN (prod D1, cp#117 rehearsal job
+   * job_1cc93d7e8d7cf62a78d79441): steps_done runs THROUGH runpod_endpoints and error_step is
+   * wfp_upload, which is inferStep over those five steps. So the driver survived the ~87s RunPod
+   * call and recorded it, and the poll that killed the job arrived during the STUDIO UPLOAD after
+   * it, with the lease lapsed a second time.
+   *
+   * The fatal window was therefore the SECOND long stretch, not the first, which is the whole
+   * argument for a general heartbeat over anything keyed to runpod_endpoints. This test drives that
+   * exact shape, and it is why the fix is not step-specific.
+   */
+  it("a poll CANNOT claim the job while the driver is still uploading the studio (the live fixture)", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new MemoryStore();
+      const tenant = await seedTenant(store);
+      const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+
+      let entered!: () => void;
+      const inUpload = new Promise<void>((r) => {
+        entered = r;
+      });
+      let release!: () => void;
+      const slowUpload = new Promise<void>((r) => {
+        release = r;
+      });
+      const uploadUserWorker = vi.fn(async () => {
+        entered();
+        await slowUpload;
+      });
+      // cf and scriptUploadCf are the same object in the shipping default (the no-upload-credential
+      // fallback), so both are overridden with the one slow client.
+      const cf = fakeCf({ uploadUserWorker });
+      const d = deps(store, { cf, scriptUploadCf: cf });
+
+      const run = runProvisionJob(d, job.id, tenant, "key-A", fakeClock(1));
+      await inUpload;
+
+      // The prod row, reproduced: five steps recorded, the sixth in flight.
+      const midJob = (await store.getJob(job.id)) as ProvisionJob;
+      expect(JSON.parse(midJob.steps_done) as string[]).toEqual([
+        "d1_create",
+        "d1_migrate",
+        "r2_bucket",
+        "r2_token",
+        "runpod_endpoints",
+      ]);
+
+      await vi.advanceTimersByTimeAsync(90_000);
+
+      const mid = (await store.getJob(job.id)) as ProvisionJob;
+      expect(mid.status).toBe("running");
+      expect(jobHasLiveDriver(mid, Date.now())).toBe(true);
+      expect(await store.claimJob(job.id, 60)).toBe(false);
+
+      release();
+      expect(await run).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

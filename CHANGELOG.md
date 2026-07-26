@@ -28,13 +28,19 @@ is a separate product on a separate cadence).
 ### fix(provisioner): the job lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENED RECENTLY (cp#148)
 
 - **The defect:** `provision_jobs.lease_until` was written only by `setJobRunning` and by each step
-  `mark()`, so any STEP longer than the 60s lease expired it under a healthy driver.
-  `runpod_endpoints` is exactly that step: one uninterrupted call, four endpoints, no mark inside it.
-  On a slow RunPod account (about 87s in that step during the cp#117 rehearsal) the lease lapsed at
-  about 68s, the next poll won the now-free claim, and `continueProvisionJob` -- which refuses
-  anything short of `wfp_upload` -- wrote `finishJob(failed)` plus `setTenantStatus(failed)` plus a
+  `mark()`, so ANY unmarked stretch longer than the 60s lease expired it under a healthy driver. Two
+  stretches are long enough in practice: `runpod_endpoints` (one uninterrupted call, four endpoints)
+  and the stretch from that mark to `wfp_upload` (studio assets plus the worker script). A poll then
+  won the now-free claim and ran `continueProvisionJob`, which refuses anything short of
+  `wfp_upload`, and that refusal wrote `finishJob(failed)` plus `setTenantStatus(failed)` plus a
   destructive rollback. The invocation never "ended at `runpod_endpoints`"; the job was taken from a
   driver that was still working.
+- **Confirmed against prod D1**, not just against the constants: the cp#117 rehearsal job
+  (`job_1cc93d7e8d7cf62a78d79441`) has `steps_done` running THROUGH `runpod_endpoints` with
+  `error_step` = `wfp_upload`, which is `inferStep` over those five steps. So the driver survived the
+  ~87s RunPod call and recorded it, and the poll that killed the job arrived during the STUDIO UPLOAD
+  that followed. The fatal window was the second long stretch, which is why the fix is a general
+  heartbeat rather than anything specific to `runpod_endpoints`.
 - **The fix:** a live driver heartbeats its own lease every 20s for as long as its invocation lives
   (`renewJobLease`), so an expired lease means a dead driver and nothing else. The `wfp_upload`
   boundary is now reachable at ANY prefix duration instead of only a fast one.
