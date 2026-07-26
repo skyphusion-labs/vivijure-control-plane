@@ -1169,3 +1169,77 @@ named-token table. A programmatic token is strictly additive to the operator sec
 on a studio without that secret hands the tenant a credential that 403s on arrival, and the mint path
 refuses with `not_provisioned` rather than issuing it.
 
+
+## Reconciling a tenant record against RunPod (cp#137)
+
+The plane records the RunPod endpoints of a tenant in `tenants.endpoints_json` and, until this,
+nothing ever compared that record to RunPod. cp#137 found the consequence live: the standing testbed
+read `status=live` while all four endpoints it names returned 404. A status column says
+"provisioning completed once"; it has never said "renders today".
+
+**This is detection, and only detection.** `POST /api/admin/reconcile/runpod` reads two lists and
+returns a report. It writes nothing, not even an audit row: a pass that can alter what it measures is
+not a measurement. Deleting an orphan or re-provisioning a tenant is separate, lead-approved work.
+
+**Why the operator brings the RunPod half.** The plane holds no credential that can read the RunPod
+account of a tenant, deliberately: key A (graphql read/write) is used once at provision and never
+stored, key B is invoke-only and transient here. So the plane cannot poll RunPod, a background
+reconciler is not buildable without breaking that custody boundary on purpose, and the snapshot
+arrives in the request body from an operator who read RunPod with their own key.
+
+```
+set -a; . ~/your-runpod.env; set +a          # RUNPOD_API_KEY, never echoed
+export CONTROL_PLANE_ADMIN_TOKEN=...          # the plane admin token
+node scripts/reconcile-runpod.mjs --plane https://studio.vivijure.com --account-label prod
+node scripts/reconcile-runpod.mjs --dry-run   # gather and print the snapshot, post nothing
+```
+
+Exit 0 = clean, 1 = real drift, 2 = the check could not be PERFORMED. 2 is never a pass.
+
+### Both debris layers, always
+
+Deleting an endpoint does NOT delete the template it was built from (the cp#117 drill: four
+orphaned endpoints were deleted and four orphaned templates appeared underneath them). Any sweep
+that enumerates endpoints only removes half the debris while reading as complete, so this compares
+records against BOTH lists and labels every finding with the layer it came from.
+
+| finding | layer | what it means |
+| --- | --- | --- |
+| `record_endpoint_missing` | endpoint | the record names an endpoint RunPod does not have: the tenant cannot render that step (the cp#137 case) |
+| `record_endpoint_renamed` | endpoint | the id exists under a different name; provisioning adopts BY NAME, so a re-provision would build a second one |
+| `record_template_missing` | template | the template under a live endpoint is gone; a re-provision has nowhere to write the fresh R2 credential and refuses with 409 |
+| `orphan_endpoint` | endpoint | RunPod holds an endpoint whose only owner is a torn-down record, or that no record claims |
+| `orphan_template` | template | the second layer: a template with no live endpoint record, invisible until the endpoints are cleared |
+| `record_unreadable` | record | `endpoints_json` cannot be parsed, so nothing about that tenant can be reconciled |
+
+### An unprovable check never reads as a clean one
+
+Absence is a claim about a census. "That endpoint is gone" is sound only if the endpoint list was
+whole; "no record owns this" is sound only if the tenant list was whole. So:
+
+- the snapshot MUST state `complete` explicitly (a body without it is refused with 400, because an
+  assumed-complete census turns a truncated page into a false absence);
+- the plane marks its own census incomplete when `listTenants` returns a full page
+  (`TENANT_PAGE_LIMIT`);
+- a finding that depends on a census which was not proven whole is reported as
+  `confidence: "unproven"` with the reason, and the whole report reads `verdict: "unproven"`, never
+  `clean`.
+
+Resources the pass cannot trace to a slug the plane knows are listed under `unattributed` and are
+NEVER called orphans. Claiming ownership of a resource we cannot trace is how a later cleanup step
+deletes something that was never ours.
+
+### Verifying it
+
+`tests/reconcile-runpod.test.ts` drives the detector from fixtures (both orphan layers, the
+truncation guards, and the positive control that a consistent tenant reports clean).
+`tests/reconcile-runpod.live.test.ts` runs the SAME function over the live RunPod account and the
+live tenants table through the shipping clients, read-only, zero GPU spend:
+
+```
+set -a; . ~/.cf-provisioner-full.env; . ~/your-runpod.env; set +a
+CF_ACCOUNT_ID=<id> RECONCILE_LIVE=1 npx vitest run tests/reconcile-runpod.live.test.ts
+```
+
+It asserts shape and internal consistency, never `clean`: the live account carries known drift, and
+a test demanding clean would be a test demanding the bug be fixed before the detector can be trusted.
