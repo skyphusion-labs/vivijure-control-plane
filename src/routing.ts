@@ -1,3 +1,4 @@
+// cp147 guard evidence probe, throwaway, will not merge
 // Tenant hostname routing (#55, epic #40).
 //
 // Two kinds of hostname land on this Worker:
