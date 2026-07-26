@@ -58,6 +58,33 @@ export const SMOKE_RENDER_COVERAGE = {
  * outcome is a change in the tenant, not in what we asked for.
  */
 export const SMOKE_SHOT_ID = "smoke1";
+/**
+ * The project name AND the storyboard title, deliberately the SAME STRING.
+ *
+ * WHY THEY MUST MATCH, found by a live failure rather than by reading: the studio does not accept a
+ * caller-supplied projectName at all. `validateStoryboard` DERIVES it from the title
+ * (`normalizeProjectName(rawTitle)`, whitespace -> "_") and discards whatever the caller passed, then
+ * names the bundle `bundles/<projectName>-<contenthash>.tar.gz`. The render submit separately names a
+ * `project`, and backend >=1.0.11 validates that the bundle key BELONGS to that project
+ * (`check_bundle_key_for_project`, added in "bind job R2 keys to project slug"). So a fixture whose
+ * title and projectName differ produces a bundle under the TITLE and submits under the PROJECT, and
+ * the render is refused before any GPU work:
+ *
+ *   bundle assembled: bundles/Control_Plane_Smoke_Render-46c0bfe2e8a3acca.tar.gz
+ *   render submitted:  project = "control-plane-smoke"
+ *   backend:           bundle_key ... must belong to project 'control-plane-smoke'
+ *
+ * That is exactly what happened on the cp#137 testbed the moment its endpoints were moved onto the
+ * current pin. It was INVISIBLE before only because that tenant was still running backend 1.0.2,
+ * which had no tenancy check -- so this fixture has never once been exercised against a backend that
+ * enforces it.
+ *
+ * The fix is one string rather than a derivation on purpose. Re-deriving the project from the title
+ * here would mean mirroring `normalizeProjectName` in this repo, and a mirror of someone else's
+ * normalization is only as fresh as the day it was copied. A value that is NORMALIZATION-STABLE (no
+ * whitespace, no "/") is identical before and after their transform, so there is nothing to keep in
+ * step. tests/smoke-render.test.ts asserts that stability.
+ */
 export const SMOKE_PROJECT_NAME = "control-plane-smoke";
 export const SMOKE_SCENE_SECONDS = 4;
 export const SMOKE_PROMPT = "a single red apple on a plain white table, soft daylight, sharp focus";
@@ -77,7 +104,9 @@ export const SMOKE_PROMPT = "a single red apple on a plain white table, soft day
  */
 export function canonicalStoryboard(): Record<string, unknown> {
   return {
-    title: "Control Plane Smoke Render",
+    // Same string as projectName, and see SMOKE_PROJECT_NAME for why that is load-bearing rather
+    // than tidy: the studio derives the project FROM this title and ignores the field below.
+    title: SMOKE_PROJECT_NAME,
     projectName: SMOKE_PROJECT_NAME,
     full_prompt: SMOKE_PROMPT,
     duration_seconds: SMOKE_SCENE_SECONDS,
