@@ -37,7 +37,7 @@ import {
   type ProvisionDeps,
   type ProvisionOutcome,
 } from "../src/provisioner";
-import { createTenantEndpoints, RunPodClient, tenantEndpointName, PROVISION_PLAN } from "../src/runpod";
+import { convergeTenantTemplateImages, createTenantEndpoints, RunPodClient, tenantEndpointName, PROVISION_PLAN } from "../src/runpod";
 import { localStudioBundleSource } from "./studio-bundle-local";
 import { localModuleBundleSource } from "./module-bundle-local";
 import { provisionE2eLive, provisionE2eEnvOrThrow } from "./provision-e2e-env";
@@ -102,7 +102,10 @@ beforeAll(async () => {
   deps = {
     store,
     cf,
-    runpod: { createEndpoints: (key, s, r2) => createTenantEndpoints(key, s, r2) },
+    runpod: {
+      createEndpoints: (key, s, r2) => createTenantEndpoints(key, s, r2),
+      convergeTemplateImages: (key, s) => convergeTenantTemplateImages(key, s),
+    },
     bundle: localStudioBundleSource(env.studioReleaseDir),
     moduleBundle: localModuleBundleSource(env.studioReleaseDir),
     // The live e2e drives the SAME fallback production takes when no upload credential is set: one

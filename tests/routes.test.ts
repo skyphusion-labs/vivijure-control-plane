@@ -16,6 +16,7 @@ import { MemoryStore } from "./memory-store";
 import type { Tenant } from "../src/store";
 import { TenantModuleError } from "../src/tenant-modules";
 import { StudioBindingError } from "../src/tenant-studio-bindings";
+import { ReprovisionError } from "../src/tenant-runpod-reprovision";
 import { decryptStudioToken, encryptStudioToken, kekRing } from "../src/token-crypto";
 // Cross-lane (authorized by the lead, control-plane#20 client fix): the CANONICAL invoke-key
 // response shapes, shared with the client suite that reads them
@@ -82,6 +83,32 @@ const CLEAN_DETACH = {
   missing_secrets: [] as string[],
 };
 
+/**
+ * cp#137: the shape a clean RunPod rebuild returns. Declared once, at the top, so the route tests
+ * assert the ROUTE contract against a fixture that cannot drift silently from the module suite that
+ * owns the behaviour (tests/tenant-runpod-reprovision.test.ts).
+ */
+const CLEAN_REBUILD = {
+  tenant_id: "ten_abc123",
+  slug: "hero",
+  script: "tenant-hero-studio",
+  endpoints_before: [{ key: "backend", id: "dead-backend" }],
+  endpoints_after: [
+    { key: "backend", id: "new-backend", name: "vivijure-hero-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
+  ],
+  templates: [],
+  r2_token_id: "fresh-token-id",
+  previous_r2_token_revoked: true,
+  bindings_after: ["ASSETS", "DB"],
+  secrets_after: ["RUNPOD_API_KEY", "STUDIO_API_TOKEN"],
+  missing_bindings: [] as string[],
+  missing_secrets: [] as string[],
+  modules_release: "v1.6.0",
+  modules_uploaded: ["modules_upload", "modules_install", "verify"],
+  status: "awaiting_invoke_key" as const,
+  next_step: "mint a RESTRICTED RunPod invoke key scoped to exactly these endpoint ids (new-backend)",
+};
+
 const ROOT_HOST = "studio.vivijure.com";
 const ORIGIN = `https://${ROOT_HOST}`;
 const AUP = "2026-07-17";
@@ -100,6 +127,8 @@ let wiring: {
   refreshStudioBindings: ReturnType<typeof vi.fn>;
   setVideoFinishTierState: ReturnType<typeof vi.fn>;
   detachStudioBinding: ReturnType<typeof vi.fn>;
+  preflightReprovisionRunPod: ReturnType<typeof vi.fn>;
+  reprovisionRunPod: ReturnType<typeof vi.fn>;
   preflightStudioUpgrade: ReturnType<typeof vi.fn>;
   upgradeStudio: ReturnType<typeof vi.fn>;
 };
@@ -182,6 +211,20 @@ beforeEach(() => {
       },
     })),
     upgradeModules: vi.fn(async () => {}),
+    // cp#137: the RunPod rebuild. Default is a PASSING preflight and a clean rebuild; the refusal
+    // and failure cases override them.
+    preflightReprovisionRunPod: vi.fn(async () => ({
+      ok: true,
+      context: {
+        script: "tenant-hero-studio",
+        studioApiToken: "tok",
+        bucket: "vivijure-tenant-hero",
+        modulesRelease: "v1.6.0",
+        bundles: new Map(),
+        recorded: [],
+      },
+    })),
+    reprovisionRunPod: vi.fn(async () => CLEAN_REBUILD),
     // cp#136: default is a clean declaration; the refusal and short-readback cases override it.
     setVideoFinishTierState: vi.fn(async () => ({ ok: true, result: CLEAN_TIER_STATE })),
     // cp#136 criterion 3: default is a clean detach; the refusal and short-readback cases override.
@@ -2433,5 +2476,166 @@ describe("POST /api/admin/tenants/:id/video-finish-binding (cp#136)", () => {
     expect((await res.json() as { ok: boolean }).ok).toBe(false);
     // Still audited: the attempt happened and the operator needs the record of it.
     expect(store.audit.map((a) => a.action)).toEqual(["tenant.detach_video_finish_binding"]);
+  });
+});
+
+// ---- cp#137: rebuild a tenant's RunPod endpoints -------------------------------------------------
+//
+// The route is the thin half; the step machine and every custody rule live in
+// tests/tenant-runpod-reprovision.test.ts. What is proved HERE is what only the router can get
+// wrong: the gate, the confirmation, the key refusal, the writer interlock, the refusal passthrough,
+// and -- the one that matters most -- that a failure records and returns a message with no
+// credential in it.
+describe("POST /api/admin/tenants/:id/reprovision-runpod (cp#137)", () => {
+  const admin = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${ADMIN_TOKEN}`, ...extra });
+  const KEY_A = "rpa_ROUTEKEYAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const stamp = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+
+  const call = (
+    body: Record<string, unknown> = { confirm_slug: "hero", runpod_api_key: KEY_A },
+    id = "ten_abc123",
+    d: ControlPlaneDeps = deps,
+  ) => handle(jsonReq(`/api/admin/tenants/${id}/reprovision-runpod`, body, { headers: admin() }), env(), ctx, d);
+
+  async function liveTenant(): Promise<Tenant> {
+    const t = await store.createTenant("ten_abc123", "hero", "acct_1", "live");
+    t.script_name = "tenant-hero-studio";
+    t.modules_release = "v1.6.0";
+    t.r2_bucket_name = "vivijure-tenant-hero";
+    return t;
+  }
+
+  it("REFUSES without the admin token: this rebuilds someone else's render capacity", async () => {
+    await liveTenant();
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/reprovision-runpod", { confirm_slug: "hero", runpod_api_key: KEY_A }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(401);
+    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
+  });
+
+  it("refuses 503 when the plane has no provisioner wiring, rather than looking present", async () => {
+    await liveTenant();
+    const res = await call(undefined, "ten_abc123", { ...deps, provisioner: undefined });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "provisioner_unconfigured" });
+  });
+
+  it("404s an unknown tenant", async () => {
+    expect((await call(undefined, "ten_nope")).status).toBe(404);
+    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES a wrong or missing slug confirmation: the ids are opaque, the slug is not", async () => {
+    await liveTenant();
+    const wrong = await call({ confirm_slug: "hero-2", runpod_api_key: KEY_A });
+    expect(wrong.status).toBe(400);
+    expect(await wrong.json()).toEqual({ error: "slug_confirmation_required", slug: "hero" });
+    expect((await call({ runpod_api_key: KEY_A })).status).toBe(400);
+    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES without key A, BEFORE anything can change state", async () => {
+    await liveTenant();
+    const res = await call({ confirm_slug: "hero" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "runpod_key_required" });
+    // The refusal is upstream of the preflight, so nothing has even been read on the tenant's behalf.
+    expect(wiring.preflightReprovisionRunPod).not.toHaveBeenCalled();
+    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES while a job holds a live lease: this must not race an upload", async () => {
+    await liveTenant();
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    running.status = "running";
+    running.lease_until = stamp(deps.now() + 60_000);
+
+    const res = await call();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "job_in_progress", job_id: "job_running", kind: "provision" });
+    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
+  });
+
+  it("POSITIVE CONTROL: a dead lease does NOT block, or the guard would wedge the route forever", async () => {
+    await liveTenant();
+    const stale = await store.createProvisionJob("job_stale", "ten_abc123", "provision");
+    stale.status = "running";
+    stale.lease_until = stamp(deps.now() - 60_000);
+
+    expect((await call()).status).toBe(200);
+    expect(wiring.reprovisionRunPod).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a preflight refusal through with its own code and status, having written nothing", async () => {
+    await liveTenant();
+    wiring.preflightReprovisionRunPod = vi.fn(async () => ({
+      ok: false,
+      refusal: { code: "tenant_studio_not_serving", status: 422, message: "the tenant studio answered 503" },
+    }));
+
+    const res = await call();
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ error: "tenant_studio_not_serving" });
+    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
+    // A refusal is not an action: nothing is audited, because nothing happened.
+    expect(store.audit).toEqual([]);
+  });
+
+  it("hands key A to the runner and keeps it out of the audit row", async () => {
+    await liveTenant();
+
+    const res = await call();
+
+    expect(res.status).toBe(200);
+    // The key reaches the runner as an ARGUMENT and lives nowhere else.
+    expect(wiring.reprovisionRunPod).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "ten_abc123" }),
+      expect.objectContaining({ script: "tenant-hero-studio" }),
+      KEY_A,
+    );
+    const audit = JSON.stringify(store.audit);
+    // CONTROL FIRST: the audit row exists and carries the ids, so "no key in the audit" is not an
+    // assertion about an empty table.
+    expect(audit).toContain("tenant.reprovision_runpod");
+    expect(audit).toContain("new-backend");
+    expect(audit).toContain("fresh-token-id");
+    expect(audit).not.toContain(KEY_A);
+  });
+
+  it("answers with the new ids and the honest status, and no summary boolean (cp#20)", async () => {
+    await liveTenant();
+
+    const body = (await (await call()).json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("awaiting_invoke_key");
+    expect(body.endpoints_after).toEqual(CLEAN_REBUILD.endpoints_after);
+    expect(body.next_step).toContain("new-backend");
+    // No `ok`: a caller branches on status and on the ids, never on a summary flag that reads as
+    // success while the tenant cannot render (cp#20).
+    expect("ok" in body).toBe(false);
+  });
+
+  it("turns a rebuild failure into a 409 naming the step, with a message carrying no credential", async () => {
+    await liveTenant();
+    // The module already scrubs; the route must not re-introduce the value by reporting something
+    // else. This asserts the ROUTE's half of that contract.
+    wiring.reprovisionRunPod = vi.fn(async () => {
+      throw new ReprovisionError("runpod_endpoints", 'endpoints.create: 401 {"authorization":"Bearer [redacted]"}');
+    });
+
+    const res = await call();
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ error: "reprovision_failed", step: "runpod_endpoints" });
+    expect(String(body.message)).toContain("[redacted]");
+    expect(String(body.message)).not.toContain(KEY_A);
+    // The failure is AUDITED, not swallowed: an operator reading the log has to see the attempt.
+    const audit = JSON.stringify(store.audit);
+    expect(audit).toContain("tenant.reprovision_runpod.failed");
+    expect(audit).not.toContain(KEY_A);
   });
 });

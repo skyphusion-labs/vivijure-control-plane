@@ -57,7 +57,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     cf,
     scriptUploadCf: fakeCf("scriptUpload"),
     videoFinishServiceId: null,
-    runpod: { createEndpoints: vi.fn(async () => ENDPOINTS) },
+    runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),
       revoke: vi.fn(async () => undefined),

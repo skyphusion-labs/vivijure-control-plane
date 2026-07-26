@@ -250,6 +250,26 @@ export class RunPodClient {
     return await this.call<{ id: string }>("templates.update", "PATCH", `/templates/${templateId}`, { env });
   }
 
+  /**
+   * Rewrite an EXISTING template's IMAGE (cp#137).
+   *
+   * WHY THIS IS SEPARATE FROM updateTemplateEnv, and why a re-provision needs it at all:
+   * createTenantEndpoints adopts a template BY NAME and rewrites its env, never its image. On a
+   * fresh provision that is invisible (the template was created moments earlier, by this code, at
+   * this pin). On a LONG-LIVED tenant it is the cp#126 rot wearing different clothes: the testbed's
+   * four templates were still on backend 1.0.2 / upscale 0.2.7 / musetalk 0.1.0 / audio-upscale
+   * 0.1.0, six-plus releases behind the pins this file resolves, so an adopt-only rebuild would have
+   * put the endpoints back on stale bytes and read as done.
+   *
+   * The endpoint does not have to be recreated for this to bite: an endpoint resolves its image
+   * THROUGH its template, so converging the template is what moves the pin.
+   */
+  async updateTemplateImage(templateId: string, imageName: string) {
+    return await this.call<{ id: string }>("templates.update_image", "PATCH", `/templates/${templateId}`, {
+      imageName,
+    });
+  }
+
   async createEndpoint(args: {
     name: string;
     templateId: string;
@@ -519,4 +539,75 @@ export function invokeKeyRecipe(endpoints: CreatedEndpoint[]): {
     ],
     endpoints: endpoints.map((e) => ({ key: e.key, label: e.label, id: e.id, name: e.name })),
   };
+}
+
+/**
+ * What converging ONE tenant template did. Reported per key so an operator SEES the pin move rather
+ * than being told it was handled.
+ */
+export interface TemplateConvergence {
+  key: SatelliteKey;
+  name: string;
+  /** null when no template of this name exists yet: the create path will make it AT the pin. */
+  template_id: string | null;
+  image_before: string | null;
+  /** The pin this plane holds. On a change, this is what RunPod reported when READ BACK. */
+  image_after: string;
+  changed: boolean;
+}
+
+/**
+ * Move a tenant's existing templates onto the pins the plane currently holds (cp#137).
+ *
+ * RUN BEFORE createTenantEndpoints, never after: the adopt path rewrites template ENV and reuses
+ * whatever image the template already carried, so a template left un-converged silently decides what
+ * the rebuilt endpoint runs.
+ *
+ * THE READ-BACK IS THE POINT. A PATCH answering 200 is the writing client's opinion of its own work;
+ * what matters is the image RunPod HOLDS, which is what a worker actually pulls and what
+ * `check:pins:prod` reads. A readback that disagrees THROWS rather than reporting a pin that did not
+ * move.
+ */
+export async function convergeTenantTemplateImages(
+  runpodApiKey: string,
+  slug: string,
+  plan: PlannedEndpoint[] = PROVISION_PLAN,
+  fetchImpl: typeof fetch = fetch,
+): Promise<TemplateConvergence[]> {
+  const client = new RunPodClient(runpodApiKey, fetchImpl);
+  const templates = (await client.listTemplates()) as { id: string; name: string; imageName?: string }[];
+  const converged: TemplateConvergence[] = [];
+
+  for (const spec of plan) {
+    const name = tenantEndpointName(slug, spec.key);
+    const want = imageRef(spec.key);
+    const existing = templates.find((t) => t.name === name);
+
+    if (!existing) {
+      // Nothing to converge: createTenantEndpoints CREATES this template at imageRef(). Reported
+      // rather than skipped silently, so an operator sees which half of the plan took which path.
+      converged.push({ key: spec.key, name, template_id: null, image_before: null, image_after: want, changed: false });
+      continue;
+    }
+
+    const before = existing.imageName ?? null;
+    if (before === want) {
+      converged.push({ key: spec.key, name, template_id: existing.id, image_before: before, image_after: want, changed: false });
+      continue;
+    }
+
+    await client.updateTemplateImage(existing.id, want);
+    const after = await client.getTemplate(existing.id);
+    if (after.imageName !== want) {
+      throw new RunPodError(
+        "templates.converge",
+        409,
+        `template ${name} (${existing.id}) still reports image ${after.imageName} after being set to ` +
+          `${want}; refusing to build an endpoint on a pin that did not move`,
+      );
+    }
+    converged.push({ key: spec.key, name, template_id: existing.id, image_before: before, image_after: want, changed: true });
+  }
+
+  return converged;
 }

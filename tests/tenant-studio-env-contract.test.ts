@@ -65,7 +65,7 @@ function recordingDeps() {
     // captures the bindings this file exists to assert on.
     scriptUploadCf: cf,
     videoFinishServiceId: null,
-    runpod: { createEndpoints: vi.fn(async () => ENDPOINTS) },
+    runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),
       revoke: vi.fn(async () => undefined),

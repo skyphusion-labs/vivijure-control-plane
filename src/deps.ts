@@ -30,8 +30,15 @@ import {
   type ProvisionDeps,
   type TeardownOutcome,
 } from "./provisioner";
-import { createTenantEndpoints } from "./runpod";
+import { convergeTenantTemplateImages, createTenantEndpoints } from "./runpod";
 import type { ControlPlaneStore, Tenant } from "./store";
+import {
+  preflightRunPodReprovision,
+  reprovisionTenantRunPod,
+  type ReprovisionContext,
+  type ReprovisionPreflight,
+  type ReprovisionResult,
+} from "./tenant-runpod-reprovision";
 import {
   detachTenantStudioBinding,
   preflightStudioBindingDetach,
@@ -160,6 +167,19 @@ export interface ProvisionerWiring {
     | { ok: true; result: StudioBindingRefresh }
   >;
   /**
+   * Check everything a RunPod rebuild needs WITHOUT writing anything (cp#137). Same preflight split
+   * as every other route here: the refusal and the work are not the same call.
+   */
+  preflightReprovisionRunPod(tenant: Tenant): Promise<ReprovisionPreflight>;
+  /**
+   * Rebuild a tenant's four RunPod endpoints and re-point everything that names them (cp#137).
+   *
+   * Takes key A as an ARGUMENT and nothing else keeps it: transient by ruling, exactly as the
+   * provision path treats it. Throws ReprovisionError on failure, carrying a step and a message that
+   * has already been scrubbed of every secret this pass was holding.
+   */
+  reprovisionRunPod(tenant: Tenant, context: ReprovisionContext, runpodApiKey: string): Promise<ReprovisionResult>;
+  /**
    * Declare a tenant unreachable for the video-finish tier, or un-declare it (cp#136).
    *
    * Same split, same reasons, as refreshStudioBindings: the preflight must not have written
@@ -269,7 +289,12 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     // Trimmed, and empty-means-absent: a whitespace-only value is a config typo, and treating it as
     // a service id would attach a binding CF cannot resolve.
     videoFinishServiceId: env.VIDEO_FINISH_VPC_SERVICE_ID?.trim() || null,
-    runpod: { createEndpoints: (key, slug, r2) => createTenantEndpoints(key, slug, r2) },
+    runpod: {
+      createEndpoints: (key, slug, r2) => createTenantEndpoints(key, slug, r2),
+      // cp#137: adopt-by-name reuses a template's IMAGE, so a long-lived tenant's templates have to
+      // be walked onto the current pins before anything is rebuilt on them.
+      convergeTemplateImages: (key, slug) => convergeTenantTemplateImages(key, slug),
+    },
     bundle: r2StudioBundleSource(STUDIO_RELEASES),
     // Module bundles ship in the SAME release mirror, per-module subpath (cf#99).
     moduleBundle: r2ModuleBundleSource(STUDIO_RELEASES),
@@ -360,6 +385,12 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       const pre = preflightStudioBindings(deps, tenant);
       if (!pre.ok) return { ok: false, refusal: pre.refusal };
       return { ok: true, result: await refreshTenantStudioBindings(deps, tenant, pre.script, pre.serviceId) };
+    },
+    async preflightReprovisionRunPod(tenant): Promise<ReprovisionPreflight> {
+      return await preflightRunPodReprovision(deps, tenant);
+    },
+    async reprovisionRunPod(tenant, context, runpodApiKey): Promise<ReprovisionResult> {
+      return await reprovisionTenantRunPod(deps, tenant, context, runpodApiKey);
     },
     async detachStudioBinding(tenant) {
       const pre = preflightStudioBindingDetach(tenant);

@@ -81,7 +81,7 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     // Same object as cf: the fallback path, so a test asserting on cf's log sees the upload.
     scriptUploadCf: cf,
     videoFinishServiceId: null,
-    runpod: { createEndpoints: vi.fn(async () => ENDPOINTS) },
+    runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),
       revoke: vi.fn(async () => undefined),
@@ -669,7 +669,7 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
         await slowRunPod;
         return ENDPOINTS;
       });
-      const d = deps(store, { runpod: { createEndpoints } });
+      const d = deps(store, { runpod: { createEndpoints, convergeTemplateImages: vi.fn(async () => []) } });
 
       // THE POSITIVE CONTROL, and it is the point of the whole test: a second job, driven by nobody,
       // takes the same 60s lease at the same instant. If 90 seconds of this harness clock did not
@@ -730,7 +730,7 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
         await slowRunPod;
         return ENDPOINTS;
       });
-      const d = deps(store, { runpod: { createEndpoints } });
+      const d = deps(store, { runpod: { createEndpoints, convergeTemplateImages: vi.fn(async () => []) } });
 
       const run = runProvisionJob(d, job.id, tenant, "key-A", fakeClock(1));
       await inRunPod;

@@ -18,7 +18,7 @@ import type { CfApi } from "./cf-api";
 import { CfApiError, isScriptAbsent } from "./cf-api";
 import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
-import type { TenantR2Creds } from "./runpod";
+import type { TemplateConvergence, TenantR2Creds } from "./runpod";
 import {
   JOB_LEASE_SECONDS,
   type ControlPlaneStore,
@@ -97,6 +97,14 @@ export interface RunPodProvisioner {
    * wiring cannot repeat that.
    */
   createEndpoints(runpodApiKey: string, slug: string, r2: TenantR2Creds): Promise<TenantEndpoint[]>;
+  /**
+   * Move this tenant's EXISTING templates onto the pins the plane currently holds (cp#137).
+   *
+   * On the seam rather than reached for directly, so there is still exactly one RunPod injection
+   * point. Required rather than optional: an optional method would let a wiring omission read as
+   * "nothing to converge", which is the silent-skip shape this repo keeps refusing.
+   */
+  convergeTemplateImages(runpodApiKey: string, slug: string): Promise<TemplateConvergence[]>;
 }
 
 /**
