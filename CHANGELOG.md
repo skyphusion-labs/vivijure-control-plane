@@ -6,6 +6,10 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.11.0 -- 2026-07-26
+
+MINOR: three operator capabilities that were each missing a half -- a record that could not be compared to reality (cp#137), a lease that expired under a driver still working (cp#148), and a panel state nothing could write (cp#136). Carries a schema change: migration 0011, additive.
+
 ### feat(hosted): reconcile a tenant record against live RunPod state, read-only (cp#137)
 
 - **The defect:** the plane records tenant endpoints in `tenants.endpoints_json` and nothing ever
