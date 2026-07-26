@@ -6,6 +6,25 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(hosted): reconcile a tenant record against live RunPod state, read-only (cp#137)
+
+- **The defect:** the plane records tenant endpoints in `tenants.endpoints_json` and nothing ever
+  compared that record to RunPod. The standing testbed read `status=live` while all four endpoints it
+  names returned 404. `status` means "provisioning completed once", never "renders today".
+- **`POST /api/admin/reconcile/runpod`**, admin-gated, DETECTION ONLY. It writes nothing, not even an
+  audit row: a pass that can alter what it measures is not a measurement. Remediation is separate,
+  lead-approved work.
+- **The operator brings the RunPod half**, gathered with their own key via
+  `scripts/reconcile-runpod.mjs`. The plane holds no credential that can read the RunPod account of a
+  tenant (key A used once and never stored, key B invoke-only), so it cannot poll RunPod and a
+  background reconciler is not buildable without breaking that custody boundary on purpose.
+- **Both debris layers, always.** Deleting an endpoint does not delete the template underneath it
+  (cp#117), so records are compared against the endpoint list AND the template list; an
+  endpoint-only sweep removes half the debris while reading as complete.
+- **An unprovable check never reads as a clean one.** The snapshot must state `complete` explicitly,
+  the plane marks its own census incomplete on a full `listTenants` page, and any finding resting on
+  a census that was not proven whole is reported `unproven` rather than asserted.
+
 ## v1.10.0 -- 2026-07-26
 
 MINOR: the studio bytes-move capability (cp#139) -- the operation that was missing between `refresh-studio-bindings` (bindings, never bytes) and `upgrade-modules` (module bytes, never the studio).

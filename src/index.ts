@@ -37,6 +37,7 @@ import type { ControlPlaneEnv } from "./env";
 import { publicOrigin, studioKekRing, tenantDomainSuffix } from "./env";
 import { kekCensus, sweepReencrypt } from "./kek-rotation";
 import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "./oauth";
+import { parseInventoryBody, reconcileRunPod, TENANT_PAGE_LIMIT } from "./reconcile-runpod";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
 import { RECLAIM_LEASE_SECONDS, jobHasLiveDriver } from "./store";
@@ -834,6 +835,31 @@ async function adminRoutes(
     await deps.store.setSetting("signups_enabled", value, actor);
     await deps.store.recordAdminAction(actor, "settings.set", "signups_enabled", value);
     return new Response(null, { status: 204 });
+  }
+
+  // ---- RunPod reconciliation: read the drift, change nothing (cp#137) -------------------------
+  //
+  // WHY A POST THAT ONLY READS. The plane cannot fetch this itself: it holds no credential that can
+  // read the RunPod account of a tenant, by design (key A used once and never stored, key B
+  // invoke-only). So the operator brings the RunPod snapshot they read with their own key and the
+  // plane supplies the half only it has, the tenant records. The verb is POST because a snapshot
+  // travels in a body, not because anything is written.
+  //
+  // NOTHING IS WRITTEN, INCLUDING AN AUDIT ROW. Every other admin route here records what it did
+  // because it did something. This one reads two lists and returns a report, so there is no state
+  // change to audit, and adding a write would give the pass the one property it must not have: the
+  // ability to alter the thing it is measuring. Remediation (deleting an orphan, re-provisioning a
+  // tenant) is separate, lead-approved work with its own route and its own audit.
+  if (request.method === "POST" && path === "/api/admin/reconcile/runpod") {
+    const parsed = parseInventoryBody(await readJson(request));
+    if (!parsed.ok) return err("invalid_inventory", 400, { message: parsed.detail });
+
+    const tenants = await deps.store.listTenants({});
+    // The store pages at TENANT_PAGE_LIMIT. A full page means the census MAY have been cut off, and
+    // every orphan finding is an absence-of-owner claim that only a whole census can support, so
+    // the flag travels into the report instead of being assumed away.
+    const census = { tenants, complete: tenants.length < TENANT_PAGE_LIMIT };
+    return json({ report: reconcileRunPod(census, parsed.inventory) });
   }
 
   const suspend = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/(suspend|resume)$/.exec(path);
