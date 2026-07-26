@@ -19,11 +19,12 @@ import { CfApiError, isScriptAbsent } from "./cf-api";
 import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
 import type { TenantR2Creds } from "./runpod";
-import type {
-  ControlPlaneStore,
-  ResourceReferrer,
-  Tenant,
-  TenantResourceKind,
+import {
+  JOB_LEASE_SECONDS,
+  type ControlPlaneStore,
+  type ResourceReferrer,
+  type Tenant,
+  type TenantResourceKind,
 } from "./store";
 import { emptyBucketBounded, type EmptyBucketResult } from "./r2-empty";
 import type { KekRing } from "./token-crypto";
@@ -291,6 +292,45 @@ export const PROVISION_INVOCATION_BUDGET_MS = 15_000;
  */
 const YIELD_UNSAFE_STEPS = new Set<MarkableProvisionStep>(["runpod_endpoints"]);
 
+/**
+ * How often a live driver refreshes its lease (cp#148). A third of the lease, so two consecutive
+ * missed beats still leave the job leased; the driver has to be GONE for the lease to lapse.
+ */
+export const JOB_LEASE_HEARTBEAT_MS = 20_000;
+
+/**
+ * Hold the job lease for as long as THIS invocation lives, and return the stopper (cp#148).
+ *
+ * THE DEFECT THIS CLOSES. The lease was written only by setJobRunning and by mark(), so it said "a
+ * step boundary happened within the last 60 seconds", never "a driver is alive". runpod_endpoints is
+ * one uninterrupted await with no mark inside it, so on a slow RunPod account (the cp#117 rehearsal
+ * measured ~87s in that one step) the lease lapsed at ~68s while the driver was healthy and still
+ * working. The next poll found a free claim, won it, and ran continueProvisionJob, which refuses
+ * anything short of wfp_upload and writes finishJob(failed) + setTenantStatus(failed) + a
+ * destructive rollback. The invocation never "ended" at runpod_endpoints; the job was taken from it.
+ *
+ * WHY A TIMER AND NOT deps.sleep. deps.sleep models a bounded wait the flow AWAITS, and every
+ * budgeted loop in this codebase uses it for exactly that. This is the opposite shape: a background
+ * tick whose lifetime is the invocation. setInterval is the runtime primitive for that, and the
+ * coupling is the point -- when the invocation dies the timer dies with it, the lease lapses within
+ * one beat, and an expired lease finally means what every guard already assumed it meant.
+ *
+ * A failed renew is LOGGED, never thrown: losing the lease is information about the job, not a
+ * reason to break a driver that is otherwise doing real work. The step it is in decides its own
+ * fate, and the writes it is racing are now refused store-side.
+ */
+function startLeaseHeartbeat(deps: ProvisionDeps, jobId: string): () => void {
+  const timer = setInterval(() => {
+    void deps.store
+      .renewJobLease(jobId, JOB_LEASE_SECONDS)
+      .then((held) => {
+        if (!held) deps.log("provision.lease_not_held", { job: jobId });
+      })
+      .catch((e: unknown) => deps.log("provision.lease_renew_failed", { job: jobId, error: String(e) }));
+  }, JOB_LEASE_HEARTBEAT_MS);
+  return () => clearInterval(timer);
+}
+
 /** A job that ran out of invocation budget with work left. NOT a failure: progress is persisted. */
 export interface ProvisionYielded {
   ok: false;
@@ -399,6 +439,8 @@ export async function runProvisionJob(
     if (!YIELD_UNSAFE_STEPS.has(step) && at - startedAt >= budgetMs) throw new ProvisionYield(step);
   };
 
+  // The lease is the claim of THIS driver, and it is only true while the driver is alive (cp#148).
+  const stopHeartbeat = startLeaseHeartbeat(deps, jobId);
   try {
     await deps.store.setJobRunning(jobId);
     await deps.store.setTenantStatus(tenant.id, "provisioning");
@@ -671,6 +713,10 @@ export async function runProvisionJob(
     // job stays failed either way so reclaim can retry.
     await rollbackFailedProvision(deps, tenant.id);
     return { ok: false, step, message };
+  } finally {
+    // Stop beating on EVERY exit, success, failure and yield alike. A yield leaves the lease live
+    // for up to its remaining term, which is the pre-existing hand-off cadence the poller expects.
+    stopHeartbeat();
   }
 }
 
@@ -745,6 +791,7 @@ export async function continueProvisionJob(
   };
   const complete = (step: ProvisionStep) => done.includes(step);
 
+  const stopHeartbeat = startLeaseHeartbeat(deps, jobId);
   try {
     // The resumability boundary, checked rather than assumed.
     if (!complete("wfp_upload")) {
@@ -790,6 +837,8 @@ export async function continueProvisionJob(
     await deps.store.setTenantStatus(tenant.id, "failed");
     await rollbackFailedProvision(deps, tenant.id);
     return { ok: false, step, message };
+  } finally {
+    stopHeartbeat();
   }
 }
 
@@ -1070,6 +1119,7 @@ export async function upgradeTenantModules(
     if (!YIELD_UNSAFE_STEPS.has(step) && at - startedAt >= budgetMs) throw new ProvisionYield(step);
   };
 
+  const stopHeartbeat = startLeaseHeartbeat(deps, jobId);
   try {
     // Same lease treatment as provision (#44): the route claims before 202; this covers direct
     // callers and renews if the claim expired between accept and execution.
@@ -1124,6 +1174,8 @@ export async function upgradeTenantModules(
     // still-serving paying tenant answer 503 to its own users. That single line is the difference
     // between a failed upgrade and an outage.
     return { ok: false, step, message };
+  } finally {
+    stopHeartbeat();
   }
 }
 

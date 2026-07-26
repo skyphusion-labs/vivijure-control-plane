@@ -25,6 +25,31 @@ is a separate product on a separate cadence).
   the plane marks its own census incomplete on a full `listTenants` page, and any finding resting on
   a census that was not proven whole is reported `unproven` rather than asserted.
 
+### fix(provisioner): the job lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENED RECENTLY (cp#148)
+
+- **The defect:** `provision_jobs.lease_until` was written only by `setJobRunning` and by each step
+  `mark()`, so any STEP longer than the 60s lease expired it under a healthy driver.
+  `runpod_endpoints` is exactly that step: one uninterrupted call, four endpoints, no mark inside it.
+  On a slow RunPod account (about 87s in that step during the cp#117 rehearsal) the lease lapsed at
+  about 68s, the next poll won the now-free claim, and `continueProvisionJob` -- which refuses
+  anything short of `wfp_upload` -- wrote `finishJob(failed)` plus `setTenantStatus(failed)` plus a
+  destructive rollback. The invocation never "ended at `runpod_endpoints`"; the job was taken from a
+  driver that was still working.
+- **The fix:** a live driver heartbeats its own lease every 20s for as long as its invocation lives
+  (`renewJobLease`), so an expired lease means a dead driver and nothing else. The `wfp_upload`
+  boundary is now reachable at ANY prefix duration instead of only a fast one.
+- The heartbeat renews `lease_until` and NOT `updated_at`: liveness and progress are different facts,
+  and bumping both would make a live-but-wedged driver immortal against the lost-driver rule.
+- `updateJobProgress` and `renewJobLease` now both refuse a TERMINAL job. A driver that lost its job
+  runs on to the end of its invocation, and its late mark used to overwrite the terminal step and
+  re-arm the lease on a failed row.
+- Repaired for free, same column: `claimReclaim`, `beginTeardown` and `jobHasLiveDriver` were reading
+  that lease to refuse acting under a live provision driver, and during a slow `runpod_endpoints` a
+  reclaim could have blanked the tenant resource columns underneath it.
+- The first-poll constant is deliberately NOT touched: a later poll changes discovery time, not
+  outcome, and an earlier one would have made the old race MORE likely.
+- Docs: `docs/control-plane.md`, "The provision job lease, and why a driver heartbeats it".
+
 ## v1.10.0 -- 2026-07-26
 
 MINOR: the studio bytes-move capability (cp#139) -- the operation that was missing between `refresh-studio-bindings` (bindings, never bytes) and `upgrade-modules` (module bytes, never the studio).

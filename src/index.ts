@@ -40,7 +40,7 @@ import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "
 import { parseInventoryBody, reconcileRunPod, TENANT_PAGE_LIMIT } from "./reconcile-runpod";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
-import { RECLAIM_LEASE_SECONDS, jobHasLiveDriver } from "./store";
+import { JOB_LEASE_SECONDS, RECLAIM_LEASE_SECONDS, jobHasLiveDriver } from "./store";
 import { StudioBindingError } from "./tenant-studio-bindings";
 import type { PreservationHoldKind } from "./store";
 import type { Account, Tenant, ProvisionJob, SmokeRender } from "./store";
@@ -471,8 +471,12 @@ async function tenantRoutes(
  */
 const MAX_JOB_STALE_MS = 10 * 60 * 1000;
 
-/** One invocation's claim on a job. Matches the store's lease length. */
-const JOB_CLAIM_SECONDS = 60;
+/**
+ * One invocation claim on a job. THE store lease length, not a copy of it (cp#148): the poller and
+ * the driver heartbeat have to agree on one number, and two 60s literals that agree by luck is how
+ * a lease hierarchy drifts.
+ */
+const JOB_CLAIM_SECONDS = JOB_LEASE_SECONDS;
 
 /**
  * Drive a non-terminal job forward, or declare it lost. Returns the re-read job when it changed.

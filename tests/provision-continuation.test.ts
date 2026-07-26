@@ -543,3 +543,143 @@ describe("per-step provision timing (cp#18)", () => {
     expect(reads).toBe(marks + 1);
   });
 });
+
+describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENED RECENTLY", () => {
+  /**
+   * THE REGRESSION, as the cp#117 rehearsal met it live.
+   *
+   * runpod_endpoints is ONE uninterrupted await with no mark inside it, so it renewed nothing while
+   * it ran. On the slow scratch account it ran ~87s, the 60s lease lapsed at ~68s under a perfectly
+   * healthy driver, and the cp#124 first poll at 90s found a free claim. It won it, ran
+   * continueProvisionJob, which refuses anything short of wfp_upload, and that refusal wrote
+   * finishJob(failed) + setTenantStatus(failed) + a destructive rollback. The driver never "ended at
+   * runpod_endpoints"; the job was taken away from it while it was still working.
+   *
+   * The test drives the SAME shape: hold createEndpoints open, advance 90 seconds, and require the
+   * poll to lose. It fails on the pre-cp#148 provisioner, where claimJob returns true here.
+   */
+  it("a poll CANNOT claim the job while the driver is still inside a long runpod_endpoints step", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new MemoryStore();
+      const tenant = await seedTenant(store);
+      const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+
+      let release!: () => void;
+      const slowRunPod = new Promise<void>((r) => {
+        release = r;
+      });
+      const createEndpoints = vi.fn(async () => {
+        await slowRunPod;
+        return ENDPOINTS;
+      });
+      const d = deps(store, { runpod: { createEndpoints } });
+
+      // THE POSITIVE CONTROL, and it is the point of the whole test: a second job, driven by nobody,
+      // takes the same 60s lease at the same instant. If 90 seconds of this harness clock did not
+      // really expire an un-heartbeated lease, the assertion below would pass for the wrong reason.
+      const idle = await store.createProvisionJob("job_control", "ten_1", "provision");
+      await store.setJobRunning(idle.id);
+
+      const run = runProvisionJob(d, job.id, tenant, "key-A", fakeClock(1));
+
+      // Let the CF prefix (d1 .. r2_token) run until the driver is parked inside RunPod. It has to
+      // be advanceTimersByTimeAsync and not a bare microtask drain: r2_token awaits
+      // crypto.subtle.digest, which settles on the event loop, and a tight microtask loop starves it.
+      for (let i = 0; i < 50 && createEndpoints.mock.calls.length === 0; i++) {
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      expect(createEndpoints).toHaveBeenCalledTimes(1);
+
+      // 90s: the cp#124 first poll, a full 30s past the lease the last mark left behind.
+      await vi.advanceTimersByTimeAsync(90_000);
+
+      const mid = (await store.getJob(job.id)) as ProvisionJob;
+      expect(mid.status).toBe("running");
+      expect(jobHasLiveDriver(mid, Date.now())).toBe(true);
+      expect(await store.claimJob(job.id, 60)).toBe(false);
+
+      // The control: same clock, same 60s lease, no driver. This one IS claimable, so the false
+      // above is the heartbeat and nothing else.
+      expect(jobHasLiveDriver((await store.getJob(idle.id)) as ProvisionJob, Date.now())).toBe(false);
+      expect(await store.claimJob(idle.id, 60)).toBe(true);
+
+      release();
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the provision CARRIES THROUGH runpod_endpoints to wfp_upload despite the slow step", async () => {
+    // The outcome the issue asks for: the boundary is reachable regardless of prefix duration,
+    // rather than the prefix being made faster and hoped about.
+    vi.useFakeTimers();
+    try {
+      const store = new MemoryStore();
+      const tenant = await seedTenant(store);
+      const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+
+      let release!: () => void;
+      const slowRunPod = new Promise<void>((r) => {
+        release = r;
+      });
+      const createEndpoints = vi.fn(async () => {
+        await slowRunPod;
+        return ENDPOINTS;
+      });
+      const d = deps(store, { runpod: { createEndpoints } });
+
+      const run = runProvisionJob(d, job.id, tenant, "key-A", fakeClock(1));
+      for (let i = 0; i < 50 && createEndpoints.mock.calls.length === 0; i++) {
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      expect(createEndpoints).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(110_000);
+      release();
+      const outcome = await run;
+
+      expect(outcome).toEqual({ ok: true, status: "awaiting_invoke_key" });
+      const finished = (await store.getJob(job.id)) as ProvisionJob;
+      expect(finished.status).toBe("succeeded");
+      expect(JSON.parse(finished.steps_done) as string[]).toContain("wfp_upload");
+      // A finished job releases its lease, so the next caller is not locked out by a dead heartbeat.
+      expect(finished.lease_until).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a heartbeat CANNOT resurrect a job somebody else already finished", async () => {
+    const store = new MemoryStore();
+    await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+
+    // Control first: while the job is live, the renew really does work. Without this the refusal
+    // below would pass against a renewJobLease that never renews anything.
+    await store.setJobRunning(job.id);
+    expect(await store.renewJobLease(job.id, 60)).toBe(true);
+
+    await store.finishJob(job.id, "failed", "runpod_endpoints", "keyless refusal");
+    expect(await store.renewJobLease(job.id, 60)).toBe(false);
+    expect((await store.getJob(job.id))?.lease_until).toBeNull();
+  });
+
+  it("a LATE mark from a driver that lost its job does not overwrite the terminal record", async () => {
+    const store = new MemoryStore();
+    await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+    await store.setJobRunning(job.id);
+    await store.updateJobProgress(job.id, "r2_token", JSON.stringify(["d1_create", "r2_token"]));
+    await store.finishJob(job.id, "failed", "runpod_endpoints", "keyless refusal");
+
+    // The losing driver runs on to the end of its invocation and marks the next step.
+    await store.updateJobProgress(job.id, "wfp_upload", JSON.stringify(["d1_create", "r2_token", "wfp_upload"]));
+
+    const after = (await store.getJob(job.id)) as ProvisionJob;
+    expect(after.status).toBe("failed");
+    expect(after.step).toBe("r2_token");
+    expect(JSON.parse(after.steps_done) as string[]).not.toContain("wfp_upload");
+    expect(after.lease_until).toBeNull();
+  });
+});

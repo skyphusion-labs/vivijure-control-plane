@@ -618,6 +618,62 @@ workers running the old image and squatting the account worker slots (a 50-minut
 2026-07-25). **Cycle the workers** (`workersMax` to 0 and back), then verify the first job's worker
 image and `isStale` via `GET /v2/serverless/{id}/workers` before trusting the run.
 
+## The provision job lease, and why a driver heartbeats it (cp#148)
+
+A provision does not fit in one Worker invocation, so the poll IS the engine: each `GET
+/api/tenant/:id/job` drives the job a little further under its own `waitUntil`, and
+`provision_jobs.lease_until` is the arbitration that keeps two polls from driving the same job at
+once. Three rules make that safe, and the third one had to be added.
+
+1. **Only the poll that WINS `claimJob` drives.** `claimJob` is a conditional UPDATE, so exactly one
+   of any number of overlapping polls matches the predicate.
+2. **A job with no progress for 10 minutes is declared LOST** and failed honestly, rather than left
+   spinning forever.
+3. **A live driver renews its own lease every 20 seconds, for as long as its invocation lives.**
+
+Rule 3 is what makes `lease_until` mean *a driver is alive*. Before cp#148 the lease was written only
+by `setJobRunning` and by each step `mark()`, so it actually meant *a step boundary happened within
+the last 60 seconds*, and any STEP longer than the lease expired it underneath a perfectly healthy
+driver. `runpod_endpoints` is the one step that can do that: it is a single uninterrupted call that
+creates four RunPod endpoints and marks nothing inside itself. On a slow RunPod account (the cp#117
+rehearsal measured about 87 seconds in that one step) the lease lapsed at about 68 seconds, the next
+poll found a free claim, won it, and ran `continueProvisionJob` -- which refuses anything short of
+`wfp_upload` and writes `finishJob(failed)` plus `setTenantStatus(failed)` plus a destructive
+rollback. The job was not abandoned by its driver; it was taken away from one.
+
+### The two columns are different facts, deliberately
+
+| column | question it answers | who writes it |
+| --- | --- | --- |
+| `lease_until` | is a driver ALIVE right now | `setJobRunning`, `claimJob`, each `mark()`, and the heartbeat |
+| `updated_at` | when did this job last make PROGRESS | `setJobRunning`, `claimJob`, each `mark()` |
+
+The heartbeat renews `lease_until` and deliberately does NOT touch `updated_at`. Bumping both would
+make a driver that is alive but wedged immortal: it would hold the claim forever and never trip the
+lost-driver rule. Liveness and progress are separate questions and stay in separate columns.
+
+### Consequences elsewhere, because several guards read the same column
+
+`claimReclaim`, `beginTeardown` and `jobHasLiveDriver` all refuse to act while a provision driver
+holds a live lease. They were reading a column that could only say "a step boundary happened
+recently", so during a slow `runpod_endpoints` a reclaim could have blanked the tenant resource
+columns underneath the running provisioner. Those guards were repaired by the same change, without
+being touched.
+
+### A terminal job is a closed record
+
+A driver that lost its job keeps running to the end of its invocation. `updateJobProgress` and
+`renewJobLease` therefore both carry `status IN (queued, running)`: a late write cannot overwrite
+the terminal step, cannot re-arm the lease on a failed row, and cannot make a finished job read as
+live and progressing.
+
+### What has NOT changed
+
+The first-poll delay is untouched. A poll that arrives later changes discovery time, not outcome, and
+an EARLIER first poll would have made the old race more likely rather than less. Yield boundaries are
+untouched as well: `runpod_endpoints` still suppresses the yield and carries through to `wfp_upload`
+in the same invocation, because a job yielded between those two is unresumable by a keyless poll.
+
 ## Verifying changes
 
 ```bash
