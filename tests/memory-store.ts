@@ -231,6 +231,9 @@ export class MemoryStore implements ControlPlaneStore {
       studio_release: null,
       modules_release: null,
       studio_token_enc: null,
+      video_finish_unreachable: 0,
+      video_finish_unreachable_reason: null,
+      video_finish_unreachable_at: null,
       created_at: new Date().toISOString(),
       live_at: null,
       suspended_at: null,
@@ -324,6 +327,16 @@ export class MemoryStore implements ControlPlaneStore {
   async setTenantStudioRelease(id: string, release: string | null) {
     const t = this.tenants.get(id);
     if (t) t.studio_release = release;
+  }
+
+  async setTenantVideoFinishUnreachable(id: string, mark: { reason: string; at: string } | null) {
+    const t = this.tenants.get(id);
+    if (!t) return;
+    // All three together, exactly as the D1 statement writes them: a stub that let the flag and its
+    // reason drift apart would encode a state the real store cannot produce.
+    t.video_finish_unreachable = mark ? 1 : 0;
+    t.video_finish_unreachable_reason = mark ? mark.reason : null;
+    t.video_finish_unreachable_at = mark ? mark.at : null;
   }
 
   // ---- #23: teardown record + referential guard ------------------------------------------------

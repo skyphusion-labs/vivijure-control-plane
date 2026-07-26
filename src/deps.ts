@@ -59,6 +59,13 @@ import type { KekRing } from "./token-crypto";
 import { decryptStudioToken } from "./token-crypto";
 import { CfTokenMinter } from "./token-minter";
 import {
+  applyVideoFinishTierState,
+  preflightVideoFinishTierState,
+  type VideoFinishTierStateIntent,
+  type VideoFinishTierStateRefusal,
+  type VideoFinishTierStateResult,
+} from "./video-finish-tier-state";
+import {
   TENANT_MODULE_CATALOG,
   awaitTenantModulesReady,
   tenantModuleScriptName,
@@ -147,6 +154,22 @@ export interface ProvisionerWiring {
   refreshStudioBindings(tenant: Tenant): Promise<
     | { ok: false; refusal: StudioBindingRefusal }
     | { ok: true; result: StudioBindingRefresh }
+  >;
+  /**
+   * Declare a tenant unreachable for the video-finish tier, or un-declare it (cp#136).
+   *
+   * Same split, same reasons, as refreshStudioBindings: the preflight must not have written
+   * anything, the tenant keeps serving throughout, and the return is a READBACK through a different
+   * credential than the one that wrote. It reads the studio TWICE on purpose -- once before, to
+   * refuse when the studio cannot observe the var at all, and once after, so the operator sees the
+   * sentence the panel now serves rather than only the binding the plane thinks it set.
+   */
+  setVideoFinishTierState(
+    tenant: Tenant,
+    intent: VideoFinishTierStateIntent,
+  ): Promise<
+    | { ok: false; refusal: VideoFinishTierStateRefusal }
+    | { ok: true; result: VideoFinishTierStateResult }
   >;
   /**
    * The operator verification client (cp#45): four typed calls against THIS tenant's own studio.
@@ -319,6 +342,14 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       const pre = preflightStudioBindings(deps, tenant);
       if (!pre.ok) return { ok: false, refusal: pre.refusal };
       return { ok: true, result: await refreshTenantStudioBindings(deps, tenant, pre.script, pre.serviceId) };
+    },
+    async setVideoFinishTierState(tenant, intent) {
+      // Preflight FIRST and separately, for the same reason as above, plus one specific to this
+      // route: the refusal it exists for (a studio that cannot read the var) must happen before the
+      // record is written, or the plane would remember a declaration it failed to deliver.
+      const pre = await preflightVideoFinishTierState(deps, tenant, intent);
+      if (!pre.ok) return { ok: false, refusal: pre.refusal };
+      return { ok: true, result: await applyVideoFinishTierState(deps, tenant, pre.context, intent) };
     },
     async start(jobId, tenant, runpodApiKey) {
       // runProvisionJob records every outcome on the job row; the return value is the same fact.

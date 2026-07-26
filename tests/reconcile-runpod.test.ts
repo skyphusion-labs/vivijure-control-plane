@@ -73,6 +73,11 @@ function tenantRow(slug: string, status: TenantLifecycle, endpointsJson: string 
     suspended_reason: null,
     deleted_at: status === "deleted" ? "2026-07-20T00:00:00.000Z" : null,
     api_token_rotated_at: null,
+    // cp#136 columns, present because the row type requires them: a fixture that omits a NOT NULL
+    // column is a row the real store cannot return.
+    video_finish_unreachable: 0,
+    video_finish_unreachable_reason: null,
+    video_finish_unreachable_at: null,
     teardown_at: status === "deleted" ? "2026-07-20T00:00:00.000Z" : null,
     teardown_failures: status === "deleted" ? "[]" : null,
     reclaim_lease_until: null,

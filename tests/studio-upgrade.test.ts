@@ -27,6 +27,7 @@ import type { Tenant } from "../src/store";
 import { encryptStudioToken, kekRing } from "../src/token-crypto";
 import { TENANT_STUDIO_VAR_DISPOSITION } from "../src/tenant-studio-env";
 import { MemoryStore } from "./memory-store";
+import { VIDEO_FINISH_TIER_STATE_VAR, VIDEO_FINISH_UNPROVISIONABLE } from "../src/video-finish-tier-state";
 
 const KEK = btoa("0123456789abcdef0123456789abcdef");
 const RING = kekRing(KEK);
@@ -515,5 +516,70 @@ describe("the result is a readback, not a success flag", () => {
     // Same host object both sides: a convergence run reports no movement rather than dressing a
     // no-op as a move.
     expect(out.result.served_shape_changed).toBe(false);
+  });
+});
+
+// cp#136: the ONE binding this upload must NOT simply carry forward.
+//
+// WHY IT IS HERE RATHER THAN IN THE cp#136 FILE: this is the seam where the two features meet, and
+// it is the seam that fails silently. `inherit` PRESERVES what is bound, which is the right default
+// for every other binding and exactly wrong for a projection of a plane record. A tenant whose
+// unreachable declaration was cleared would otherwise carry VIDEO_FINISH_TIER_STATE across the move
+// and keep telling its user the tier can never be turned on for them.
+describe("the finish-tier state is RE-DERIVED across a bytes move, not inherited (cp#136)", () => {
+  const staleCf = () =>
+    fakeCf({
+      getScriptBindings: vi.fn(async () => [
+        ...LIVE_BINDINGS.map((b) => ({ ...b })),
+        { type: "plain_text", name: VIDEO_FINISH_TIER_STATE_VAR },
+      ]),
+    });
+  const sent = (upload: CfApi) =>
+    (upload.uploadUserWorker as unknown as { mock: { calls: [{ bindings: { type: string; name: string; text?: string }[] }][] } })
+      .mock.calls[0][0].bindings;
+
+  it("DROPS a stale var when the plane record says the tenant is reachable", async () => {
+    const store = new MemoryStore();
+    const tenant = await seedLiveTenant(store);
+    const upload = fakeCf();
+    const d = deps(store, { cf: staleCf(), scriptUploadCf: upload });
+
+    await upgradeTenantStudio(d, "job_1", tenant, await contextFor(d, tenant));
+
+    const bindings = sent(upload);
+    // CONTROL: the proxy saw a real payload, so the absence below is an omission and not an
+    // upload that never happened.
+    expect(bindings.length).toBeGreaterThan(0);
+    // Omitted means DROPPED for a non-secret binding (cp#112 live probe), and dropping it is how a
+    // cleared record reaches the studio.
+    expect(bindings.find((b) => b.name === VIDEO_FINISH_TIER_STATE_VAR)).toBeUndefined();
+  });
+
+  it("RE-STATES it from the record when the tenant is declared unreachable", async () => {
+    const store = new MemoryStore();
+    const seeded = await seedLiveTenant(store);
+    await store.setTenantVideoFinishUnreachable(seeded.id, {
+      reason: "the CF account holding this studio is gone",
+      at: "2026-07-26T12:00:00.000Z",
+    });
+    const tenant = (await store.getTenantById(seeded.id)) as Tenant;
+    const upload = fakeCf();
+    const d = deps(store, { scriptUploadCf: upload });
+
+    await upgradeTenantStudio(d, "job_1", tenant, await contextFor(d, tenant));
+
+    const bindings = sent(upload);
+    expect(bindings.length).toBeGreaterThan(0);
+    // plain_text carrying the value, NOT an inherit: the value comes from the plane record on every
+    // move, so a studio that lost it gets it back and a studio that has it keeps the right one.
+    expect(bindings.find((b) => b.name === VIDEO_FINISH_TIER_STATE_VAR)).toEqual({
+      type: "plain_text",
+      name: VIDEO_FINISH_TIER_STATE_VAR,
+      text: VIDEO_FINISH_UNPROVISIONABLE,
+    });
+    // And nothing else grew a value: the custody claim above still holds on this path.
+    for (const b of bindings.filter((x) => x.name !== VIDEO_FINISH_TIER_STATE_VAR)) {
+      expect(b.text).toBeUndefined();
+    }
   });
 });

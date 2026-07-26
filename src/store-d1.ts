@@ -424,6 +424,18 @@ export class D1Store implements ControlPlaneStore {
     await this.db.prepare("UPDATE tenants SET studio_release = ?2 WHERE id = ?1").bind(id, release).run();
   }
 
+  async setTenantVideoFinishUnreachable(id: string, mark: { reason: string; at: string } | null): Promise<void> {
+    // ONE statement writes all three columns, in both directions, so the flag can never be set
+    // without its reason or cleared while its reason stays behind (cp#136).
+    await this.db
+      .prepare(
+        "UPDATE tenants SET video_finish_unreachable = ?2, video_finish_unreachable_reason = ?3, " +
+          "video_finish_unreachable_at = ?4 WHERE id = ?1",
+      )
+      .bind(id, mark ? 1 : 0, mark ? mark.reason : null, mark ? mark.at : null)
+      .run();
+  }
+
   async setTenantModulesRelease(id: string, release: string | null): Promise<void> {
     // Binds null straight through: clearing is a real state here (see the column comment in
     // migration 0006), not the absence of a write.

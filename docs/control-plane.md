@@ -1053,6 +1053,127 @@ What that does NOT prove is that a tenant studio can REACH the container at rend
 reachability are different facts; the second needs a real render through a tenant carrying the
 binding, and that is the gate before the tier is considered live for tenants.
 
+## Declaring a studio UNREACHABLE for the video-finish tier (cp#136)
+
+The studio panel resolves three states for the tier (`vivijure-cf/src/video-finish-availability.ts`):
+
+| state | meaning | how the panel decides |
+| --- | --- | --- |
+| `available` | the tier is bound | it OBSERVES `VIDEO_FINISH_VPC` |
+| `provisionable` | absent, but somebody can attach it | the default for any unbound studio |
+| `unprovisionable` | absent, and no operator action reaches this studio | the var `VIDEO_FINISH_TIER_STATE` |
+
+Until cp#136 **nothing in this plane ever wrote that var**, so the third state could not occur in
+production: every unbound studio read the "not yet provisioned" sentence whether or not that promise
+could be kept for it. This is the writer.
+
+### Why it is DECLARED and not derived
+
+There is no plane-side condition that computes unreachability. With `VIDEO_FINISH_VPC_SERVICE_ID`
+set the studio gets the binding and resolves `available` by observation; with it unset an operator
+can set it and reach the studio through `refresh-studio-bindings` (cp#112), so "not yet" is a
+promise that can still be kept. **Every derived writer writes `provisionable` forever**, which is
+the original bug with more code in front of it.
+
+The nearby-sounding condition is a trap worth naming: the finish tier being **down** is transient,
+and the sentence this state displays ("cannot be turned on for it") is permanent. Wiring an outage
+to a permanent claim would tell every tenant the tier can never be turned on, and keep saying it
+after the container came back.
+
+### One writer, one source of truth, projected at every write
+
+`tenants.video_finish_unreachable` (migration 0011, with its reason and timestamp) is the RECORD.
+`VIDEO_FINISH_TIER_STATE` on the studio is a PROJECTION of that record, re-derived at every write to
+the studio: the provision upload, the studio-upgrade re-upload, and this route.
+
+Re-derived rather than carried, and that is the part that is easy to get wrong. The upgrade path
+carries every censused binding forward as `inherit`, which PRESERVES a var rather than dropping it,
+so a tenant whose declaration was CLEARED would keep displaying the sentence across the next bytes
+move. Both write paths therefore strip this var out of the carried set and re-add it from the
+record. A non-secret binding omitted from an upload or patch is DROPPED (measured, cp#112), so
+omitting IS the clear, and the studio converges in both directions.
+
+### What clears it
+
+1. **This route, explicitly**: `unreachable: false` drops the record and the studio var with it.
+2. **The binding arriving, implicitly**: the panel lets a bound tier beat any var (an observation
+   beats a label), so a studio that becomes reachable stops displaying the sentence even before
+   anyone clears the record.
+
+```
+POST /api/admin/tenants/ten_abc123/video-finish-tier-state
+Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN
+
+{ "unreachable": true, "reason": "the CF account holding this studio is gone" }
+```
+
+A reason is MANDATORY when declaring and meaningless when clearing. A declaration nobody can explain
+cannot be reviewed, and this one makes a studio tell its user a capability can never be turned on
+for them; the same standard `0010_preservation_holds.sql` sets for a hold.
+
+### The reader floor, which is a refusal and not a warning
+
+Setting the var on a studio whose bundle predates the READER is a silent no-op: the reader landed in
+`vivijure-cf` `ba61789`, first tagged **v1.9.0**. That is the cf#98 / cf#118 / cp#112 failure family
+(a change that looks applied and reaches nobody) and this route refuses to join it.
+
+**Which studios it bites** (checked against prod D1 on 2026-07-26, not assumed from the issue that
+filed this): the live tenant `rollins-e2e` is at v1.9.0, moved in place by cf#248, so the floor does
+not fire on it. That does not make it ornamental. It guards any tenant whose bytes lag the plane,
+which every provision can be between a release and its rollout, and it is written against the
+CAPABILITY rather than against a named tenant so a corrected fact about one studio cannot make it
+wrong.
+
+The check is NOT a version-string comparison. It asks the studio what it serves and requires
+`capability:video-finish` to be present in `host.hooks_unavailable` on `GET /api/modules` before it
+will write. A served field is the tenant assertion about itself; a release number is our claim about
+it. The floor applies to DECLARING only: clearing is always allowed, because un-saying something
+must not be gated on a probe that has nothing to do with un-saying it.
+
+### Refusals, all before anything is written
+
+| Refusal | When |
+| --- | --- |
+| `provisioner_unconfigured` (503) | no provisioner wiring on this deploy |
+| `not_found` (404) | unknown tenant |
+| `invalid_body` (400) | the body does not state an intent (`unreachable` is not a boolean) |
+| `reason_required` (400) | declaring without a reason |
+| `job_in_progress` (409) | a provision or upgrade holds a LIVE lease; this patch must not race an upload |
+| `not_provisioned` (409) | no studio script recorded, so there is nothing to project onto |
+| `tenant_deleted` (404) | the tenant no longer exists |
+| `tenant_studio_token_missing` / `tenant_studio_token_unreadable` (422) | the studio cannot be asked what it serves |
+| `studio_not_serving` (422) | the studio did not answer `/api/modules` with readable JSON |
+| `studio_reader_absent` (422) | THE FLOOR: the studio does not serve the capability key, so the var would reach nobody |
+
+### What comes back
+
+A READBACK through a different credential than the one that wrote, plus the reader half:
+`var_present_before` / `var_present_after`, `bindings_before` / `bindings_after`, `secrets_before` /
+`secrets_after`, `missing_bindings` / `missing_secrets`, and `served_reason_before` /
+`served_reason_after` / `served_reason_changed`.
+
+The served fields are what make this more than a binding census: the plane can prove it bound a var,
+but only the studio can prove the PANEL projection changed. The plane reports those sentences
+verbatim and never compares them against a copy, because the copy belongs to `vivijure-cf` and a
+second copy here would be a drift source with no owner.
+
+**A readback that disagrees with the intent answers 409, not 200.** The tenant keeps serving
+throughout: no bytes, no release change, no status write.
+
+### What this does NOT do
+
+It does not put a live studio into the state. Two things are needed for that, and only one of them
+is now satisfied:
+
+- **A bundle that can observe the var.** Met: the live tenant is at v1.9.0 (cf#248).
+- **The tier UNBOUND on that studio.** NOT met if the studio carries `VIDEO_FINISH_VPC`, and this is
+  a property of the design rather than a gap: the panel lets an observed binding beat any label, so a
+  bound studio cannot display the sentence at all, and this route refuses to declare on one instead
+  of writing a var that would sit there inert. Reading the sentence on a live studio therefore means
+  a tenant whose tier is genuinely absent.
+
+Plus the sentence read by a human. That leg is tracked on cp#136.
+
 ## Preservation holds: the interlock on the irreversible lever (cp#118)
 
 `ABUSE-RESPONSE-RUNBOOK.md` Section 5.2 forbids teardown on a tenant with an open report or
