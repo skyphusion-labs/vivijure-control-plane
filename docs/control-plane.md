@@ -1053,6 +1053,65 @@ What that does NOT prove is that a tenant studio can REACH the container at rend
 reachability are different facts; the second needs a real render through a tenant carrying the
 binding, and that is the gate before the tier is considered live for tenants.
 
+## Taking the tier OFF a studio (cp#136, criterion 3)
+
+`POST /api/admin/tenants/:id/video-finish-binding` with `{ "attached": false }` detaches the
+video-finish binding; `{ "attached": true }` puts it back.
+
+**Why it exists**, and it was found by running a drill rather than by reading code: every binding
+writer in this plane either ATTACHES the tier or PRESERVES it. The provision path attaches it
+whenever `VIDEO_FINISH_VPC_SERVICE_ID` is set, `refresh-studio-bindings` always appends it, and the
+studio upgrade carries every censused binding forward as `inherit`. So a tenant that HAS the tier
+could never be returned to the tier-absent state the panel sentence describes, and the cp#136
+acceptance criterion (a human READS that sentence on a live studio) had no honest path at all. The
+testbed proved it: the mark refused with `studio_reader_absent` because the studio serves `{}`,
+which means the tier is bound and observed available, correctly.
+
+**It is not a hand patch.** A settings PATCH that omits a binding DROPS it, which is exactly the
+failure the attach path exists to prevent, so the detach runs through the SAME
+census-then-inherit-everything machinery with the same readback through the other credential. The
+only difference from the attach path is which single binding is left out.
+
+**The attach direction is the cp#112 call itself**, not a second implementation. That is what makes
+"reattach restores exactly what a refresh produces" true by identity rather than by imitation, and
+it means the attach side keeps its own refusals.
+
+**Detach deliberately does NOT require `VIDEO_FINISH_VPC_SERVICE_ID`.** It does not name a service
+id, so a plane that has lost its tier configuration can still take the tier off a tenant, which is
+the direction you want to be able to move in when something is wrong.
+
+### One truth at a time
+
+Both directions refuse with `video_finish_declared` (409) while the tenant carries a cp#136
+declaration:
+
+- **Attach** is the one that carries weight. Attaching the tier to a studio the record says nobody
+  can reach makes that record false the moment it succeeds. The panel would be fine either way (an
+  observed binding beats the label, so no reader is lied to), which is precisely why the plane has
+  to catch it: the harm is a record quietly disagreeing with the world, and no reader surfaces that.
+  The guard lives in the SHARED preflight, so `refresh-studio-bindings` inherits it too; a guard
+  that covered only the newer route is one somebody routes around by using the older one.
+- **Detach** refuses for symmetry rather than for rescue. The reader floor on the mark route already
+  makes it impossible to DECLARE a studio whose tier is bound, so a declared tenant is normally
+  tier-absent already and this refusal is a convergence no-op. It is there so nobody has to
+  re-derive that at 3am.
+
+The drill order follows from the guards: **detach, then mark, read, clear, then reattach.**
+
+| Refusal | When |
+| --- | --- |
+| `provisioner_unconfigured` (503) | no provisioner wiring on this deploy |
+| `not_found` (404) / `tenant_deleted` (404) | unknown or deleted tenant |
+| `invalid_body` (400) | `attached` is not a boolean |
+| `job_in_progress` (409) | a provision or upgrade holds a LIVE lease; this patch must not race an upload |
+| `not_provisioned` (409) | no studio script recorded |
+| `video_finish_declared` (409) | a cp#136 declaration stands; clear it first |
+| `video_finish_unconfigured` (409) | ATTACH only: the plane has no service id to attach |
+| `vpc_binding_unauthorized` (409) | the SCRIPT UPLOAD credential lacks Connectivity Directory access |
+
+A readback that disagrees with the intent answers **409, not 200**. No bytes, no release, no status
+write; the tenant serves throughout.
+
 ## Declaring a studio UNREACHABLE for the video-finish tier (cp#136)
 
 The studio panel resolves three states for the tier (`vivijure-cf/src/video-finish-availability.ts`):
@@ -1166,11 +1225,11 @@ It does not put a live studio into the state. Two things are needed for that, an
 is now satisfied:
 
 - **A bundle that can observe the var.** Met: the live tenant is at v1.9.0 (cf#248).
-- **The tier UNBOUND on that studio.** NOT met if the studio carries `VIDEO_FINISH_VPC`, and this is
-  a property of the design rather than a gap: the panel lets an observed binding beat any label, so a
-  bound studio cannot display the sentence at all, and this route refuses to declare on one instead
-  of writing a var that would sit there inert. Reading the sentence on a live studio therefore means
-  a tenant whose tier is genuinely absent.
+- **The tier UNBOUND on that studio.** Still a property of the design rather than a gap: the panel
+  lets an observed binding beat any label, so a bound studio cannot display the sentence at all, and
+  this route refuses to declare on one instead of writing a var that would sit there inert. The
+  testbed IS bound today, which is why the drill needs the detach route documented above; that is now
+  a supported operator action rather than a hand patch.
 
 Plus the sentence read by a human. That leg is tracked on cp#136.
 

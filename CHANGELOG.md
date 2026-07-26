@@ -6,6 +6,41 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(hosted): detach and reattach the video-finish tier binding (cp#136, criterion 3)
+
+- **The gap, found by running the drill rather than by reading the code.** cp#136 made the
+  `unprovisionable` state writable, but no studio could DISPLAY it: every binding writer in this
+  plane either attaches the tier or preserves it (provision attaches when the service id is set,
+  `refresh-studio-bindings` always appends, the studio upgrade inherits). A tenant that HAS the tier
+  could never be returned to the tier-absent state the sentence describes, so the acceptance
+  criterion (a human READS it on a live studio) had no honest path. The testbed proved it: the mark
+  refused with `studio_reader_absent` because the studio serves `{}`, tier bound and observed
+  available, correctly.
+- **`POST /api/admin/tenants/:id/video-finish-binding`** with `{"attached": false|true}`,
+  admin-gated, inline, one tenant per call. No bytes, no release, no status write.
+- **Not a hand patch, and that is the whole point.** A settings PATCH omitting a binding DROPS it,
+  which is the failure the attach path exists to prevent, so the detach runs through the SAME
+  census-then-inherit-everything machinery with the same readback through the other credential. The
+  only difference from attach is which single binding is left out.
+- **Attach IS the cp#112 call**, not a second implementation, which makes "reattach restores exactly
+  what a refresh produces" true by identity rather than by imitation.
+- **Detach deliberately requires no `VIDEO_FINISH_VPC_SERVICE_ID`:** it names no service id, so a
+  plane that has lost its tier configuration can still take the tier off a tenant. That is the
+  direction you want to move in when something is wrong.
+- **One truth at a time.** Both directions refuse `video_finish_declared` (409) while a cp#136
+  declaration stands. The ATTACH guard is the load-bearing one (attaching would make the record false
+  the moment it succeeded, and the panel would never surface it because an observation beats a
+  label), and it lives in the SHARED preflight so `refresh-studio-bindings` inherits it too. The
+  detach guard is symmetry rather than rescue: the reader floor already makes declaring a bound
+  studio impossible.
+- Tests: the discriminating one asserts a sent payload that omits exactly one binding and carries
+  every other, which no pre-existing writer in this plane could produce; plus the custody claim on
+  this path, convergence on an already-absent tier, a short-readback failure, the var re-derived
+  rather than inherited, and both guards with positive controls. Two test bugs were caught by the
+  fakes themselves (the shared census helper defaults to the ATTACH outcome; the memory store
+  enforces the real UNIQUE(slug) constraint), which is the stubs doing their job.
+- Docs: `docs/control-plane.md`, "Taking the tier OFF a studio (cp#136, criterion 3)".
+
 ## v1.11.0 -- 2026-07-26
 
 MINOR: three operator capabilities that were each missing a half -- a record that could not be compared to reality (cp#137), a lease that expired under a driver still working (cp#148), and a panel state nothing could write (cp#136). Carries a schema change: migration 0011, additive.

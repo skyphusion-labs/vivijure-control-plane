@@ -52,6 +52,7 @@
 // trusting a success:true.
 
 import { CfApiError, type WorkerBinding } from "./cf-api";
+import { isVideoFinishUnreachable, withVideoFinishTierState } from "./video-finish-tier-state";
 import type { ProvisionDeps } from "./provisioner";
 import type { Tenant } from "./store";
 
@@ -81,7 +82,7 @@ export class StudioBindingError extends Error {
  * touched the tenant. Same split as preflightUpgrade: the refusal and the work are not one call.
  */
 export interface StudioBindingRefusal {
-  code: "not_provisioned" | "video_finish_unconfigured";
+  code: "not_provisioned" | "video_finish_unconfigured" | "video_finish_declared";
   status: number;
   message: string;
 }
@@ -125,6 +126,29 @@ export function preflightStudioBindings(
         message:
           "this tenant has no studio script recorded, so there is nothing to patch; " +
           "it needs a provision, not a binding refresh",
+      },
+    };
+  }
+  // ONE TRUTH AT A TIME (cp#136). Attaching the tier to a studio the plane has DECLARED unreachable
+  // would make the record false the moment it succeeded: the record says no operator action reaches
+  // this studio, and this IS an operator action reaching it. The panel would be fine either way (an
+  // observed binding beats the label, so nobody is lied to), which is exactly why this has to be
+  // caught here -- the harm is a plane record quietly disagreeing with the world, and no reader
+  // would ever surface it.
+  //
+  // It lives in the SHARED preflight rather than only on the cp#136 route, so the cp#112 refresh
+  // route inherits it too. Same action, same hazard; a guard that only covers the newer caller is a
+  // guard someone routes around by using the older one.
+  if (isVideoFinishUnreachable(tenant)) {
+    return {
+      ok: false,
+      refusal: {
+        code: "video_finish_declared",
+        status: 409,
+        message:
+          "this tenant is DECLARED unreachable for the video-finish tier, so attaching the tier " +
+          "would make that record false. Clear the declaration first " +
+          "(POST /api/admin/tenants/<id>/video-finish-tier-state with unreachable=false), then re-run",
       },
     };
   }
@@ -230,6 +254,176 @@ export async function refreshTenantStudioBindings(
     script,
     ok: result.ok,
     already_present: alreadyPresent,
+    bindings_before: result.bindings_before.length,
+    bindings_after: result.bindings_after.length,
+    missing_bindings: missingBindings,
+    missing_secrets: missingSecrets,
+  });
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------------------------
+// cp#136 (criterion 3): DETACH the video-finish tier from a live tenant studio.
+//
+// WHY THIS EXISTS, and it is a gap found by running the drill rather than by reading the code. The
+// `unprovisionable` state is now writable, but no studio could DISPLAY it: every binding writer in
+// this plane either attaches the tier or preserves it. `runProvisionJob` attaches it whenever the
+// service id is configured, `refreshTenantStudioBindings` above always APPENDS it, and the studio
+// upgrade carries every censused binding forward as `inherit`. So a tenant that has the tier can
+// never be put back into the tier-absent state the sentence describes, and the acceptance criterion
+// (a human READS it on a live studio) had no honest path at all. The testbed proved it: the mark
+// refused with `studio_reader_absent` because the studio serves `{}` -- tier bound, observed
+// available, and correctly so.
+//
+// WHY IT IS NOT A HAND PATCH, which was the alternative. A settings PATCH omitting a binding DROPS
+// it, and that is precisely the failure this file exists to prevent: hand-writing the desired set
+// risks dropping a binding or a secret the plane cannot reproduce. So the detach goes through the
+// SAME census-then-inherit-everything machinery, with the same readback through the other
+// credential, and the only difference from the attach path is which single binding is left out.
+//
+// WHAT IT DELIBERATELY DOES NOT REQUIRE: `VIDEO_FINISH_VPC_SERVICE_ID`. Detaching does not need a
+// service id, because it does not name one. A plane that has lost its tier configuration can still
+// take the tier off a tenant, which is the direction you want to be able to move in when something
+// is wrong.
+
+/** A refusal for the detach half, checked before anything is written. */
+export interface StudioBindingDetachRefusal {
+  code: "not_provisioned" | "tenant_deleted" | "video_finish_declared";
+  status: number;
+  message: string;
+}
+
+/** The readback for a detach. Same shape discipline as the refresh above: evidence, not a flag. */
+export interface StudioBindingDetach {
+  ok: boolean;
+  script: string;
+  /** True when the tenant did not carry the binding; the PATCH still runs (it converges the set). */
+  already_absent: boolean;
+  bindings_before: string[];
+  bindings_after: string[];
+  secrets_before: string[];
+  secrets_after: string[];
+  /**
+   * Names present before and absent after, EXCLUDING the one we meant to remove. Non-empty is the
+   * strand this route fears, and keeping the intended removal out of it is what lets `ok` mean
+   * "removed exactly one thing".
+   */
+  missing_bindings: string[];
+  missing_secrets: string[];
+}
+
+/**
+ * Everything that can refuse a detach, checked WITHOUT writing.
+ *
+ * The declaration guard is the mirror of the one in preflightStudioBindings and the lead constraint
+ * on cp#136: one truth at a time. See the FINAL note on that issue for why this direction is the
+ * belt to the attach guard braces -- the floor on the mark route already makes it impossible to
+ * DECLARE a studio whose tier is bound, so a declared tenant is normally already tier-absent and
+ * this refusal is a convergence no-op rather than a save. It is here because "normally" is not a
+ * guarantee anyone should have to re-derive at 3am.
+ */
+export function preflightStudioBindingDetach(
+  tenant: Tenant,
+): { ok: true; script: string } | { ok: false; refusal: StudioBindingDetachRefusal } {
+  if (tenant.deleted_at !== null) {
+    return { ok: false, refusal: { code: "tenant_deleted", status: 404, message: "this tenant no longer exists" } };
+  }
+  if (!tenant.script_name) {
+    return {
+      ok: false,
+      refusal: {
+        code: "not_provisioned",
+        status: 409,
+        message: "this tenant has no studio script recorded, so there is no binding set to patch",
+      },
+    };
+  }
+  if (isVideoFinishUnreachable(tenant)) {
+    return {
+      ok: false,
+      refusal: {
+        code: "video_finish_declared",
+        status: 409,
+        message:
+          "this tenant is DECLARED unreachable for the video-finish tier. Detaching under a live " +
+          "declaration mixes two operator statements about the same capability; clear the " +
+          "declaration first if you are undoing it, or leave it in place if you are not",
+      },
+    };
+  }
+  return { ok: true, script: tenant.script_name };
+}
+
+/**
+ * Take the video-finish binding OFF a tenant studio, idempotently, carrying everything else.
+ *
+ * Idempotent by CONVERGENCE rather than by skipping, exactly like the attach half: a tenant that
+ * already lacks the binding is patched anyway, so a studio that disagrees with the plane is brought
+ * into line instead of being reported as already fine.
+ *
+ * NEVER writes tenants.status, tenants.studio_release, or the studio bytes.
+ */
+export async function detachTenantStudioBinding(
+  deps: ProvisionDeps,
+  tenant: Tenant,
+  script: string,
+): Promise<StudioBindingDetach> {
+  const before = await deps.cf.getScriptBindings(deps.namespace, script);
+  const secretsBefore = await deps.cf.getScriptSecretNames(deps.namespace, script);
+  const alreadyAbsent = !before.some((b) => b.name === VIDEO_FINISH_BINDING);
+
+  // Everything except the tier travels as `inherit`, so no binding VALUE is handled here. The cp#136
+  // var is RE-DERIVED from the record rather than inherited, for the same reason both write paths do
+  // it: a projection that is carried forward is a projection that can outlive its record.
+  const desired = withVideoFinishTierState(
+    before.filter((b) => b.name !== VIDEO_FINISH_BINDING).map((b) => ({ type: "inherit" as const, name: b.name })),
+    tenant,
+  );
+
+  try {
+    await deps.scriptUploadCf.patchScriptSettings(deps.namespace, script, desired);
+  } catch (e) {
+    if (e instanceof CfApiError && e.cfErrors.some((c) => c.code === CF_VPC_BINDING_UNAUTHORIZED)) {
+      throw new StudioBindingError(
+        "vpc_binding_unauthorized",
+        409,
+        "video-finish detach refused: the plane SCRIPT UPLOAD credential is not authorized for " +
+          "Workers VPC (needs Connectivity Directory access). The tenant was NOT changed -- fix " +
+          "CF_WORKER_UPLOAD_TOKEN and re-run.",
+      );
+    }
+    throw e;
+  }
+
+  const after = await deps.cf.getScriptBindings(deps.namespace, script);
+  const secretsAfter = await deps.cf.getScriptSecretNames(deps.namespace, script);
+  const afterNames = new Set(after.map((b) => b.name));
+  const afterSecrets = new Set(secretsAfter);
+  // The intended removal is excluded from the strand check; everything else present before must
+  // still be present after.
+  const missingBindings = names(before)
+    .filter((n) => n !== VIDEO_FINISH_BINDING)
+    .filter((n) => !afterNames.has(n));
+  const missingSecrets = [...secretsBefore].sort().filter((n) => !afterSecrets.has(n));
+
+  const result: StudioBindingDetach = {
+    ok: missingBindings.length === 0 && missingSecrets.length === 0 && !afterNames.has(VIDEO_FINISH_BINDING),
+    script,
+    already_absent: alreadyAbsent,
+    bindings_before: names(before),
+    bindings_after: names(after),
+    secrets_before: [...secretsBefore].sort(),
+    secrets_after: [...secretsAfter].sort(),
+    missing_bindings: missingBindings,
+    missing_secrets: missingSecrets,
+  };
+
+  deps.log("studio_bindings.detach", {
+    tenant: tenant.id,
+    script,
+    ok: result.ok,
+    already_absent: alreadyAbsent,
     bindings_before: result.bindings_before.length,
     bindings_after: result.bindings_after.length,
     missing_bindings: missingBindings,

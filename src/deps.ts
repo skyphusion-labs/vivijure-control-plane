@@ -33,8 +33,12 @@ import {
 import { createTenantEndpoints } from "./runpod";
 import type { ControlPlaneStore, Tenant } from "./store";
 import {
+  detachTenantStudioBinding,
+  preflightStudioBindingDetach,
   preflightStudioBindings,
   refreshTenantStudioBindings,
+  type StudioBindingDetach,
+  type StudioBindingDetachRefusal,
   type StudioBindingRefresh,
   type StudioBindingRefusal,
 } from "./tenant-studio-bindings";
@@ -164,6 +168,20 @@ export interface ProvisionerWiring {
    * refuse when the studio cannot observe the var at all, and once after, so the operator sees the
    * sentence the panel now serves rather than only the binding the plane thinks it set.
    */
+  /**
+   * Take the video-finish binding OFF a tenant studio (cp#136 criterion 3).
+   *
+   * The MIRROR of refreshStudioBindings, through the same census-then-inherit machinery, and the
+   * reason it exists at all: no other writer in this plane can produce a tier-ABSENT studio, so the
+   * state the panel describes could never be displayed on a live tenant. There is deliberately no
+   * `reattach` member here -- reattaching IS refreshStudioBindings, and calling that one rather than
+   * writing a second implementation is what makes "restores exactly what refresh produces" true by
+   * identity instead of by imitation.
+   */
+  detachStudioBinding(tenant: Tenant): Promise<
+    | { ok: false; refusal: StudioBindingDetachRefusal }
+    | { ok: true; result: StudioBindingDetach }
+  >;
   setVideoFinishTierState(
     tenant: Tenant,
     intent: VideoFinishTierStateIntent,
@@ -342,6 +360,11 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       const pre = preflightStudioBindings(deps, tenant);
       if (!pre.ok) return { ok: false, refusal: pre.refusal };
       return { ok: true, result: await refreshTenantStudioBindings(deps, tenant, pre.script, pre.serviceId) };
+    },
+    async detachStudioBinding(tenant) {
+      const pre = preflightStudioBindingDetach(tenant);
+      if (!pre.ok) return { ok: false, refusal: pre.refusal };
+      return { ok: true, result: await detachTenantStudioBinding(deps, tenant, pre.script) };
     },
     async setVideoFinishTierState(tenant, intent) {
       // Preflight FIRST and separately, for the same reason as above, plus one specific to this
