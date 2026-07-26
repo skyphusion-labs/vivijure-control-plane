@@ -565,11 +565,21 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
       const tenant = await seedTenant(store);
       const job = await store.createProvisionJob("job_1", "ten_1", "provision");
 
+      // TWO promises, not a spin loop. The test has to wait for the driver to be INSIDE the RunPod
+      // step, and polling for it (drain microtasks, check the spy) is both flaky and self-defeating:
+      // r2_token awaits crypto.subtle.digest, which settles on the event loop, so a tight loop
+      // starves the very thing it is waiting for. CI proved it, on a slower runner than this box.
+      // The step announces its own entry instead, and the test parks on that.
+      let entered!: () => void;
+      const inRunPod = new Promise<void>((r) => {
+        entered = r;
+      });
       let release!: () => void;
       const slowRunPod = new Promise<void>((r) => {
         release = r;
       });
       const createEndpoints = vi.fn(async () => {
+        entered();
         await slowRunPod;
         return ENDPOINTS;
       });
@@ -583,12 +593,8 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
 
       const run = runProvisionJob(d, job.id, tenant, "key-A", fakeClock(1));
 
-      // Let the CF prefix (d1 .. r2_token) run until the driver is parked inside RunPod. It has to
-      // be advanceTimersByTimeAsync and not a bare microtask drain: r2_token awaits
-      // crypto.subtle.digest, which settles on the event loop, and a tight microtask loop starves it.
-      for (let i = 0; i < 50 && createEndpoints.mock.calls.length === 0; i++) {
-        await vi.advanceTimersByTimeAsync(1);
-      }
+      // The CF prefix (d1 .. r2_token) runs on its own; park until the driver is inside RunPod.
+      await inRunPod;
       expect(createEndpoints).toHaveBeenCalledTimes(1);
 
       // 90s: the cp#124 first poll, a full 30s past the lease the last mark left behind.
@@ -620,20 +626,28 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
       const tenant = await seedTenant(store);
       const job = await store.createProvisionJob("job_1", "ten_1", "provision");
 
+      // TWO promises, not a spin loop. The test has to wait for the driver to be INSIDE the RunPod
+      // step, and polling for it (drain microtasks, check the spy) is both flaky and self-defeating:
+      // r2_token awaits crypto.subtle.digest, which settles on the event loop, so a tight loop
+      // starves the very thing it is waiting for. CI proved it, on a slower runner than this box.
+      // The step announces its own entry instead, and the test parks on that.
+      let entered!: () => void;
+      const inRunPod = new Promise<void>((r) => {
+        entered = r;
+      });
       let release!: () => void;
       const slowRunPod = new Promise<void>((r) => {
         release = r;
       });
       const createEndpoints = vi.fn(async () => {
+        entered();
         await slowRunPod;
         return ENDPOINTS;
       });
       const d = deps(store, { runpod: { createEndpoints } });
 
       const run = runProvisionJob(d, job.id, tenant, "key-A", fakeClock(1));
-      for (let i = 0; i < 50 && createEndpoints.mock.calls.length === 0; i++) {
-        await vi.advanceTimersByTimeAsync(1);
-      }
+      await inRunPod;
       expect(createEndpoints).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(110_000);
       release();
