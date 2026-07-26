@@ -238,6 +238,92 @@ describe("runProvisionJob budget yielding", () => {
   });
 });
 
+describe("cp#158: a yielding driver HANDS THE LEASE BACK instead of leaving it to expire", () => {
+  /**
+   * THE LATENCY, filed out of cp#148 and measured in dead time rather than in wrongness.
+   *
+   * A yield means this driver is done writing and the next poll is meant to carry on. But the lease
+   * it leaves behind is a fresh JOB_LEASE_SECONDS (updateJobProgress re-arms it on every mark), so
+   * claimJob refuses every poll for up to a full minute while NOTHING is driving the job. On the
+   * cp#124 cadence that is up to a minute added to a provision, per yield, for no reason anyone
+   * chose.
+   *
+   * These assertions fail on the pre-cp#158 provisioner: the lease is live and the claim is refused.
+   */
+  it("the job is claimable IMMEDIATELY after a yield, with no lease left to wait out", async () => {
+    const store = new MemoryStore();
+    const t = await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+
+    // THE CONTROL, taken BEFORE the yield: the same store, the same claim, on a job whose lease is
+    // live. If claimJob said yes to everything this suite would prove nothing about the release.
+    const control = await store.createProvisionJob("job_control", t.id, "provision");
+    await store.setJobRunning(control.id);
+    expect(await store.claimJob(control.id, 60)).toBe(false);
+
+    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(20_000), 15_000);
+    expect(res).toMatchObject({ ok: false, yielded: true });
+
+    const after = store.jobs.get("job_1")!;
+    // The row still reads as a live, progressing job to everyone else -- it just is not LEASED.
+    expect(after.status).toBe("running");
+    expect(after.error_message).toBeNull();
+    expect(after.lease_until).toBeNull();
+    expect(await store.claimJob("job_1", 60)).toBe(true);
+  });
+
+  it("a RESUMED driver hands it back too, so a multi-yield provision pays the wait exactly never", async () => {
+    const store = new MemoryStore();
+    const t = await seedTenant(store, { throughStudio: true });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    await store.setJobRunning(job.id);
+    const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"];
+
+    const res = await continueProvisionJob(deps(store), job.id, t, stepsDone, fakeClock(20_000), 15_000);
+
+    expect(res).toMatchObject({ ok: false, yielded: true });
+    expect(store.jobs.get("job_1")!.lease_until).toBeNull();
+    expect(await store.claimJob("job_1", 60)).toBe(true);
+  });
+
+  it("the heartbeat does NOT outlive the yield and re-arm the released lease", async () => {
+    // WHAT THIS PROVES, stated exactly: the interval is cleared, so no beat lands after the driver
+    // has gone. It does NOT prove the ORDER of stop-then-release inside the yield branch; that
+    // ordering guards a sub-millisecond interleaving (a beat landing between the release write and
+    // the clearInterval) that cannot be staged without instrumenting the timer, and it is written
+    // that way because the cost of getting it wrong is a full lease term of dead time.
+    vi.useFakeTimers();
+    try {
+      const store = new MemoryStore();
+      const t = await seedTenant(store);
+      const job = await store.createProvisionJob("job_1", t.id, "provision");
+
+      const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(20_000), 15_000);
+      expect(res).toMatchObject({ ok: false, yielded: true });
+
+      // Three heartbeat intervals past the yield. A timer that outlived its driver shows up here.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(store.jobs.get("job_1")!.lease_until).toBeNull();
+      expect(await store.claimJob("job_1", 60)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a driver whose job was already FINISHED by someone else cannot write to it on the way out", async () => {
+    // The terminal-job predicate, same as renewJobLease and updateJobProgress carry. finishJob NULLs
+    // the lease anyway, so what this actually proves is that the release does not touch a closed
+    // record: the store refuses it rather than the column happening to look right.
+    const store = new MemoryStore();
+    const t = await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    await store.finishJob(job.id, "failed", "d1_create", "taken by a poll");
+
+    expect(await store.releaseJobLease(job.id)).toBe(false);
+    expect(store.jobs.get("job_1")!.status).toBe("failed");
+  });
+});
+
 describe("continueProvisionJob", () => {
   it("RESUMES a job stranded after wfp_upload and drives it to succeeded, with NO key A", async () => {
     // Exactly run 4: the invocation died inside modules_install. Key A is gone forever by design.

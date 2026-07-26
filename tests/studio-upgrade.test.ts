@@ -23,7 +23,8 @@ import {
   type StudioUpgradeContext,
 } from "../src/tenant-studio-upgrade";
 import type { CfApi } from "../src/cf-api";
-import type { Tenant } from "../src/store";
+import type { ProvisionJob, Tenant } from "../src/store";
+import { jobHasLiveDriver } from "../src/store";
 import { encryptStudioToken, kekRing } from "../src/token-crypto";
 import { TENANT_STUDIO_VAR_DISPOSITION } from "../src/tenant-studio-env";
 import { MemoryStore } from "./memory-store";
@@ -149,6 +150,97 @@ async function contextFor(d: ProvisionDeps, tenant: Tenant, release = NEW_RELEAS
   if (!pre.ok) throw new Error(`preflight refused unexpectedly: ${pre.refusal.code}`);
   return pre.context;
 }
+
+// ---- cp#158: the lease on a studio upgrade means A DRIVER IS ALIVE ----------------------------
+//
+// THE SHAPE, inherited whole from cp#148. This driver marks at step boundaries only, and its steps
+// are unbounded remote work: a migration set, an asset upload session, the script PUT. Any one of
+// them longer than JOB_LEASE_SECONDS used to expire the lease under a perfectly healthy upgrade.
+//
+// WHAT THAT COSTS HERE is not a stolen job (no poll-driven continuation claims this kind); it is the
+// ONE-WRITER guard. The route refuses a second upgrade on jobHasLiveDriver, which reads lease_until,
+// so a lapsed lease admits a second driver PUTting different bytes into the same LIVE studio script.
+// claimReclaim and beginTeardown read the same column.
+describe("cp#158: the studio-upgrade lease is heartbeated while its driver lives", () => {
+  it("a second writer CANNOT take the row while the driver is still inside the script upload", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new MemoryStore();
+      const tenant = await seedLiveTenant(store);
+      const job = await seedJob(store, tenant);
+
+      // Two promises rather than a spin loop, for the reason the cp#148 test records: the steps
+      // ahead of this one settle on the event loop, so a tight poll starves what it waits for.
+      let entered!: () => void;
+      const inUpload = new Promise<void>((r) => {
+        entered = r;
+      });
+      let release!: () => void;
+      const slowUpload = new Promise<void>((r) => {
+        release = r;
+      });
+      const uploadUserWorker = vi.fn(async () => {
+        entered();
+        await slowUpload;
+      });
+      const d = deps(store, { scriptUploadCf: fakeCf({ uploadUserWorker }) });
+      const context = await contextFor(d, tenant);
+
+      // THE POSITIVE CONTROL: a second job takes the same 60s lease at the same instant with nobody
+      // driving it. Without this, a harness that never expires anything would make the assertion
+      // below pass for the wrong reason.
+      const idle = await seedJob(store, tenant, "job_control");
+      await store.setJobRunning(idle.id);
+
+      const run = upgradeTenantStudio(d, job.id, tenant, context);
+      await inUpload;
+      expect(uploadUserWorker).toHaveBeenCalledTimes(1);
+
+      // 90 seconds: a full 30s past the lease the last mark (assets_upload) left behind.
+      await vi.advanceTimersByTimeAsync(90_000);
+
+      const mid = (await store.getJob(job.id)) as ProvisionJob;
+      expect(jobHasLiveDriver(mid, Date.now())).toBe(true);
+      expect(await store.claimJob(job.id, 60)).toBe(false);
+
+      // The control, same clock, same lease length, no driver: claimable. So the false above is the
+      // heartbeat and not a clock that never moved.
+      expect(jobHasLiveDriver((await store.getJob(idle.id)) as ProvisionJob, Date.now())).toBe(false);
+      expect(await store.claimJob(idle.id, 60)).toBe(true);
+
+      release();
+      const outcome = await run;
+      expect(outcome.ok).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the beat DIES WITH THE DRIVER: a finished upgrade leaves no lease behind", async () => {
+    // The other half of the meaning. A heartbeat that outlived its invocation would lock the row for
+    // a lease term after the job is over, and would also be evidence that the timer is not coupled
+    // to the invocation the way the whole design claims.
+    vi.useFakeTimers();
+    try {
+      const store = new MemoryStore();
+      const tenant = await seedLiveTenant(store);
+      const job = await seedJob(store, tenant);
+      const d = deps(store);
+      const context = await contextFor(d, tenant);
+
+      const outcome = await upgradeTenantStudio(d, job.id, tenant, context);
+      expect(outcome.ok).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      const finished = (await store.getJob(job.id)) as ProvisionJob;
+      expect(finished.status).toBe("succeeded");
+      expect(finished.lease_until).toBeNull();
+      expect(jobHasLiveDriver(finished, Date.now())).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 // ---- preflight: every refusal must have written NOTHING ----------------------------------------
 

@@ -566,6 +566,19 @@ export class MemoryStore implements ControlPlaneStore {
     j.lease_until = this.stamp(Date.now() + leaseSeconds * 1000);
     return true;
   }
+  /**
+   * The yield hand-back (cp#158), mirroring the SQL: lease cleared, updated_at untouched, terminal
+   * job refused. Modelled faithfully because what the tests assert is that the NEXT caller can claim
+   * immediately, and a fake that cleared the lease unconditionally would also let a driver write to
+   * a job somebody else already finished.
+   */
+  async releaseJobLease(id: string) {
+    const j = this.jobs.get(id);
+    if (!j) return false;
+    if (j.status !== "queued" && j.status !== "running") return false;
+    j.lease_until = null;
+    return true;
+  }
   async updateJobProgress(id: string, step: string, stepsDoneJson: string) {
     const j = this.jobs.get(id);
     if (!j) return;

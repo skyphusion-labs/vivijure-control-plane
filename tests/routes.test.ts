@@ -884,16 +884,103 @@ describe("GET /api/tenant/:id/job -- drives PROVISION jobs only", () => {
     expect((await store.getTenantById("ten_abc123"))?.status).toBe("live");
   });
 
-  it("POSITIVE CONTROL: it DOES drive a provision job, so the guard above is not passing vacuously", async () => {
+  // A lease that expired in the past, in the D1 datetime shape the store writes and leaseIsLive
+  // reads. This is what a job whose driver is genuinely GONE looks like: it ran (status running,
+  // attempts 1) and then stopped beating (cp#148), which is the ONE state a poll may take over.
+  const expireLease = (jobId: string) => {
+    const j = store.jobs.get(jobId)!;
+    j.lease_until = new Date(Date.now() - 1_000).toISOString().replace("T", " ").slice(0, 19);
+  };
+
+  it("POSITIVE CONTROL: it DOES drive a provision job whose driver is gone, so the guards are not vacuous", async () => {
     const resume = armResume();
     const s = await accepted();
     await store.createTenant("ten_dd0001", "other", s.account.id, "provisioning");
     await store.createProvisionJob("job_p1", "ten_dd0001", "provision");
+    // A driver took it and died: running, lease lapsed, no heartbeat behind it.
+    await store.setJobRunning("job_p1");
+    expireLease("job_p1");
 
     await handle(req("/api/tenant/ten_dd0001/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
     await flush();
 
     expect(resume).toHaveBeenCalledWith("job_p1", expect.objectContaining({ id: "ten_dd0001" }), []);
+  });
+
+  // ---- cp#132: the server half of cp#124 ------------------------------------------------------
+  //
+  // THE DEFECT, and it is destructive rather than merely wrong: createProvisionJob INSERTs `queued`
+  // with a NULL lease and the driver is dispatched under waitUntil in the same request, so a poll
+  // landing in that window wins claimJob outright. The winner runs continueProvisionJob, which
+  // refuses anything short of wfp_upload by writing finishJob(failed) + setTenantStatus(failed) +
+  // a rollback that DELETES the D1, bucket and token the real driver is still creating. The client
+  // half (PR #129) made the UI wait; it could not stop a second tab, a script, or an operator
+  // rehearsal, because the refusal is written by whoever holds the lease.
+  //
+  // The cp#148 heartbeat does not reach this window: it opens BEFORE the first beat and before
+  // setJobRunning. What closes it is refusing to claim a job no driver has taken yet.
+  it("NEVER claims a provision job whose driver has not started yet (cp#132)", async () => {
+    const resume = armResume();
+    const s = await accepted();
+    await store.createTenant("ten_cc0001", "fresh", s.account.id, "provisioning");
+    await store.createProvisionJob("job_q1", "ten_cc0001", "provision");
+
+    const res = await handle(req("/api/tenant/ten_cc0001/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    await flush();
+
+    // Reported, not driven, and above all not TERMINALIZED.
+    expect(res.status).toBe(200);
+    expect(resume).not.toHaveBeenCalled();
+    const job = store.jobs.get("job_q1")!;
+    expect(job.status).toBe("queued");
+    expect(job.error_message).toBeNull();
+    expect(job.finished_at).toBeNull();
+    // The lease is the other half: a poll that claimed would have written one, and that claim is
+    // what makes the real driver own setJobRunning miss its predicate.
+    expect(job.lease_until).toBeNull();
+    expect((await store.getTenantById("ten_cc0001"))?.status).toBe("provisioning");
+  });
+
+  it("NEVER claims a provision job whose driver is alive and beating (cp#148 half, at the route)", async () => {
+    const resume = armResume();
+    const s = await accepted();
+    await store.createTenant("ten_cc0002", "beating", s.account.id, "provisioning");
+    await store.createProvisionJob("job_q2", "ten_cc0002", "provision");
+    // setJobRunning is the first thing a driver writes, and its heartbeat keeps this lease live.
+    await store.setJobRunning("job_q2");
+
+    const res = await handle(req("/api/tenant/ten_cc0002/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    await flush();
+
+    expect(res.status).toBe(200);
+    expect(resume).not.toHaveBeenCalled();
+    expect(store.jobs.get("job_q2")!.status).toBe("running");
+    expect((await store.getTenantById("ten_cc0002"))?.status).toBe("provisioning");
+  });
+
+  it("still declares a QUEUED job lost once the stale rule says so, so declining is not a wedge", async () => {
+    // The cost of declining, paid honestly: a job whose driver never arrives is nobody else to
+    // rescue, so the existing 10-minute lost-driver rule has to be the thing that ends it. If this
+    // failed, the fix above would have traded a destructive race for an eternal spinner.
+    const resume = armResume();
+    const s = await accepted();
+    await store.createTenant("ten_cc0003", "stalled", s.account.id, "provisioning");
+    await store.createProvisionJob("job_q3", "ten_cc0003", "provision");
+    const stalled = store.jobs.get("job_q3")!;
+    // Off the ROUTE clock (deps.now is fixed in this harness), not the wall clock: the stale rule
+    // compares updated_at against deps.now(), and a stamp taken from Date.now() reads as a job whose
+    // last progress is in the future.
+    stalled.updated_at = new Date(deps.now() - 11 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+
+    const res = await handle(req("/api/tenant/ten_cc0003/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    await flush();
+
+    expect(res.status).toBe(200);
+    expect(resume).not.toHaveBeenCalled();
+    const job = store.jobs.get("job_q3")!;
+    expect(job.status).toBe("failed");
+    expect(job.error_message).toContain("invocation lost");
+    expect((await store.getTenantById("ten_cc0003"))?.status).toBe("failed");
   });
 });
 

@@ -257,6 +257,36 @@ export function jobHasLiveDriver(job: ProvisionJob, nowMs: number): boolean {
   return leaseIsLive(job.lease_until, nowMs);
 }
 
+/**
+ * Has NO driver ever taken this job (cp#132)?
+ *
+ * THE DEFECT THIS NAMES. Every job kind is INSERTed `queued` with a NULL lease, and its driver is
+ * dispatched by the same request under waitUntil. Between those two facts sits a window in which
+ * the row says nobody holds this job while a driver is starting up, and claimJob -- correctly, for
+ * what it is -- reads the row alone: status in (queued, running) AND no live lease. So an early
+ * poller wins the claim outright, and on a provision that claim is destructive: the winner runs
+ * continueProvisionJob, which refuses anything short of wfp_upload by writing finishJob(failed) +
+ * setTenantStatus(failed) + a rollback that DELETES the half-built tenant, while the real driver is
+ * still provisioning it. Worse, the poll claim makes the driver own setJobRunning UPDATE miss its
+ * predicate (it requires a free lease), so the row never even records that a driver arrived.
+ *
+ * The cp#148 heartbeat does not close this one: it starts beating at the same instant, and the
+ * window is BEFORE the first beat and before setJobRunning.
+ *
+ * WHY `queued` IS THE HONEST TEST rather than a timing heuristic: setJobRunning is the only writer
+ * of `running` and it is the first store call every driver makes, so `queued` means exactly "no
+ * driver has ever claimed this row". Not "the driver is slow", not "the lease lapsed". A job that is
+ * `running` with a lapsed lease is the OTHER case entirely, and there the lease now means what it
+ * says (cp#148): the driver is gone, so terminalizing it is honest.
+ *
+ * What owns a queued job whose driver never arrives is the existing lost-driver rule
+ * (MAX_JOB_STALE_MS in index.ts), which reads updated_at and declares it lost with an attributable
+ * message. Slower than a poll racing it, and correct instead of destructive.
+ */
+export function jobAwaitsFirstDriver(job: ProvisionJob): boolean {
+  return job.status === "queued";
+}
+
 /** The generic refusal. Every tier gives a stranger THIS string and nothing more (enumeration). */
 export const SLUG_TAKEN_REASON = "that name is taken";
 
@@ -684,6 +714,20 @@ export interface ControlPlaneStore {
    * owns the job it is still working on.
    */
   renewJobLease(id: string, leaseSeconds: number): Promise<boolean>;
+  /**
+   * Hand the job back at a YIELD boundary (cp#158).
+   *
+   * A driver that yields is done writing, but its lease runs on for up to the remainder of
+   * JOB_LEASE_SECONDS, so the job sits un-drivable for up to a minute of pure dead time before the
+   * next poll can pick it up. That is latency, not a correctness bug, and this is the direct cure:
+   * the driver that knows it is leaving says so, instead of the next driver waiting out a lease
+   * nobody is holding.
+   *
+   * Like renewJobLease it leaves updated_at ALONE (liveness is not progress) and REFUSES a terminal
+   * job, so a driver whose job was finished by someone else cannot write to that closed record.
+   * Returns whether a row was actually released.
+   */
+  releaseJobLease(id: string): Promise<boolean>;
   /**
    * Record progress. REFUSES a terminal job (cp#148): a late mark from a driver whose job was
    * already failed by a poll would otherwise overwrite step / steps_done on the terminal record and

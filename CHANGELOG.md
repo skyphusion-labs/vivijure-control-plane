@@ -6,6 +6,36 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(provisioner): honest leases at both ends -- yield hand-back, upgrade heartbeat, no claim before the first driver (cp#158, cp#132)
+
+- **The yield left a lease nobody was holding (cp#158).** A driver that yields is out of invocation
+  budget with work left, and its last `mark()` had just re-armed `lease_until` for a full 60s, so the
+  job was un-drivable for up to a minute in which nothing was driving it. `releaseJobLease` lets the
+  driver that knows it is leaving clear its own lease, and the next poll claims immediately. It
+  leaves `updated_at` alone (a yield is not progress) and refuses a terminal job, exactly as the
+  cp#148 heartbeat does. The heartbeat is stopped BEFORE the release, or a queued beat re-arms what
+  was just cleared.
+- **The studio-upgrade driver now heartbeats too (cp#158).** It marked only at step boundaries and
+  its steps are unbounded remote work (a migration set, an asset upload session, the script PUT), so
+  a slow leg made a live upgrade read as driverless. Nothing poll-driven claims that job kind, so no
+  job is stolen; what breaks is the ONE-WRITER guard, since the route refuses a second upgrade on
+  `jobHasLiveDriver`. A lapsed lease there admits a second driver PUTting different bytes into the
+  same LIVE studio script. It takes the same exported `startLeaseHeartbeat`, not a second copy.
+- **A poll may not claim a job no driver has taken yet (cp#132, the server half of cp#124).** Every
+  job is INSERTed `queued` with a NULL lease and its driver is dispatched under `waitUntil` in the
+  same request; the cp#148 heartbeat cannot cover that window because it opens before the first beat.
+  An early poller -- a second tab, a script, an operator rehearsal -- won `claimJob` outright and ran
+  `continueProvisionJob`, whose pre-`wfp_upload` refusal writes `finishJob(failed)` +
+  `setTenantStatus(failed)` + a rollback that DELETES the D1, bucket and token the real driver is
+  still creating. The claim also made the driver own `setJobRunning` miss its predicate, so the row
+  never recorded that a driver arrived. `driveJobIfNeeded` now declines a `queued` job: report it,
+  drive nothing, write nothing. A `running` job with a lapsed lease is still claimed, because since
+  cp#148 that state honestly means the driver is gone.
+- **The cost, named:** a job whose driver never arrives is now ended by the existing 10-minute
+  lost-driver rule rather than by a poll racing it. A slow honest refusal costs a wait; a fast wrong
+  one costs a customer their half-built studio.
+- Docs: `docs/control-plane.md` (the provision job lease section carries all three).
+
 ## v1.12.0 -- 2026-07-26
 
 MINOR: the operator action that was missing under cp#136 -- a studio could be TOLD the video-finish tier is unreachable, but no writer in this plane could make one tier-absent, so the state could not be displayed on a live tenant. Carries NO schema change; migration 0011 shipped with v1.11.0.

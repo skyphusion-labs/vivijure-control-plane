@@ -618,7 +618,7 @@ workers running the old image and squatting the account worker slots (a 50-minut
 2026-07-25). **Cycle the workers** (`workersMax` to 0 and back), then verify the first job's worker
 image and `isStale` via `GET /v2/serverless/{id}/workers` before trusting the run.
 
-## The provision job lease, and why a driver heartbeats it (cp#148)
+## The provision job lease, and why a driver heartbeats it (cp#148, cp#158, cp#132)
 
 A provision does not fit in one Worker invocation, so the poll IS the engine: each `GET
 /api/tenant/:id/job` drives the job a little further under its own `waitUntil`, and
@@ -630,6 +630,8 @@ once. Three rules make that safe, and the third one had to be added.
 2. **A job with no progress for 10 minutes is declared LOST** and failed honestly, rather than left
    spinning forever.
 3. **A live driver renews its own lease every 20 seconds, for as long as its invocation lives.**
+4. **A driver that YIELDS hands the lease back** instead of leaving it to expire (cp#158).
+5. **A job no driver has taken yet is not claimable by a poll at all** (cp#132).
 
 Rule 3 is what makes `lease_until` mean *a driver is alive*. Before cp#148 the lease was written only
 by `setJobRunning` and by each step `mark()`, so it actually meant *a step boundary happened within
@@ -656,7 +658,7 @@ unmarked stretch, and a list of which ones are long enough is a thing that stops
 
 | column | question it answers | who writes it |
 | --- | --- | --- |
-| `lease_until` | is a driver ALIVE right now | `setJobRunning`, `claimJob`, each `mark()`, and the heartbeat |
+| `lease_until` | is a driver ALIVE right now | `setJobRunning`, `claimJob`, each `mark()`, the heartbeat, and the yield hand-back (which clears it) |
 | `updated_at` | when did this job last make PROGRESS | `setJobRunning`, `claimJob`, each `mark()` |
 
 The heartbeat renews `lease_until` and deliberately does NOT touch `updated_at`. Bumping both would
@@ -678,12 +680,65 @@ A driver that lost its job keeps running to the end of its invocation. `updateJo
 the terminal step, cannot re-arm the lease on a failed row, and cannot make a finished job read as
 live and progressing.
 
+### The yield hand-back (cp#158)
+
+A yield is a driver saying it is out of invocation budget with work left, and it is the normal way a
+provision crosses more than one invocation. The driver was leaving its lease behind on the way out:
+the last `mark()` had just re-armed it for a full `JOB_LEASE_SECONDS`, so the job sat un-drivable for
+up to a minute in which nothing at all was driving it. Pure latency, added to a provision, per yield.
+
+`releaseJobLease` is the cure and it is deliberately small: the driver that knows it is leaving
+clears its own lease, and the next poll claims immediately. Two properties are carried over from the
+heartbeat verbatim -- it leaves `updated_at` alone (a yield is not progress, and bumping it would push
+out the moment an unresumed job is declared lost), and it refuses a terminal job (a closed record is
+not writable by a driver that already lost it). The heartbeat is stopped BEFORE the release, or a
+beat still queued behind the write re-arms the lease that was just cleared.
+
+One consequence worth naming rather than discovering: `checkSlugAvailability` refuses a reclaim while
+a provision lease is live, so during that stale minute an owner re-provisioning their own slug got
+"that name is still being set up; try again in a minute" while no driver existed. They now get the
+reclaim. That is the column telling the truth, which is the whole point of cp#148.
+
+### The upgrade drivers heartbeat too (cp#158)
+
+`upgradeTenantModules` and `upgradeTenantStudio` run the same `startLeaseHeartbeat`. The studio
+upgrade in particular marks only at step boundaries and its steps are unbounded remote work (a
+migration set, an asset upload session, the script PUT), so any one of them running past the lease
+used to make the row read as driverless. Nothing poll-driven claims those job kinds, so no job gets
+stolen; what breaks instead is the ONE-WRITER guard, since the route refuses a second upgrade on
+`jobHasLiveDriver`. A lapsed lease there admits a second driver PUTting different bytes into the same
+LIVE studio script, which is the one way that route reaches a state nothing recorded.
+
+### A poll may not claim a job no driver has taken yet (cp#132)
+
+Every job kind is INSERTed `queued` with a NULL lease, and its driver is dispatched by the same
+request under `waitUntil`. The heartbeat cannot cover the window between those two facts, because the
+window opens before the first beat exists. Inside it `claimJob` matches on status and a free lease,
+so an early poller -- a second tab, a script, a curl loop, an operator rehearsal -- wins the claim
+outright. On a provision that win is destructive: the winner runs `continueProvisionJob`, which
+refuses anything short of `wfp_upload` by writing `finishJob(failed)` + `setTenantStatus(failed)` +
+a rollback that DELETES the D1, bucket and token the real driver is at that moment creating. The
+claim also makes the driver own `setJobRunning` miss its predicate, so the row never records that a
+driver arrived at all.
+
+`driveJobIfNeeded` therefore declines a `queued` job: report it, drive nothing, write nothing.
+`queued` is the honest test rather than a timing heuristic, because `setJobRunning` is the only
+writer of `running` and it is the first store call every driver makes. A `running` job with a lapsed
+lease is the other case entirely and is still claimed, since cp#148 made that state mean the driver
+is genuinely gone.
+
+The cost is paid on the rare job whose driver never arrives at all: it is now the 10-minute
+lost-driver rule that ends it rather than a poll racing it. That is the asymmetry that decides every
+lease question here -- a slow honest refusal costs a wait, and a fast wrong one costs a customer
+their half-built studio.
+
 ### What has NOT changed
 
 The first-poll delay is untouched. A poll that arrives later changes discovery time, not outcome, and
-an EARLIER first poll would have made the old race more likely rather than less. Yield boundaries are
-untouched as well: `runpod_endpoints` still suppresses the yield and carries through to `wfp_upload`
-in the same invocation, because a job yielded between those two is unresumable by a keyless poll.
+an EARLIER first poll would have made the old race more likely rather than less. The yield BOUNDARIES
+are untouched as well: `runpod_endpoints` still suppresses the yield and carries through to
+`wfp_upload` in the same invocation, because a job yielded between those two is unresumable by a
+keyless poll. cp#158 changed what a yielding driver does with its LEASE, not where it may yield.
 
 ## Verifying changes
 

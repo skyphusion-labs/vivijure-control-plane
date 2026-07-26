@@ -45,7 +45,7 @@
 // mean "idempotent". A release that adds NO migration re-runs this as a no-op.
 
 import { applyStudioMigrations } from "./migrate";
-import { type ProvisionDeps, type StudioBundleSource, uploadStudioAssets } from "./provisioner";
+import { type ProvisionDeps, type StudioBundleSource, startLeaseHeartbeat, uploadStudioAssets } from "./provisioner";
 import type { Tenant } from "./store";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
 import { withVideoFinishTierState } from "./video-finish-tier-state";
@@ -311,6 +311,22 @@ export async function upgradeTenantStudio(
   };
   const done: StudioUpgradeStep[] = [];
 
+  // THE LEASE MUST MEAN A DRIVER IS ALIVE HERE TOO (cp#158, the cp#148 pattern).
+  //
+  // This driver marks only at step boundaries, and three of its four steps are unbounded remote
+  // work: a D1 migration set, an asset upload session, and the script PUT. Any one of them running
+  // past JOB_LEASE_SECONDS let the lease lapse under a perfectly healthy upgrade, and lease_until is
+  // the column the ONE-writer guard reads (the route refuses a second upgrade on
+  // jobHasLiveDriver). A lapsed lease there is not cosmetic: it lets a second POST start a second
+  // driver PUTting different bytes into the SAME live studio script, which is the one way this
+  // route can reach a state nothing recorded. claimReclaim and beginTeardown read the same column
+  // and were reading it just as wrongly.
+  //
+  // No poll-driven continuation claims a studio_upgrade job today, which is why cp#148 could leave
+  // this for a follow-up rather than a fix. That is an argument about who ELSE reads the column, not
+  // about whether it tells the truth, and "the lease lies but nothing important reads it yet" is
+  // exactly the shape that became cp#148.
+  const stopHeartbeat = startLeaseHeartbeat(deps, jobId);
   try {
     await deps.store.setJobRunning(jobId);
 
@@ -475,5 +491,10 @@ export async function upgradeTenantStudio(
     // studio_release stays NULL: the tenant is not known to be uniformly at any release, and the job
     // row carries from_release so a rollback re-run has a target.
     return { ok: false, step: failedStep, message, result: null };
+  } finally {
+    // Every exit, terminal or thrown. The timer lifetime IS the invocation: when this driver dies
+    // the beat dies with it, the lease lapses within one interval, and only then does anything else
+    // get to act on this row.
+    stopHeartbeat();
   }
 }

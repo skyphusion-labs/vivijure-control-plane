@@ -319,8 +319,15 @@ export const JOB_LEASE_HEARTBEAT_MS = 20_000;
  * A failed renew is LOGGED, never thrown: losing the lease is information about the job, not a
  * reason to break a driver that is otherwise doing real work. The step it is in decides its own
  * fate, and the writes it is racing are now refused store-side.
+ *
+ * EXPORTED for the studio-upgrade driver (cp#158). That driver lives in its own file and beat
+ * nothing, so its lease said "a step boundary happened recently" while a slow migration or asset
+ * upload ran -- the pre-cp#148 meaning, on a route whose ONE-writer guard (job_in_progress, which
+ * reads jobHasLiveDriver) is the only thing standing between one live studio and two drivers PUTting
+ * different bytes into it. It takes THIS function rather than a second copy of it: one heartbeat
+ * shape, one place where the interval and the terminal-job refusal are decided.
  */
-function startLeaseHeartbeat(deps: ProvisionDeps, jobId: string): () => void {
+export function startLeaseHeartbeat(deps: ProvisionDeps, jobId: string): () => void {
   const timer = setInterval(() => {
     void deps.store
       .renewJobLease(jobId, JOB_LEASE_SECONDS)
@@ -702,7 +709,18 @@ export async function runProvisionJob(
     // Out of invocation budget, not broken: leave the job RUNNING with its progress persisted so the
     // next poll picks it up. Writing a failure here would turn "not finished yet" into "failed".
     if (e instanceof ProvisionYield) {
-      deps.log("provision.yielded", { tenant: tenant.id, after: e.after, elapsedMs: clock.now() - startedAt });
+      // cp#158: hand the lease back NOW rather than leaving it to expire. A yield means this driver
+      // is done writing, so the up-to-60s remainder of its lease is pure dead time before the next
+      // poll can drive. Order is load-bearing: stop the heartbeat FIRST, or a beat still queued
+      // behind this await re-arms the lease we just cleared and reinstates the whole delay.
+      stopHeartbeat();
+      const released = await deps.store.releaseJobLease(jobId);
+      deps.log("provision.yielded", {
+        tenant: tenant.id,
+        after: e.after,
+        elapsedMs: clock.now() - startedAt,
+        leaseReleased: released,
+      });
       return { ok: false, yielded: true, after: e.after };
     }
     const step =
@@ -721,8 +739,9 @@ export async function runProvisionJob(
     await rollbackFailedProvision(deps, tenant.id);
     return { ok: false, step, message };
   } finally {
-    // Stop beating on EVERY exit, success, failure and yield alike. A yield leaves the lease live
-    // for up to its remaining term, which is the pre-existing hand-off cadence the poller expects.
+    // Stop beating on EVERY exit: success, failure and yield alike. The yield path already stopped
+    // it (it has to, before releasing the lease -- cp#158), and calling the stopper twice is a
+    // no-op, which is cheaper than tracking whether it ran and getting THAT wrong.
     stopHeartbeat();
   }
 }
@@ -833,7 +852,19 @@ export async function continueProvisionJob(
     return { ok: true, status: "awaiting_invoke_key" };
   } catch (e) {
     if (e instanceof ProvisionYield) {
-      deps.log("provision.yielded", { tenant: tenant.id, after: e.after, elapsedMs: clock.now() - startedAt, resumed: true });
+      // cp#158: hand the lease back NOW rather than leaving it to expire. A yield means this driver
+      // is done writing, so the up-to-60s remainder of its lease is pure dead time before the next
+      // poll can drive. Order is load-bearing: stop the heartbeat FIRST, or a beat still queued
+      // behind this await re-arms the lease we just cleared and reinstates the whole delay.
+      stopHeartbeat();
+      const released = await deps.store.releaseJobLease(jobId);
+      deps.log("provision.yielded", {
+        tenant: tenant.id,
+        after: e.after,
+        elapsedMs: clock.now() - startedAt,
+        resumed: true,
+        leaseReleased: released,
+      });
       return { ok: false, yielded: true, after: e.after };
     }
     const step = e instanceof ProvisionFailure ? e.step : e instanceof TenantModuleError ? e.step : inferStep(done);
