@@ -6,6 +6,31 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(hosted): the abuse-report-url readback raced edge propagation (cp#164)
+
+- **Found by running the cp#164 acceptance, not by reading code.** The first live converge on the
+  testbed bound the var cleanly (19 bindings to 20, nothing stranded, all four secrets intact) and
+  the studio served no `host.abuse_report_url`, so the route answered **409 and told the operator to
+  move the studio bytes**. Sixty seconds later the same call returned `reader_live: true` with the
+  URL, twice in a row. Nothing about the studio had changed: the settings PATCH had not reached the
+  isolate answering the next dispatch.
+- That is the cf#114 lesson arriving from a new direction ("the secrets PUT returning 200 does NOT
+  mean the edge serves the key yet"), and the first cut of this route did not apply it to its own
+  readback. The cost ran the wrong way: an operator following that 409 would move a live tenant onto
+  a new release to fix a problem that did not exist.
+- The confirm is now **bounded-retried** (`READBACK_PROBE_MS` 2500 / `READBACK_BUDGET_MS` 15000), the
+  first read still happens immediately so a current studio stays instant, and the response carries
+  `readback_attempts` and `readback_elapsed_ms` as numbers rather than as a sentence.
+- **Three outcomes now:** 200 bound and observed; **202** bound, nothing stranded, not yet observed;
+  409 a genuine strand only. The 202 names both possible causes (the edge has not caught up, or the
+  bundle predates the vivijure-cf v1.10.0 reader) because from the plane they are indistinguishable,
+  and says re-run first since the route is idempotent. `ok` and `reader_live` stay false there, so
+  nothing machine-readable claims an unobserved success. 202 is the shape the invoke-key route
+  already uses for "stored, not yet proven".
+- `docs/open-the-doors-checklist.md`: the hosted tenant-studio abuse-link row flips to **DONE**,
+  riding that live evidence, with the eyeball-the-panel residual recorded rather than glossed.
+- Carries NO schema change.
+
 ## v1.15.0 -- 2026-07-27
 
 MINOR: the two ends of a hosted tenant that a human has to reach. A tenant studio can finally show a reporter where to go (cp#164), and an operator repair can finally be finished rather than stranding at a route only the account owner can call (cp#169). Two new admin routes, two new owner-facing surfaces, and new tenant-visible behaviour, hence MINOR.

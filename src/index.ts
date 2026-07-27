@@ -40,6 +40,7 @@ import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "
 import { parseInventoryBody, reconcileRunPod, TENANT_PAGE_LIMIT } from "./reconcile-runpod";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
+import { ABUSE_REPORT_URL_VAR } from "./tenant-abuse-report";
 import {
   HANDOFF_TOKEN_PARAM,
   burnInvokeKeyHandoff,
@@ -1614,13 +1615,43 @@ async function adminRoutes(
       }),
     );
 
-    // 409 when the readback disagrees with the intent, including the READER FLOOR: a studio running
-    // bytes older than the vivijure-cf v1.10.0 reader takes the var and shows nobody anything, and
-    // `reader_live: false` is that fact. A 200 carrying ok:false reads as success to anything that
-    // checks status codes, and "we advertised an intake path that reaches no reader" is exactly the
-    // outcome this route exists to make impossible to miss. The fix is to move the studio bytes
-    // (POST .../upgrade-studio) and re-run; nothing here is repaired by setting the var again.
-    return json({ tenant_id: tenant.id, slug: tenant.slug, ...result }, result.ok ? 200 : 409);
+    // THREE OUTCOMES, and the middle one was learned on the live testbed (cp#164 acceptance run).
+    //
+    //   200  bound AND the studio serves it. Done.
+    //   202  bound, nothing stranded, but the studio had not served it by the end of the confirm
+    //        budget. The first cut of this route answered 409 here and told the operator to move the
+    //        studio bytes -- and the live run proved that instruction can be flat wrong: the very
+    //        first converge on the testbed reported exactly this and the SAME call succeeded sixty
+    //        seconds later, unchanged. The binding IS set; either the edge has not picked it up yet
+    //        or the bundle predates the reader, and from here those are indistinguishable. So the
+    //        answer names both and says re-run, which is cheap because this route is idempotent.
+    //        202 is the same shape the invoke-key route already uses for "stored, not yet proven".
+    //   409  a genuine strand: a binding or secret present before and absent after. That is the
+    //        outcome this route exists to make impossible to miss, and it keeps the hard status.
+    //
+    // `ok` stays FALSE on the 202 and `reader_live` stays false, so nothing machine-readable claims
+    // a success that was not observed.
+    const stranded = result.missing_bindings.length > 0 || result.missing_secrets.length > 0;
+    const status = result.ok ? 200 : stranded ? 409 : 202;
+    return json(
+      {
+        tenant_id: tenant.id,
+        slug: tenant.slug,
+        ...result,
+        ...(status === 202
+          ? {
+              message:
+                "the binding IS set on this studio and nothing was stranded, but it had not served " +
+                `${ABUSE_REPORT_URL_VAR} back within ${result.readback_elapsed_ms}ms ` +
+                `(${result.readback_attempts} checks). Either the edge has not picked the binding up ` +
+                "yet, or this studio runs a bundle that predates the vivijure-cf v1.10.0 reader. " +
+                "Re-run this route to tell them apart: it is idempotent, and a re-run that still " +
+                "reports this means the studio bytes need moving (POST .../upgrade-studio).",
+            }
+          : {}),
+      },
+      status,
+    );
   }
 
   // ---- cp#169: hand the OWNER a one-time link to install a fresh invoke key -------------------

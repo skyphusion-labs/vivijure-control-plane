@@ -33,6 +33,7 @@ import {
   ABUSE_REPORT_ASSET,
   ABUSE_REPORT_PATH,
   ABUSE_REPORT_URL_VAR,
+  READBACK_BUDGET_MS,
   abuseReportUrlBindings,
   applyAbuseReportUrl,
   hostedAbuseReportUrl,
@@ -119,6 +120,14 @@ function studio(): ProvisionDeps["callTenantStudio"] {
   }) as unknown as ProvisionDeps["callTenantStudio"];
 }
 
+/**
+ * A clock the sleep MOVES, so the readback retry budget is exercised without a real wait.
+ *
+ * This is the seam that makes the cp#164 propagation-race fix testable at all: the loop is bounded
+ * by wall time, so a test that could not move the clock could only assert the happy path.
+ */
+let clock: number;
+
 function deps(c: Census = census(), over: Partial<ProvisionDeps> = {}): ProvisionDeps {
   return {
     store,
@@ -129,7 +138,10 @@ function deps(c: Census = census(), over: Partial<ProvisionDeps> = {}): Provisio
     namespace: "vivijure-tenants",
     kek: RING,
     abuseReportUrl: URL_OURS,
-    now: () => Date.parse("2026-07-27T12:00:00.000Z"),
+    now: () => clock,
+    sleep: async (ms: number) => {
+      clock += ms;
+    },
     log: () => undefined,
     callTenantStudio: studio(),
     ...over,
@@ -151,6 +163,7 @@ const env = (host: string): ControlPlaneEnv => ({ CONTROL_PLANE_HOST: host }) as
 
 beforeEach(() => {
   store = new MemoryStore();
+  clock = Date.parse("2026-07-27T12:00:00.000Z");
   patched = [];
   // Default: a v1.10.0-or-later studio with no var yet, which then serves what the plane bound.
   served = [null, URL_OURS];
@@ -324,7 +337,7 @@ describe("the existing-tenant door: converging a live studio", () => {
     expect(result.served_url_after).toBe(URL_OURS);
   });
 
-  it("REFUSES green when the studio does not project it back (the reader floor)", async () => {
+  it("REFUSES green when the studio NEVER projects it back, after the whole retry budget", async () => {
     // A bundle older than the vivijure-cf v1.10.0 reader takes the var and shows nobody anything.
     // That is the cf#98 / cp#112 failure family -- applied and reaching no one -- and the ONLY
     // honest detection is asking the studio afterwards, because the panel emits the key only when
@@ -342,6 +355,50 @@ describe("the existing-tenant door: converging a live studio", () => {
     expect(result.missing_bindings).toEqual([]);
     expect(result.reader_live).toBe(false);
     expect(result.ok).toBe(false);
+  });
+
+  it("RETRIES the readback, so a studio that catches up a moment later reports GREEN", async () => {
+    // THE LIVE FINDING (cp#164 acceptance run, 2026-07-27). The first converge on the testbed bound
+    // the var cleanly and the studio still served nothing; sixty seconds later the same call
+    // returned reader_live true, twice. The settings PATCH had not reached the isolate answering the
+    // next dispatch. Without this retry the route reports a SUCCESSFUL converge as a failure and
+    // tells the operator to move a live tenant's bytes for no reason.
+    served = [null, null, null, URL_OURS];
+    const t = await seedTenant();
+    const d = deps();
+    const pre = await preflightAbuseReportUrl(d, t);
+    if (!pre.ok) throw new Error("preflight refused: " + pre.refusal.code);
+    const result = await applyAbuseReportUrl(d, t, pre.context);
+
+    expect(result.reader_live).toBe(true);
+    expect(result.ok).toBe(true);
+    // CONTROL: it really did have to ask more than once, so this is the retry working and not the
+    // first read happening to succeed.
+    expect(result.readback_attempts).toBeGreaterThan(1);
+    expect(result.readback_elapsed_ms).toBeGreaterThan(0);
+  });
+
+  it("does NOT sleep when the very first read already sees it", async () => {
+    // The common case must stay instant: an operator converging a current studio should not pay a
+    // retry budget for a race that did not happen.
+    const t = await seedTenant();
+    const d = deps();
+    const pre = await preflightAbuseReportUrl(d, t);
+    if (!pre.ok) throw new Error("preflight refused: " + pre.refusal.code);
+    const result = await applyAbuseReportUrl(d, t, pre.context);
+    expect(result.readback_attempts).toBe(1);
+    expect(result.readback_elapsed_ms).toBe(0);
+  });
+
+  it("gives up INSIDE the budget rather than running forever", async () => {
+    served = [null, null];
+    const t = await seedTenant();
+    const d = deps();
+    const pre = await preflightAbuseReportUrl(d, t);
+    if (!pre.ok) throw new Error("preflight refused: " + pre.refusal.code);
+    const result = await applyAbuseReportUrl(d, t, pre.context);
+    expect(result.readback_elapsed_ms).toBeLessThanOrEqual(READBACK_BUDGET_MS);
+    expect(result.readback_attempts).toBeGreaterThan(1);
   });
 
   it("REFUSES green when the studio echoes something other than what we bound", async () => {

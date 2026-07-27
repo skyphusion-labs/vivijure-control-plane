@@ -86,6 +86,8 @@ const CLEAN_ABUSE_URL = {
   served_url_before: null as string | null,
   served_url_after: "https://studio.example.com/report-abuse" as string | null,
   reader_live: true,
+  readback_attempts: 1,
+  readback_elapsed_ms: 0,
 };
 
 /** A clean cp#136 detach readback, shaped like the real one (same discipline as CLEAN_REFRESH). */
@@ -2561,6 +2563,7 @@ describe("POST /api/admin/tenants/:id/abuse-report-url (cp#164)", () => {
       "bindings_before", "bindings_after", "secrets_before", "secrets_after",
       "missing_bindings", "missing_secrets",
       "served_url_before", "served_url_after", "reader_live",
+      "readback_attempts", "readback_elapsed_ms",
     ]);
     expect(store.audit.map((a) => a.action)).toEqual(["tenant.set_abuse_report_url"]);
     // The same care standard cp#112 sets: a live tenant keeps serving, on the same release.
@@ -2569,22 +2572,49 @@ describe("POST /api/admin/tenants/:id/abuse-report-url (cp#164)", () => {
     expect(after?.studio_release).toBe("v1.10.0");
   });
 
-  it("409s the READER FLOOR: the var is bound and the studio is too old to project it", async () => {
-    // The failure family this route exists not to join: a change that looks applied and reaches
-    // nobody. A 200 here would tell an operator the tenant now advertises an intake path when its
-    // panel cannot render one, and that claim is the whole point of the issue.
+  it("202s an unconfirmed readback: bound, nothing stranded, not yet observed", async () => {
+    // THE LIVE CORRECTION (cp#164 acceptance run). This answered 409 and told the operator to move
+    // the studio bytes -- and the testbed proved that instruction can be flat wrong: the first
+    // converge reported exactly this shape and the SAME call succeeded a minute later, unchanged.
+    // 202 is the repo's existing "stored, not yet proven" shape (the invoke-key route), and the
+    // message names BOTH possible causes because from the plane they are indistinguishable.
     await existingTenant();
-    // The seam SUCCEEDED (ok:true): the write happened. It is the READBACK that says the studio
-    // shows nobody anything, which is a different fact from a refusal and answers differently.
     wiring.setAbuseReportUrl = vi.fn(async () => ({
       ok: true,
-      result: { ...CLEAN_ABUSE_URL, ok: false, reader_live: false, served_url_after: null },
+      result: {
+        ...CLEAN_ABUSE_URL,
+        ok: false,
+        reader_live: false,
+        served_url_after: null,
+        readback_attempts: 6,
+        readback_elapsed_ms: 15000,
+      },
+    }));
+    const res = await call();
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { reader_live: boolean; ok: boolean; message: string };
+    // Nothing machine-readable claims a success that was not observed.
+    expect(body.reader_live).toBe(false);
+    expect(body.ok).toBe(false);
+    // The message must name the re-run AND the bytes move, in that order of likelihood.
+    expect(body.message).toMatch(/binding IS set/);
+    expect(body.message).toMatch(/[Rr]e-run/);
+    expect(body.message).toMatch(/v1\.10\.0/);
+    // Still audited: the write HAPPENED, and an operator reading the log needs to see it did.
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.set_abuse_report_url"]);
+  });
+
+  it("409s a genuine STRAND, which keeps the hard status", async () => {
+    // The outcome this route exists to make impossible to miss: a binding or secret that was there
+    // before and is not there after. That is not a propagation lag and must not soften to a 202.
+    await existingTenant();
+    wiring.setAbuseReportUrl = vi.fn(async () => ({
+      ok: true,
+      result: { ...CLEAN_ABUSE_URL, ok: false, missing_bindings: ["DB"], reader_live: false },
     }));
     const res = await call();
     expect(res.status).toBe(409);
-    expect((await res.json() as { reader_live: boolean }).reader_live).toBe(false);
-    // Still audited: the write HAPPENED, and an operator reading the log needs to see it did.
-    expect(store.audit.map((a) => a.action)).toEqual(["tenant.set_abuse_report_url"]);
+    expect((await res.json() as { missing_bindings: string[] }).missing_bindings).toEqual(["DB"]);
   });
 
   it("passes a REFUSAL through with its own code and status, having written nothing", async () => {

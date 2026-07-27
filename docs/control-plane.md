@@ -1355,9 +1355,34 @@ emits `host.abuse_report_url` **only when the var is already set**, so its absen
 nothing. The honest check runs the other way: write, then ask the studio what it serves. A studio
 that echoes the URL back has proven the reader is live in the bytes it runs.
 
-`reader_live: false` in the response is that fact, and the route answers **409**: the fix is to move
-the studio bytes (`POST .../upgrade-studio`) and re-run, not to set the var again. A 200 there would
-tell an operator the tenant advertises an intake path when its panel cannot render one.
+### The readback RACES edge propagation (measured, 2026-07-27)
+
+The first live converge on `rollins-e2e` bound the var cleanly (19 bindings to 20, nothing stranded,
+all four secrets intact) and the studio served no `host.abuse_report_url`. Sixty seconds later the
+same call returned `reader_live: true` with the URL, twice in a row. Nothing about the studio
+changed: the settings PATCH had simply not reached the isolate answering the next dispatch.
+
+That is the cf#114 lesson from a new direction ("the secrets PUT returning 200 does NOT mean the
+edge serves the key yet"), and the first cut of this route did not apply it to its own readback. The
+cost was in the wrong direction: it answered 409 and told the operator to move a live tenant's bytes
+to fix a problem that did not exist. The confirm is now bounded-retried
+(`READBACK_PROBE_MS` / `READBACK_BUDGET_MS`), and the response carries `readback_attempts` and
+`readback_elapsed_ms` as numbers.
+
+### Three outcomes
+
+| status | meaning |
+|---|---|
+| **200** | bound AND the studio serves it |
+| **202** | bound, nothing stranded, not yet observed within the confirm budget |
+| **409** | a genuine STRAND: a binding or secret present before and absent after |
+
+The 202 names BOTH possible causes, because from the plane they are indistinguishable: the edge has
+not picked the binding up yet, or the bundle predates the v1.10.0 reader. It says re-run first (this
+route is idempotent, so that costs nothing) and move the studio bytes only if a re-run still reports
+it. `ok` and `reader_live` both stay false there, so nothing machine-readable claims a success that
+was not observed. 202 is the same shape the invoke-key route already uses for "stored, not yet
+proven".
 
 `ABUSE_REPORT_URL` is deliberately `conditional` rather than `provisioned` in
 `src/tenant-studio-env.ts`. `provisioned` joins `REQUIRED_TENANT_STUDIO_VARS`, which the MODULE
