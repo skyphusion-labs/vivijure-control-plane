@@ -54,6 +54,23 @@ export function d1Over(db: DatabaseSync): any {
       };
       return api;
     },
+    // Added for the cp#189 credit capture, which needs the hold-settle and the debit-append to be
+    // ONE transaction. D1 documents batch() as an implicit transaction, so the shim uses a REAL
+    // SQLite transaction rather than looping the statements bare -- looping them would silently make
+    // the test pass for a store method whose entire correctness claim is atomicity, which is the
+    // paper-over this harness exists not to do.
+    async batch(statements: any[]) {
+      db.exec("BEGIN");
+      try {
+        const out = [];
+        for (const s of statements) out.push(await s.run());
+        db.exec("COMMIT");
+        return out;
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+    },
   };
 }
 
