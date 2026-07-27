@@ -6,6 +6,43 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(hosted): per-tenant AI Gateway token on plan-enhance (cf#56)
+
+- `plan-enhance` joins `TENANT_MODULE_CATALOG`, so hosted tenants get the Opus director pass on OUR
+  unified billing through the DEDICATED `vivijure-hosted` gateway, with a per-tenant `CF_AIG_TOKEN`
+  making that spend attributable and revocable one tenant at a time.
+- **`TenantModuleSpec.endpointKey` is now optional.** plan-enhance is not RunPod-backed, and an absent
+  key is the honest encoding rather than a sentinel endpoint existing only to satisfy a type. A spec
+  that DOES declare an endpointKey the tenant lacks still fails loudly, unchanged and tested.
+- **Bindings are BOTH or NEITHER.** `pickProvider` returns `opus` only when `GATEWAY_ID` and
+  `CF_AIG_TOKEN` are both present, so a half-bound module is a silent permanent fallback to the free
+  local provider, not a partial feature. `AI` is bound unconditionally because the local fallback
+  needs it too. The unconfigured case logs `module.ai_gateway_unconfigured`.
+- **Revocation is wired on every path:** revoke-then-mint at provision AND at upgrade/converge (an
+  existing tenant GAINS the module on converge, and a module shipped without its credential is one
+  that quietly runs on the wrong provider), plus revoke at teardown. By deterministic NAME, so no
+  migration and no new column: unlike the R2 credential, whose id doubles as the S3 access key id,
+  this token id is only ever needed in order to revoke.
+- **`TENANT_AI_GATEWAY_ID`** names the gateway. Unset = no gateway, and plan-enhance degrades to the
+  free local Workers AI provider, which is a genuine working fallback. Never point it at
+  `skyphusion-llm`; that is prism gateway and sharing it would defeat per-tenant attribution.
+- Fixed while adding the catalog entry: the module-upgrade preflight derived its required-endpoint
+  set from the whole catalog, so an endpoint-less spec would have refused EVERY upgrade with
+  "missing the endpoint(s) needed by: plan-enhance". Now only endpoint-backed specs are checked.
+- **Live-proven, not assumed:** an `ai` binding attaches to a Workers-for-Platforms user worker
+  (uploaded into a throwaway namespace, read BACK off the API as `AI [ai]`, torn down); the
+  provisioner credential mints an `AI Gateway Run` token (group id read off the API, never guessed);
+  `vivijure-hosted` ENFORCES it (valid token 200, bogus token 401 at the gateway, no header 401);
+  and revocation genuinely stops access, with a **~8-16s propagation lag**.
+- **KILL-SWITCH RUNBOOK FACT:** revoking a tenant token is real but NOT instant (~8-16s). An operator
+  pulling it during an incident must not read the first success as failure; re-check, bounded. Same
+  family as the cf#114 edge-propagation lesson.
+
+**DEPLOY ORDERING (this is load-bearing):** the catalog entry is only safe once a studio release
+actually PUBLISHES the plan-enhance bundle (vivijure-cf#56, PR #270). `moduleBundle.fetch` throws on
+an older release, and while that failure is loud rather than silent, it would fail EVERY provision.
+Merge vivijure-cf#270, cut a studio release, and only then deploy this pinned at that tag or later.
+
 ### feat(admin): aggregate per-tenant R2 usage with an honest alert verdict (cf#56)
 
 - `GET /api/admin/r2-usage` returns per-tenant bucket usage, an aggregate, and an alert verdict

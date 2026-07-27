@@ -24,6 +24,12 @@ export interface MintedR2Credential {
 
 export interface TokenMinter {
   mintBucketToken(name: string, bucket: string): Promise<MintedR2Credential>;
+  /**
+   * Mint this tenant AI Gateway Run token (cf#56), the per-tenant key for the Opus director pass.
+   * Same custody rule as the R2 credential: the value goes straight into a worker secret and is
+   * dropped, never persisted control-plane side.
+   */
+  mintAigToken(name: string): Promise<MintedR2Credential>;
   revoke(tokenId: string): Promise<void>;
   /**
    * Revoke by deterministic name when the id was never persisted (cf#91).
@@ -40,6 +46,13 @@ export interface TokenMinter {
 export const R2_BUCKET_ITEM_READ = "6a018a9f2fc74eb6b293b0c548f38b39";
 export const R2_BUCKET_ITEM_WRITE = "2efd5506f9c8494dacb1fa10a3e7d5b6";
 
+/**
+ * AI Gateway Run (cf#56). READ OFF the account permission-groups endpoint, never guessed, per the
+ * rule that produced the R2 ids above. Account-scoped: the permission model has no per-gateway
+ * resource, so the tenant boundary is the token itself.
+ */
+export const AI_GATEWAY_RUN = "644535f4ed854494a59cb289d634b257";
+
 /** The real minter. */
 export class CfTokenMinter implements TokenMinter {
   constructor(
@@ -49,6 +62,10 @@ export class CfTokenMinter implements TokenMinter {
 
   async mintBucketToken(name: string, bucket: string): Promise<MintedR2Credential> {
     return await this.cf.mintR2Token(name, bucket, this.permissionGroupIds);
+  }
+
+  async mintAigToken(name: string): Promise<MintedR2Credential> {
+    return await this.cf.mintAigRunToken(name, [AI_GATEWAY_RUN]);
   }
 
   async revoke(tokenId: string): Promise<void> {
