@@ -136,7 +136,18 @@ export class MemoryStore implements ControlPlaneStore {
   async hasAcceptedAup(account_id: string, version: string) {
     return this.aup.some((r) => r.account_id === account_id && r.aup_version === version);
   }
-  async recordAupAcceptance(account_id: string, aup_version: string, aup_sha256: string, ip_hash: string | null) {
+  // The 5th parameter is accepted and deliberately not stored. TypeScript lets an implementation
+  // declare FEWER parameters than its interface, so this fake used to end at ip_hash -- which
+  // compiled, but made a correct 5-argument call a type error at any site holding the concrete
+  // MemoryStore type. Taking the parameter costs nothing and removes that trap; what the fake does
+  // with user_agent is a separate question nothing currently asserts on.
+  async recordAupAcceptance(
+    account_id: string,
+    aup_version: string,
+    aup_sha256: string,
+    ip_hash: string | null,
+    _user_agent?: string | null,
+  ) {
     if (!(await this.hasAcceptedAup(account_id, aup_version))) {
       this.aup.push({ account_id, aup_version, aup_sha256, ip_hash });
     }

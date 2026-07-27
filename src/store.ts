@@ -964,6 +964,15 @@ export interface CreditStore {
   getHoldByJobRef(tenantId: string, jobRef: string): Promise<import("./credits").HoldRow | null>;
 
   /**
+   * Recent holds for a tenant, newest first.
+   *
+   * Added for the READ surface (cp#192), not for the gate. A failed job leaves a released hold and NO
+   * ledger row, so a statement built from money rows alone shows a tenant nothing where their failed
+   * render should be -- silence that reads as a lost record rather than as a deliberate non-charge.
+   */
+  listHolds(tenantId: string, limit: number): Promise<import("./credits").HoldRow[]>;
+
+  /**
    * Captured holds carrying no debit row. Should always be empty (capture is one atomic batch); it
    * is queryable anyway, because "should be empty" is a claim and an empty result is the proof.
    */

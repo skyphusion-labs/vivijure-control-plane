@@ -31,7 +31,7 @@ import {
   type TeardownOutcome,
 } from "./provisioner";
 import { convergeTenantTemplateImages, createTenantEndpoints } from "./runpod";
-import type { ControlPlaneStore, Tenant } from "./store";
+import type { ControlPlaneStore, CreditStore, Tenant } from "./store";
 import {
   preflightRunPodReprovision,
   reprovisionTenantRunPod,
@@ -279,6 +279,14 @@ export interface ControlPlaneDeps {
    * will ever run. That absence-refusal is deliberate and tested, same rule as the admin gate.
    */
   provisioner?: ProvisionerWiring;
+  /**
+   * The credit ledger (cp#189). OPTIONAL for the same reason `provisioner` is: a deploy without it is
+   * a valid deployment shape, and the money routes refuse with an honest 503 rather than answering
+   * from nothing. A balance route that returned zeros on an unwired store would be the worst possible
+   * failure here -- an unknown wearing a number's clothes, on the one surface where that decides
+   * whether someone can work.
+   */
+  credits?: CreditStore;
 }
 
 export function productionDeps(env: ControlPlaneEnv): ControlPlaneDeps {
@@ -289,6 +297,10 @@ export function productionDeps(env: ControlPlaneEnv): ControlPlaneDeps {
     fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
     now: () => Date.now(),
     provisioner: provisionerWiring(env, store),
+    // The SAME D1Store instance. D1Store implements both interfaces, so production has one object and
+    // one connection; the split into two interfaces is about what callers may depend on, not about
+    // there being two stores.
+    credits: store,
   };
 }
 
