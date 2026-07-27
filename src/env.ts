@@ -76,6 +76,16 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    */
   CREDITS_ENFORCING?: string;
 
+  /**
+   * Ceiling on ONE operator credit, in micro-USD. Unset = the documented default (USD 100).
+   *
+   * A typo catcher, not a policy: nobody ruled a maximum comp, and the hazard being bounded is a
+   * stray keystroke turning USD 10.00 into USD 10,000.00 on the one surface that mints money from
+   * nothing. Above it the route refuses and names this knob, so a genuinely large credit is a
+   * deliberate act with a config change behind it.
+   */
+  MANUAL_CREDIT_CEILING_MICRO_USD?: string;
+
   // SSO client identifiers. A provider is OFFERED only when its id AND secret are both present,
   // which is what makes /api/platform/config a projection rather than a hardcoded list.
   GOOGLE_OAUTH_CLIENT_ID?: string;
