@@ -49,7 +49,7 @@ import { type ProvisionDeps, type StudioBundleSource, startLeaseHeartbeat, uploa
 import type { Tenant } from "./store";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
 import { withAbuseReportUrl } from "./tenant-abuse-report";
-import { withStorageQuota } from "./tenant-storage-quota";
+import { resolveStorageQuota, withStorageQuota } from "./tenant-storage-quota";
 import { withVideoFinishTierState } from "./video-finish-tier-state";
 import { decryptStudioToken } from "./token-crypto";
 
@@ -271,14 +271,9 @@ export async function preflightStudioUpgrade(
   // would silently uncap a tenant that was capped a moment ago. Refuse before the bytes move, not
   // after: the same reason the provision path refuses, with more at stake because there is a live
   // tenant on the other side.
-  if (deps.storageQuota.invalid !== null) {
-    return refuse(
-      "plane_storage_quota_malformed",
-      409,
-      `this plane configures TENANT_R2_STORAGE_QUOTA_BYTES="${deps.storageQuota.invalid}", which is ` +
-        "not a positive integer number of BYTES. This upgrade re-derives that var onto the studio, " +
-        "so it would leave the tenant uncapped. Fix the deploy var (bytes only, no units) and re-run",
-    );
+  const resolvedQuota = resolveStorageQuota(deps.storageQuota, tenant);
+  if (resolvedQuota.blocked !== null) {
+    return refuse("plane_storage_quota_malformed", 409, resolvedQuota.blocked);
   }
 
   const hostBefore = await servedHost(deps, tenant.script_name, studioApiToken);
@@ -428,7 +423,10 @@ export async function upgradeTenantStudio(
         ),
         deps.abuseReportUrl,
       ),
-      deps.storageQuota.bytes,
+      // Re-derived from the RECORD-plus-plane resolution, not from the plane alone: a tenant that
+      // recorded its own ceiling (or recorded that it has none) must not have that decision
+      // overwritten by a bytes move it did not ask for.
+      resolveStorageQuota(deps.storageQuota, tenant).bytes,
     );
 
     try {

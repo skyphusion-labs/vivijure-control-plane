@@ -78,6 +78,8 @@ function tenantRow(slug: string, status: TenantLifecycle, endpointsJson: string 
     video_finish_unreachable: 0,
     video_finish_unreachable_reason: null,
     video_finish_unreachable_at: null,
+  r2_storage_quota_mode: null,
+  r2_storage_quota_bytes: null,
     teardown_at: status === "deleted" ? "2026-07-20T00:00:00.000Z" : null,
     teardown_failures: status === "deleted" ? "[]" : null,
     reclaim_lease_until: null,

@@ -27,6 +27,8 @@ import type { Tenant } from "../src/store";
 import { encryptStudioToken, kekRing } from "../src/token-crypto";
 import {
   QUOTA_READBACK_BUDGET_MS,
+  resolveStorageQuota,
+  tenantStorageQuotaOverride,
   STORAGE_QUOTA_VAR,
   STORAGE_USAGE_PATH,
   applyStorageQuota,
@@ -223,6 +225,63 @@ describe("the projection: plane config -> studio var", () => {
   });
 });
 
+describe("two tenant classes: the plane number is a DEFAULT, not the answer (cp#173)", () => {
+  const row = (mode: string | null, bytes: string | null = null) => ({
+    r2_storage_quota_mode: mode,
+    r2_storage_quota_bytes: bytes,
+  });
+  const plane = { bytes: QUOTA, invalid: null };
+
+  it("inherits the plane default when the tenant records nothing", () => {
+    expect(resolveStorageQuota(plane, row(null))).toEqual({ bytes: QUOTA, source: "plane", blocked: null });
+  });
+
+  it("lets a tenant record its OWN ceiling, beating the plane default", () => {
+    expect(resolveStorageQuota(plane, row("set", "500"))).toEqual({ bytes: "500", source: "tenant", blocked: null });
+  });
+
+  it("lets a tenant be DELIBERATELY uncapped while the plane default is set", () => {
+    // THE cp#173 CASE, and the one a single global number could not express. A prepaid tenant is
+    // bounded by their credit balance; binding the hard cap would deny them at exactly the byte
+    // where charged overage begins, and refuse service to somebody holding credits.
+    expect(resolveStorageQuota(plane, row("none"))).toEqual({ bytes: null, source: "tenant_none", blocked: null });
+  });
+
+  it("keeps 'no per-tenant value' and 'deliberately uncapped' DISTINGUISHABLE", () => {
+    // Both bind nothing today, and they are not the same fact: the day an operator sets the plane
+    // default, one tenant gets a hard cap and the other must not. A single nullable number would
+    // spell these identically, which is how a prepaid tenant silently inherits a cap.
+    const unset = { bytes: null, invalid: null };
+    const inheriting = resolveStorageQuota(unset, row(null));
+    const uncapped = resolveStorageQuota(unset, row("none"));
+    expect(inheriting.bytes).toBeNull();
+    expect(uncapped.bytes).toBeNull();
+    expect(inheriting.source).toBe("plane_unset");
+    expect(uncapped.source).toBe("tenant_none");
+    // ...and here is the day it matters:
+    expect(resolveStorageQuota(plane, row(null)).bytes).toBe(QUOTA);
+    expect(resolveStorageQuota(plane, row("none")).bytes).toBeNull();
+  });
+
+  it("does NOT let a malformed plane var block a tenant that overrode it", () => {
+    // That tenant was never going to use the plane value, so a broken deploy var must not take
+    // them down with it. It DOES block a tenant that would have inherited it.
+    const broken = { bytes: null, invalid: "100GB" };
+    expect(resolveStorageQuota(broken, row("none")).blocked).toBeNull();
+    expect(resolveStorageQuota(broken, row("set", "500")).blocked).toBeNull();
+    expect(resolveStorageQuota(broken, row(null)).blocked).toMatch(/100GB/);
+  });
+
+  it("REFUSES an unreadable tenant record instead of guessing which way it should fail", () => {
+    // Both guesses are wrong in opposite directions: inheriting caps a tenant nobody capped,
+    // defaulting to none uncaps one somebody did.
+    expect(tenantStorageQuotaOverride(row("whatever"))).toBe("corrupt");
+    expect(tenantStorageQuotaOverride(row("set", "100GB"))).toBe("corrupt");
+    expect(tenantStorageQuotaOverride(row("set", null))).toBe("corrupt");
+    expect(resolveStorageQuota(plane, row("set", "-5")).blocked).toMatch(/unreadable/);
+  });
+});
+
 describe("preflight refuses BEFORE anything is written", () => {
   it("refuses a studio whose bundle predates the core#52 reader, and does not write", async () => {
     // THE REASON THIS VAR GETS A PRE-WRITE PROBE AND ABUSE_REPORT_URL COULD NOT. A studio carrying
@@ -380,6 +439,107 @@ describe("the converge: patch, then PROVE the studio enforces it", () => {
     expect(result.enforced).toBe(true);
     expect(result.used_bytes).toBe(900);
     expect(result.over_on_arrival).toBe(true);
+  });
+
+  it("writes the RECORD before the studio, and only after the preflight let it through", async () => {
+    // Ordering, both directions, and both were chosen rather than fallen into: writing the record
+    // before the preflight would leave the plane remembering a decision it could not deliver
+    // (the cp#136 lesson), and writing it after the patch would leave a studio enforcing a number
+    // the record does not know about, which the next upgrade would silently revert.
+    const t = await seedTenant();
+    const d = deps();
+    const order: string[] = [];
+    const realSet = d.store.setTenantStorageQuota.bind(d.store);
+    d.store.setTenantStorageQuota = async (id, override) => {
+      order.push("record");
+      return realSet(id, override);
+    };
+    const before = d.scriptUploadCf.patchScriptSettings.bind(d.scriptUploadCf);
+    d.scriptUploadCf.patchScriptSettings = async (...args: Parameters<typeof before>) => {
+      order.push("studio");
+      return before(...args);
+    };
+
+    const pre = await preflightStorageQuota(d, t, { mode: "set", bytes: "500" });
+    if (!pre.ok) throw new Error("preflight refused");
+    // Nothing is written by a preflight, ever.
+    expect(order).toEqual([]);
+
+    readings = [
+      { quota: null, used: 5_000 },
+      { quota: 500, used: 5_000 },
+    ];
+    const result = await applyStorageQuota(d, t, pre.context);
+    expect(order).toEqual(["record", "studio"]);
+    expect(result.record_written).toBe(true);
+    expect(result.quota_source).toBe("tenant");
+    const row = await d.store.getTenantById(t.id);
+    expect(row?.r2_storage_quota_mode).toBe("set");
+    expect(row?.r2_storage_quota_bytes).toBe("500");
+  });
+
+  it("a converge with NO intent does not touch the record", async () => {
+    // A re-run pushes the record onto the studio; it must not rewrite the decision. Asserted as
+    // "was never CALLED" rather than "the row looks the same", because a write-then-write-back
+    // would pass the second and fail the first.
+    const t = await seedTenant();
+    const d = deps();
+    const writes: unknown[] = [];
+    d.store.setTenantStorageQuota = async (_id, override) => {
+      writes.push(override);
+    };
+
+    const pre = await preflightStorageQuota(d, t);
+    if (!pre.ok) throw new Error("preflight refused");
+    const result = await applyStorageQuota(d, t, pre.context);
+
+    expect(writes).toEqual([]);
+    expect(result.record_written).toBe(false);
+    expect(result.quota_source).toBe("plane");
+    // CONTROL: the recorder DOES record when an intent is present, so the emptiness above is a
+    // decision not taken rather than a proxy that never fires.
+    const pre2 = await preflightStorageQuota(d, t, { mode: "none" });
+    if (!pre2.ok) throw new Error("preflight refused");
+    readings = [{ quota: null, used: 0 }];
+    await applyStorageQuota(d, t, pre2.context);
+    expect(writes).toEqual([{ mode: "none" }]);
+  });
+
+  it("UNCAPS a tenant on intent 'none' even though the plane configures a ceiling", async () => {
+    // The prepaid class end to end: the record says none, the patch omits the var, and the studio
+    // reporting quota_bytes:null is what proves the tenant is not capped.
+    readings = [
+      { quota: Number(QUOTA), used: 5_000 },
+      { quota: null, used: 5_000 },
+    ];
+    const t = await seedTenant();
+    const d = deps(census({ after: LIVE_BINDINGS }));
+    const pre = await preflightStorageQuota(d, t, { mode: "none" });
+    if (!pre.ok) throw new Error("preflight refused");
+    const result = await applyStorageQuota(d, t, pre.context);
+
+    expect(sentVar(patched[0].bindings)).toBeUndefined();
+    expect(result.quota_source).toBe("tenant_none");
+    expect(result.served_quota_after).toBeNull();
+    expect(result.ok).toBe(true);
+    const row = await d.store.getTenantById(t.id);
+    expect(row?.r2_storage_quota_mode).toBe("none");
+  });
+
+  it("refuses a quota_bytes that is not a byte count, before touching the record", async () => {
+    const t = await seedTenant();
+    const d = deps();
+    const writes: unknown[] = [];
+    d.store.setTenantStorageQuota = async (_id, o) => {
+      writes.push(o);
+    };
+    const res = await preflightStorageQuota(d, t, { mode: "set", bytes: "100GB" });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.refusal.code).toBe("invalid_quota_bytes");
+    expect(res.refusal.status).toBe(400);
+    expect(writes).toEqual([]);
+    expect(patched).toEqual([]);
   });
 
   it("converges an EXISTING value rather than skipping it, so a raised ceiling actually moves", async () => {

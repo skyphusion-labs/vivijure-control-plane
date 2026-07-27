@@ -31,7 +31,7 @@ import type { KekRing } from "./token-crypto";
 import { decryptStudioToken, encryptStudioToken } from "./token-crypto";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
 import { abuseReportUrlBindings } from "./tenant-abuse-report";
-import { storageQuotaBindings, type StorageQuotaConfig } from "./tenant-storage-quota";
+import { resolveStorageQuota, storageQuotaBindings, type StorageQuotaConfig } from "./tenant-storage-quota";
 import { videoFinishTierStateBindings } from "./video-finish-tier-state";
 import type { TokenMinter } from "./token-minter";
 import type { ModuleBundle, ModuleBundleSource } from "./tenant-modules";
@@ -537,13 +537,13 @@ export async function runProvisionJob(
     // NO ceiling, so binding it would produce an uncapped tenant on a plane whose config says it is
     // capped -- the silent-inert class this repo keeps getting burned by, with a bill attached.
     // Unset is not malformed: that is a plane which has chosen no ceiling, and it provisions.
-    if (deps.storageQuota.invalid !== null) {
-      throw new ProvisionFailure(
-        "bundle_fetch",
-        `TENANT_R2_STORAGE_QUOTA_BYTES="${deps.storageQuota.invalid}" is not a positive integer ` +
-          "number of BYTES; the tenant studio would read it as no ceiling at all. Fix the deploy " +
-          "var (bytes only, no units) and re-run this provision",
-      );
+    // Resolved through the ONE seam every writer uses, so a tenant born here enforces exactly what a
+    // later converge or studio upgrade would give it. A per-tenant record (cp#173's prepaid class,
+    // recorded before the provision) beats the plane default, INCLUDING beating a malformed one:
+    // that tenant was never going to use the plane value, so a broken deploy var must not block them.
+    const resolvedQuota = resolveStorageQuota(deps.storageQuota, tenant);
+    if (resolvedQuota.blocked !== null) {
+      throw new ProvisionFailure("bundle_fetch", resolvedQuota.blocked);
     }
 
     // 1. D1. Adopt-on-exists makes a re-run safe.
@@ -684,7 +684,7 @@ export async function runProvisionJob(
         // bill that keeps arriving after they stop rendering (and, for a tenant who leaves, the one
         // we inherit). Absent when this plane configures no ceiling: core reads an absent knob as
         // off, so there is no value meaning "unlimited" to bind, and "0" would deny every submit.
-        ...storageQuotaBindings(deps.storageQuota.bytes),
+        ...storageQuotaBindings(resolvedQuota.bytes),
         // cf#118: the video-finish tier. Present only when this plane is configured for it; absent
         // means the tenant degrades to per-shot clips WITH THE REASON STATED, which is exactly what
         // tenants get today and what self-host gets without the container.

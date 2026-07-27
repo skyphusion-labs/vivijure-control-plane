@@ -9,6 +9,20 @@
 // absent, which core reads as OFF. A tenant who left the render queue running had no storage bound
 // at all, and the bill is ours.
 //
+// TWO KINDS OF TENANT, so ONE global number cannot express the policy (cp#173, joan's finding
+// against live core source before this shipped). The core knob is a submit-time DENY: 507 over
+// quota, 503 fail-closed. That is a HARD CAP by construction, and it is exactly right for BYOK and
+// self-host, who pay us nothing for GPU while their R2 sits on our bill -- there the refusal
+// threshold IS the cost-recovery mechanism. It is exactly WRONG for a PREPAID tenant, whose bound
+// is their credit balance: a hard byte cap denies service at precisely the byte where charged
+// overage was supposed to begin, so overage becomes unreachable code and a tenant HOLDING CREDITS
+// is refused by a cap they were told did not exist. An honesty failure, not a rounding one.
+//
+// So the plane var is the DEFAULT and every tenant can override it, including overriding it to NO
+// ceiling. "No per-tenant value, inherit the default" and "deliberately uncapped" are different
+// facts kept in different states (see migrations/0013_tenant_storage_quota.sql): collapsing them is
+// how a prepaid tenant silently inherits a hard cap the day an operator sets the plane default.
+//
 // WHY THE NUMBER IS CONFIGURED AND NOT DERIVED, the opposite call from ABUSE_REPORT_URL next door.
 // That URL is a FACT OF THE DEPLOY (we serve the page, so we can compute it and a second env var
 // could only disagree with it). A storage ceiling is a POLICY: it prices what we are willing to
@@ -73,6 +87,15 @@ export interface StorageQuotaConfig {
 }
 
 /**
+ * The ONE predicate, shared by the plane var, the per-tenant record and the route that writes it.
+ * Three copies of "is this a byte count" is how the three end up disagreeing about "1e3".
+ */
+export function isPositiveIntegerBytes(value: string): boolean {
+  const n = Number(value.trim());
+  return value.trim() !== "" && Number.isInteger(n) && n > 0;
+}
+
+/**
  * Read the knob off plane config. BYTES ONLY, deliberately, matching core: no unit parsing, because
  * a mis-parsed unit is an order-of-magnitude error on somebody's bill.
  */
@@ -80,11 +103,11 @@ export function tenantStorageQuota(env: ControlPlaneEnv): StorageQuotaConfig {
   const raw = env.TENANT_R2_STORAGE_QUOTA_BYTES;
   if (typeof raw !== "string" || raw.trim() === "") return { bytes: null, invalid: null };
   const trimmed = raw.trim();
-  const n = Number(trimmed);
   // Integer AND positive, the same predicate core applies, so the plane cannot consider a value
   // configured that the studio would read as off. 0 is refused rather than treated as "off": an
   // operator who typed 0 asked for something, and a zero ceiling denies every submit.
-  if (!Number.isInteger(n) || n <= 0) return { bytes: null, invalid: trimmed };
+  if (!isPositiveIntegerBytes(trimmed)) return { bytes: null, invalid: trimmed };
+  const n = Number(trimmed);
   // Normalized through Number so "007" and "1e3" cannot reach a studio as a string core parses
   // differently from what an operator read in the deploy config.
   return { bytes: String(n), invalid: null };
@@ -111,11 +134,85 @@ export function withStorageQuota(carried: WorkerBinding[], bytes: string | null)
   return [...carried.filter((b) => b.name !== STORAGE_QUOTA_VAR), ...storageQuotaBindings(bytes)];
 }
 
+/** What a tenant row records about its own ceiling. `null` means it inherits the plane default. */
+export type StorageQuotaOverride = { mode: "set"; bytes: string } | { mode: "none" };
+
+/** The two columns, as they come off a tenant row. */
+export interface StorageQuotaRow {
+  r2_storage_quota_mode: string | null;
+  r2_storage_quota_bytes: string | null;
+}
+
+export interface ResolvedStorageQuota {
+  /** What to bind. null = bind nothing, which is how core reads "no ceiling". */
+  bytes: string | null;
+  /** WHERE the answer came from. Reported, never inferred by a caller from bytes alone. */
+  source: "tenant" | "tenant_none" | "plane" | "plane_unset";
+  /**
+   * Set when no honest answer exists: the value this tenant would use is malformed. A caller must
+   * REFUSE rather than bind, because the studio reads a malformed value as no ceiling at all.
+   */
+  blocked: string | null;
+}
+
+/** Read a tenant row's override, or null when it inherits. Unknown modes are NOT silently ignored. */
+export function tenantStorageQuotaOverride(row: StorageQuotaRow): StorageQuotaOverride | "corrupt" | null {
+  const mode = row.r2_storage_quota_mode;
+  if (mode === null || mode === "") return null;
+  if (mode === "none") return { mode: "none" };
+  if (mode === "set") {
+    const bytes = row.r2_storage_quota_bytes;
+    // The route validates before writing, so this is a record that got there another way. Reporting
+    // it as corrupt is the only honest answer: falling back to the plane default would hand this
+    // tenant a ceiling nobody chose for them, and falling back to no ceiling would uncap them.
+    if (typeof bytes !== "string" || !isPositiveIntegerBytes(bytes)) return "corrupt";
+    return { mode: "set", bytes: String(Number(bytes.trim())) };
+  }
+  return "corrupt";
+}
+
+/**
+ * THE ONE PLACE the effective ceiling is decided. Every writer goes through it, so the provision
+ * upload, the studio-upgrade re-derive and the converge route cannot disagree about what a tenant
+ * should be enforcing -- which is the whole reason the record exists rather than the var alone.
+ */
+export function resolveStorageQuota(plane: StorageQuotaConfig, row: StorageQuotaRow): ResolvedStorageQuota {
+  const override = tenantStorageQuotaOverride(row);
+  if (override === "corrupt") {
+    return {
+      bytes: null,
+      source: "tenant",
+      blocked:
+        `this tenant's storage-quota record is unreadable (mode=${JSON.stringify(row.r2_storage_quota_mode)}, ` +
+        `bytes=${JSON.stringify(row.r2_storage_quota_bytes)}); refusing rather than guessing whether it ` +
+        "should be capped, because both guesses are wrong in opposite directions",
+    };
+  }
+  // A deliberate no-ceiling beats the plane default, and it beats a MALFORMED plane default too:
+  // this tenant was never going to use that value, so a broken deploy var must not block them.
+  if (override?.mode === "none") return { bytes: null, source: "tenant_none", blocked: null };
+  if (override?.mode === "set") return { bytes: override.bytes, source: "tenant", blocked: null };
+  if (plane.invalid !== null) {
+    return {
+      bytes: null,
+      source: "plane",
+      blocked:
+        `this plane configures TENANT_R2_STORAGE_QUOTA_BYTES="${plane.invalid}", which is not a ` +
+        "positive integer number of BYTES. The studio would read that as NO ceiling, so this refuses " +
+        "rather than leaving a tenant uncapped while the deploy config says otherwise. Fix the var " +
+        "(bytes only, no units), or record a per-tenant decision on this tenant, and re-run",
+    };
+  }
+  return { bytes: plane.bytes, source: plane.bytes === null ? "plane_unset" : "plane", blocked: null };
+}
+
 export interface StorageQuotaRefusal {
   code:
     | "not_provisioned"
     | "tenant_deleted"
     | "plane_quota_malformed"
+    | "tenant_quota_record_unreadable"
+    | "invalid_quota_bytes"
     | "tenant_studio_token_missing"
     | "tenant_studio_token_unreadable"
     | "studio_not_serving"
@@ -124,11 +221,27 @@ export interface StorageQuotaRefusal {
   message: string;
 }
 
+/**
+ * What an operator is asking for on THIS call.
+ *
+ * Absent means "no decision, just converge the studio onto what the record already says", which is
+ * what the provision and upgrade paths do implicitly and what a re-run of the route does. The three
+ * explicit forms are the three states the record can hold, named rather than encoded as nulls.
+ */
+export type StorageQuotaIntent = { mode: "inherit" } | { mode: "set"; bytes: string } | { mode: "none" };
+
 export interface StorageQuotaContext {
   script: string;
   studioApiToken: string;
-  /** What the plane wants enforced. null = converge the tenant to NO ceiling. */
+  /** What this tenant should enforce. null = no ceiling. */
   bytes: string | null;
+  /** Where that came from: the tenant record, a deliberate uncapping, or the plane default. */
+  source: ResolvedStorageQuota["source"];
+  /**
+   * The record change to persist before writing the studio, or undefined to leave the record alone.
+   * `null` is itself a value here: it CLEARS the override back to inheriting the plane default.
+   */
+  override?: StorageQuotaOverride | null;
   /** What the studio reported for quota_bytes BEFORE the write. */
   servedBefore: number | null;
   /** What the studio reported for used_bytes BEFORE the write, so the operator sees the headroom. */
@@ -143,8 +256,16 @@ export type StorageQuotaPreflight =
 export interface StorageQuotaResult {
   ok: boolean;
   script: string;
-  /** What the plane bound, as bound. null = the ceiling was REMOVED. */
+  /** What was bound, as bound. null = no ceiling (either removed, or this tenant is uncapped). */
   quota_bytes: string | null;
+  /**
+   * WHERE that number came from: this tenant's own record, a deliberate uncapping of this tenant,
+   * or the plane default. An operator reading "no ceiling" needs to know which of the two ways it
+   * got there, because one is a decision and the other is a plane that configures nothing.
+   */
+  quota_source: ResolvedStorageQuota["source"];
+  /** True when this call CHANGED the tenant record (as opposed to converging the studio onto it). */
+  record_written: boolean;
   already_present: boolean;
   var_present_after: boolean;
   bindings_before: string[];
@@ -224,6 +345,7 @@ async function readStudioStorage(
 export async function preflightStorageQuota(
   deps: ProvisionDeps,
   tenant: Tenant,
+  intent?: StorageQuotaIntent,
 ): Promise<StorageQuotaPreflight> {
   const refuse = (
     code: StorageQuotaRefusal["code"],
@@ -240,15 +362,33 @@ export async function preflightStorageQuota(
         "needs a provision, not a binding patch",
     );
   }
-  if (deps.storageQuota.invalid !== null) {
+  // The INTENT is validated before anything else it could affect, so a typo in a byte count never
+  // reaches the record, the studio, or a refusal that blames the plane for the caller's value.
+  if (intent?.mode === "set" && !isPositiveIntegerBytes(intent.bytes)) {
     return refuse(
-      "plane_quota_malformed",
-      409,
-      `this plane configures TENANT_R2_STORAGE_QUOTA_BYTES="${deps.storageQuota.invalid}", which is ` +
-        "not a positive integer number of BYTES. The studio would read that as NO ceiling, so this " +
-        "refuses rather than leaving a tenant uncapped while the deploy config says otherwise. Fix " +
-        "the var (bytes only, no units) and re-run",
+      "invalid_quota_bytes",
+      400,
+      `quota_bytes must be a positive integer number of BYTES, with no unit suffix; got ` +
+        `${JSON.stringify(intent.bytes)}. 107374182400 = 100 GiB`,
     );
+  }
+
+  // What this tenant would enforce AFTER the intent is applied. Resolved once, here, so the refusal
+  // below and the value written later cannot come from two different calculations.
+  const row: StorageQuotaRow =
+    intent === undefined
+      ? tenant
+      : intent.mode === "inherit"
+        ? { r2_storage_quota_mode: null, r2_storage_quota_bytes: null }
+        : intent.mode === "none"
+          ? { r2_storage_quota_mode: "none", r2_storage_quota_bytes: null }
+          : { r2_storage_quota_mode: "set", r2_storage_quota_bytes: intent.bytes };
+  const resolved = resolveStorageQuota(deps.storageQuota, row);
+  if (resolved.blocked !== null) {
+    // Two different causes, two different codes, because they need opposite follow-up: fix the
+    // deploy var, versus fix one tenant row.
+    const code = resolved.source === "plane" ? "plane_quota_malformed" : "tenant_quota_record_unreadable";
+    return refuse(code, 409, resolved.blocked);
   }
   if (!tenant.studio_token_enc) {
     return refuse("tenant_studio_token_missing", 422, "no studio token recorded for this tenant");
@@ -288,7 +428,13 @@ export async function preflightStorageQuota(
     context: {
       script: tenant.script_name,
       studioApiToken,
-      bytes: deps.storageQuota.bytes,
+      bytes: resolved.bytes,
+      source: resolved.source,
+      // undefined (no key written) when there is no intent: a converge must not rewrite a record
+      // nobody asked to change. `null` is the CLEAR, and it is a decision like any other.
+      ...(intent === undefined
+        ? {}
+        : { override: intent.mode === "inherit" ? null : (intent as StorageQuotaOverride) }),
       servedBefore: before.quota,
       usedBefore: before.used,
     },
@@ -314,7 +460,16 @@ export async function applyStorageQuota(
   tenant: Tenant,
   context: StorageQuotaContext,
 ): Promise<StorageQuotaResult> {
-  const { script, studioApiToken, bytes, servedBefore, usedBefore } = context;
+  const { script, studioApiToken, bytes, source, servedBefore, usedBefore } = context;
+
+  // THE RECORD FIRST, and only after the preflight proved this studio can receive the projection.
+  //
+  // Order matters in both directions and this is the cp#136 ordering: writing the record before the
+  // preflight would leave the plane remembering a decision it could not deliver, and writing it
+  // AFTER the studio patch would leave a studio enforcing a number the record does not know about,
+  // which the next upgrade would then silently revert. Between those, the record leads.
+  const recordWritten = "override" in context;
+  if (recordWritten) await deps.store.setTenantStorageQuota(tenant.id, context.override ?? null);
 
   // Census BEFORE, through the provisioner credential (reads), so a loss is recognisable. Secret
   // NAMES only; these endpoints never return values and this file never wants one.
@@ -371,6 +526,8 @@ export async function applyStorageQuota(
       enforced,
     script,
     quota_bytes: bytes,
+    quota_source: source,
+    record_written: recordWritten,
     already_present: alreadyPresent,
     var_present_after: afterNames.has(STORAGE_QUOTA_VAR),
     bindings_before: names(before),
@@ -395,6 +552,8 @@ export async function applyStorageQuota(
     script,
     ok: result.ok,
     quota_bytes: bytes,
+    quota_source: source,
+    record_written: recordWritten,
     already_present: alreadyPresent,
     var_present_after: result.var_present_after,
     enforced,

@@ -320,6 +320,52 @@ describe("runProvisionJob", () => {
     expect(upload.bindings.some((b) => b.name === "R2_STORAGE_QUOTA_BYTES")).toBe(false);
   });
 
+  it("gives a DELIBERATELY UNCAPPED tenant no ceiling, though the plane configures one (cp#173)", async () => {
+    // The prepaid class. Their bound is a credit balance, and a hard byte cap would deny them at
+    // exactly the byte where charged overage begins -- refusing service to somebody holding
+    // credits. Before the per-tenant seam this was unexpressible: one global number, one outcome.
+    const row = await tenant();
+    await store.setTenantStorageQuota(row.id, { mode: "none" });
+    const t = (await store.getTenantById(row.id)) as Tenant;
+    const d = deps();
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+
+    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      bindings: { type: string; name: string }[];
+    };
+    // CONTROL: the plane DOES configure a ceiling on this fixture, so the absence is the record
+    // winning rather than a plane with nothing to bind.
+    expect(d.storageQuota.bytes).toBe("107374182400");
+    expect(upload.bindings.some((b) => b.name === "R2_STORAGE_QUOTA_BYTES")).toBe(false);
+  });
+
+  it("lets a tenant's OWN recorded ceiling beat the plane default", async () => {
+    const row = await tenant();
+    await store.setTenantStorageQuota(row.id, { mode: "set", bytes: "500" });
+    const t = (await store.getTenantById(row.id)) as Tenant;
+    const d = deps();
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+
+    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      bindings: { type: string; name: string; text?: string }[];
+    };
+    expect(upload.bindings.find((b) => b.name === "R2_STORAGE_QUOTA_BYTES")?.text).toBe("500");
+  });
+
+  it("does NOT let a malformed plane var block a tenant that overrode it", async () => {
+    // The refusal exists to stop an uncapped tenant on a plane that thinks it caps. A tenant who
+    // recorded their own decision was never reading that var, so taking them down with it would be
+    // a second defect wearing the first one's clothes.
+    const row = await tenant();
+    await store.setTenantStorageQuota(row.id, { mode: "none" });
+    const t = (await store.getTenantById(row.id)) as Tenant;
+    const d = deps({ storageQuota: { bytes: null, invalid: "100GB" } });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+  });
+
   it("REFUSES the whole provision while the plane's ceiling is malformed, creating nothing", async () => {
     // "typed it wrong" and "wants no ceiling" must not be the same outcome. core reads a non-integer
     // as OFF, so binding it would hand out an uncapped tenant on a plane whose config claims a cap.

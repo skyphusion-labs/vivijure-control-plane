@@ -736,6 +736,31 @@ describe("the storage ceiling is RE-DERIVED across a bytes move, not inherited (
     for (const b of LIVE_BINDINGS) expect(bindings.some((x) => x.name === b.name)).toBe(true);
   });
 
+  it("re-derives from the RECORD, not the plane, so a bytes move cannot re-cap an uncapped tenant", async () => {
+    // The failure this prevents is quiet and expensive: a prepaid tenant recorded as uncapped, a
+    // routine studio upgrade, and the plane default silently lands a hard cap on them.
+    const store = new MemoryStore();
+    const seeded = await seedLiveTenant(store);
+    await store.setTenantStorageQuota(seeded.id, { mode: "none" });
+    const tenant = (await store.getTenantById(seeded.id)) as Tenant;
+    const upload = fakeCf();
+    const d = deps(store, { scriptUploadCf: upload, storageQuota: { bytes: "107374182400", invalid: null } });
+
+    await upgradeTenantStudio(d, "job_1", tenant, await contextFor(d, tenant));
+
+    const bindings = sent(upload);
+    expect(bindings.length).toBeGreaterThan(0);
+    expect(bindings.find((b) => b.name === STORAGE_QUOTA_VAR)).toBeUndefined();
+    // CONTROL: the same fixture WITHOUT the record binds the plane number, so the absence above is
+    // the record winning and not a plane with nothing to give.
+    const store2 = new MemoryStore();
+    const plain = await seedLiveTenant(store2);
+    const upload2 = fakeCf();
+    const d2 = deps(store2, { scriptUploadCf: upload2, storageQuota: { bytes: "107374182400", invalid: null } });
+    await upgradeTenantStudio(d2, "job_2", plain, await contextFor(d2, plain));
+    expect(sent(upload2).find((b) => b.name === STORAGE_QUOTA_VAR)?.text).toBe("107374182400");
+  });
+
   it("REFUSES the move while the plane's ceiling is malformed, before any bytes are shipped", async () => {
     // This upgrade RE-DERIVES the var, so a malformed plane value would silently uncap a tenant
     // that was capped a moment ago. Refuse in the preflight, where nothing has been written yet.

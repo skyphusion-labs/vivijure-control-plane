@@ -102,6 +102,19 @@ export interface Tenant {
   video_finish_unreachable_reason: string | null;
   /** When it was declared. NULL whenever the flag is 0; the two are written and cleared together. */
   video_finish_unreachable_at: string | null;
+  /**
+   * The PER-TENANT R2 storage ceiling decision (cp#183): NULL (inherit the plane default), 'set'
+   * (use r2_storage_quota_bytes) or 'none' (NO ceiling for this tenant, whatever the plane says).
+   *
+   * Three states because cp#173 gives us two kinds of tenant. BYOK and self-host pay us nothing for
+   * GPU while their R2 sits on our bill, so a refusal threshold IS the cost-recovery mechanism.
+   * PREPAID tenants are bounded by their credit balance instead, so a hard byte cap would deny them
+   * at exactly the byte where charged overage begins. "Inherit" and "deliberately uncapped" are
+   * therefore different facts, and a single nullable number would spell them identically.
+   */
+  r2_storage_quota_mode: string | null;
+  /** The ceiling in BYTES, as the string that gets bound. Meaningful only when mode is 'set'. */
+  r2_storage_quota_bytes: string | null;
 }
 
 /**
@@ -555,6 +568,18 @@ export interface ControlPlaneStore {
    * caller job (src/video-finish-tier-state.ts), so the source of truth has exactly one writer.
    */
   setTenantVideoFinishUnreachable(id: string, mark: { reason: string; at: string } | null): Promise<void>;
+
+  /**
+   * Record the per-tenant storage-ceiling decision (cp#183). `null` clears it back to inheriting the
+   * plane default; 'none' records a deliberate no-ceiling, which is NOT the same state.
+   *
+   * The record is written only after the studio has been proven able to receive the projection, so
+   * the plane never remembers a ceiling it failed to deliver (the cp#136 ordering).
+   */
+  setTenantStorageQuota(
+    id: string,
+    override: { mode: "set"; bytes: string } | { mode: "none" } | null,
+  ): Promise<void>;
 
   /**
    * Blank ONE resource column, on that resource's successful deletion (#23).

@@ -1416,10 +1416,43 @@ truncated or half-rendered. `GET /api/storage/usage` on the studio reports `used
 `quota_bytes` and `over`; `POST /api/storage/reconcile` rebuilds the ledger from the bucket (the
 one-time backfill for a studio whose accounting started mid-life).
 
+### TWO tenant classes, so the plane number is a DEFAULT rather than the answer (cp#173)
+
+The core knob is a submit-time DENY. That is a hard cap by construction, and which tenants that is
+right for is a product question, not a plumbing one:
+
+| Class | Bound by | The knob |
+|---|---|---|
+| BYOK, self-host | nothing else -- they pay us no GPU while their R2 sits on our bill | the byte ceiling IS the cost-recovery mechanism |
+| Prepaid (cp#173) | their CREDIT BALANCE, in the right unit, in the credit ledger | **unset**: a hard cap would deny at exactly the byte where charged overage begins |
+
+Binding a hard ceiling to a prepaid tenant makes overage unreachable code and refuses service to
+somebody **holding credits**, by a cap they were told did not exist. So every tenant can override the
+plane default, including overriding it to no ceiling at all:
+
+| `tenants.r2_storage_quota_mode` | Effective ceiling |
+|---|---|
+| NULL | inherit the plane default (the ordinary state) |
+| `set` | `r2_storage_quota_bytes`, whatever the plane says |
+| `none` | NO ceiling, whatever the plane says |
+
+**`NULL` and `none` are different facts and are stored differently on purpose.** Both bind nothing
+while the plane default is unset, and they diverge the moment an operator sets one: the inheriting
+tenant gets a hard cap, the deliberately-uncapped one must not. A single nullable number would spell
+them identically, which is exactly how a prepaid tenant silently inherits a cap.
+
+The record is the source of truth and the studio var is a projection re-derived at every write, so a
+routine studio upgrade cannot re-cap a tenant somebody uncapped. One resolution seam
+(`resolveStorageQuota`) is used by all three write paths, so they cannot disagree about the answer.
+
+A malformed plane var blocks a tenant who would have INHERITED it, and deliberately does not block
+one who overrode it: that tenant was never going to read the value.
+
 ### What a tenant is BORN with, and where an operator changes it
 
 A tenant is born with **whatever `TENANT_R2_STORAGE_QUOTA_BYTES` says on the plane at the moment it
-is provisioned**, and with **no ceiling at all when that var is unset**. There is deliberately no
+is provisioned** unless its row already records a decision, and with **no ceiling at all when that
+var is unset**. There is deliberately no
 default in code, on either host: the number prices what an operator is willing to carry per tenant,
 which is policy this repository does not get to invent, and a fallback here would be a pricing
 decision hidden in a config read. Unset behaves exactly like `R2_USAGE_ALERT_BYTES` unset.
@@ -1460,12 +1493,25 @@ including all the way back to uncapped.
 ```
 POST /api/admin/tenants/ten_abc123/storage-quota
 Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN
+
+{}                                  converge only: push the RECORD onto the studio, decide nothing
+{"mode":"inherit"}                  clear the override; follow the plane default
+{"mode":"set","quota_bytes":"500"}  this tenant enforces 500 bytes
+{"mode":"none"}                     this tenant has NO ceiling (the prepaid class)
 ```
 
-No body: the operator is not choosing a value here, they are asking a studio to catch up with the
-plane. A binding patch, not a re-upload, for the cp#112 reasons (two of the four tenant secrets
-cannot be reproduced, and a re-upload would smuggle a release change in as a config fix), so it
-changes no bytes, no release and no status.
+An empty body changes no decision, which is what makes a re-run safe. `inherit` and `none` are
+separate words because they are separate facts.
+
+The RECORD is written first, and only after the preflight has proven the studio can receive the
+projection. Both halves of that order were chosen: writing before the preflight would leave the
+plane remembering a decision it could not deliver (the cp#136 ordering), and writing after the
+studio patch would leave a studio enforcing a number the record does not know about, which the next
+upgrade would silently revert.
+
+A binding patch, not a re-upload, for the cp#112 reasons (two of the four tenant secrets cannot be
+reproduced, and a re-upload would smuggle a release change in as a config fix), so it changes no
+bytes, no release and no status.
 
 ### The reader floor is a PRE-write probe here, unlike cp#164
 
@@ -1490,6 +1536,11 @@ The route answers on the READBACK, not on the binding patch: after the write it 
 The 202 exists for the same measured reason as cp#164: a settings PATCH returning 200 does not mean
 the isolate answering the next dispatch has it yet. Unlike cp#164 it cannot mean "the bundle is too
 old", because the preflight already read the reader off this studio.
+
+`quota_source` says WHERE the answer came from (`tenant`, `tenant_none`, `plane`, `plane_unset`) and
+`record_written` says whether this call changed the decision or only converged the studio onto it.
+"No ceiling" from a deliberate uncapping and "no ceiling" from a plane that configures none are
+different states, and a number alone cannot tell them apart.
 
 `over_on_arrival` is reported when the tenant is already past the ceiling it was just given. That is
 not an error and not a rollback: the data is untouched and only the next submit denies. An operator

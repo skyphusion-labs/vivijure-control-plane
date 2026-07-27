@@ -95,6 +95,8 @@ const CLEAN_STORAGE_QUOTA = {
   ok: true,
   script: "tenant-hero-studio",
   quota_bytes: "107374182400" as string | null,
+  quota_source: "plane" as "tenant" | "tenant_none" | "plane" | "plane_unset",
+  record_written: false,
   already_present: false,
   var_present_after: true,
   bindings_before: ["ASSETS", "DB"],
@@ -2710,7 +2712,8 @@ describe("POST /api/admin/tenants/:id/storage-quota (cp#183)", () => {
     const res = await call();
     expect(res.status).toBe(200);
     expectExactKeys(await res.json(), [
-      "tenant_id", "slug", "ok", "script", "quota_bytes", "already_present", "var_present_after",
+      "tenant_id", "slug", "ok", "script", "quota_bytes", "quota_source", "record_written",
+      "already_present", "var_present_after",
       "bindings_before", "bindings_after", "secrets_before", "secrets_after",
       "missing_bindings", "missing_secrets",
       "served_quota_before", "served_quota_after", "used_bytes", "over_on_arrival", "enforced",
@@ -2760,6 +2763,62 @@ describe("POST /api/admin/tenants/:id/storage-quota (cp#183)", () => {
     const res = await call();
     expect(res.status).toBe(409);
     expect((await res.json() as { missing_bindings: string[] }).missing_bindings).toEqual(["DB"]);
+  });
+
+  it("carries the INTENT into the wiring call and the audit row (cp#173's two tenant classes)", async () => {
+    // The requirement a single global number could not meet: a tenant can be told it has NO
+    // ceiling, distinctly from having no per-tenant value at all. The route has to carry which one
+    // was asked for, or the plane cannot tell a prepaid decision from an unconfigured default.
+    await existingTenant();
+    wiring.setStorageQuota = vi.fn(async () => ({
+      ok: true,
+      result: { ...CLEAN_STORAGE_QUOTA, quota_bytes: null, quota_source: "tenant_none" as const, record_written: true },
+    }));
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/storage-quota", { mode: "none" }, { headers: admin() }),
+      env(),
+      ctx,
+      deps,
+    );
+    expect(res.status).toBe(200);
+    expect(wiring.setStorageQuota).toHaveBeenCalledWith(expect.anything(), { mode: "none" });
+    const audit = JSON.parse(store.audit[0].detail as string) as Record<string, unknown>;
+    expect(audit.intent).toBe("none");
+    expect(audit.quota_source).toBe("tenant_none");
+    expect(audit.record_written).toBe(true);
+  });
+
+  it("treats an EMPTY body as converge-only, changing no decision", async () => {
+    // A re-run must not silently rewrite the record. `undefined` intent is how the wiring is told
+    // "push what the record already says onto the studio", which is also what a provision does.
+    await existingTenant();
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(wiring.setStorageQuota).toHaveBeenCalledWith(expect.anything(), undefined);
+    expect(JSON.parse(store.audit[0].detail as string).intent).toBe("converge_only");
+  });
+
+  it("400s a bad quota_bytes and a bad mode, before the wiring is touched", async () => {
+    await existingTenant();
+    const bad = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/storage-quota", { mode: "set", quota_bytes: 100 }, { headers: admin() }),
+      env(),
+      ctx,
+      deps,
+    );
+    expect(bad.status).toBe(400);
+    expect((await bad.json() as { error: string }).error).toBe("invalid_quota_bytes");
+
+    const worse = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/storage-quota", { mode: "unlimited" }, { headers: admin() }),
+      env(),
+      ctx,
+      deps,
+    );
+    expect(worse.status).toBe(400);
+    expect((await worse.json() as { error: string }).error).toBe("invalid_mode");
+    expect(wiring.setStorageQuota).not.toHaveBeenCalled();
+    expect(store.audit).toEqual([]);
   });
 
   it("passes a REFUSAL through with its own code and status, having written nothing", async () => {

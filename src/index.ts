@@ -42,6 +42,7 @@ import { buildR2UsageReport, parseThresholdBytes } from "./tenant-r2-usage";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
 import { ABUSE_REPORT_URL_VAR } from "./tenant-abuse-report";
+import type { StorageQuotaIntent } from "./tenant-storage-quota";
 import {
   HANDOFF_TOKEN_PARAM,
   burnInvokeKeyHandoff,
@@ -1723,7 +1724,45 @@ async function adminRoutes(
       return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
     }
 
-    const outcome = await deps.provisioner.setStorageQuota(tenant);
+    // THE INTENT, and why a body is optional here when the cp#164 converge takes none.
+    //
+    // That route has nothing to choose: the URL is a fact of the deploy. This one does, because
+    // cp#173 gives us two tenant classes and a single plane number cannot express both. So:
+    //
+    //   {}                                    converge only -- push the RECORD onto the studio,
+    //                                         change no decision. What a re-run does, and what the
+    //                                         provision and upgrade paths do implicitly.
+    //   {"mode":"inherit"}                    clear the override; follow the plane default
+    //   {"mode":"set","quota_bytes":"N"}      this tenant enforces N bytes
+    //   {"mode":"none"}                       this tenant has NO ceiling (the prepaid class), and
+    //                                         keeps having none if an operator later sets a default
+    //
+    // `none` and `inherit` are separate words on purpose. They are different facts, and the day the
+    // plane default is set they produce opposite outcomes for a tenant holding credits.
+    let intent: StorageQuotaIntent | undefined;
+    const body = await readJson(request);
+    const mode = (body as { mode?: unknown } | null)?.mode;
+    if (mode !== undefined) {
+      if (mode === "inherit" || mode === "none") {
+        intent = { mode };
+      } else if (mode === "set") {
+        const raw = (body as { quota_bytes?: unknown }).quota_bytes;
+        if (typeof raw !== "string") {
+          return err("invalid_quota_bytes", 400, {
+            message: 'mode "set" requires quota_bytes as a STRING of bytes, e.g. "107374182400" (100 GiB)',
+          });
+        }
+        // Validated in the preflight, one predicate, so the route and the record cannot disagree
+        // about what a byte count is.
+        intent = { mode: "set", bytes: raw };
+      } else {
+        return err("invalid_mode", 400, {
+          message: `mode must be "inherit", "set" or "none"; got ${JSON.stringify(mode)}`,
+        });
+      }
+    }
+
+    const outcome = await deps.provisioner.setStorageQuota(tenant, intent);
     if (!outcome.ok) return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
 
     const result = outcome.result;
@@ -1733,7 +1772,12 @@ async function adminRoutes(
       tenant.id,
       JSON.stringify({
         ok: result.ok,
+        // The DECISION is audited beside its outcome: "no ceiling" from a deliberate uncapping and
+        // "no ceiling" from a plane that configures none read identically in a number alone.
+        intent: intent ? intent.mode : "converge_only",
         quota_bytes: result.quota_bytes,
+        quota_source: result.quota_source,
+        record_written: result.record_written,
         already_present: result.already_present,
         var_present_after: result.var_present_after,
         enforced: result.enforced,
