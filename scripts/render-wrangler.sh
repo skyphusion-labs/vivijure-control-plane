@@ -46,7 +46,12 @@ REQUIRED_VARS="CLOUDFLARE_ACCOUNT_ID CONTROL_PLANE_D1_ID TENANT_DISPATCH_NAMESPA
 #     either is missing, so empty is a coherent working state and not a half-configured one.
 #   R2_USAGE_ALERT_BYTES -- empty means no threshold, and the admin usage surface reports a
 #     `no_threshold` verdict. An operator who has not chosen a number has not asked to be alerted.
-ALLOW_EMPTY="GOOGLE_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_ID APPLE_TEAM_ID APPLE_SERVICES_ID TENANT_AI_GATEWAY_ID R2_USAGE_ALERT_BYTES"
+#   TENANT_R2_STORAGE_QUOTA_BYTES (cp#183) -- empty means no per-tenant storage ceiling, the same
+#     state a self-hosted studio has by default. It meets the bar for the same reason as the two
+#     above: an operator who has not chosen a byte count has not chosen a cap, and the plane binds
+#     nothing rather than binding a number nobody picked. A non-empty MALFORMED value is a different
+#     matter and is refused at the write paths, not here.
+ALLOW_EMPTY="GOOGLE_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_ID APPLE_TEAM_ID APPLE_SERVICES_ID TENANT_AI_GATEWAY_ID R2_USAGE_ALERT_BYTES TENANT_R2_STORAGE_QUOTA_BYTES"
 
 # Fail BEFORE rendering, so the error names the missing variable instead of surfacing later as a
 # malformed toml the reader has to reverse-engineer.

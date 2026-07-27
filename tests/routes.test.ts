@@ -90,6 +90,28 @@ const CLEAN_ABUSE_URL = {
   readback_elapsed_ms: 0,
 };
 
+/** A clean cp#183 storage-quota readback, shaped like the real one. */
+const CLEAN_STORAGE_QUOTA = {
+  ok: true,
+  script: "tenant-hero-studio",
+  quota_bytes: "107374182400" as string | null,
+  already_present: false,
+  var_present_after: true,
+  bindings_before: ["ASSETS", "DB"],
+  bindings_after: ["ASSETS", "DB", "R2_STORAGE_QUOTA_BYTES"],
+  secrets_before: ["STUDIO_API_TOKEN"],
+  secrets_after: ["STUDIO_API_TOKEN"],
+  missing_bindings: [] as string[],
+  missing_secrets: [] as string[],
+  served_quota_before: null as number | null,
+  served_quota_after: 107374182400 as number | null,
+  used_bytes: 5000 as number | null,
+  over_on_arrival: false,
+  enforced: true,
+  readback_attempts: 1,
+  readback_elapsed_ms: 0,
+};
+
 /** A clean cp#136 detach readback, shaped like the real one (same discipline as CLEAN_REFRESH). */
 const CLEAN_DETACH = {
   ok: true,
@@ -147,6 +169,7 @@ let wiring: {
   refreshStudioBindings: ReturnType<typeof vi.fn>;
   setVideoFinishTierState: ReturnType<typeof vi.fn>;
   setAbuseReportUrl: ReturnType<typeof vi.fn>;
+  setStorageQuota: ReturnType<typeof vi.fn>;
   detachStudioBinding: ReturnType<typeof vi.fn>;
   preflightReprovisionRunPod: ReturnType<typeof vi.fn>;
   reprovisionRunPod: ReturnType<typeof vi.fn>;
@@ -250,6 +273,8 @@ beforeEach(() => {
     setVideoFinishTierState: vi.fn(async () => ({ ok: true, result: CLEAN_TIER_STATE })),
     // cp#164: default is a clean converge; the refusal and reader-floor cases override it.
     setAbuseReportUrl: vi.fn(async () => ({ ok: true, result: CLEAN_ABUSE_URL })),
+    // cp#183: default is a clean converge that the STUDIO confirmed; the 202 and strand cases override.
+    setStorageQuota: vi.fn(async () => ({ ok: true, result: CLEAN_STORAGE_QUOTA })),
     // cp#136 criterion 3: default is a clean detach; the refusal and short-readback cases override.
     detachStudioBinding: vi.fn(async () => ({ ok: true, result: CLEAN_DETACH })),
   };
@@ -2626,6 +2651,132 @@ describe("POST /api/admin/tenants/:id/abuse-report-url (cp#164)", () => {
     const res = await call();
     expect(res.status).toBe(409);
     expect((await res.json() as { error: string }).error).toBe("not_provisioned");
+    expect(store.audit).toEqual([]);
+  });
+});
+
+// cp#183: the route that CAPS a tenant already live.
+//
+// The behaviour that matters here is the ROUTE half: what it refuses, what it audits, and that it
+// never answers 200 over a readback the studio did not confirm. What the plane SENDS to Cloudflare,
+// the reader-floor probe and the converge-downward direction live in
+// tests/tenant-storage-quota.test.ts, which owns that behaviour.
+describe("POST /api/admin/tenants/:id/storage-quota (cp#183)", () => {
+  const admin = () => ({ authorization: `Bearer ${ADMIN_TOKEN}` });
+  const call = (id = "ten_abc123", d: ControlPlaneDeps = deps) =>
+    handle(jsonReq(`/api/admin/tenants/${id}/storage-quota`, {}, { headers: admin() }), env(), ctx, d);
+
+  async function existingTenant(): Promise<Tenant> {
+    const t = await store.createTenant("ten_abc123", "hero", "acct_1", "live");
+    t.live_at = "t0";
+    t.script_name = "tenant-hero-studio";
+    t.studio_release = "v1.12.0";
+    return t;
+  }
+
+  it("REFUSES without the admin token: it changes what someone else's studio will accept", async () => {
+    await existingTenant();
+    const res = await handle(jsonReq("/api/admin/tenants/ten_abc123/storage-quota", {}), env(), ctx, deps);
+    expect(res.status).toBe(401);
+    expect(wiring.setStorageQuota).not.toHaveBeenCalled();
+  });
+
+  it("refuses 503 with no provisioner wiring, rather than looking present", async () => {
+    await existingTenant();
+    const res = await call("ten_abc123", { ...deps, provisioner: undefined });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "provisioner_unconfigured" });
+  });
+
+  it("404s an unknown tenant", async () => {
+    expect((await call("ten_nope")).status).toBe(404);
+    expect(wiring.setStorageQuota).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES while a job holds a live lease: this patch must not race an upload", async () => {
+    await existingTenant();
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    running.status = "running";
+    running.lease_until = new Date(deps.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
+
+    const res = await call();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "job_in_progress", job_id: "job_running", kind: "provision" });
+    expect(wiring.setStorageQuota).not.toHaveBeenCalled();
+  });
+
+  it("returns the READBACK and audits the action, changing no tenant state", async () => {
+    await existingTenant();
+    const res = await call();
+    expect(res.status).toBe(200);
+    expectExactKeys(await res.json(), [
+      "tenant_id", "slug", "ok", "script", "quota_bytes", "already_present", "var_present_after",
+      "bindings_before", "bindings_after", "secrets_before", "secrets_after",
+      "missing_bindings", "missing_secrets",
+      "served_quota_before", "served_quota_after", "used_bytes", "over_on_arrival", "enforced",
+      "readback_attempts", "readback_elapsed_ms",
+    ]);
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.set_storage_quota"]);
+    // A live tenant keeps serving, on the same release: this is a config write, not a bytes move.
+    const after = await store.getTenantById("ten_abc123");
+    expect(after?.status).toBe("live");
+    expect(after?.studio_release).toBe("v1.12.0");
+  });
+
+  it("202s an unconfirmed readback, and does NOT claim the tenant is capped", async () => {
+    // The cost-control version of the cp#164 lesson: the binding is set and nothing is stranded,
+    // but the studio has not reported the ceiling, so `enforced` and `ok` both stay false. Unlike
+    // cp#164 this cannot be a too-old bundle -- the preflight already read the reader -- so the
+    // message says edge propagation and says re-run.
+    await existingTenant();
+    wiring.setStorageQuota = vi.fn(async () => ({
+      ok: true,
+      result: {
+        ...CLEAN_STORAGE_QUOTA,
+        ok: false,
+        enforced: false,
+        served_quota_after: null,
+        readback_attempts: 6,
+        readback_elapsed_ms: 15000,
+      },
+    }));
+    const res = await call();
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { enforced: boolean; ok: boolean; message: string };
+    expect(body.enforced).toBe(false);
+    expect(body.ok).toBe(false);
+    expect(body.message).toMatch(/binding IS set/);
+    expect(body.message).toMatch(/[Rr]e-run/);
+    // Still audited: the write HAPPENED, and an operator reading the log needs to see that.
+    expect(store.audit.map((a) => a.action)).toEqual(["tenant.set_storage_quota"]);
+  });
+
+  it("409s a genuine STRAND, which keeps the hard status", async () => {
+    await existingTenant();
+    wiring.setStorageQuota = vi.fn(async () => ({
+      ok: true,
+      result: { ...CLEAN_STORAGE_QUOTA, ok: false, missing_bindings: ["DB"], enforced: false },
+    }));
+    const res = await call();
+    expect(res.status).toBe(409);
+    expect((await res.json() as { missing_bindings: string[] }).missing_bindings).toEqual(["DB"]);
+  });
+
+  it("passes a REFUSAL through with its own code and status, having written nothing", async () => {
+    // The reader-floor refusal is the one that matters most: a studio too old to enforce the
+    // ceiling must not be told it has one.
+    await existingTenant();
+    wiring.setStorageQuota = vi.fn(async () => ({
+      ok: false,
+      refusal: {
+        code: "studio_predates_quota_reader",
+        status: 409,
+        message: "this studio answers 404 for /api/storage/usage",
+      },
+    }));
+    const res = await call();
+    expect(res.status).toBe(409);
+    expect((await res.json() as { error: string }).error).toBe("studio_predates_quota_reader");
     expect(store.audit).toEqual([]);
   });
 });

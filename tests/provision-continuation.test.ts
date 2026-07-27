@@ -104,6 +104,9 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
     kek: RING,
     spendDailyCeiling: null,
+    // cp#183: the fixture plane configures a per-tenant storage ceiling, because a plane that caps
+    // nothing is the state that lane exists to end. Tests covering unset or malformed override it.
+    storageQuota: { bytes: "107374182400", invalid: null },
     probeTenantRoot: vi.fn(async () => ({ status: 200 })),
     // 201 on install is the studio's real success code; 200 is a FAILURE there. Modelled exactly,
     // because a fake that is generous about status codes proves nothing about the caller.

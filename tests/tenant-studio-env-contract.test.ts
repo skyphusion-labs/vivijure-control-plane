@@ -88,6 +88,10 @@ function recordingDeps() {
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
     kek: kekRing(btoa("0123456789abcdef0123456789abcdef")),
     spendDailyCeiling: "5.00",
+    // cp#183: a real plane configures a ceiling, and the disposition census below asserts that a
+    // var marked `provisioned` is really uploaded. This one is `conditional`, so it is present in
+    // the upload because the plane sets it, which is what the hosted deploy does.
+    storageQuota: { bytes: "107374182400", invalid: null },
     probeTenantRoot: vi.fn(async () => ({ status: 200 })),
     callTenantStudio: vi.fn(async (_s: string, init: { path: string }) => {
       if (init.path === "/api/modules/installed") return { status: 200, text: JSON.stringify({ modules: [{ name: "keyframe" }] }) };
@@ -183,5 +187,66 @@ describe("the tenant studio platform-env contract (#116)", () => {
 
   it("constructs the S3 endpoint from the account id rather than minting or storing one", () => {
     expect(r2S3Endpoint("abc123")).toBe("https://abc123.r2.cloudflarestorage.com");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// cp#183 REGRESSION: the disposition table against the PINNED release contract.
+//
+// WHAT ACTUALLY HAPPENED, and why an assertion derived from our own table could not catch it. The
+// two exhaustive checks above walk TENANT_STUDIO_VAR_DISPOSITION, so they are green by
+// construction no matter what a release declares. vivijure-cf v1.12.0 added R2_STORAGE_QUOTA_BYTES
+// to ORCHESTRATOR_VAR_KEYS, which stamps it into the release manifest as a required_var; this plane
+// had no disposition for it; and assertDispositionCoversContract -- correctly -- then threw on
+// EVERY provision and EVERY studio upgrade against the pinned release. The guard worked. Nothing
+// on this side answered it, and no test here could have said so, because every list this suite
+// reads is one we write.
+//
+// WHAT THIS SNAPSHOT IS, stated honestly rather than implied: the required_vars of the pinned
+// artifact, read out of R2 on 2026-07-27 (studio-releases/v1.12.0/manifest.json). It is a RECORDED
+// SAMPLE. It catches a regression -- someone deleting a disposition, or a var this plane already
+// knows about going missing -- and it CANNOT catch the next var a future vivijure-cf release adds.
+// That gap is structural to a snapshot, and the only real closure is a deploy-time check against
+// the manifest the plane is actually pinned to; filed separately rather than pretended away here.
+const PINNED_RELEASE_REQUIRED_VARS_V1_12_0 = [
+  "ABUSE_REPORT_URL",
+  "ACCESS_AUD",
+  "ACCESS_TEAM_DOMAIN",
+  "ALLOW_UNAUTHENTICATED",
+  "AUTH_MODE",
+  "DEMO_ARTIFACT_ORIGIN",
+  "DEMO_ASSISTANT_MODEL",
+  "DEMO_CHAT_GLOBAL_DAILY",
+  "DEMO_CHAT_PER_IP_DAILY",
+  "DEMO_RENDER_ENABLED",
+  "DEMO_RENDER_GLOBAL_DAILY",
+  "DEMO_RENDER_PER_IP_DAILY",
+  "DEMO_RENDER_QUEUE_DEPTH",
+  "FILM_CLIP_DURATION_FLOOR",
+  "PLANNER_AI_MOCK",
+  "R2_S3_BUCKET",
+  "R2_S3_ENDPOINT",
+  "R2_STORAGE_QUOTA_BYTES",
+  "SPEND_DAILY_CEILING",
+  "SPEND_LIMIT_FAIL_CLOSED",
+];
+
+describe("the pinned release contract, not just our own table (cp#183)", () => {
+  it("has a disposition for every var the PINNED release declares", () => {
+    // This is the assertion that was red on main: R2_STORAGE_QUOTA_BYTES had no entry, so this
+    // threw exactly as the provision path did.
+    expect(() => assertDispositionCoversContract(PINNED_RELEASE_REQUIRED_VARS_V1_12_0)).not.toThrow();
+  });
+
+  it("CONTROL: a var with no disposition still REFUSES, naming it", () => {
+    // Without this the check above could pass because the assertion accepts everything, which is
+    // the vacuous-negative shape that let the real defect through in the first place.
+    expect(() =>
+      assertDispositionCoversContract([...PINNED_RELEASE_REQUIRED_VARS_V1_12_0, "SOME_FUTURE_VAR"]),
+    ).toThrow(/SOME_FUTURE_VAR/);
+  });
+
+  it("names the storage ceiling explicitly, so deleting its entry fails HERE", () => {
+    expect(TENANT_STUDIO_VAR_DISPOSITION.R2_STORAGE_QUOTA_BYTES?.disposition).toBe("conditional");
   });
 });

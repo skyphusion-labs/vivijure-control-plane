@@ -31,6 +31,7 @@ import type { KekRing } from "./token-crypto";
 import { decryptStudioToken, encryptStudioToken } from "./token-crypto";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
 import { abuseReportUrlBindings } from "./tenant-abuse-report";
+import { storageQuotaBindings, type StorageQuotaConfig } from "./tenant-storage-quota";
 import { videoFinishTierStateBindings } from "./video-finish-tier-state";
 import type { TokenMinter } from "./token-minter";
 import type { ModuleBundle, ModuleBundleSource } from "./tenant-modules";
@@ -221,6 +222,14 @@ export interface ProvisionDeps {
   aiGatewayId: string | null;
   /** Optional per-tenant daily spend ceiling set as SPEND_DAILY_CEILING; null -> studio default. */
   spendDailyCeiling: string | null;
+  /**
+   * The per-tenant R2 storage ceiling this plane configures (cp#183), already validated.
+   *
+   * `bytes` is bound onto the studio as R2_STORAGE_QUOTA_BYTES; null binds nothing, which core
+   * reads as no ceiling. `invalid` carries a set-but-malformed raw value so a write path can REFUSE
+   * rather than leave a tenant uncapped while the deploy config claims otherwise.
+   */
+  storageQuota: StorageQuotaConfig;
   /**
    * The hosted abuse-report page this deploy publishes, bound onto every tenant studio as
    * ABUSE_REPORT_URL (cp#164), or null when the plane cannot name one.
@@ -523,6 +532,20 @@ export async function runProvisionJob(
       throw new ProvisionFailure("bundle_fetch", String(e instanceof Error ? e.message : e));
     }
 
+    // cp#183: a set-but-malformed storage ceiling refuses the provision HERE, beside the other
+    // contract check and before any tenant resource exists. The studio would read a non-integer as
+    // NO ceiling, so binding it would produce an uncapped tenant on a plane whose config says it is
+    // capped -- the silent-inert class this repo keeps getting burned by, with a bill attached.
+    // Unset is not malformed: that is a plane which has chosen no ceiling, and it provisions.
+    if (deps.storageQuota.invalid !== null) {
+      throw new ProvisionFailure(
+        "bundle_fetch",
+        `TENANT_R2_STORAGE_QUOTA_BYTES="${deps.storageQuota.invalid}" is not a positive integer ` +
+          "number of BYTES; the tenant studio would read it as no ceiling at all. Fix the deploy " +
+          "var (bytes only, no units) and re-run this provision",
+      );
+    }
+
     // 1. D1. Adopt-on-exists makes a re-run safe.
     const db = await deps.cf.createD1(tenantD1Name(tenant.slug));
     await deps.store.setTenantD1(tenant.id, db.uuid);
@@ -656,6 +679,12 @@ export async function runProvisionJob(
         ...(deps.spendDailyCeiling
           ? [{ type: "plain_text" as const, name: "SPEND_DAILY_CEILING", text: deps.spendDailyCeiling }]
           : []),
+        // cp#183: the per-tenant R2 storage ceiling, the OTHER cost bound. SPEND_DAILY_CEILING caps
+        // what a tenant can spend in a day; this caps what they can accumulate forever, which is the
+        // bill that keeps arriving after they stop rendering (and, for a tenant who leaves, the one
+        // we inherit). Absent when this plane configures no ceiling: core reads an absent knob as
+        // off, so there is no value meaning "unlimited" to bind, and "0" would deny every submit.
+        ...storageQuotaBindings(deps.storageQuota.bytes),
         // cf#118: the video-finish tier. Present only when this plane is configured for it; absent
         // means the tenant degrades to per-shot clips WITH THE REASON STATED, which is exactly what
         // tenants get today and what self-host gets without the container.

@@ -29,6 +29,7 @@ import { encryptStudioToken, kekRing } from "../src/token-crypto";
 import { TENANT_STUDIO_VAR_DISPOSITION } from "../src/tenant-studio-env";
 import { MemoryStore } from "./memory-store";
 import { ABUSE_REPORT_URL_VAR } from "../src/tenant-abuse-report";
+import { STORAGE_QUOTA_VAR } from "../src/tenant-storage-quota";
 import { VIDEO_FINISH_TIER_STATE_VAR, VIDEO_FINISH_UNPROVISIONABLE } from "../src/video-finish-tier-state";
 
 const KEK = btoa("0123456789abcdef0123456789abcdef");
@@ -112,6 +113,9 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
     kek: RING,
     spendDailyCeiling: null,
+    // cp#183: the fixture plane configures a per-tenant storage ceiling, because a plane that caps
+    // nothing is the state that lane exists to end. Tests covering unset or malformed override it.
+    storageQuota: { bytes: "107374182400", invalid: null },
     // A studio that serves, and whose /api/modules host object GAINS a field on the new release --
     // the served content marker acceptance criterion 2 asks for.
     callTenantStudio: vi.fn(async (_s: string, init: { path: string }) => {
@@ -402,10 +406,24 @@ describe("the upload carries the tenant forward instead of re-stating it", () =>
       expect(byName.get(b.name)).toBe("inherit");
     }
     // THE CUSTODY CLAIM, asserted as "was never PASSED" rather than "is not in the final state":
-    // no binding in the payload carries a value field at all.
-    for (const b of args.bindings as Record<string, unknown>[]) {
+    // no binding carries a value the plane holds on the TENANT's behalf.
+    //
+    // The exemptions are the PROJECTIONS of plane config, and they are narrow by construction: a
+    // projection is re-derived rather than inherited precisely because inheriting it would preserve
+    // a value this plane no longer configures (cp#164 the intake URL, cp#183 the storage ceiling,
+    // cp#136 the tier state). Their values come from OUR config, never from the tenant, and they
+    // are a URL and two numbers rather than credentials. Everything else travels valueless.
+    const PROJECTED = new Set<string>([ABUSE_REPORT_URL_VAR, VIDEO_FINISH_TIER_STATE_VAR, STORAGE_QUOTA_VAR]);
+    for (const b of args.bindings as unknown as Record<string, unknown>[]) {
+      if (PROJECTED.has(String(b.name))) continue;
       expect(b.text).toBeUndefined();
       expect(b.service_id).toBeUndefined();
+    }
+    // CONTROL: the exemption is not a blanket. Every SECRET is still valueless, checked by name, so
+    // widening PROJECTED later cannot quietly let a credential through this assertion.
+    for (const name of LIVE_SECRETS) {
+      const b = (args.bindings as unknown as Record<string, unknown>[]).find((x) => x.name === name);
+      if (b) expect(b.text).toBeUndefined();
     }
   });
 
@@ -669,6 +687,80 @@ describe("the abuse-report URL is RE-DERIVED across a bytes move, not inherited 
   });
 });
 
+describe("the storage ceiling is RE-DERIVED across a bytes move, not inherited (cp#183)", () => {
+  const sent = (upload: CfApi) =>
+    (upload.uploadUserWorker as unknown as { mock: { calls: [{ bindings: { type: string; name: string; text?: string }[] }][] } })
+      .mock.calls[0][0].bindings;
+
+  it("BINDS the plane's ceiling onto a studio that never had one", async () => {
+    // The door that reaches an already-live tenant without an operator running anything by hand: a
+    // tenant provisioned before the var existed gets capped as a side effect of any studio upgrade.
+    // FAILS against the pre-cp#183 upgrade, which carried the binding set forward untouched.
+    const store = new MemoryStore();
+    const tenant = await seedLiveTenant(store);
+    const upload = fakeCf();
+    const d = deps(store, { scriptUploadCf: upload, storageQuota: { bytes: "107374182400", invalid: null } });
+
+    await upgradeTenantStudio(d, "job_1", tenant, await contextFor(d, tenant));
+
+    const bindings = sent(upload);
+    // CONTROL: the proxy saw a real payload, so the assertion below is about an upload that happened.
+    expect(bindings.length).toBeGreaterThan(0);
+    expect(bindings.find((b) => b.name === STORAGE_QUOTA_VAR)).toEqual({
+      type: "plain_text",
+      name: STORAGE_QUOTA_VAR,
+      text: "107374182400",
+    });
+  });
+
+  it("DROPS a carried ceiling when the plane no longer configures one", async () => {
+    // `inherit` would preserve it, which for a projection is exactly wrong: a plane that LIFTED its
+    // quota could never lift it on a live tenant, and the knob would be a one-way door.
+    const store = new MemoryStore();
+    const tenant = await seedLiveTenant(store);
+    const upload = fakeCf();
+    const stale = fakeCf({
+      getScriptBindings: vi.fn(async () => [
+        ...LIVE_BINDINGS.map((b) => ({ ...b })),
+        { type: "plain_text", name: STORAGE_QUOTA_VAR },
+      ]),
+    });
+    const d = deps(store, { cf: stale, scriptUploadCf: upload, storageQuota: { bytes: null, invalid: null } });
+
+    await upgradeTenantStudio(d, "job_1", tenant, await contextFor(d, tenant));
+
+    const bindings = sent(upload);
+    expect(bindings.length).toBeGreaterThan(0);
+    expect(bindings.find((b) => b.name === STORAGE_QUOTA_VAR)).toBeUndefined();
+    // CONTROL: everything else still travelled, so this is one omission and not a lost binding set.
+    for (const b of LIVE_BINDINGS) expect(bindings.some((x) => x.name === b.name)).toBe(true);
+  });
+
+  it("REFUSES the move while the plane's ceiling is malformed, before any bytes are shipped", async () => {
+    // This upgrade RE-DERIVES the var, so a malformed plane value would silently uncap a tenant
+    // that was capped a moment ago. Refuse in the preflight, where nothing has been written yet.
+    const store = new MemoryStore();
+    const tenant = await seedLiveTenant(store);
+    const d = deps(store, { storageQuota: { bytes: null, invalid: "10 GiB" } });
+
+    const pre = await preflightStudioUpgrade(d, tenant, NEW_RELEASE);
+    expect(pre.ok).toBe(false);
+    if (pre.ok) throw new Error("unreachable");
+    expect(pre.refusal.code).toBe("plane_storage_quota_malformed");
+    expect(pre.refusal.message).toContain("10 GiB");
+  });
+
+  it("CONTROL: the same fixture with a well-formed ceiling passes preflight", async () => {
+    // Without this the refusal above could pass for the boring reason (a preflight that refuses
+    // everything on this fixture), which is the vacuous-negative class this repo keeps catching.
+    const store = new MemoryStore();
+    const tenant = await seedLiveTenant(store);
+    const d = deps(store, { storageQuota: { bytes: "107374182400", invalid: null } });
+
+    expect((await preflightStudioUpgrade(d, tenant, NEW_RELEASE)).ok).toBe(true);
+  });
+});
+
 describe("the finish-tier state is RE-DERIVED across a bytes move, not inherited (cp#136)", () => {
   const staleCf = () =>
     fakeCf({
@@ -720,8 +812,11 @@ describe("the finish-tier state is RE-DERIVED across a bytes move, not inherited
       name: VIDEO_FINISH_TIER_STATE_VAR,
       text: VIDEO_FINISH_UNPROVISIONABLE,
     });
-    // And nothing else grew a value: the custody claim above still holds on this path.
-    for (const b of bindings.filter((x) => x.name !== VIDEO_FINISH_TIER_STATE_VAR)) {
+    // And nothing else grew a value: the custody claim above still holds on this path. The other
+    // PROJECTIONS of plane config are exempt for the reason stated there (their values are ours,
+    // not the tenant's); everything that could be a credential is not.
+    const projected = new Set<string>([VIDEO_FINISH_TIER_STATE_VAR, ABUSE_REPORT_URL_VAR, STORAGE_QUOTA_VAR]);
+    for (const b of bindings.filter((x) => !projected.has(x.name))) {
       expect(b.text).toBeUndefined();
     }
   });
