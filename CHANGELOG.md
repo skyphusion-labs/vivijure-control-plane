@@ -6,6 +6,29 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(credits): the tenant-facing credit surface (cp#194)
+
+- New `public/credits-checks.js` (pure, no DOM, `node --check` plus a unit suite) and a credit panel
+  on the live-studio route of `public/index.html`, wired in `public/front-door.js`. Vanilla JS, no
+  framework, no build step.
+- **The surface ships DARK, deliberately.** It renders only when the plane says `credits_apply`, and
+  that is false for every tenant today because the tenant class which would make it true
+  (`tenants.compute_mode`) is designed in `docs/managed-compute.md` and lands with cp#191. The
+  alternative was showing every existing BYOK tenant a USD 0.00 balance, which would invent a billing
+  relationship they never entered into on a product whose current pitch is that there is no paid tier.
+- **Applicability is never inferred from the numbers.** A BYOK tenant and a prepaid tenant who has not
+  topped up both read zero; guessing from the shape of the payload is how the first gets told they owe
+  us money. The API states it (`credits_apply`, `topup_available`, both always present even when
+  false) and the surface renders from the statement.
+- An unreadable balance shows an honest sentence and NO figure, because this is the number a tenant
+  uses to decide whether they can start work. Counting mode is stated on the panel rather than left to
+  be inferred from nothing being refused. Held is shown only when something is held.
+- The top-up control has THREE states (hidden / not-open-yet / available), so an unprovisioned rail
+  renders as a sentence and never as a control that invites a click.
+- Failed jobs appear as explicit no-charge lines carrying their reason, and a zero-delta line shows no
+  money at all rather than "USD 0.00" (which reads as a charge that happened to be free, a different
+  claim from "we did not charge you").
+
 ### fix(deploy): declare CREDITS_ENFORCING, which shipped in v1.17.0 as a knob that could not be turned
 
 - `CREDITS_ENFORCING` (cp#192, released in v1.17.0) was typed in `env.ts` and read by both credit
