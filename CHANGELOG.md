@@ -6,6 +6,47 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(quota): bind R2_STORAGE_QUOTA_BYTES per tenant, at provision and at converge (cp#183)
+
+- **Restores a broken capability, not merely a new knob.** vivijure-cf v1.12.0 declares
+  `R2_STORAGE_QUOTA_BYTES` in its release manifest; this plane had no disposition for it; so
+  `assertDispositionCoversContract` threw on **every provision** (`provisioner.ts`) and **every
+  studio upgrade** (`tenant-studio-upgrade.ts`) against the pinned release. Found by pulling
+  `studio-releases/v1.12.0/manifest.json` out of R2 (the object the deployed plane fetches), not
+  from memory. The guard was right; nothing on this side answered it.
+- vivijure-core v1.3.0 shipped the per-tenant storage ceiling (core#52) and vivijure-cf v1.11.0
+  wired the reader, and **this plane wrote the var nowhere** (repo-wide grep: zero hits), so hosted
+  shipped the enforcement bound to nobody. `SPEND_DAILY_CEILING` caps what a tenant spends in a day;
+  nothing capped what a tenant ACCUMULATES, which is the bill that keeps arriving after the
+  rendering stops and the one we inherit when a tenant leaves.
+- **Three write paths**, because one door leaves the estate split: the provision upload, the studio
+  upgrade (re-derived, never inherited, so a raised or lifted ceiling actually moves), and
+  `POST /api/admin/tenants/:id/storage-quota` for tenants already live.
+- **PER-TENANT overridable, including unset** (cp#173, found by joan against live core source before
+  this shipped). The core knob is a submit-time DENY, so it is a hard cap: right for BYOK and
+  self-host, who pay us nothing for GPU while their R2 sits on our bill, and wrong for a PREPAID
+  tenant bounded by their credit balance, who would be denied at exactly the byte where charged
+  overage begins. `migrations/0013` therefore keeps THREE states -- inherit / `set` / `none` -- because
+  "no per-tenant value" and "deliberately uncapped" bind the same thing today and diverge the day a
+  default is set. One resolution seam (`resolveStorageQuota`) serves all three write paths.
+- **No default in code**, on either host: unset = no ceiling, the same posture as
+  `R2_USAGE_ALERT_BYTES`. The number prices what an operator is willing to carry per tenant, which
+  is policy this repo does not get to invent. It lives in the deploy variable
+  `TENANT_R2_STORAGE_QUOTA_BYTES` (var census honored: template, render allowlist, BOTH deploy env
+  blocks; `var-census.py` watched to FAIL with one block missing).
+- **A set-but-malformed value REFUSES rather than rounding down to off.** core parses `100GB` and
+  `""` identically (quota off), which makes "typed it wrong" and "wants no ceiling" the same outcome
+  while an operator believes tenants are capped. It blocks a tenant who would INHERIT the value and
+  deliberately does not block one who overrode it.
+- **The reader floor is a PRE-write probe**, unlike cp#164: a studio carrying the core#52 reader
+  serves `GET /api/storage/usage` whether or not a quota is set, so a 404 proves the reader is
+  absent and the converge refuses before writing a ceiling nothing would enforce. Measured against a
+  real running studio (200, `quota_bytes: null` with the quota off), not assumed.
+- **Green means the STUDIO said so**: bounded-retry readback of the enforced number, 200 enforced /
+  202 bound-but-not-yet-observed / 409 strand, with `ok` and `enforced` both false on the 202.
+  `quota_source` and `record_written` travel in the response and the audit row.
+- Carries a schema change: `migrations/0013_tenant_storage_quota.sql`.
+
 ## v1.16.0 -- 2026-07-27
 
 MINOR: the cf#56 hosted-glue lane. Per-tenant AI Gateway credential on plan-enhance, the admin R2
