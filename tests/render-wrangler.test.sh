@@ -184,6 +184,37 @@ else
   fail=$((fail + 1))
 fi
 
+# VAR CENSUS (cf#56). A [vars] entry only reaches the Worker if it appears in wrangler.toml.example,
+# in one of the render allowlists, AND in BOTH deploy.yml render env blocks. Nothing connected those
+# lists, so a var could be typed in env.ts, read in deps.ts, and never passed -- rendering empty and
+# shipping the feature INERT while the deploy stayed green. Caught by review, not by the pipeline;
+# this is the pipeline catching it. Detail: scripts/var-census.py.
+echo ""
+echo "var census:"
+if python3 "$here/scripts/var-census.py" "$here"; then
+  echo "  ok   every placeholder is allowlisted and supplied by BOTH deploy render blocks"
+  pass=$((pass + 1))
+else
+  echo "  FAIL var census (messages above)"
+  fail=$((fail + 1))
+fi
+
+# CONTROL: the census must be able to FAIL, or the pass above only proves the script ran. Feed it a
+# tree whose template carries a placeholder nothing allowlists and confirm it objects.
+census_tmp="$(mktemp -d)"
+mkdir -p "$census_tmp/scripts" "$census_tmp/.github/workflows"
+cp "$here/scripts/render-wrangler.sh" "$census_tmp/scripts/"
+cp "$here/.github/workflows/deploy.yml" "$census_tmp/.github/workflows/"
+{ cat "$here/wrangler.toml.example"; echo "CENSUS_CONTROL_VAR = \"\${CENSUS_CONTROL_VAR}\""; } > "$census_tmp/wrangler.toml.example"
+if python3 "$here/scripts/var-census.py" "$census_tmp" >/dev/null 2>&1; then
+  echo "  FAILED CONTROL: the census accepted an unlisted placeholder -- it proves nothing"
+  fail=$((fail + 1))
+else
+  echo "  ok   CONTROL: the census refuses an unlisted placeholder"
+  pass=$((pass + 1))
+fi
+rm -rf "$census_tmp"
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ] || exit 1

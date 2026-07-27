@@ -196,6 +196,22 @@ APPLE_SERVICES_ID = "${APPLE_SERVICES_ID}"
 # Worker needs it at runtime (CfApi paths + the tenant R2 S3 endpoint) and a Worker cannot read its
 # own account id. DISPATCH_NAMESPACE is the same namespace TENANT_DISPATCH binds; the binding
 # serves dispatch, the NAME serves the upload API, and they must agree.
+# cf#56: the AI Gateway tenant MODULE workers bind as GATEWAY_ID. Set it to the DEDICATED
+# hosted-tenant gateway (vivijure-hosted), which runs authentication ON -- verified: a valid
+# per-tenant token reaches the provider and a bogus one is refused 401 AT the gateway.
+#
+# NEVER point this at prism gateway (skyphusion-llm). A shared gateway puts every tenant LLM call
+# in one analytics namespace and defeats the per-tenant attribution the token exists to give.
+#
+# EMPTY IS MEANINGFUL: no gateway named, so plan-enhance runs on the free local Workers AI provider.
+# That is a real working fallback, not a degrade -- pickProvider needs GATEWAY_ID and CF_AIG_TOKEN
+# both, and the provisioner binds NEITHER when either is missing (tenant-modules.ts).
+TENANT_AI_GATEWAY_ID = "${TENANT_AI_GATEWAY_ID}"
+# cf#56: alert threshold in BYTES for total R2 across all tenant buckets, on the admin usage
+# surface. EMPTY IS MEANINGFUL: no threshold, and the surface reports usage with a `no_threshold`
+# verdict rather than inventing a line nobody chose. parseThresholdBytes refuses 0 deliberately --
+# a permanently-firing alert is one the operator learns to ignore.
+R2_USAGE_ALERT_BYTES = "${R2_USAGE_ALERT_BYTES}"
 CF_ACCOUNT_ID = "${CLOUDFLARE_ACCOUNT_ID}"
 DISPATCH_NAMESPACE = "${TENANT_DISPATCH_NAMESPACE}"
 # The shared dispatch namespace tenant MODULE workers are uploaded into (cf#99), distinct from

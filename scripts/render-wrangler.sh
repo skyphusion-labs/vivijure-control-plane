@@ -39,7 +39,14 @@ REQUIRED_VARS="CLOUDFLARE_ACCOUNT_ID CONTROL_PLANE_D1_ID TENANT_DISPATCH_NAMESPA
 #
 # Do NOT extend this list to silence a failing deploy. Adding a name here says "empty is correct
 # for this value", which for anything above is false.
-ALLOW_EMPTY="GOOGLE_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_ID APPLE_TEAM_ID APPLE_SERVICES_ID"
+# cf#56 adds two more, and both meet the bar this list sets rather than being parked here to
+# quiet a deploy:
+#   TENANT_AI_GATEWAY_ID -- empty means this plane names no AI Gateway, so plan-enhance runs on the
+#     free local Workers AI provider. The provisioner binds NEITHER GATEWAY_ID nor CF_AIG_TOKEN when
+#     either is missing, so empty is a coherent working state and not a half-configured one.
+#   R2_USAGE_ALERT_BYTES -- empty means no threshold, and the admin usage surface reports a
+#     `no_threshold` verdict. An operator who has not chosen a number has not asked to be alerted.
+ALLOW_EMPTY="GOOGLE_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_ID APPLE_TEAM_ID APPLE_SERVICES_ID TENANT_AI_GATEWAY_ID R2_USAGE_ALERT_BYTES"
 
 # Fail BEFORE rendering, so the error names the missing variable instead of surfacing later as a
 # malformed toml the reader has to reverse-engineer.

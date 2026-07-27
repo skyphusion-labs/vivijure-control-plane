@@ -83,6 +83,14 @@ Repository **variables**:
 - `AUP_VERSION`, `AUP_URL`, `POSTERN_SEND_URL`
 - `GOOGLE_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_ID`
 - `APPLE_TEAM_ID`, `APPLE_SERVICES_ID` (empty = Apple SSO is not offered)
+- `TENANT_AI_GATEWAY_ID` (cf#56) -- the AI Gateway that tenant MODULE workers bind as `GATEWAY_ID`.
+  Set it to **`vivijure-hosted`**, the dedicated hosted-tenant gateway (authentication ON: a valid
+  per-tenant token reaches the provider, a bogus one is refused 401 at the gateway).
+  **Never `skyphusion-llm`** -- that is prism's gateway, and sharing it would put every tenant LLM
+  call in one analytics namespace, defeating the per-tenant attribution the token exists to provide.
+  Empty = no gateway named, so `plan-enhance` runs on the free local Workers AI provider.
+- `R2_USAGE_ALERT_BYTES` (cf#56) -- alert threshold in BYTES for total R2 across tenant buckets on
+  the admin usage surface. Empty = no threshold, and the surface reports a `no_threshold` verdict.
 
 Worker **secrets** (`wrangler secret put`, never in Actions): `POSTERN_SEND_TOKEN`,
 `GOOGLE_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `APPLE_PRIVATE_KEY`,
@@ -284,14 +292,33 @@ allowlist**, and the direction matters. `envsubst` turns an unset variable into 
 "empty", "misspelled the variable name", and "forgot to set it" all render identically and all look
 fine. Guarding a hand-picked few leaves every other value silently defaultable to empty.
 
-`ALLOW_EMPTY` is exactly four names:
+`ALLOW_EMPTY` is exactly six names:
 
-`GOOGLE_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_SERVICES_ID`
+`GOOGLE_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_SERVICES_ID`,
+`TENANT_AI_GATEWAY_ID`, `R2_USAGE_ALERT_BYTES`
 
 Each is half of an SSO provider pair, and a provider is offered only when both halves are present,
 so an unconfigured provider is *absent* rather than broken. Empty is how that is expressed. They are
 additionally **absent** as repository variables rather than empty, because the GitHub API rejects an
 empty variable value with a 422 -- the workflow cannot set them to the empty string it wants.
+
+The two cf#56 names meet the same bar rather than being parked there to quiet a deploy.
+`TENANT_AI_GATEWAY_ID` empty means this plane names no gateway, and the provisioner then binds
+**neither** `GATEWAY_ID` nor `CF_AIG_TOKEN` (both or neither, since `pickProvider` needs both), so
+empty is a coherent working state rather than a half-configured one. `R2_USAGE_ALERT_BYTES` empty
+means an operator has not chosen a threshold, and has therefore not asked to be alerted.
+
+### The var census (cf#56)
+
+A `[vars]` entry only reaches the Worker if it appears in **wrangler.toml.example**, in one of the
+two allowlists in **render-wrangler.sh**, and in **both** render env blocks in **deploy.yml**.
+Nothing connected those lists, so a var could be typed in `env.ts`, read in `deps.ts`, and never be
+passed: it renders EMPTY, the deploy goes green, and the feature ships **inert**. Both cf#56 vars
+hit exactly that, caught by review rather than by the pipeline.
+
+`scripts/var-census.py` now checks that all four lists agree, and it runs inside
+`tests/render-wrangler.test.sh` with a control proving it can fail. Add a var to one list and the
+census names the lists it is missing from.
 
 Do not extend that list to silence a failing deploy. Adding a name to it asserts that empty is
 correct for that value, which for everything else here is false.

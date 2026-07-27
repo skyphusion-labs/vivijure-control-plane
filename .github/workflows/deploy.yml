@@ -112,6 +112,8 @@ jobs:
           GITHUB_OAUTH_CLIENT_ID: ${{ vars.GITHUB_OAUTH_CLIENT_ID }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           APPLE_SERVICES_ID: ${{ vars.APPLE_SERVICES_ID }}
+          TENANT_AI_GATEWAY_ID: ${{ vars.TENANT_AI_GATEWAY_ID }}
+          R2_USAGE_ALERT_BYTES: ${{ vars.R2_USAGE_ALERT_BYTES }}
         run: scripts/render-wrangler.sh wrangler.toml
 
       # Show what a deploy WOULD do. On a clean release this prints the no-op line; anything else
@@ -197,6 +199,8 @@ jobs:
           GITHUB_OAUTH_CLIENT_ID: ${{ vars.GITHUB_OAUTH_CLIENT_ID }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           APPLE_SERVICES_ID: ${{ vars.APPLE_SERVICES_ID }}
+          TENANT_AI_GATEWAY_ID: ${{ vars.TENANT_AI_GATEWAY_ID }}
+          R2_USAGE_ALERT_BYTES: ${{ vars.R2_USAGE_ALERT_BYTES }}
         run: scripts/render-wrangler.sh wrangler.toml
 
       # MIGRATE BEFORE DEPLOY, deliberately. This ordering is load-bearing.
