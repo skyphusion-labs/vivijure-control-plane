@@ -5,121 +5,160 @@
 # release passes) and NEGATIVELY (each failure mode is watched to FAIL). A gate that has only ever
 # been seen to pass is not known to gate anything.
 #
-# The fixture shape here is not invented. It mirrors the LIVE v1.12.0 artifact: the module manifest
-# key is `module` (not `name`), and `worker` carries {path, sha256, size}. An earlier draft of this
-# gate asserted a `name` field that does not exist in any real release; it passed a hand-written
-# fixture and failed every genuine artifact. The sha256 below is COMPUTED from the bytes written, so
-# the fixture cannot drift into self-consistency with a wrong hash.
+# SYNTHETIC repo roots on purpose. An earlier version parsed the REAL src/ tree, which couples this
+# suite to whatever transient defect the repo happens to carry. While this gate was being written,
+# main genuinely was missing a disposition, so the positive case would have failed for a reason
+# having nothing to do with the gate logic. Fixtures here; real artifacts in the manual verification
+# recorded on the PR.
+#
+# The fixture SHAPE is not invented. It mirrors the live v1.12.0 artifact: the module manifest key
+# is module (not name), worker carries {path, sha256, size}, and the top-level manifest carries tag
+# plus required_vars. An earlier draft asserted a name field that exists in no real release; it
+# passed a hand-written fixture and failed every genuine artifact. The sha256 here is COMPUTED from
+# the bytes written, so the fixture cannot drift into self-consistency with a wrong hash.
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 gate="$here/scripts/check-release-modules.py"
 fails=0
+ok()  { printf "PASS  %s\n" "$1"; }
+bad() { printf "FAIL  %s\n" "$1"; fails=$((fails+1)); }
 
-note() { printf "  %s\n" "$1"; }
-ok()   { printf "PASS  %s\n" "$1"; }
-bad()  { printf "FAIL  %s\n" "$1"; fails=$((fails+1)); }
-
-# Build a bucket-shaped tree holding every module the catalog declares.
-build() {
-  local root="$1" tag="$2"
-  local base="$root/studio-releases/$tag"
-  mkdir -p "$base/modules"
-  printf "{\"tag\":\"%s\"}" "$tag" > "$base/manifest.json"
-  local mods
-  mods="$(python3 - "$here" <<"PY"
-import re,sys,pathlib
-src=(pathlib.Path(sys.argv[1])/"src"/"tenant-modules.ts").read_text()
-m=re.search(r"TENANT_MODULE_CATALOG:\s*readonly\s+TenantModuleSpec\[\]\s*=\s*\[(.*?)\n\];",src,re.S)
-print(" ".join(re.findall(r"\{\s*module:\s*\"([^\"]+)\"", m.group(1))))
+# mkrepo <dir> <catalog-csv> <disposition-csv>
+mkrepo() {
+  python3 - "$@" <<"PY"
+import pathlib, sys
+root, cat, disp = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+(root / "src").mkdir(parents=True, exist_ok=True)
+rows = "\n".join("  { module: \"%s\", endpointKey: \"e\" }," % m for m in cat.split(",") if m)
+(root / "src" / "tenant-modules.ts").write_text(
+    "export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [\n%s\n];\n" % rows)
+drows = "\n".join("  %s: { disposition: \"provisioned\", why: \"x\" }," % v
+                  for v in disp.split(",") if v)
+(root / "src" / "tenant-studio-env.ts").write_text(
+    "export const TENANT_STUDIO_VAR_DISPOSITION: Record<string, X> = {\n%s\n};\n" % drows)
 PY
-)"
-  for m in $mods; do
-    mkdir -p "$base/modules/$m"
-    printf "export default {};// %s\n" "$m" > "$base/modules/$m/worker.js"
-    python3 - "$base/modules/$m" "$m" <<"PY"
-import hashlib,json,pathlib,sys
-d=pathlib.Path(sys.argv[1]); name=sys.argv[2]
-b=(d/"worker.js").read_bytes()
-(d/"manifest.json").write_text(json.dumps({
-  "module": name, "main_module": "worker.js",
-  "compatibility_date": "2026-06-01", "compatibility_flags": ["nodejs_compat"],
-  "worker": {"path":"worker.js","sha256":hashlib.sha256(b).hexdigest(),"size":len(b)},
-}))
-PY
-  done
-  echo "$mods"
 }
 
-# ---------------------------------------------------------------- POSITIVE
-t="$(mktemp -d)"; build "$t" v1.12.0 >/dev/null
-if python3 "$gate" "$here" --release v1.12.0 --from-dir "$t" >/dev/null 2>&1; then
+# mkbucket <dir> <tag> <modules-csv> <required-vars-csv>
+mkbucket() {
+  python3 - "$@" <<"PY"
+import hashlib, json, pathlib, sys
+root, tag, mods, req = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+base = root / "studio-releases" / tag
+(base / "modules").mkdir(parents=True, exist_ok=True)
+(base / "manifest.json").write_text(json.dumps({
+    "tag": tag, "required_vars": [v for v in req.split(",") if v]}))
+for m in [x for x in mods.split(",") if x]:
+    d = base / "modules" / m
+    d.mkdir(parents=True, exist_ok=True)
+    b = ("export default {};// %s\n" % m).encode()
+    (d / "worker.js").write_bytes(b)
+    (d / "manifest.json").write_text(json.dumps({
+        "module": m, "main_module": "worker.js",
+        "compatibility_date": "2026-06-01", "compatibility_flags": ["nodejs_compat"],
+        "worker": {"path": "worker.js", "sha256": hashlib.sha256(b).hexdigest(), "size": len(b)}}))
+PY
+}
+
+MODS="keyframe,plan-enhance"
+VARS="AUTH_MODE,SPEND_DAILY_CEILING"
+
+# ------------------------------------------------------------------ POSITIVE
+r1="$(mktemp -d)"; b1="$(mktemp -d)"
+mkrepo "$r1" "$MODS" "$VARS"; mkbucket "$b1" v1.12.0 "$MODS" "$VARS"
+if python3 "$gate" "$r1" --release v1.12.0 --from-dir "$b1" >/dev/null 2>&1; then
   ok "a complete release passes"
 else
   bad "a complete release should pass but did not"
-  python3 "$gate" "$here" --release v1.12.0 --from-dir "$t" 2>&1 | sed "s/^/    /"
+  python3 "$gate" "$r1" --release v1.12.0 --from-dir "$b1" 2>&1 | sed "s/^/    /"
 fi
 
-# ------------------------------------------------- NEGATIVE: the cp#184 near-miss
-# The catalog names a module the pinned release does not publish. This is the exact pair that would
-# have failed EVERY provision at modules_upload.
-t2="$(mktemp -d)"; mods="$(build "$t2" v1.12.0)"
-last="$(echo "$mods" | tr " " "\n" | tail -1)"
-rm -rf "$t2/studio-releases/v1.12.0/modules/$last"
-if python3 "$gate" "$here" --release v1.12.0 --from-dir "$t2" >/dev/null 2>&1; then
-  bad "a release MISSING module $last was accepted (the cp#187 gap is still open)"
+# ------------------------- A: the cp#184 near-miss -- catalog module absent from the release
+r2="$(mktemp -d)"; b2="$(mktemp -d)"
+mkrepo "$r2" "$MODS" "$VARS"; mkbucket "$b2" v1.12.0 "keyframe" "$VARS"
+if python3 "$gate" "$r2" --release v1.12.0 --from-dir "$b2" >/dev/null 2>&1; then
+  bad "a release MISSING a catalog module was accepted"
 else
-  ok "a release missing a catalog module is refused"
+  ok "A: a release missing a catalog module is refused"
 fi
 
-# ------------------------------------------------- NEGATIVE: manifest promises absent bytes
-t3="$(mktemp -d)"; mods="$(build "$t3" v1.12.0)"
-first="$(echo "$mods" | tr " " "\n" | head -1)"
-rm -f "$t3/studio-releases/v1.12.0/modules/$first/worker.js"
-if python3 "$gate" "$here" --release v1.12.0 --from-dir "$t3" >/dev/null 2>&1; then
+# ------------------------- A: manifest promises worker bytes that are absent
+r3="$(mktemp -d)"; b3="$(mktemp -d)"
+mkrepo "$r3" "$MODS" "$VARS"; mkbucket "$b3" v1.12.0 "$MODS" "$VARS"
+rm -f "$b3/studio-releases/v1.12.0/modules/keyframe/worker.js"
+if python3 "$gate" "$r3" --release v1.12.0 --from-dir "$b3" >/dev/null 2>&1; then
   bad "a manifest promising ABSENT worker bytes was accepted"
 else
-  ok "a manifest promising absent worker bytes is refused"
+  ok "A: a manifest promising absent worker bytes is refused"
 fi
 
-# ------------------------------------------------- NEGATIVE: worker bytes do not match the pin
-t4="$(mktemp -d)"; mods="$(build "$t4" v1.12.0)"
-first="$(echo "$mods" | tr " " "\n" | head -1)"
-printf "//tampered\n" >> "$t4/studio-releases/v1.12.0/modules/$first/worker.js"
-if python3 "$gate" "$here" --release v1.12.0 --from-dir "$t4" >/dev/null 2>&1; then
+# ------------------------- A: worker bytes do not match the pinned hash
+r4="$(mktemp -d)"; b4="$(mktemp -d)"
+mkrepo "$r4" "$MODS" "$VARS"; mkbucket "$b4" v1.12.0 "$MODS" "$VARS"
+printf "//tampered\n" >> "$b4/studio-releases/v1.12.0/modules/keyframe/worker.js"
+if python3 "$gate" "$r4" --release v1.12.0 --from-dir "$b4" >/dev/null 2>&1; then
   bad "TAMPERED worker bytes were accepted (integrity check is not working)"
 else
-  ok "worker bytes that do not match the pinned sha256 are refused"
+  ok "A: worker bytes not matching the pinned sha256 are refused"
 fi
 
-# ------------------------------------------------- NEGATIVE: pin points at the wrong bytes
-t5="$(mktemp -d)"; build "$t5" v1.12.0 >/dev/null
-mv "$t5/studio-releases/v1.12.0" "$t5/studio-releases/v9.9.9"
-if python3 "$gate" "$here" --release v9.9.9 --from-dir "$t5" >/dev/null 2>&1; then
+# ------------------------- CONTROL: pin points at differently-tagged bytes
+r5="$(mktemp -d)"; b5="$(mktemp -d)"
+mkrepo "$r5" "$MODS" "$VARS"; mkbucket "$b5" v1.12.0 "$MODS" "$VARS"
+mv "$b5/studio-releases/v1.12.0" "$b5/studio-releases/v9.9.9"
+if python3 "$gate" "$r5" --release v9.9.9 --from-dir "$b5" >/dev/null 2>&1; then
   bad "a release whose manifest tag disagrees with the pin was accepted"
 else
-  ok "a pin pointing at bytes tagged differently is refused"
+  ok "CONTROL: a pin pointing at differently-tagged bytes is refused"
 fi
 
-# ------------------------------------------------- NEGATIVE: unreadable release is CANNOT VERIFY
-# The distinction that matters operationally: a credentials or missing-release problem must not be
-# reported as evidence about the modules.
-out="$(python3 "$gate" "$here" --release v1.12.0 --from-dir "$(mktemp -d)" 2>&1)"
+# ------------------------- CONTROL: unreadable release is CANNOT VERIFY, not a module verdict
+r6="$(mktemp -d)"
+mkrepo "$r6" "$MODS" "$VARS"
+out="$(python3 "$gate" "$r6" --release v1.12.0 --from-dir "$(mktemp -d)" 2>&1)"
 if echo "$out" | grep -q "CANNOT VERIFY"; then
-  ok "an unreadable release reports CANNOT VERIFY, not a module verdict"
+  ok "CONTROL: an unreadable release reports CANNOT VERIFY, not a module verdict"
 else
   bad "an unreadable release did not report CANNOT VERIFY"
-  note "$out"
 fi
 
-# ------------------------------------------------- NEGATIVE: a parser miss must never pass
-# If the catalog regex stops matching, every per-module check would pass vacuously. That has to be
-# a failure, not a green.
-t7="$(mktemp -d)"; mkdir -p "$t7/src"
-printf "export const TENANT_MODULE_CATALOG = [];\n" > "$t7/src/tenant-modules.ts"
-if python3 "$gate" "$t7" --release v1.12.0 --from-dir "$(mktemp -d)" >/dev/null 2>&1; then
-  bad "a catalog the parser could not read was treated as a PASS"
+# ------------------------- B: THE LIVE DEFECT -- a required_var with no disposition
+# The v1.12.0 flip shipped required_vars including R2_STORAGE_QUOTA_BYTES with no disposition on
+# the plane. assertDispositionCoversContract threw at provision AND upgrade: deploy green, entire
+# tenant lifecycle dead. This is that exact pair.
+r7="$(mktemp -d)"; b7="$(mktemp -d)"
+mkrepo "$r7" "$MODS" "$VARS"
+mkbucket "$b7" v1.12.0 "$MODS" "$VARS,R2_STORAGE_QUOTA_BYTES"
+if python3 "$gate" "$r7" --release v1.12.0 --from-dir "$b7" >/dev/null 2>&1; then
+  bad "a required_var with NO disposition was accepted (the live-outage shape is still open)"
 else
-  ok "a catalog that parses to nothing is a failure, not a vacuous pass"
+  ok "B: a required_var with no disposition is refused"
+fi
+
+# ------------------------- B: a manifest carrying no required_vars at all
+r8="$(mktemp -d)"; b8="$(mktemp -d)"
+mkrepo "$r8" "$MODS" "$VARS"; mkbucket "$b8" v1.12.0 "$MODS" ""
+if python3 "$gate" "$r8" --release v1.12.0 --from-dir "$b8" >/dev/null 2>&1; then
+  bad "a manifest carrying NO required_vars was accepted (bundle-r2 refuses it at provision)"
+else
+  ok "B: a manifest with no required_vars is refused"
+fi
+
+# ------------------------- VACUITY: a parser miss must never pass
+r9="$(mktemp -d)"; b9="$(mktemp -d)"
+mkrepo "$r9" "" "$VARS"; mkbucket "$b9" v1.12.0 "$MODS" "$VARS"
+if python3 "$gate" "$r9" --release v1.12.0 --from-dir "$b9" >/dev/null 2>&1; then
+  bad "a catalog that parses to NOTHING was treated as a pass"
+else
+  ok "VACUITY: a catalog parsing to nothing is a failure, not a vacuous pass"
+fi
+
+r10="$(mktemp -d)"; b10="$(mktemp -d)"
+mkrepo "$r10" "$MODS" ""; mkbucket "$b10" v1.12.0 "$MODS" "$VARS"
+if python3 "$gate" "$r10" --release v1.12.0 --from-dir "$b10" >/dev/null 2>&1; then
+  bad "a disposition map that parses to NOTHING was treated as a pass"
+else
+  ok "VACUITY: a disposition map parsing to nothing is a failure, not a vacuous pass"
 fi
 
 if [ "$fails" -ne 0 ]; then

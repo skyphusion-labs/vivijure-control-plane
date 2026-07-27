@@ -133,10 +133,17 @@ jobs:
       # that manifest promises must be present and hash to the pinned sha256 -- the same checks
       # src/module-bundle-r2.ts performs at provision time, run BEFORE we deploy instead of after.
       #
+      # SECOND ASSERTION, added after a LIVE outage: the v1.12.0 flip shipped a manifest whose
+      # required_vars include R2_STORAGE_QUOTA_BYTES, for which TENANT_STUDIO_VAR_DISPOSITION had no
+      # entry. assertDispositionCoversContract threw at provision AND upgrade, so the plane could
+      # provision and upgrade NOTHING while this deploy sat green. Same shape as the module case --
+      # the pinned release makes a demand the plane cannot answer -- so it is the same gate, over
+      # the same fetched manifest, rather than a second gate an operator would assume was implied.
+      #
       # In PREFLIGHT deliberately: a dry run exercises it, and `release` (which needs: preflight)
       # cannot run on a bad pin. An unreadable bucket reports CANNOT VERIFY and refuses, rather
       # than reporting every module as missing and sending someone hunting the wrong problem.
-      - name: Pinned release carries every catalog module
+      - name: Pinned release is satisfiable by this plane
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

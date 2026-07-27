@@ -1,12 +1,29 @@
 #!/usr/bin/env python3
 """
-Release-module gate (cp#187): every TENANT_MODULE_CATALOG entry must have a real bundle in the
-pinned STUDIO_RELEASE, or the deploy is refused.
+Release compatibility gate (cp#187): does the pinned STUDIO_RELEASE demand anything -- a module
+bundle OR a studio var -- that this plane deploy cannot satisfy? Answered before the deploy, rather
+than at the first provision.
 
-WHY THIS EXISTS. cp#184 added plan-enhance to TENANT_MODULE_CATALOG while the repo variable
+TWO assertion families over ONE fetched manifest, in one gate rather than two. They share the input,
+and an operator reading two separate gates would reasonably assume one implies the other. Both
+failures have the same shape: the pinned release makes a demand the plane cannot answer, and both
+surface at PROVISION time, which is the worst place to find out.
+
+WHY THIS EXISTS -- one near-miss and one LIVE outage, the same shape one assertion apart.
+
+ASSERTION A (modules). cp#184 added plan-enhance to TENANT_MODULE_CATALOG while the repo variable
 STUDIO_RELEASE was still pinned at v1.9.0, whose release carries no plan-enhance bundle. Deploying
 that pair would have failed EVERY provision at modules_upload: loud, but every one, and only after
 a tenant hit it. It was caught by a human reading the diff before tagging.
+
+ASSERTION B (vars). The STUDIO_RELEASE flip to v1.12.0 shipped a manifest whose required_vars
+include R2_STORAGE_QUOTA_BYTES, for which TENANT_STUDIO_VAR_DISPOSITION had no entry. Not
+hypothetical: assertDispositionCoversContract threw in provisioner.ts and tenant-studio-upgrade.ts,
+and the plane could provision and upgrade NOTHING. The deploy was green; the entire tenant lifecycle
+was dead. One assertion away from being caught at the same moment as A.
+
+So the question this gate answers is neither "are the bundles there" nor "are the vars decided" but
+the general one: does the pinned release demand anything this plane cannot answer?
 
 Nothing in the deploy checked it. deploy.yml even ASSERTS the property in prose -- "the
 studio-releases R2 bucket must exist AND hold the artifact for the pinned STUDIO_RELEASE tag" -- in
@@ -24,7 +41,13 @@ WHAT IT CHECKS, and the order matters:
      "the modules are missing" from "credentials, bucket, or release are wrong". Without it, a bad
      token reports every module as missing and sends someone hunting a release problem that does
      not exist. If the control fails we say CANNOT VERIFY and refuse, rather than guessing.
-  3. Each catalog module has a readable bundle manifest at
+  3. ASSERTION B: every var in the manifest required_vars has an entry in
+     TENANT_STUDIO_VAR_DISPOSITION. Mirrors assertDispositionCoversContract in
+     src/tenant-studio-env.ts exactly, including its intent: a new studio var gets a DELIBERATE
+     decision instead of being silently unbound. Running it here moves that check from first
+     provision to before deploy. A disposition map parsing to nothing is a failure, for the same
+     reason an empty catalog is.
+  4. ASSERTION A: each catalog module has a readable bundle manifest at
      studio-releases/<tag>/modules/<module>/manifest.json whose `module` field matches the module
      asked for, AND the worker bytes it promises are present and hash to the pinned sha256.
 
@@ -72,6 +95,17 @@ def parse_catalog(root):
     if not m:
         return None
     return re.findall(r"\{\s*module:\s*\"([^\"]+)\"", m.group(1))
+
+
+def parse_disposition(root):
+    # The var names in TENANT_STUDIO_VAR_DISPOSITION, read from the source of truth. Same
+    # parse-not-import tradeoff as parse_catalog, and the same non-empty guard in main(): a parser
+    # miss must never degrade into a silent pass.
+    src = (root / "src" / "tenant-studio-env.ts").read_text()
+    m = re.search(r"TENANT_STUDIO_VAR_DISPOSITION[^=]*=\s*\{(.*?)\n\};", src, re.S)
+    if not m:
+        return None
+    return re.findall(r"^\s{2}([A-Z0-9_]+):\s*\{", m.group(1), re.M)
 
 
 def wrangler_fetcher(bucket):
@@ -159,6 +193,35 @@ def main():
         return 1
 
     problems = []
+
+    # ASSERTION B, before the per-module work: an undecided var kills EVERY provision AND upgrade,
+    # which is strictly wider blast radius than one missing module bundle.
+    required = top.get("required_vars")
+    if not isinstance(required, list) or not required:
+        problems.append(
+            "the release manifest carries no required_vars. src/bundle-r2.ts REFUSES such a "
+            "manifest at provision time, so this release cannot be provisioned at all."
+        )
+    else:
+        disposition = parse_disposition(root)
+        if disposition is None:
+            print("check-release-modules: could not locate TENANT_STUDIO_VAR_DISPOSITION in "
+                  "src/tenant-studio-env.ts. The gate cannot verify what it cannot read; refusing.")
+            return 1
+        if not disposition:
+            print("check-release-modules: TENANT_STUDIO_VAR_DISPOSITION parsed to ZERO entries. "
+                  "Either every var would read as undecided or the check would pass vacuously; "
+                  "either way that is a failure, not a pass.")
+            return 1
+        undecided = [v for v in required if v not in disposition]
+        if undecided:
+            problems.append(
+                "the pinned release %s declares %d var(s) with NO disposition in "
+                "src/tenant-studio-env.ts: %s. assertDispositionCoversContract throws on these at "
+                "provision AND upgrade, so the plane deploys green and can then provision or "
+                "upgrade NO tenant." % (release, len(undecided), ", ".join(undecided))
+            )
+
     for name in modules:
         key = base + "/modules/" + name + "/manifest.json"
         rawm = fetch(key)
@@ -207,8 +270,9 @@ def main():
             print("check-release-modules: " + p)
         return 1
 
-    print("check-release-modules: OK -- release %s carries a bundle for all %d catalog modules (%s)."
-          % (release, len(modules), ", ".join(modules)))
+    print("check-release-modules: OK -- release %s carries a bundle for all %d catalog modules "
+          "(%s), and all %d required_vars have a disposition."
+          % (release, len(modules), ", ".join(modules), len(top.get("required_vars") or [])))
     return 0
 
 
