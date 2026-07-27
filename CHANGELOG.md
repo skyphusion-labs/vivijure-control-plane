@@ -6,6 +6,22 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.16.0 -- 2026-07-27
+
+MINOR: the cf#56 hosted-glue lane. Per-tenant AI Gateway credential on plan-enhance, the admin R2
+usage surface, and the deploy-var activation that makes both of them actually reach the Worker.
+Carries **NO schema change** (verified against `migrations/`: the v1.15.1..v1.16.0 range touches no
+migration file, not assumed from the absence of a migration in any one PR).
+
+Contains four merged PRs: #181, #182, #184, #186.
+
+### docs: measured per-job-class compute cost basis (cp#180)
+
+- Adds `docs/cost-basis.md` (237 lines, docs only, no code path touched). A MEASUREMENT of
+  per-job-class compute cost, not a pricing design; every number carries a provenance tag
+  (MEASURED / CITED RATE / DERIVED) and an untagged number is defined as a bug in the document.
+  Feeds the prepaid credit design (cp#173) and the per-tenant meter (vivijure-cf#56).
+
 ### fix(deploy): activate TENANT_AI_GATEWAY_ID and R2_USAGE_ALERT_BYTES, and census the var lists (cf#56)
 
 - Both vars were typed in `env.ts` and read in `deps.ts` but declared in **no** deploy config, so
