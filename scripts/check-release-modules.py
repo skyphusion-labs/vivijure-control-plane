@@ -70,7 +70,9 @@ import os
 import pathlib
 import re
 import sys
+import subprocess
 import tarfile
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -165,12 +167,139 @@ def dir_source(base, tag):
     return get
 
 
+# ---------------------------------------------------------------------------------------------
+# MIRROR VERIFICATION (cp#209)
+#
+# The gate above proves the pinned release is internally satisfiable. It does NOT prove the R2
+# MIRROR is present and matching, and the provisioner reads R2 (src/module-bundle-r2.ts) with no
+# fallback, so a release that is internally perfect but never mirrored still fails at provision.
+#
+# THE COMPARISON IS AGAINST THE CANONICAL MANIFEST, NEVER THE MIRROR OWN. A mirror validated
+# against the manifest sitting beside it in the same bucket is an internal-consistency check
+# wearing a mirror-check costume: a perfectly self-consistent STALE mirror passes it happily. The
+# canonical sha256 comes from the GitHub release artifact, which is the source of truth.
+#
+# BLAST-RADIUS CONFINEMENT, a hard requirement rather than tidiness. The credential available here
+# is ACCOUNT-WIDE R2 read; it could not be scoped to one bucket on that API path, so it can read any
+# R2 object in the account, INCLUDING TENANT BUCKETS. Given that this project states plainly that it
+# does not monitor tenant content, a CI job holding that reach must have its blast radius bounded by
+# CODE, not by intent and not by review. Every key this gate can construct is forced under
+# studio-releases/ by mirror_key(), which refuses any segment that could escape it.
+
+MIRROR_ROOT = "studio-releases"
+# One path segment: no slashes, no traversal. Deliberately strict -- release tags and module names
+# are both tightly shaped, so a narrow allowlist costs nothing and removes a whole class of doubt.
+SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+class UnsafeKey(ValueError):
+    pass
+
+
+def mirror_key(*segments):
+    # Build an R2 key under studio-releases/, or REFUSE. This is the ONLY way the gate is allowed
+    # to name an object. Not a convenience wrapper: it is the mechanism that keeps an account-wide
+    # read credential pointed at exactly one prefix.
+    for seg in segments:
+        if not isinstance(seg, str) or not seg or ".." in seg or "/" in seg or "\\" in seg:
+            raise UnsafeKey("refusing an unsafe key segment: %r" % (seg,))
+        if not SAFE_SEGMENT.match(seg):
+            raise UnsafeKey("refusing a key segment outside the allowlist: %r" % (seg,))
+    key = MIRROR_ROOT + "/" + "/".join(segments)
+    # Belt and braces: even if the loop above were ever loosened, the result must still be confined.
+    if not key.startswith(MIRROR_ROOT + "/") or "/../" in key or "//" in key:
+        raise UnsafeKey("constructed key escapes %s/: %r" % (MIRROR_ROOT, key))
+    return key
+
+
+def r2_get(bucket, key):
+    # Read one object from R2 via wrangler. Returns (bytes|None, error|None); (None, None) means
+    # wrangler ran and the object is genuinely absent. Same three-outcome contract as the release
+    # fetcher, for the same reason: collapsing them makes a verdict unreadable.
+    out = pathlib.Path(tempfile.mkstemp(prefix="mirror-")[1])
+    try:
+        r = subprocess.run(
+            ["npx", "wrangler", "r2", "object", "get", bucket + "/" + key,
+             "--file", str(out), "--remote"],
+            capture_output=True, text=True,
+        )
+        blob = (r.stdout or "") + (r.stderr or "")
+        if r.returncode == 0 and out.exists() and out.stat().st_size > 0:
+            return out.read_bytes(), None
+        if "specified key does not exist" in blob.lower():
+            return None, None
+        return None, "wrangler exit %d: %s" % (r.returncode, " ".join(blob.split())[:1200])
+    except FileNotFoundError as e:
+        return None, "could not execute wrangler: %s" % e
+    finally:
+        out.unlink(missing_ok=True)
+
+
+def verify_mirror(bucket, release, modules, canonical_manifest_bytes, canonical_module_manifests):
+    # Assert the R2 mirror matches the CANONICAL release. Returns a list of problems.
+    problems = []
+    try:
+        top_key = mirror_key(release, "manifest.json")
+    except UnsafeKey as e:
+        return ["mirror check refused to build a key: %s" % e]
+
+    raw, err = r2_get(bucket, top_key)
+    if err is not None:
+        return ["MIRROR CANNOT VERIFY -- reading %s failed, so nothing here is evidence about the "
+                "mirror. Underlying error: %s" % (top_key, err)]
+    if raw is None:
+        return ["the release %s is NOT MIRRORED at all (%s is absent). The provisioner reads R2 and "
+                "has no fallback, so every provision would fail fetching the studio bundle."
+                % (release, top_key)]
+    if raw != canonical_manifest_bytes:
+        problems.append(
+            "the mirrored manifest at %s does not match the canonical release manifest byte for "
+            "byte. The mirror is stale or was written from a different build." % top_key
+        )
+
+    for name in modules:
+        canon = canonical_module_manifests.get(name)
+        if canon is None:
+            continue
+        worker = canon.get("worker") or {}
+        want = worker.get("sha256")
+        wpath = worker.get("path")
+        if not want or not wpath:
+            continue
+        try:
+            wkey = mirror_key(release, "modules", name, wpath)
+        except UnsafeKey as e:
+            problems.append("mirror check refused to build a key for %s: %s" % (name, e))
+            continue
+        wbytes, werr = r2_get(bucket, wkey)
+        if werr is not None:
+            problems.append("%s mirror could not be verified: reading %s failed (%s)."
+                            % (name, wkey, werr))
+            continue
+        if wbytes is None:
+            problems.append(
+                "%s is NOT MIRRORED (%s is absent) even though the canonical release publishes it. "
+                "Provisioning would fail at modules_upload." % (name, wkey)
+            )
+            continue
+        got = hashlib.sha256(wbytes).hexdigest()
+        if got != want:
+            problems.append(
+                "%s mirrored worker at %s hashes to %s but the CANONICAL release manifest declares "
+                "%s. The mirror is not the release." % (name, wkey, got, want)
+            )
+    return problems
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("root", nargs="?", default=".")
     ap.add_argument("--release", required=True, help="the pinned STUDIO_RELEASE tag")
     ap.add_argument("--release-repo", default=DEFAULT_RELEASE_REPO)
     ap.add_argument("--from-dir", help="read from a local release tree instead (self-test only)")
+    ap.add_argument("--mirror-bucket",
+                    help="also verify the R2 MIRROR against the canonical release (cp#209). "
+                         "Omitted means the mirror is NOT checked, which the summary says out loud.")
     a = ap.parse_args()
 
     root = pathlib.Path(a.root)
@@ -245,6 +374,7 @@ def main():
             )
 
     # ASSERTION A.
+    canonical_module_manifests = {}
     for name in modules:
         key = "modules/%s/manifest.json" % name
         rawm, merr = get(key)
@@ -269,6 +399,7 @@ def main():
                 "different module." % (name, key, mm.get("module"))
             )
             continue
+        canonical_module_manifests[name] = mm
         worker = mm.get("worker") or {}
         wpath = worker.get("path")
         if not wpath:
@@ -293,14 +424,29 @@ def main():
                 "the release claims." % (name, wkey, got, want)
             )
 
+    # ASSERTION C (cp#209): the R2 mirror matches the CANONICAL release. Runs LAST because it is
+    # the only part needing a credential, so a run without one still reports everything else.
+    mirror_checked = False
+    if a.mirror_bucket and not a.from_dir:
+        mirror_checked = True
+        problems.extend(
+            verify_mirror(a.mirror_bucket, release, modules, raw, canonical_module_manifests)
+        )
+
     if problems:
         for p in problems:
             print("check-release-modules: " + p)
         return 1
 
+    # NO SILENT CAPS: say explicitly whether the mirror was checked. A summary reading identically
+    # with and without mirror coverage would let an operator believe R2 was verified when it was not.
+    mirror_note = ("The R2 mirror was verified against the canonical release."
+                   if mirror_checked else
+                   "The R2 mirror was NOT checked on this run (no --mirror-bucket).")
     print("check-release-modules: OK -- release %s carries a bundle for all %d catalog modules (%s), "
-          "and all %d required_vars have a disposition."
-          % (release, len(modules), ", ".join(modules), len(top.get("required_vars") or [])))
+          "and all %d required_vars have a disposition. %s"
+          % (release, len(modules), ", ".join(modules), len(top.get("required_vars") or []),
+             mirror_note))
     return 0
 
 
