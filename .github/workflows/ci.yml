@@ -82,6 +82,14 @@ jobs:
       - name: Release-module gate self-test
         run: bash tests/check-release-modules.test.sh
 
+      # cp#209 blast-radius confinement. The mirror check at deploy runs under an ACCOUNT-WIDE R2
+      # read credential that could not be bucket-scoped, so it can reach tenant buckets. This
+      # asserts the gate cannot be pointed anywhere but studio-releases/. Credential-free, so it
+      # runs here and on fork PRs -- the confinement is verified everywhere the code changes, not
+      # only where the token exists.
+      - name: Mirror-key confinement
+        run: python3 tests/mirror-key-confinement.test.py
+
       # THE REAL GATE, on every PR. This is the whole reason it reads the GitHub release rather
       # than R2: no credential, so it runs here AND on fork PRs. The R2_STORAGE_QUOTA_BYTES
       # disposition gap that took the plane down would have been caught at THIS step, before merge,
