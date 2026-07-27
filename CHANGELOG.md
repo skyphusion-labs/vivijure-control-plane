@@ -6,6 +6,31 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(admin): aggregate per-tenant R2 usage with an honest alert verdict (cf#56)
+
+- `GET /api/admin/r2-usage` returns per-tenant bucket usage, an aggregate, and an alert verdict
+  against an operator-set threshold (`R2_USAGE_ALERT_BYTES`). **Reads only**, and records no audit
+  row for the same reason `/api/admin/reconcile/runpod` records none: nothing changes, and a write
+  would let the pass alter what it measures.
+- **Hosted-only and correctly so:** it measures OUR bill and cannot reach a tenant studio. The
+  per-tenant storage QUOTA stays a studio-core operator knob (vivijure-core#52) so self-host gets the
+  identical feature rather than a hosted-only enforcement path.
+- **A number we could not read is `null`, never `0`.** A failed bucket read and an empty bucket are
+  different facts; collapsing them makes the total under-report and the alert under-fire.
+- **An under-threshold verdict requires a COMPLETE total.** `listTenants` pages at
+  `TENANT_PAGE_LIMIT`, so a truncated census or any failed read makes the total a FLOOR. The verdict
+  is three-state: `over` is sound from a floor, `under` requires completeness, `indeterminate` is the
+  honest answer in between. `parseThresholdBytes` refuses `0` (a permanent alert is ignored).
+- **Live-verified, not stubbed:** Cloudflare returns these counters as STRINGS, so a client assuming
+  numbers would feed `NaN` into the aggregate. Asserted against the real API with a negative control
+  proving a nonexistent bucket throws rather than reporting zero usage.
+- Fix-forward: the `CANNOT mint an R2 token` live negative control mints with a BOGUS permission-group
+  id, so it is refused under any credential and passed vacuously under the full token. Now skipped
+  under `CF_PROVISIONER_FULL`, active under the reduced token where its premise holds.
+- Fix-forward: `SPEND_DAILY_CEILING` was documented as bound only when an operator configures a
+  ceiling; `productionDeps` supplies a `25` fallback, so it is bound on every provision here.
+  Confirmed live on the testbed tenant studio (cf#56 item 4, no code needed).
+
 ## v1.15.1 -- 2026-07-27
 
 PATCH: the cp#164 converge route reported a SUCCESSFUL converge as a failure, because its readback raced edge propagation. Found by running the cp#164 acceptance against the live testbed, hours after v1.15.0 shipped it. Carries NO schema change (verified against `migrations/`, not assumed).
