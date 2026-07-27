@@ -1138,6 +1138,14 @@ export class D1Store implements ControlPlaneStore, CreditStore {
       .first<HoldRow>();
   }
 
+  async listHolds(tenantId: string, limit: number): Promise<HoldRow[]> {
+    const rows = await this.db
+      .prepare("SELECT * FROM credit_holds WHERE tenant_id = ?1 ORDER BY created_at DESC, id DESC LIMIT ?2")
+      .bind(tenantId, limit)
+      .all<HoldRow>();
+    return rows.results ?? [];
+  }
+
   async capturedHoldsMissingDebit(limit: number): Promise<HoldRow[]> {
     const rows = await this.db
       .prepare(

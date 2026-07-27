@@ -64,6 +64,18 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   /** postern send door (POST /api/send). Var: it is a URL, not a secret. */
   POSTERN_SEND_URL?: string;
 
+  /**
+   * Credit enforcement (cp#189). Absent, or anything non-affirmative, = COUNTING MODE: the ledger
+   * records and refuses nothing.
+   *
+   * Deliberately NOT fail-closed by default, against the usual reflex and for a reason specific to
+   * this knob: no purchase door exists yet, so no tenant CAN hold a positive balance, and enforcing
+   * by default would refuse every submission on every tenant the instant the migration lands. The
+   * dangerous direction here is not "spends without paying", it is "a studio that stops working for
+   * reasons nobody configured". Full argument at parseEnforcing() in credits.ts.
+   */
+  CREDITS_ENFORCING?: string;
+
   // SSO client identifiers. A provider is OFFERED only when its id AND secret are both present,
   // which is what makes /api/platform/config a projection rather than a hardcoded list.
   GOOGLE_OAUTH_CLIENT_ID?: string;
