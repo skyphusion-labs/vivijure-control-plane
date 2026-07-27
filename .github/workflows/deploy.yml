@@ -161,13 +161,25 @@ jobs:
       - name: Pinned release is satisfiable by this plane
         env:
           STUDIO_RELEASE: ${{ vars.STUDIO_RELEASE }}
+          STUDIO_RELEASES_BUCKET: ${{ vars.STUDIO_RELEASES_BUCKET }}
+          # cp#209. ACCOUNT-WIDE R2 read (it could not be bucket-scoped on the minting API path),
+          # so the reach is bounded in CODE: every key is built by mirror_key(), which refuses
+          # anything that could escape studio-releases/. tests/mirror-key-confinement.test.py drives
+          # that refusal and runs on every PR.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.STUDIO_RELEASES_R2_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${STUDIO_RELEASE:-}" ]; then
             echo "::error::STUDIO_RELEASE is empty; refusing to deploy an unverifiable pin"
             exit 1
           fi
-          python3 scripts/check-release-modules.py . --release "$STUDIO_RELEASE"
+          # The mirror assertion is what the provisioner actually depends on: it reads R2, and
+          # module-bundle-r2.ts has no fallback. Compared against the CANONICAL release manifest,
+          # never the mirror own -- a mirror validated against the manifest beside it passes
+          # happily when both are stale.
+          python3 scripts/check-release-modules.py . \
+            --release "$STUDIO_RELEASE" \
+            --mirror-bucket "$STUDIO_RELEASES_BUCKET"
 
       # Show what a deploy WOULD do. On a clean release this prints the no-op line; anything else
       # is the cue that this tag carries schema change. Read-only: list, never apply.
