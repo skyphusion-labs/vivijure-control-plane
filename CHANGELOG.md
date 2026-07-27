@@ -6,6 +6,30 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(deploy): declare CREDITS_ENFORCING, which shipped in v1.17.0 as a knob that could not be turned
+
+- `CREDITS_ENFORCING` (cp#192, released in v1.17.0) was typed in `env.ts` and read by both credit
+  routes, but declared in **none** of `wrangler.toml.example`, `scripts/render-wrangler.sh`, or
+  either `deploy.yml` render block. It therefore never reached the Worker. The DEFAULT behaviour was
+  still correct, because absent reads as counting mode and that is the ruled default, so nothing was
+  broken in production. **What was broken is the ability to change it**: setting the repo variable
+  would have done nothing, and every surface would have kept reporting `enforcing: false` while an
+  operator believed they had switched enforcement on.
+- That matters beyond tidiness: flipping this knob is a named acceptance criterion of cp#193, and its
+  closing evidence is a live read showing `enforcing: true`. A knob that cannot be turned makes that
+  criterion unmeetable, and the failure would have surfaced at the worst moment, next to a live
+  purchase door.
+- Now declared in all four lists as `ALLOW_EMPTY`, on merit: empty is not merely tolerated here, it
+  is the ruled default.
+
+**The census did not catch this, and the reason is worth recording.** `scripts/var-census.py` starts
+from the placeholders in `wrangler.toml.example` and asserts the other three lists agree with it. A
+var that appears in NONE of the four is invisible to it: the lists agree by all omitting it. So the
+census closes the drift class where a var is declared in some places and not others, and cannot see
+the class where a var is declared nowhere and read anyway, which is the original cf#56 shape. Closing
+that would mean censusing `src/env.ts` against the deploy lists, which needs a vars-vs-secrets-vs-
+bindings distinction the current script does not make. Filed rather than bolted on here.
+
 ## v1.17.0 -- 2026-07-27
 
 MINOR: the per-tenant cost-bound lane. The prepaid credit ledger primitive (inert by design) and the
