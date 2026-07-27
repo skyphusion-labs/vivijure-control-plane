@@ -140,19 +140,32 @@ jobs:
       # the pinned release makes a demand the plane cannot answer -- so it is the same gate, over
       # the same fetched manifest, rather than a second gate an operator would assume was implied.
       #
+      # READS THE GITHUB RELEASE, not R2. studio-release.yml calls the GitHub release the "PUBLIC
+      # source of truth" and R2 a "CACHE/MIRROR only, never the source of truth", so this gates on
+      # the canonical artifact. It is also credential-free, which is why the same check runs in
+      # ci.yml on every PR -- the var gap above would have been caught before merge instead of
+      # after deploy. An earlier version read R2 and could not run at all: this deploy token has no
+      # R2 API read and never needed one, because the plane reaches releases through the
+      # STUDIO_RELEASES binding. It refused every deploy without being able to say why, and a gate
+      # that always refuses is a gate somebody disables.
+      #
+      # NOT covered here: that the R2 MIRROR is present and matching. The provisioner reads R2 and
+      # module-bundle-r2.ts has no fallback, so that gap is real; it needs an R2 read grant and is
+      # tracked separately.
+      #
       # In PREFLIGHT deliberately: a dry run exercises it, and `release` (which needs: preflight)
-      # cannot run on a bad pin. An unreadable bucket reports CANNOT VERIFY and refuses, rather
-      # than reporting every module as missing and sending someone hunting the wrong problem.
+      # cannot run on a bad pin. A failed download reports CANNOT VERIFY with the underlying error
+      # rather than reporting every module as missing and sending someone hunting the wrong problem.
       - name: Pinned release is satisfiable by this plane
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           STUDIO_RELEASE: ${{ vars.STUDIO_RELEASE }}
-          STUDIO_RELEASES_BUCKET: ${{ vars.STUDIO_RELEASES_BUCKET }}
         run: |
-          python3 scripts/check-release-modules.py . \
-            --release "$STUDIO_RELEASE" \
-            --bucket "$STUDIO_RELEASES_BUCKET"
+          set -euo pipefail
+          if [ -z "${STUDIO_RELEASE:-}" ]; then
+            echo "::error::STUDIO_RELEASE is empty; refusing to deploy an unverifiable pin"
+            exit 1
+          fi
+          python3 scripts/check-release-modules.py . --release "$STUDIO_RELEASE"
 
       # Show what a deploy WOULD do. On a clean release this prints the no-op line; anything else
       # is the cue that this tag carries schema change. Read-only: list, never apply.

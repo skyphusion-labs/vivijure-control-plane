@@ -117,32 +117,34 @@ fi
 r6="$(mktemp -d)"
 mkrepo "$r6" "$MODS" "$VARS"
 out="$(python3 "$gate" "$r6" --release v1.12.0 --from-dir "$(mktemp -d)" 2>&1)"
-if echo "$out" | grep -q "is ABSENT"; then
-  ok "CONTROL: a release that is genuinely absent is reported as ABSENT"
+if echo "$out" | grep -q "not a studio release"; then
+  ok "CONTROL: a fetch that SUCCEEDS but finds no manifest is a release verdict, not CANNOT VERIFY"
 else
-  bad "an absent release was not reported as ABSENT"
+  bad "a fetched-but-empty release was not reported as a release problem"
   printf "    %s\n" "$out"
 fi
 
-# ------------------------- CONTROL: a FAILED read is CANNOT VERIFY and NAMES the cause
-# The three outcomes present / absent / could-not-find-out must stay distinct. A live dry run
-# collapsed all three into one bare None, and the gate could only list three possible causes
+# ------------------------- CONTROL: a FAILED fetch is CANNOT VERIFY and NAMES the cause
+# The three outcomes present / absent / could-not-find-out must stay distinct. An earlier version
+# collapsed all three into one bare None, and a live dry run could only list three possible causes
 # because the code had discarded the one fact that would have named which. This drives the REAL
-# error branch by removing wrangler from PATH, rather than stubbing the fetcher.
+# fetch path against a tag that has no release, rather than stubbing it.
+#
+# Network-dependent by design: the gate itself downloads the release, so a CI environment that
+# cannot reach GitHub cannot run the gate at all. The assertion holds either way -- an unreachable
+# host and a 404 both have to produce CANNOT VERIFY plus a named cause.
 r6b="$(mktemp -d)"
 mkrepo "$r6b" "$MODS" "$VARS"
-emptybin="$(mktemp -d)"
-py="$(command -v python3)"
-out="$(PATH="$emptybin" "$py" "$gate" "$r6b" --release v1.12.0 --bucket some-bucket 2>&1)"
+out="$(python3 "$gate" "$r6b" --release v0.0.0-no-such-release 2>&1)"
 if echo "$out" | grep -q "CANNOT VERIFY"; then
-  if echo "$out" | grep -qiE "wrangler"; then
-    ok "CONTROL: a failed read reports CANNOT VERIFY and names the underlying cause"
+  if echo "$out" | grep -qiE "http|download|404|resolve|urlopen"; then
+    ok "CONTROL: a failed fetch reports CANNOT VERIFY and names the underlying cause"
   else
     bad "CANNOT VERIFY was reported but the underlying cause was swallowed"
     printf "    %s\n" "$out"
   fi
 else
-  bad "a failed read did not report CANNOT VERIFY"
+  bad "a failed fetch did not report CANNOT VERIFY"
   printf "    %s\n" "$out"
 fi
 
