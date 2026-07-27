@@ -97,7 +97,18 @@ jobs:
       #
       # Fork PRs may not receive repo variables. When STUDIO_RELEASE is absent this NOTICEs and
       # skips rather than failing, because failing every fork PR is how a gate gets removed. The
-      # authoritative enforcement is deploy.yml preflight, which hard-fails on an empty pin.
+      # authoritative enforcement is deploy.yml preflight, which hard-fails on an empty pin, so the
+      # softening is confined to the EARLY copy of the check and never to the deciding one.
+      #
+      # THE RESIDUAL RISK, written down rather than left for someone to rediscover: if repo
+      # variables ever stop reaching PR runs, this path turns the gate into a silent no-op that
+      # looks exactly like a passing gate. That is the same shape as every other failure this gate
+      # exists to catch, so it does not get to hide in a skip branch.
+      #
+      # CHECKED, NOT ASSUMED: variables DO reach PR runs today. Verified 2026-07-27 in CI run
+      # 30253531388, where this step logged `STUDIO_RELEASE: v1.12.0` and printed the real OK line
+      # (all 6 catalog modules, all 20 required_vars) rather than the notice above. If you are
+      # reading this because the step is suddenly silent, that is the thing to re-check first.
       - name: Pinned release is satisfiable by this plane
         env:
           STUDIO_RELEASE: ${{ vars.STUDIO_RELEASE }}
