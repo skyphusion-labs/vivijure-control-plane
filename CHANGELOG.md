@@ -6,6 +6,39 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(hosted): operator-initiated, owner-completed invoke-key handoff (cp#169)
+
+- **The strand.** A cp#137 reprovision rebuilds a tenant's four RunPod endpoints; new endpoints get
+  new ids, so the stored key B is scoped to ids that no longer exist and every repair ends at
+  "install a fresh invoke key" -- on a SESSION-gated route. The operator who performed the repair
+  could not finish it, and the tenant sat at `awaiting_invoke_key` until the account owner signed
+  in. Observed live during the cp#137 remediation.
+- **Conrad's ruling: PATH 3.** The INITIATIVE moves to the operator, the CREDENTIAL DECISION stays
+  with the owner. An admin-gated install (option 2) was declined deliberately: it would let an
+  operator credential place a RunPod key on a customer studio.
+- A successful reprovision now mints a one-time link in the same response that reports the repair,
+  bound to the endpoints THAT run created; `POST /api/admin/tenants/:id/invoke-key-handoff` mints one
+  on demand for a tenant stranded before this existed. The owner opens `/install-key?t=...`, reads
+  what happened and which four endpoints to scope, and pastes their own key. No email integration in
+  this pass (parked); the operator hands the link over through their support channel.
+- **The verification is unrelaxed and unduplicated.** `verifyInvokeKeyScope` runs exactly as on the
+  session route because there is now exactly ONE install implementation and both routes call it. A
+  key that can reach graphql is still refused, and all four endpoint ids are still probed.
+- **What a leaked link can do is bounded by RunPod, not by our clock:** the key offered must reach
+  the tenant's own endpoints, which live on the TENANT's RunPod account, so the link alone installs
+  nothing.
+- Storage is hash-only (`invoke_key_handoffs`, migration 0012), the rule `login_tokens` and
+  `sessions` already follow. Issuance AND consumption are audited, correlated by a handoff id that
+  is not part of the secret; neither row carries the token or the key.
+- **Single use burns on a COMPLETED install only.** A rejected key must not burn the link (a typo
+  would re-strand the customer), and neither must the 202 path, whose own message says to retry.
+- A handoff made STALE by a later reprovision is refused rather than honoured: installing a key
+  scoped to dead endpoints would re-enter the state the handoff exists to repair.
+- A link that cannot be minted does not undo a repair that already happened: the refusal is reported
+  on the response and the standalone mint route is the retry.
+- Schema: migration 0012 adds `invoke_key_handoffs`. Additive (`CREATE TABLE`), safe under the
+  workflow's migrate-then-deploy order.
+
 ### feat(hosted): the plane sets ABUSE_REPORT_URL on tenant studios, on both doors (cp#164)
 
 - **The reader shipped and had nothing to read.** vivijure-cf v1.10.0 validates `ABUSE_REPORT_URL`

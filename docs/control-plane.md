@@ -1365,6 +1365,85 @@ upgrade re-checks in its verify census, and that path never touches studio bindi
 would fail an unrelated module upgrade on every tenant not yet converged. A studio without the var
 is fully functional; the panel renders no link, which is the deliberate behaviour and not a degrade.
 
+## Finishing a repair: the owner-completed invoke-key handoff (cp#169)
+
+`POST /api/admin/tenants/:id/reprovision-runpod` (cp#137) rebuilds a live tenant's four RunPod
+endpoints. New endpoints get new ids, so the tenant's stored key B is scoped to ids that no longer
+exist, and every repair ends at "install a fresh invoke key" -- a SESSION-gated route, because the
+admin bearer is honoured only under `/api/admin/`. **The operator who performed the repair could not
+finish it.** Observed live during the cp#137 remediation: a correctly-scoped key in the operator's
+hand, and the tenant sat at `awaiting_invoke_key` until the account owner signed in.
+
+**Conrad's ruling (cp#169): PATH 3, operator-initiated and owner-completed.** "As convenient as
+possible while maintaining operator action." The INITIATIVE moves to the operator; the CREDENTIAL
+DECISION stays with the owner. An admin-gated install (option 2) was declined deliberately: it would
+let an operator credential place a RunPod key on a customer studio, which is the custody expansion
+the two-key design exists to prevent.
+
+### The flow
+
+1. A successful reprovision mints a one-time link **in the same response that reports the repair**,
+   bound to the endpoints that run created (the tenant is re-read AFTER the rebuild).
+2. `POST /api/admin/tenants/:id/invoke-key-handoff` mints one on demand, for a tenant stranded by a
+   repair that predates this, a link that expired in a support queue, or a link made stale by a
+   second reprovision. Re-running a repair to obtain a link would rebuild four endpoints to solve a
+   paperwork problem.
+3. The operator hands the link to the customer through their support channel. **No email
+   integration in this pass, deliberately parked.**
+4. The owner opens `/install-key?t=<token>`, reads what happened and which four endpoints to scope,
+   and pastes their own key. `GET /api/handoff/invoke-key` serves that context and does NOT consume
+   the link.
+5. `POST /api/handoff/invoke-key` installs it, through the same code the session route runs.
+
+```
+POST /api/admin/tenants/ten_abc123/invoke-key-handoff
+Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN
+
+-> { "id": "ikh_...", "url": "https://<host>/install-key?t=...", "expires_at": "...", "endpoints": [...] }
+```
+
+The `url` is the ONLY time the token exists outside the plane. It is not logged and not audited: a
+lost link is re-minted, never recovered.
+
+### What the link can and cannot do
+
+It authorizes ONE install on ONE tenant. The key offered still has to pass `verifyInvokeKeyScope`
+**unchanged** -- refused if it can reach graphql, and required to reach all four of that tenant's
+endpoints. Those endpoints live in the TENANT's own RunPod account, so **a stranger holding the link
+and no credential to that account can install nothing.** The security bound is RunPod's scoping; the
+72-hour expiry only stops a link lingering in a support thread. That check is the whole custody
+story (cp#169 says so explicitly), so there is exactly ONE implementation of the install
+(`performInvokeKeyInstall`) and both routes call it -- identity rather than imitation.
+
+### Storage, audit, and single use
+
+- D1 holds the SHA-256 of the token and nothing else of it (`invoke_key_handoffs`, migration 0012),
+  the rule `login_tokens` and `sessions` already follow.
+- BOTH ends are audited: `tenant.issue_invoke_key_handoff` and
+  `tenant.install_invoke_key_via_handoff`, correlated by the handoff `id`, which is not part of the
+  secret. Neither row contains the token or the key.
+- **Single use is burned on a COMPLETED install only.** A rejected key must not burn the link (a
+  typo would re-strand the customer, which is the failure this issue is about), and neither must the
+  202 "modules have not picked it up yet" path, whose own instruction is to RETRY. Consumption goes
+  through the store's conditional UPDATE, so two concurrent completions cannot both count.
+
+### Staleness, and why it is refused rather than tolerated
+
+A handoff is bound to the endpoint ids that existed when it was issued. If the tenant is
+reprovisioned again before the link is used, those ids are dead, and an install verified against
+them would store a key scoped to endpoints that no longer exist -- the exact state the handoff exists
+to repair, re-entered through the mechanism meant to fix it. The resolve path refuses with
+`handoff_endpoints_changed` and says a new link is needed. The comparison is a SET comparison: the
+provisioner emits a fixed order, but depending on the order would refuse a link that is genuinely
+fine.
+
+### Deploy ordering
+
+Migration 0012 is a pure `CREATE TABLE`, so it is additive and the workflow's migrate-then-deploy
+order is safe: old code tolerates the new table, and the new code refuses honestly against a
+database that has not got it yet only if the deploy order were reversed, which the workflow does not
+allow (it verifies no migrations remain pending BEFORE it deploys the worker).
+
 ## Preservation holds: the interlock on the irreversible lever (cp#118)
 
 `ABUSE-RESPONSE-RUNBOOK.md` Section 5.2 forbids teardown on a tenant with an open report or

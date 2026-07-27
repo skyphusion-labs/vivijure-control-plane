@@ -12,6 +12,7 @@ import type {
   Account,
   AuthProvider,
   ControlPlaneStore,
+  InvokeKeyHandoff,
   LoginToken,
   OAuthState,
   PreservationHold,
@@ -85,6 +86,24 @@ export class MemoryStore implements ControlPlaneStore {
   /** Atomic check-and-set, exactly like the D1 UPDATE guard: a replay updates nothing. */
   async consumeLoginToken(token_hash: string, now: string) {
     const row = this.loginTokens.get(token_hash);
+    if (!row || row.consumed_at || row.expires_at <= now) return null;
+    row.consumed_at = now;
+    return { ...row };
+  }
+
+  // ---- invoke-key handoffs (cp#169) ----
+  readonly handoffs = new Map<string, InvokeKeyHandoff>();
+
+  async createInvokeKeyHandoff(row: Omit<InvokeKeyHandoff, "created_at" | "consumed_at">) {
+    this.handoffs.set(row.token_hash, { ...row, created_at: "t0", consumed_at: null });
+  }
+  /** Unfiltered on purpose, like the D1 read: expired and consumed are different answers. */
+  async getInvokeKeyHandoff(token_hash: string) {
+    return this.handoffs.get(token_hash) ?? null;
+  }
+  /** Atomic check-and-set, exactly like the D1 UPDATE guard: a replay consumes nothing. */
+  async consumeInvokeKeyHandoff(token_hash: string, now: string) {
+    const row = this.handoffs.get(token_hash);
     if (!row || row.consumed_at || row.expires_at <= now) return null;
     row.consumed_at = now;
     return { ...row };

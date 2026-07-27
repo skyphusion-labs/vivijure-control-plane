@@ -169,6 +169,25 @@ export interface LoginToken {
   consumed_at: string | null;
 }
 
+/**
+ * cp#169: a one-time authorization for the ACCOUNT OWNER to install one invoke key on one tenant.
+ *
+ * The plaintext token exists once, in the admin response the operator reads; this row carries only
+ * its SHA-256, exactly like a login token. `endpoints_json` is the four ids the handoff was issued
+ * against: the page shows them so the owner knows what to scope, and the consume path refuses when
+ * they no longer match the tenant's current endpoints.
+ */
+export interface InvokeKeyHandoff {
+  token_hash: string;
+  id: string;
+  tenant_id: string;
+  endpoints_json: string;
+  issued_by: string;
+  created_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+}
+
 export interface Session {
   token_hash: string;
   account_id: string;
@@ -735,6 +754,22 @@ export interface ControlPlaneStore {
    */
   updateJobProgress(id: string, step: string, stepsDoneJson: string): Promise<void>;
   finishJob(id: string, status: "succeeded" | "failed", errorStep: string | null, errorMessage: string | null): Promise<void>;
+
+  // ---- invoke-key handoffs (cp#169) ----
+  /** Mint one. The caller hashes; this store never sees the token value. */
+  createInvokeKeyHandoff(row: Omit<InvokeKeyHandoff, "created_at" | "consumed_at">): Promise<void>;
+  /**
+   * Read a handoff WITHOUT consuming it: the page needs to show the owner which endpoints to scope
+   * before they have anything to submit. Returns the row whatever its state, so the caller can tell
+   * expired from consumed from unknown -- three different sentences for a person to read.
+   */
+  getInvokeKeyHandoff(tokenHash: string): Promise<InvokeKeyHandoff | null>;
+  /**
+   * BURN it, single-use, and the UPDATE is the gate (the consumeLoginToken shape): the row comes
+   * back only if this call is what consumed it, so two concurrent completions cannot both count.
+   * Called only after an install has actually reached `live`.
+   */
+  consumeInvokeKeyHandoff(tokenHash: string, now: string): Promise<InvokeKeyHandoff | null>;
 
   // settings + audit
   getSetting(key: string): Promise<string | null>;
