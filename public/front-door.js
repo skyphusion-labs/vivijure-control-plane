@@ -13,6 +13,7 @@
   "use strict";
 
   const checks = window.frontDoorChecks;
+  const creditChecks = window.creditsChecks;
   const API_BASE = window.HOSTED_API_BASE || "";
   const $ = function (sel) { return document.querySelector(sel); };
 
@@ -44,7 +45,115 @@
       });
     },
     logout() { return this.json("/api/auth/logout", { method: "POST" }); },
+    // cp#194. A failure here must never take the studio panel down with it: the
+    // balance is an addition to a page whose primary job is the studio link.
+    async credits(tenantId) {
+      try { return await this.json("/api/tenant/" + tenantId + "/credits"); } catch (err) {
+        // 503 is the plane telling us honestly that it could not read the balance
+        // (an unwired ledger, or a failed aggregate). That is a REAL state with its
+        // own copy, not an error to swallow, so it is reported rather than dropped.
+        if (err.status === 503) return { credits_apply: true, complete: false };
+        return null;
+      }
+    },
   };
+
+
+  // cp#194: the prepaid credit panel.
+  //
+  // MOUNTED ONLY ON THE LIVE-STUDIO ROUTE, for the same reason the cf#94 token
+  // panel is: the control plane already told us what "live" means, and a second
+  // opinion in the panel is how two surfaces start disagreeing.
+  //
+  // EVERY DECISION BELOW COMES FROM THE PAYLOAD. The panel never infers that a
+  // tenant is prepaid from having a balance, because a BYOK tenant and a prepaid
+  // tenant who has not topped up both read zero, and telling the first they owe
+  // us money is the failure this gate exists to prevent.
+  async function mountCredits(tenant) {
+    const panel = $("#credits");
+    if (!panel || !tenant || !tenant.id) return;
+
+    const payload = await Api.credits(tenant.id);
+    const state = creditChecks.panelState(payload);
+    if (!state.show) return;   // stays hidden: credits do not apply to this studio
+    panel.hidden = false;
+
+    if (state.reason === "unreadable") {
+      // Show the honest sentence and NOTHING else. A stale or zero figure here is
+      // worse than no figure: this is the number a tenant uses to decide whether
+      // they can start work.
+      const bad = $("#credits-unreadable");
+      if (bad) bad.hidden = false;
+      return;
+    }
+
+    const figures = $("#credits-figures");
+    if (figures) figures.hidden = false;
+    const avail = $("#credits-available");
+    if (avail) avail.textContent = creditChecks.formatUsd(payload.available_micro_usd) || "";
+
+    // Held is shown only when there IS something held. A permanent "USD 0.00
+    // reserved" line is noise that trains people to stop reading the panel.
+    if (payload.held_micro_usd > 0) {
+      const row = $("#credits-held-row");
+      const held = $("#credits-held");
+      if (held) held.textContent = creditChecks.formatUsd(payload.held_micro_usd) || "";
+      if (row) row.hidden = false;
+    }
+
+    // Counting mode is stated, not hidden. A tenant whose balance is never
+    // enforced should not be left to infer that from nothing being refused.
+    if (payload.enforcing === false) {
+      const counting = $("#credits-counting");
+      if (counting) counting.hidden = false;
+    }
+
+    const topUp = creditChecks.topUpState(payload);
+    if (topUp === "not_open_yet") {
+      const closed = $("#credits-topup-closed");
+      if (closed) closed.hidden = false;
+    } else if (topUp === "available") {
+      const open = $("#credits-topup-open");
+      if (open) open.hidden = false;
+    }
+
+    const lines = creditChecks.projectActivity(payload);
+    if (lines.length) {
+      const list = $("#credits-activity");
+      if (list) {
+        lines.forEach(function (line) {
+          const li = document.createElement("li");
+          li.className = "row";
+          const name = document.createElement("span");
+          name.className = "row-name";
+          name.textContent = line.label;
+          li.appendChild(name);
+          if (line.amount) {
+            const amt = document.createElement("span");
+            amt.className = "small";
+            amt.textContent = line.amount;
+            li.appendChild(amt);
+          }
+          // The no-charge reason is the completed-only policy made legible on the
+          // tenant's OWN job. Dropping it turns "Not charged" into something that
+          // reads as a bug rather than as the thing we promised.
+          if (line.note) {
+            const note = document.createElement("span");
+            note.className = "small muted";
+            note.textContent = line.note;
+            li.appendChild(note);
+          }
+          list.appendChild(li);
+        });
+        list.hidden = false;
+      }
+    }
+
+    if (payload.activity_truncated === true) {
+      const more = $("#credits-activity-more");
+      if (more) more.hidden = false;
+    }
+  }
 
   function show(route) {
     document.querySelectorAll("[data-shell]").forEach(function (el) {
@@ -192,6 +301,12 @@
     // a second opinion in the panel is how two surfaces start disagreeing.
     if (route === "studio" && me.tenant && window.tenantApiToken) {
       window.tenantApiToken.mount(me.tenant);
+    }
+
+    // Fire-and-forget: the credit panel is additive, and a slow or failing balance
+    // read must not delay or break the studio link, which is what this page is FOR.
+    if (route === "studio" && me.tenant && creditChecks) {
+      mountCredits(me.tenant);
     }
 
     if (route === "suspended" && me.tenant) {

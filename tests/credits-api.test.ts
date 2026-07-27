@@ -24,7 +24,7 @@ const holdRow = (over: Partial<HoldRow> = {}): HoldRow => ({
 });
 
 const view = (ledger: LedgerRow[], holds: HoldRow[], truncated = false) =>
-  buildTenantCreditView({ balance: BAL, ledger, holds, enforcing: false, truncated });
+  buildTenantCreditView({ balance: BAL, ledger, holds, enforcing: false, truncated, creditsApply: true, topUpAvailable: false });
 
 describe("activity projection", () => {
   it("an EXPIRED hold and a RELEASED hold give different reasons", () => {
@@ -76,7 +76,7 @@ describe("activity projection", () => {
 
 describe("the operator ratio", () => {
   const admin = (ledger: LedgerRow[]) =>
-    buildAdminCreditView({ balance: BAL, ledger, holds: [], enforcing: false, truncated: false });
+    buildAdminCreditView({ balance: BAL, ledger, holds: [], enforcing: false, truncated: false, creditsApply: true, topUpAvailable: false });
 
   it("computes price over cost when cost is known", () => {
     expect(admin([ledgerRow({ delta_micro_usd: -USD(4), cost_micro_usd: USD(2) })]).price_to_cost).toBe(2);
