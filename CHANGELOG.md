@@ -28,7 +28,11 @@ is a separate product on a separate cadence).
   nothing machine-readable claims an unobserved success. 202 is the shape the invoke-key route
   already uses for "stored, not yet proven".
 - `docs/open-the-doors-checklist.md`: the hosted tenant-studio abuse-link row flips to **DONE**,
-  riding that live evidence, with the eyeball-the-panel residual recorded rather than glossed.
+  riding three artifacts and carrying no residual: the converge readback (`reader_live: true`), the
+  tenant serving `host.abuse_report_url` back on its own `GET /api/modules`, and the rendered panel
+  eyeballed by the account owner on the testbed studio (2026-07-27). That last one is owner-side by
+  construction rather than a gap: the panel is `AUTH_MODE=token` with a dispatcher-injected owner
+  credential, so nobody else has a clean door to it.
 - Carries NO schema change.
 
 ## v1.15.0 -- 2026-07-27
