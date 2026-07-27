@@ -75,6 +75,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 
 PREFIX = "studio-releases"
 
@@ -109,21 +110,40 @@ def parse_disposition(root):
 
 
 def wrangler_fetcher(bucket):
-    """Read an object out of R2 via wrangler. Returns bytes, or None when the object is absent."""
-
+    # Read an object out of R2 via wrangler.
+    #
+    # Returns (data, error):
+    #   (bytes, None)  the object is present
+    #   (None,  None)  wrangler RAN and the object is genuinely ABSENT
+    #   (None,  str)   we could not find out -- tool missing, credentials, network
+    #
+    # Those are three different verdicts and collapsing them is a real defect, not a style point.
+    # The first version of this returned a bare None for all three, so a credentials failure, a
+    # missing wrangler, and an absent object were indistinguishable, and the CANNOT VERIFY message
+    # had to LIST three possibilities because the code had thrown away the one fact that would have
+    # named which. A live dry run hit exactly that and the output could not say why.
+    #
+    # This is the same shape as the AI Gateway logs endpoint that answers success with an empty
+    # result for a gateway that does not exist (cp#185). A read that cannot distinguish its failure
+    # modes is a read you cannot draw a conclusion from. Surface the cause; never guess it.
     def fetch(key):
-        out = pathlib.Path(
-            subprocess.run(["mktemp"], capture_output=True, text=True, check=True).stdout.strip()
-        )
+        out = pathlib.Path(tempfile.mkstemp(prefix="relgate-")[1])
         try:
             r = subprocess.run(
                 ["npx", "wrangler", "r2", "object", "get", bucket + "/" + key,
                  "--file", str(out), "--remote"],
                 capture_output=True, text=True,
             )
-            if r.returncode != 0 or not out.exists() or out.stat().st_size == 0:
-                return None
-            return out.read_bytes()
+            blob = (r.stdout or "") + (r.stderr or "")
+            if r.returncode == 0 and out.exists() and out.stat().st_size > 0:
+                return out.read_bytes(), None
+            # wrangler ran and said the key is not there: a real, informative ABSENT.
+            if "specified key does not exist" in blob.lower():
+                return None, None
+            detail = " ".join(blob.split())[:400] or ("wrangler exited %d with no output" % r.returncode)
+            return None, "wrangler exit %d: %s" % (r.returncode, detail)
+        except FileNotFoundError as e:
+            return None, "could not execute wrangler: %s" % e
         finally:
             out.unlink(missing_ok=True)
 
@@ -131,11 +151,11 @@ def wrangler_fetcher(bucket):
 
 
 def dir_fetcher(base):
-    """Read from a local directory laid out like the bucket. Used by the gate self-test."""
-
+    # Read from a local directory laid out like the bucket. Used by the gate self-test. Same
+    # (data, error) contract as wrangler_fetcher; a local read has no third outcome.
     def fetch(key):
         p = base / key
-        return p.read_bytes() if p.is_file() else None
+        return (p.read_bytes(), None) if p.is_file() else (None, None)
 
     return fetch
 
@@ -175,11 +195,17 @@ def main():
 
     # CONTROL, before any per-module conclusion is drawn.
     base = PREFIX + "/" + release
-    raw = fetch(base + "/manifest.json")
+    raw, err = fetch(base + "/manifest.json")
+    if err is not None:
+        print("check-release-modules: CANNOT VERIFY -- the read of %s/manifest.json FAILED, so nothing "
+              "below is evidence about the release. Underlying error: %s" % (base, err))
+        print("check-release-modules: refusing to deploy on a pin we could not verify.")
+        return 1
     if raw is None:
-        print("check-release-modules: CANNOT VERIFY -- the release manifest at %s/manifest.json did not "
-              "read at all. That is a credentials, bucket, or missing-release problem, NOT evidence "
-              "about the modules. Refusing to deploy on an unverifiable pin." % base)
+        print("check-release-modules: the release manifest at %s/manifest.json is ABSENT. wrangler read "
+              "the bucket successfully and the object is not there, so STUDIO_RELEASE points at a "
+              "release that was never mirrored. Every provision would fail fetching the studio bundle."
+              % base)
         return 1
     try:
         top = json.loads(raw.decode("utf-8"))
@@ -224,7 +250,13 @@ def main():
 
     for name in modules:
         key = base + "/modules/" + name + "/manifest.json"
-        rawm = fetch(key)
+        rawm, merr = fetch(key)
+        if merr is not None:
+            problems.append(
+                "%s could not be verified: the read of %s failed (%s). This is NOT evidence the "
+                "bundle is missing." % (name, key, merr)
+            )
+            continue
         if rawm is None:
             problems.append(
                 "%s is in TENANT_MODULE_CATALOG but the release %s publishes NO bundle for it (%s is "
@@ -250,7 +282,13 @@ def main():
             problems.append("%s bundle manifest at %s names no worker path." % (name, key))
             continue
         wkey = base + "/modules/" + name + "/" + wpath
-        wbytes = fetch(wkey)
+        wbytes, werr = fetch(wkey)
+        if werr is not None:
+            problems.append(
+                "%s worker bytes could not be verified: the read of %s failed (%s)."
+                % (name, wkey, werr)
+            )
+            continue
         if wbytes is None:
             problems.append(
                 "%s bundle manifest promises worker bytes at %s but that object is ABSENT. The "

@@ -112,14 +112,38 @@ else
   ok "CONTROL: a pin pointing at differently-tagged bytes is refused"
 fi
 
-# ------------------------- CONTROL: unreadable release is CANNOT VERIFY, not a module verdict
+# ------------------------- CONTROL: an ABSENT release is reported as absent, not as missing modules
+# A read that SUCCEEDED and found nothing is a release problem, and says so.
 r6="$(mktemp -d)"
 mkrepo "$r6" "$MODS" "$VARS"
 out="$(python3 "$gate" "$r6" --release v1.12.0 --from-dir "$(mktemp -d)" 2>&1)"
-if echo "$out" | grep -q "CANNOT VERIFY"; then
-  ok "CONTROL: an unreadable release reports CANNOT VERIFY, not a module verdict"
+if echo "$out" | grep -q "is ABSENT"; then
+  ok "CONTROL: a release that is genuinely absent is reported as ABSENT"
 else
-  bad "an unreadable release did not report CANNOT VERIFY"
+  bad "an absent release was not reported as ABSENT"
+  printf "    %s\n" "$out"
+fi
+
+# ------------------------- CONTROL: a FAILED read is CANNOT VERIFY and NAMES the cause
+# The three outcomes present / absent / could-not-find-out must stay distinct. A live dry run
+# collapsed all three into one bare None, and the gate could only list three possible causes
+# because the code had discarded the one fact that would have named which. This drives the REAL
+# error branch by removing wrangler from PATH, rather than stubbing the fetcher.
+r6b="$(mktemp -d)"
+mkrepo "$r6b" "$MODS" "$VARS"
+emptybin="$(mktemp -d)"
+py="$(command -v python3)"
+out="$(PATH="$emptybin" "$py" "$gate" "$r6b" --release v1.12.0 --bucket some-bucket 2>&1)"
+if echo "$out" | grep -q "CANNOT VERIFY"; then
+  if echo "$out" | grep -qiE "wrangler"; then
+    ok "CONTROL: a failed read reports CANNOT VERIFY and names the underlying cause"
+  else
+    bad "CANNOT VERIFY was reported but the underlying cause was swallowed"
+    printf "    %s\n" "$out"
+  fi
+else
+  bad "a failed read did not report CANNOT VERIFY"
+  printf "    %s\n" "$out"
 fi
 
 # ------------------------- B: THE LIVE DEFECT -- a required_var with no disposition
