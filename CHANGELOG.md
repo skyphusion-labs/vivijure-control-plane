@@ -6,6 +6,10 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.15.1 -- 2026-07-27
+
+PATCH: the cp#164 converge route reported a SUCCESSFUL converge as a failure, because its readback raced edge propagation. Found by running the cp#164 acceptance against the live testbed, hours after v1.15.0 shipped it. Carries NO schema change (verified against `migrations/`, not assumed).
+
 ### fix(hosted): the abuse-report-url readback raced edge propagation (cp#164)
 
 - **Found by running the cp#164 acceptance, not by reading code.** The first live converge on the
