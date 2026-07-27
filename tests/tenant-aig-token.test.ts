@@ -69,9 +69,11 @@ describe("plan-enhance is in the catalog and is NOT endpoint-backed", () => {
 describe("uploadTenantModules -- the AI Gateway trio", () => {
   it("binds AI + GATEWAY_ID + CF_AIG_TOKEN on plan-enhance when both are configured", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten_1", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
     const pe = forModule(uploads, "plan-enhance");
-    expect(names(pe)).toEqual(["AI", "CF_AIG_TOKEN", "GATEWAY_ID"]);
+    // EXACT set, deliberately: an unexpected extra binding must fail here rather than be
+    // waved through by a toContain. TENANT_ID/TENANT_SLUG are the cp#185 attribution vars.
+    expect(names(pe)).toEqual(["AI", "CF_AIG_TOKEN", "GATEWAY_ID", "TENANT_ID", "TENANT_SLUG"]);
     expect(byName(pe, "AI")!.type).toBe("ai");
     // The gateway id is an identifier, so it rides as plain_text; the token is a secret.
     expect(byName(pe, "GATEWAY_ID")).toMatchObject({ type: "plain_text", text: "vivijure-hosted" });
@@ -80,13 +82,13 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
 
   it("gives plan-enhance NO RUNPOD_ENDPOINT_ID (it is not endpoint-backed)", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten_1", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
     expect(names(forModule(uploads, "plan-enhance"))).not.toContain("RUNPOD_ENDPOINT_ID");
   });
 
   it("does NOT leak the trio onto endpoint-backed modules", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten_1", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
     for (const m of ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale"]) {
       expect(names(forModule(uploads, m)), m).toEqual(["RUNPOD_ENDPOINT_ID"]);
     }
@@ -96,9 +98,11 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
   // present, so a half-bound module is a silent permanent fallback, not a partial feature.
   it("binds NEITHER when the token is missing, and says so in the log", async () => {
     const { d, uploads, logs } = deps();
-    await uploadTenantModules(d, "ten_1", ENDPOINTS, undefined, null);
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, null);
     const pe = forModule(uploads, "plan-enhance");
-    expect(names(pe)).toEqual(["AI"]);       // AI still bound: the local fallback needs it
+    // AI still bound (the local fallback needs it); TENANT_ID/TENANT_SLUG still bound because
+    // attribution is deliberately NOT gated on the token (cp#185). The trio itself is absent.
+    expect(names(pe)).toEqual(["AI", "TENANT_ID", "TENANT_SLUG"]);
     expect(names(pe)).not.toContain("GATEWAY_ID");
     expect(names(pe)).not.toContain("CF_AIG_TOKEN");
     expect(logs).toContain("module.ai_gateway_unconfigured");
@@ -106,9 +110,10 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
 
   it("binds NEITHER when the plane names no gateway, and still uploads a working module", async () => {
     const { d, uploads, logs } = deps({ aiGatewayId: null } as Partial<TenantModuleDeps>);
-    await uploadTenantModules(d, "ten_1", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
     const pe = forModule(uploads, "plan-enhance");
-    expect(names(pe)).toEqual(["AI"]);
+    expect(names(pe)).toEqual(["AI", "TENANT_ID", "TENANT_SLUG"]);
+    expect(names(pe)).not.toContain("GATEWAY_ID");
     expect(logs).toContain("module.ai_gateway_unconfigured");
   });
 
@@ -117,7 +122,7 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
   it("still refuses loudly when an ENDPOINT-BACKED module has no endpoint", async () => {
     const { d } = deps();
     await expect(
-      uploadTenantModules(d, "ten_1", [ENDPOINTS[0]], undefined, "AIG_SECRET_VALUE"),
+      uploadTenantModules(d, "ten_1", "acme-films", [ENDPOINTS[0]], undefined, "AIG_SECRET_VALUE"),
     ).rejects.toThrow(/needs the upscale endpoint/);
   });
 
@@ -130,7 +135,7 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
         persisted.push(event, JSON.stringify(fields));
       }),
     } as Partial<TenantModuleDeps>);
-    await uploadTenantModules(d, "ten_1", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
 
     // CONTROL: the recorder really does capture what it is given.
     persisted.push("CONTROL_CANARY");
@@ -140,5 +145,63 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
     // ...and it DID reach the one place it belongs, so the assertion above is not vacuous.
     const pe = forModule(uploads, "plan-enhance");
     expect(byName(pe, "CF_AIG_TOKEN")).toMatchObject({ type: "secret_text", text: "AIG_SECRET_VALUE" });
+  });
+});
+
+// cp#185: the per-tenant attribution vars.
+//
+// The gateway records `authentication` as a BOOLEAN -- it logs THAT a request was authenticated,
+// never WHICH token -- so the per-tenant CF_AIG_TOKEN provides access control and revocation and
+// ZERO attribution. `cf-aig-metadata`, which the module builds from these two vars, is the entire
+// attribution mechanism. If they stop being bound the meter does not break loudly: it silently
+// attributes nothing, and unattributed spend is money WE eat rather than the tenant.
+describe("uploadTenantModules -- per-tenant attribution vars (cp#185)", () => {
+  it("binds TENANT_ID and TENANT_SLUG on the gateway-backed module", async () => {
+    const { d, uploads } = deps();
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    const pe = forModule(uploads, "plan-enhance");
+    expect(byName(pe, "TENANT_ID")).toMatchObject({ type: "plain_text", text: "ten_1" });
+    expect(byName(pe, "TENANT_SLUG")).toMatchObject({ type: "plain_text", text: "acme-films" });
+  });
+
+  // plain_text, not secret_text. Neither is a secret, and binding an identifier as a secret would
+  // make it unreadable in the dashboard for no benefit while implying a custody requirement.
+  it("binds them as plain_text, never as secrets", async () => {
+    const { d, uploads } = deps();
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    const pe = forModule(uploads, "plan-enhance");
+    for (const n of ["TENANT_ID", "TENANT_SLUG"]) {
+      expect(byName(pe, n)!.type, n).toBe("plain_text");
+      expect(byName(pe, n)!.type, n).not.toBe("secret_text");
+    }
+  });
+
+  // DELIBERATE: not gated on the token. With the trio unconfigured the module runs on the free
+  // local provider and never makes a gateway call, so these are simply unread. Gating them on the
+  // token would couple two unrelated things and invite the belief that attribution is optional
+  // when the gateway IS configured.
+  it("binds them even when NO gateway token was minted", async () => {
+    const { d, uploads } = deps();
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, null);
+    const pe = forModule(uploads, "plan-enhance");
+    expect(byName(pe, "TENANT_ID")).toBeDefined();
+    expect(byName(pe, "TENANT_SLUG")).toBeDefined();
+    // ...and the token pair genuinely was NOT bound, so the assertion above is about the vars
+    // rather than about a fixture that binds everything regardless.
+    expect(byName(pe, "CF_AIG_TOKEN")).toBeUndefined();
+  });
+
+  // Scoped to gateway-backed modules. A RunPod-backed module makes no gateway call, so binding a
+  // tenant id onto it would be noise that implies a meter that does not exist for it.
+  it("does NOT bind them on modules that are not gateway-backed", async () => {
+    const { d, uploads } = deps();
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    const kf = forModule(uploads, "keyframe");
+    // POSITIVE CONTROL: keyframe really was uploaded and really does carry its own binding, so the
+    // absences below are real absences and not an empty upload record.
+    expect(kf).toBeDefined();
+    expect(byName(kf, "RUNPOD_ENDPOINT_ID")).toBeDefined();
+    expect(names(kf)).not.toContain("TENANT_ID");
+    expect(names(kf)).not.toContain("TENANT_SLUG");
   });
 });
