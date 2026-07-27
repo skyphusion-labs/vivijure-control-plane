@@ -6,6 +6,24 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.17.0 -- 2026-07-27
+
+MINOR: the per-tenant cost-bound lane. The prepaid credit ledger primitive (inert by design) and the
+per-tenant R2 storage ceiling, which also RESTORES provisioning: the pinned vivijure-cf v1.12.0
+manifest declares `R2_STORAGE_QUOTA_BYTES`, this plane had no disposition for it, and
+`assertDispositionCoversContract` was therefore refusing EVERY provision and EVERY studio upgrade
+against that pin.
+
+**Carries TWO migrations, and both reach the live plane on this deploy** (verified against
+`migrations/`, `git diff v1.16.0..HEAD`, not assumed from any one PR): `0013_credit_ledger.sql`
+(new `credit_ledger` + `credit_holds` tables) and `0014_tenant_storage_quota.sql` (two new nullable
+columns on `tenants`). Both are purely additive -- no table or column is dropped, altered or
+backfilled -- so an older Worker keeps running against the newer schema, which is what makes the
+migrate-before-deploy ordering safe here. Stated explicitly rather than discovered, given the cf#80
+history recorded in `deploy.yml`.
+
+Contains two merged PRs: #198, #199.
+
 ### feat(credits): balance and usage read API (cp#192)
 
 - `GET /api/tenant/:id/credits` (owner session) and `GET /api/admin/tenants/:id/credits` (admin
