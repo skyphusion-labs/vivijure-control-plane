@@ -6,6 +6,34 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(deploy): activate TENANT_AI_GATEWAY_ID and R2_USAGE_ALERT_BYTES, and census the var lists (cf#56)
+
+- Both vars were typed in `env.ts` and read in `deps.ts` but declared in **no** deploy config, so
+  they rendered EMPTY and shipped their features **INERT** while every test and every deploy stayed
+  green. `TENANT_AI_GATEWAY_ID` unset meant the per-tenant AI Gateway token was never bound (the
+  both-or-neither guard correctly turned it into a safe no-op); `R2_USAGE_ALERT_BYTES` unset meant
+  the admin usage surface could never alert. Now declared in `wrangler.toml.example`, allowlisted in
+  `render-wrangler.sh`, and supplied in **both** deploy.yml render env blocks.
+- Both are `ALLOW_EMPTY` on merit, not to quiet a deploy: empty gateway = `plan-enhance` runs on the
+  free local Workers AI provider (a coherent working state, since the provisioner binds neither
+  `GATEWAY_ID` nor `CF_AIG_TOKEN` when either is missing); empty threshold = `no_threshold`, because
+  an operator who has not chosen a number has not asked to be alerted.
+- **`scripts/var-census.py` closes the drift class that caused this.** A `[vars]` entry only reaches
+  the Worker if it appears in the template, in a render allowlist, AND in BOTH deploy env blocks;
+  nothing connected those four lists. The census asserts they agree, runs inside
+  `tests/render-wrangler.test.sh` (already wired into CI), and ships with a control proving it can
+  fail. Mutation-verified in both directions: dropping a var from one deploy block, and adding an
+  unlisted placeholder, are each caught.
+
+**ACTIVATION IS NOT COMPLETE AT MERGE.** Two repository VARIABLES must be set, and one of them is a
+release decision, not a config nit:
+
+- `STUDIO_RELEASE` is **v1.9.0**, and **v1.9.0 does not contain plan-enhance** (verified against the
+  release tarballs: v1.9.0 ships 6 modules without it, v1.12.0 ships 7 with it). Deploying the
+  plan-enhance catalog entry against a v1.9.0 pin fails **every** provision at `modules_upload`.
+  It must move to **v1.12.0 or later** BEFORE the control plane carrying that entry is deployed.
+- `TENANT_AI_GATEWAY_ID` must be set to `vivijure-hosted`, or the feature stays inert.
+
 ### feat(hosted): per-tenant AI Gateway token on plan-enhance (cf#56)
 
 - `plan-enhance` joins `TENANT_MODULE_CATALOG`, so hosted tenants get the Opus director pass on OUR
