@@ -6,6 +6,12 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.15.0 -- 2026-07-27
+
+MINOR: the two ends of a hosted tenant that a human has to reach. A tenant studio can finally show a reporter where to go (cp#164), and an operator repair can finally be finished rather than stranding at a route only the account owner can call (cp#169). Two new admin routes, two new owner-facing surfaces, and new tenant-visible behaviour, hence MINOR.
+
+**CARRIES A SCHEMA CHANGE:** migration `0012_invoke_key_handoff.sql` (new table `invoke_key_handoffs`). Additive `CREATE TABLE`, so the deploy workflow's migrate-then-deploy order is safe, but this tag DOES apply a migration on deploy.
+
 ### feat(hosted): operator-initiated, owner-completed invoke-key handoff (cp#169)
 
 - **The strand.** A cp#137 reprovision rebuilds a tenant's four RunPod endpoints; new endpoints get
