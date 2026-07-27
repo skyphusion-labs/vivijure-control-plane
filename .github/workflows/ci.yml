@@ -75,5 +75,31 @@ jobs:
       # (the suites test the pure helpers, not the DOM path). This catches a call to a function
       # nobody defines, which is a defect all three gates above pass silently. It is a heuristic
       # and says so; a clean run proves nobody deleted a function out from under its callers.
+      # The cp#187 gate self-test. The gate ITSELF needs bucket credentials and therefore lives in
+      # deploy.yml preflight; this proves its LOGIC on every PR, including fork PRs where no secret
+      # is available, by running it against a local bucket-shaped tree. Positive and negative both:
+      # a gate only ever seen to pass is not known to gate anything.
+      - name: Release-module gate self-test
+        run: bash tests/check-release-modules.test.sh
+
+      # THE REAL GATE, on every PR. This is the whole reason it reads the GitHub release rather
+      # than R2: no credential, so it runs here AND on fork PRs. The R2_STORAGE_QUOTA_BYTES
+      # disposition gap that took the plane down would have been caught at THIS step, before merge,
+      # instead of at a tenant first provision.
+      #
+      # Fork PRs may not receive repo variables. When STUDIO_RELEASE is absent this NOTICEs and
+      # skips rather than failing, because failing every fork PR is how a gate gets removed. The
+      # authoritative enforcement is deploy.yml preflight, which hard-fails on an empty pin.
+      - name: Pinned release is satisfiable by this plane
+        env:
+          STUDIO_RELEASE: ${{ vars.STUDIO_RELEASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${STUDIO_RELEASE:-}" ]; then
+            echo "::notice::STUDIO_RELEASE is not available (fork PR); the pin check is enforced at deploy."
+            exit 0
+          fi
+          python3 scripts/check-release-modules.py . --release "$STUDIO_RELEASE"
+
       - name: Resolve guard (front-door pages)
         run: npm run guard:resolve
