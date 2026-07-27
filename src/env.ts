@@ -168,6 +168,23 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   TENANT_SPEND_DAILY_CEILING?: string;
 
   /**
+   * Per-tenant R2 storage ceiling in BYTES, set as the tenant studio's R2_STORAGE_QUOTA_BYTES at
+   * provision time and converged onto existing tenants (cp#183). The studio enforces it at SUBMIT
+   * with an honest 507 carrying both real numbers, and fails CLOSED 503 if the quota is set and its
+   * own check cannot run (vivijure-core src/storage-quota.ts, core#52).
+   *
+   * Unset means NO ceiling, and there is deliberately no default in code: the number prices what an
+   * operator is willing to carry per tenant, so it is a policy this repo does not get to invent.
+   * Same posture as R2_USAGE_ALERT_BYTES.
+   *
+   * BYTES ONLY, no unit suffixes -- a mis-parsed unit is an order-of-magnitude error on a bill.
+   * A value that is not a positive integer is REFUSED by the write paths rather than rounded down
+   * to "off", because "typed it wrong" and "wants no ceiling" must not be the same outcome.
+   * 107374182400 = 100 GiB.
+   */
+  TENANT_R2_STORAGE_QUOTA_BYTES?: string;
+
+  /**
    * The AI Gateway slug tenant modules bind as GATEWAY_ID (cf#56). Set it to `vivijure-hosted`, the
    * DEDICATED hosted-tenant gateway (authentication ON, verified: a valid token reaches the provider
    * and a bogus one is refused 401 AT the gateway).

@@ -212,6 +212,19 @@ TENANT_AI_GATEWAY_ID = "${TENANT_AI_GATEWAY_ID}"
 # verdict rather than inventing a line nobody chose. parseThresholdBytes refuses 0 deliberately --
 # a permanently-firing alert is one the operator learns to ignore.
 R2_USAGE_ALERT_BYTES = "${R2_USAGE_ALERT_BYTES}"
+# cp#183: the per-tenant R2 storage ceiling in BYTES, bound onto every tenant studio as
+# R2_STORAGE_QUOTA_BYTES and enforced there at submit (vivijure-core core#52: honest 507 with both
+# real numbers, fail-CLOSED 503 if the quota is set and its check cannot run).
+#
+# EMPTY IS MEANINGFUL: no ceiling. There is deliberately no default -- the number prices what an
+# operator is willing to carry per tenant, which is policy this repo does not get to invent, and a
+# fallback here would be a pricing decision hidden in a config template.
+#
+# BYTES ONLY, no unit suffixes (a mis-parsed unit is an order-of-magnitude error on a bill). A
+# non-empty value that is not a positive integer REFUSES the provision, the studio upgrade and the
+# converge route rather than being rounded down to "off": the studio would read it as no ceiling,
+# and "typed it wrong" must not silently become "wanted no ceiling". 107374182400 = 100 GiB.
+TENANT_R2_STORAGE_QUOTA_BYTES = "${TENANT_R2_STORAGE_QUOTA_BYTES}"
 CF_ACCOUNT_ID = "${CLOUDFLARE_ACCOUNT_ID}"
 DISPATCH_NAMESPACE = "${TENANT_DISPATCH_NAMESPACE}"
 # The shared dispatch namespace tenant MODULE workers are uploaded into (cf#99), distinct from

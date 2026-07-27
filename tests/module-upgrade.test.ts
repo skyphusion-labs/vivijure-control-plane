@@ -80,6 +80,9 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
     kek: RING,
     spendDailyCeiling: null,
+    // cp#183: the fixture plane configures a per-tenant storage ceiling, because a plane that caps
+    // nothing is the state that lane exists to end. Tests covering unset or malformed override it.
+    storageQuota: { bytes: "107374182400", invalid: null },
     callTenantStudio: vi.fn(async (_s: string, init: { path: string }) => {
       if (init.path === "/api/modules/installed") {
         return { status: 200, text: JSON.stringify({ modules: [{ name: "keyframe" }] }) };

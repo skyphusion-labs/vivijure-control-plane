@@ -49,6 +49,7 @@ import { type ProvisionDeps, type StudioBundleSource, startLeaseHeartbeat, uploa
 import type { Tenant } from "./store";
 import { REQUIRED_TENANT_STUDIO_VARS, assertDispositionCoversContract } from "./tenant-studio-env";
 import { withAbuseReportUrl } from "./tenant-abuse-report";
+import { resolveStorageQuota, withStorageQuota } from "./tenant-storage-quota";
 import { withVideoFinishTierState } from "./video-finish-tier-state";
 import { decryptStudioToken } from "./token-crypto";
 
@@ -73,7 +74,10 @@ export interface StudioUpgradeRefusal {
     | "tenant_studio_token_unreadable"
     | "tenant_studio_not_serving"
     | "studio_bundle_unavailable"
-    | "studio_var_contract_undecided";
+    | "studio_var_contract_undecided"
+    // cp#183: the plane configures a storage ceiling that is not a positive integer of bytes, so
+    // this move would re-derive an unreadable value onto a live tenant and uncap it.
+    | "plane_storage_quota_malformed";
   status: number;
   message: string;
 }
@@ -263,6 +267,15 @@ export async function preflightStudioUpgrade(
     return refuse("studio_var_contract_undecided", 422, (e as Error).message);
   }
 
+  // cp#183: this move RE-DERIVES the storage ceiling onto the studio, so a malformed plane value
+  // would silently uncap a tenant that was capped a moment ago. Refuse before the bytes move, not
+  // after: the same reason the provision path refuses, with more at stake because there is a live
+  // tenant on the other side.
+  const resolvedQuota = resolveStorageQuota(deps.storageQuota, tenant);
+  if (resolvedQuota.blocked !== null) {
+    return refuse("plane_storage_quota_malformed", 409, resolvedQuota.blocked);
+  }
+
   const hostBefore = await servedHost(deps, tenant.script_name, studioApiToken);
 
   return {
@@ -389,17 +402,31 @@ export async function upgradeTenantStudio(
     // as `inherit` would preserve a URL from a plane that no longer publishes that page. Re-deriving
     // converges in both directions, and it is also the door this bytes move opens for cp#164 -- a
     // tenant that predated the var gets it as a side effect of any studio upgrade.
-    const bindings = withAbuseReportUrl(
-      withVideoFinishTierState(
-        [
-          ...before
-            .filter((b) => b.name !== assetsBindingName)
-            .map((b) => ({ type: "inherit" as const, name: b.name })),
-          { type: "assets" as const, name: assetsBindingName },
-        ],
-        tenant,
+    //
+    // The cp#183 ceiling is re-derived for the SAME reason, and it is the case where `inherit` is
+    // most obviously wrong: a plane that RAISED or LIFTED its storage quota would otherwise carry
+    // the old number across every bytes move, so the tenant would keep enforcing a ceiling nobody
+    // configures any more. Re-deriving converges in both directions, and it is also the door this
+    // move opens for cp#183 -- a tenant provisioned before the var existed gets it as a side effect
+    // of any studio upgrade, which is the ONLY way an already-live tenant would otherwise get it
+    // without an operator running the converge route by hand.
+    const bindings = withStorageQuota(
+      withAbuseReportUrl(
+        withVideoFinishTierState(
+          [
+            ...before
+              .filter((b) => b.name !== assetsBindingName)
+              .map((b) => ({ type: "inherit" as const, name: b.name })),
+            { type: "assets" as const, name: assetsBindingName },
+          ],
+          tenant,
+        ),
+        deps.abuseReportUrl,
       ),
-      deps.abuseReportUrl,
+      // Re-derived from the RECORD-plus-plane resolution, not from the plane alone: a tenant that
+      // recorded its own ceiling (or recorded that it has none) must not have that decision
+      // overwritten by a bytes move it did not ask for.
+      resolveStorageQuota(deps.storageQuota, tenant).bytes,
     );
 
     try {

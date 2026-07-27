@@ -45,6 +45,7 @@ import { buildR2UsageReport, parseThresholdBytes } from "./tenant-r2-usage";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
 import { ABUSE_REPORT_URL_VAR } from "./tenant-abuse-report";
+import type { StorageQuotaIntent } from "./tenant-storage-quota";
 import {
   HANDOFF_TOKEN_PARAM,
   burnInvokeKeyHandoff,
@@ -1771,6 +1772,130 @@ async function adminRoutes(
                 "yet, or this studio runs a bundle that predates the vivijure-cf v1.10.0 reader. " +
                 "Re-run this route to tell them apart: it is idempotent, and a re-run that still " +
                 "reports this means the studio bytes need moving (POST .../upgrade-studio).",
+            }
+          : {}),
+      },
+      status,
+    );
+  }
+
+  // ---- cp#183: converge an EXISTING tenant onto this plane's storage ceiling ------------------
+  //
+  // WHY A ROUTE AND NOT ONLY THE PROVISION PATH. The provision binding caps tenants created from
+  // now on and the studio upgrade caps tenants whose bytes move. Every tenant already live on this
+  // plane was provisioned before the var existed, so without this they stay uncapped forever, which
+  // is the population the cost bound was for. Same shape as the cp#164 converge next door.
+  //
+  // WHY IT ALSO CONVERGES DOWNWARD. Binding nothing is how a plane that LIFTED its quota lifts it
+  // on a live tenant: the var is filtered out of the carried set, so the studio stops enforcing a
+  // number nobody configures. That direction has to work or the quota is a one-way door.
+  const storageQuota = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/storage-quota$/.exec(path);
+  if (request.method === "POST" && storageQuota) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(storageQuota[1]);
+    if (!tenant) return err("not_found", 404);
+
+    // One writer at a time on this row, the same guard the abuse-report converge and the binding
+    // refresh take: a provision or an upgrade with a live driver is already PUTting at this
+    // tenant's scripts, and a settings patch landing mid-upload races the write that owns the set.
+    const latest = await deps.store.getLatestJobForTenant(tenant.id);
+    if (latest && jobHasLiveDriver(latest, deps.now())) {
+      return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
+    }
+
+    // THE INTENT, and why a body is optional here when the cp#164 converge takes none.
+    //
+    // That route has nothing to choose: the URL is a fact of the deploy. This one does, because
+    // cp#173 gives us two tenant classes and a single plane number cannot express both. So:
+    //
+    //   {}                                    converge only -- push the RECORD onto the studio,
+    //                                         change no decision. What a re-run does, and what the
+    //                                         provision and upgrade paths do implicitly.
+    //   {"mode":"inherit"}                    clear the override; follow the plane default
+    //   {"mode":"set","quota_bytes":"N"}      this tenant enforces N bytes
+    //   {"mode":"none"}                       this tenant has NO ceiling (the prepaid class), and
+    //                                         keeps having none if an operator later sets a default
+    //
+    // `none` and `inherit` are separate words on purpose. They are different facts, and the day the
+    // plane default is set they produce opposite outcomes for a tenant holding credits.
+    let intent: StorageQuotaIntent | undefined;
+    const body = await readJson(request);
+    const mode = (body as { mode?: unknown } | null)?.mode;
+    if (mode !== undefined) {
+      if (mode === "inherit" || mode === "none") {
+        intent = { mode };
+      } else if (mode === "set") {
+        const raw = (body as { quota_bytes?: unknown }).quota_bytes;
+        if (typeof raw !== "string") {
+          return err("invalid_quota_bytes", 400, {
+            message: 'mode "set" requires quota_bytes as a STRING of bytes, e.g. "107374182400" (100 GiB)',
+          });
+        }
+        // Validated in the preflight, one predicate, so the route and the record cannot disagree
+        // about what a byte count is.
+        intent = { mode: "set", bytes: raw };
+      } else {
+        return err("invalid_mode", 400, {
+          message: `mode must be "inherit", "set" or "none"; got ${JSON.stringify(mode)}`,
+        });
+      }
+    }
+
+    const outcome = await deps.provisioner.setStorageQuota(tenant, intent);
+    if (!outcome.ok) return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
+
+    const result = outcome.result;
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.set_storage_quota",
+      tenant.id,
+      JSON.stringify({
+        ok: result.ok,
+        // The DECISION is audited beside its outcome: "no ceiling" from a deliberate uncapping and
+        // "no ceiling" from a plane that configures none read identically in a number alone.
+        intent: intent ? intent.mode : "converge_only",
+        quota_bytes: result.quota_bytes,
+        quota_source: result.quota_source,
+        record_written: result.record_written,
+        already_present: result.already_present,
+        var_present_after: result.var_present_after,
+        enforced: result.enforced,
+        served_quota_before: result.served_quota_before,
+        served_quota_after: result.served_quota_after,
+        used_bytes: result.used_bytes,
+        over_on_arrival: result.over_on_arrival,
+        missing_bindings: result.missing_bindings,
+        missing_secrets: result.missing_secrets,
+      }),
+    );
+
+    // THREE OUTCOMES, the cp#164 shape, and the middle one is there because that route learned it
+    // on live infra rather than by reasoning:
+    //
+    //   200  bound AND the studio reports the ceiling it now enforces. Done.
+    //   202  bound, nothing stranded, but the studio had not reported the new number by the end of
+    //        the confirm budget. Unlike cp#164 this CANNOT be a too-old bundle -- the preflight
+    //        already proved the reader exists by reading quota_bytes off it -- so the remaining
+    //        cause is an edge that has not picked the binding up. Idempotent, so a re-run is cheap.
+    //   409  a genuine strand: a binding or secret present before and absent after.
+    //
+    // `ok` and `enforced` both stay FALSE on the 202: nothing machine-readable claims a cap that
+    // was not observed, which for a cost control is the whole point.
+    const stranded = result.missing_bindings.length > 0 || result.missing_secrets.length > 0;
+    const status = result.ok ? 200 : stranded ? 409 : 202;
+    return json(
+      {
+        tenant_id: tenant.id,
+        slug: tenant.slug,
+        ...result,
+        ...(status === 202
+          ? {
+              message:
+                `the binding IS set on this studio and nothing was stranded, but it had not reported ` +
+                `quota_bytes=${result.quota_bytes ?? "null"} within ${result.readback_elapsed_ms}ms ` +
+                `(${result.readback_attempts} checks). The reader is present (the preflight read it), ` +
+                "so this is an edge that has not picked the binding up yet. Re-run this route; it is " +
+                "idempotent.",
             }
           : {}),
       },
