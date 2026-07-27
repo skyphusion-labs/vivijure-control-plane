@@ -1,0 +1,37 @@
+-- cp#183: the PER-TENANT R2 storage ceiling, and why one global number could not express it.
+--
+-- The plane var TENANT_R2_STORAGE_QUOTA_BYTES sets what a tenant is born with. That is enough while
+-- every tenant is the same kind of tenant, and cp#173 ruled that they are not:
+--
+--   BYOK and self-host pay us nothing for GPU while their R2 sits on our bill, so a REFUSAL
+--   threshold is the cost-recovery mechanism, and the core knob (submit-time 507, fail-closed 503)
+--   is exactly the right shape for them.
+--
+--   PREPAID tenants are bounded by their CREDIT BALANCE, in the right unit, enforced in the credit
+--   ledger. Binding a hard byte cap to one of them denies service at precisely the byte where
+--   charged overage was supposed to begin: overage becomes unreachable code, and a tenant HOLDING
+--   CREDITS is refused by a cap they were told did not exist. That is an honesty failure, not a
+--   rounding one. Found by joan against live core source before this shipped (cp#195).
+--
+-- WHY TWO COLUMNS AND NOT ONE NULLABLE NUMBER. "no per-tenant value, inherit the plane default" and
+-- "explicitly NO ceiling for this tenant" are different facts, and a single nullable column spells
+-- them the same way. Collapsing them is precisely how a prepaid tenant silently inherits a hard cap
+-- the day an operator sets the plane default: the row would say NULL, the plane would say 100 GiB,
+-- and nothing in the record would show that the NULL was a decision.
+--
+--   r2_storage_quota_mode = NULL     -> inherit the plane default (the ordinary state)
+--   r2_storage_quota_mode = 'set'    -> use r2_storage_quota_bytes, whatever the plane says
+--   r2_storage_quota_mode = 'none'   -> NO ceiling for this tenant, whatever the plane says
+--
+-- The COLUMN is the source of truth and the studio var R2_STORAGE_QUOTA_BYTES is a PROJECTION of it,
+-- re-derived at every write to the studio (provision upload, studio-upgrade re-upload, and the
+-- converge route). Same discipline as 0011_video_finish_unreachable.sql, for the same reason: a var
+-- set out of band has no writer of record, cannot be listed, cannot be audited, and does not survive
+-- a bytes move.
+--
+-- BYTES AS TEXT, not INTEGER, deliberately: this column is the string that is bound onto a Worker
+-- var, and the plane never does arithmetic on it. Storing it as the thing it is means no integer
+-- round-trip can quietly change the number an operator typed. Validation (positive integer, bytes
+-- only, no unit suffixes) happens at the route, so a malformed value never reaches this column.
+ALTER TABLE tenants ADD COLUMN r2_storage_quota_mode TEXT;
+ALTER TABLE tenants ADD COLUMN r2_storage_quota_bytes TEXT;

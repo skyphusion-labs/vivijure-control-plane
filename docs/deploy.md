@@ -91,6 +91,13 @@ Repository **variables**:
   Empty = no gateway named, so `plan-enhance` runs on the free local Workers AI provider.
 - `R2_USAGE_ALERT_BYTES` (cf#56) -- alert threshold in BYTES for total R2 across tenant buckets on
   the admin usage surface. Empty = no threshold, and the surface reports a `no_threshold` verdict.
+- `TENANT_R2_STORAGE_QUOTA_BYTES` (cp#183) -- the PER-TENANT storage ceiling in BYTES, bound onto
+  every tenant studio as `R2_STORAGE_QUOTA_BYTES` and enforced there at submit (507 with both real
+  numbers; fail-CLOSED 503 if the quota is set and its check cannot run). Empty = no ceiling, and
+  there is deliberately no default: the number prices what an operator is willing to carry per
+  tenant. Bytes only, no unit suffixes (`107374182400` = 100 GiB). A non-empty value that is not a
+  positive integer REFUSES the provision, the studio-upgrade preflight and the converge route rather
+  than being read as "off" -- see `docs/control-plane.md`.
 
 Worker **secrets** (`wrangler secret put`, never in Actions): `POSTERN_SEND_TOKEN`,
 `GOOGLE_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `APPLE_PRIVATE_KEY`,
@@ -292,10 +299,10 @@ allowlist**, and the direction matters. `envsubst` turns an unset variable into 
 "empty", "misspelled the variable name", and "forgot to set it" all render identically and all look
 fine. Guarding a hand-picked few leaves every other value silently defaultable to empty.
 
-`ALLOW_EMPTY` is exactly six names:
+`ALLOW_EMPTY` is exactly seven names:
 
 `GOOGLE_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_SERVICES_ID`,
-`TENANT_AI_GATEWAY_ID`, `R2_USAGE_ALERT_BYTES`
+`TENANT_AI_GATEWAY_ID`, `R2_USAGE_ALERT_BYTES`, `TENANT_R2_STORAGE_QUOTA_BYTES`
 
 Each is half of an SSO provider pair, and a provider is offered only when both halves are present,
 so an unconfigured provider is *absent* rather than broken. Empty is how that is expressed. They are
@@ -307,6 +314,10 @@ The two cf#56 names meet the same bar rather than being parked there to quiet a 
 **neither** `GATEWAY_ID` nor `CF_AIG_TOKEN` (both or neither, since `pickProvider` needs both), so
 empty is a coherent working state rather than a half-configured one. `R2_USAGE_ALERT_BYTES` empty
 means an operator has not chosen a threshold, and has therefore not asked to be alerted.
+`TENANT_R2_STORAGE_QUOTA_BYTES` (cp#183) meets it for the same reason: an operator who has not
+chosen a byte count has not chosen a cap, and the plane binds nothing rather than a number nobody
+picked. A non-empty MALFORMED value is a different matter and is refused at the write paths, which
+is why it is allowed to be empty but never allowed to be wrong.
 
 ### The var census (cf#56)
 

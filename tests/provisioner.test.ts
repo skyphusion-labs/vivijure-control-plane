@@ -96,6 +96,10 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     // cp#164: the default fixture is a plane that publishes an intake page, because that is what a
     // configured deploy is. Tests that care about the unconfigured case override it with null.
     abuseReportUrl: "https://studio.example.com/report-abuse",
+    // cp#183: the default fixture is a plane WITH a ceiling configured, because a plane that caps
+    // nothing is the state this lane exists to end. Tests covering the unset and the malformed
+    // cases override it.
+    storageQuota: { bytes: "107374182400", invalid: null },
     // cf#56: the default fixture is a plane WITH a gateway configured, because that is what the
     // hosted plane is. Tests covering the unconfigured degrade override it with null.
     aiGatewayId: "vivijure-hosted",
@@ -279,6 +283,104 @@ describe("runProvisionJob", () => {
       name: "ABUSE_REPORT_URL",
       text: "https://studio.example.com/report-abuse",
     });
+  });
+
+  it("binds the per-tenant STORAGE CEILING onto a NEW tenant studio (cp#183)", async () => {
+    // THE DISCRIMINATING TEST for the provision door, and it FAILS against the behaviour cp#183
+    // filed: vivijure-core v1.3.0 shipped the enforcement, vivijure-cf v1.11.0 wired the reader,
+    // and this plane bound the var to NOBODY -- so every hosted tenant ran uncapped while the
+    // feature read as shipped. It asserts what the plane SENT, not what a fixture ended up holding.
+    const t = await tenant();
+    const d = deps();
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+
+    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      bindings: { type: string; name: string; text?: string }[];
+    };
+    expect(upload.bindings.find((b) => b.name === "R2_STORAGE_QUOTA_BYTES")).toEqual({
+      type: "plain_text",
+      name: "R2_STORAGE_QUOTA_BYTES",
+      text: "107374182400",
+    });
+  });
+
+  it("binds NO ceiling when the plane configures none, because absent IS how core reads off", async () => {
+    const t = await tenant();
+    const d = deps({ storageQuota: { bytes: null, invalid: null } });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+
+    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      bindings: { type: string; name: string }[];
+    };
+    // CONTROL: the proxy saw a real payload carrying the rest of the contract, so the absence below
+    // is an omission rather than an upload that never happened.
+    expect(upload.bindings.some((b) => b.name === "R2_S3_ENDPOINT")).toBe(true);
+    expect(upload.bindings.some((b) => b.name === "R2_STORAGE_QUOTA_BYTES")).toBe(false);
+  });
+
+  it("gives a DELIBERATELY UNCAPPED tenant no ceiling, though the plane configures one (cp#173)", async () => {
+    // The prepaid class. Their bound is a credit balance, and a hard byte cap would deny them at
+    // exactly the byte where charged overage begins -- refusing service to somebody holding
+    // credits. Before the per-tenant seam this was unexpressible: one global number, one outcome.
+    const row = await tenant();
+    await store.setTenantStorageQuota(row.id, { mode: "none" });
+    const t = (await store.getTenantById(row.id)) as Tenant;
+    const d = deps();
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+
+    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      bindings: { type: string; name: string }[];
+    };
+    // CONTROL: the plane DOES configure a ceiling on this fixture, so the absence is the record
+    // winning rather than a plane with nothing to bind.
+    expect(d.storageQuota.bytes).toBe("107374182400");
+    expect(upload.bindings.some((b) => b.name === "R2_STORAGE_QUOTA_BYTES")).toBe(false);
+  });
+
+  it("lets a tenant's OWN recorded ceiling beat the plane default", async () => {
+    const row = await tenant();
+    await store.setTenantStorageQuota(row.id, { mode: "set", bytes: "500" });
+    const t = (await store.getTenantById(row.id)) as Tenant;
+    const d = deps();
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+
+    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      bindings: { type: string; name: string; text?: string }[];
+    };
+    expect(upload.bindings.find((b) => b.name === "R2_STORAGE_QUOTA_BYTES")?.text).toBe("500");
+  });
+
+  it("does NOT let a malformed plane var block a tenant that overrode it", async () => {
+    // The refusal exists to stop an uncapped tenant on a plane that thinks it caps. A tenant who
+    // recorded their own decision was never reading that var, so taking them down with it would be
+    // a second defect wearing the first one's clothes.
+    const row = await tenant();
+    await store.setTenantStorageQuota(row.id, { mode: "none" });
+    const t = (await store.getTenantById(row.id)) as Tenant;
+    const d = deps({ storageQuota: { bytes: null, invalid: "100GB" } });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+  });
+
+  it("REFUSES the whole provision while the plane's ceiling is malformed, creating nothing", async () => {
+    // "typed it wrong" and "wants no ceiling" must not be the same outcome. core reads a non-integer
+    // as OFF, so binding it would hand out an uncapped tenant on a plane whose config claims a cap.
+    // The refusal lands beside the var-contract check, BEFORE any tenant resource exists.
+    const t = await tenant();
+    const d = deps({ storageQuota: { bytes: null, invalid: "100GB" } });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
+
+    const failure = expectProvisionFailure(res);
+    expect(failure.message).toContain("TENANT_R2_STORAGE_QUOTA_BYTES");
+    expect(failure.message).toContain("100GB");
+    // Nothing was created: the refusal is a clean stop, not a half-built tenant.
+    expect((d.cf.createD1 as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    expect((d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
   });
 
   it("binds NO abuse-report URL when the plane cannot name its own intake page (cp#164)", async () => {

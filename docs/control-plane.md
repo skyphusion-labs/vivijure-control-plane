@@ -1390,6 +1390,162 @@ upgrade re-checks in its verify census, and that path never touches studio bindi
 would fail an unrelated module upgrade on every tenant not yet converged. A studio without the var
 is fully functional; the panel renders no link, which is the deliberate behaviour and not a degrade.
 
+## Capping what a tenant can store: `R2_STORAGE_QUOTA_BYTES` (cp#183)
+
+`SPEND_DAILY_CEILING` caps what a tenant can spend in a day. It does not cap what a tenant can
+ACCUMULATE, and storage is the bill that keeps arriving after the rendering stops (and, for a tenant
+who leaves, the one we inherit). vivijure-core v1.3.0 shipped the enforcement (core#52) and
+vivijure-cf v1.11.0 wired it; this plane bound the var to nobody, so hosted shipped the feature and
+enforced it on no tenant. cp#183 is the plane half.
+
+### What the studio does with it
+
+`R2_STORAGE_QUOTA_BYTES` is a positive integer count of BYTES. The studio accounts every object
+write in its own D1 at write time (per object key, so re-writing a key updates its row rather than
+double counting) and checks at SUBMIT:
+
+| State | Behaviour |
+|---|---|
+| unset / empty / `0` / garbage | quota OFF, submits proceed |
+| a positive integer, under it | submits proceed |
+| a positive integer, at or over it | **507** with both real numbers in the message |
+| set, but the check itself cannot run | **503**, fail-CLOSED |
+
+Enforcement is at submit only: a tenant over its ceiling keeps every byte it has, and nothing is
+truncated or half-rendered. `GET /api/storage/usage` on the studio reports `used_bytes`, `objects`,
+`quota_bytes` and `over`; `POST /api/storage/reconcile` rebuilds the ledger from the bucket (the
+one-time backfill for a studio whose accounting started mid-life).
+
+### TWO tenant classes, so the plane number is a DEFAULT rather than the answer (cp#173)
+
+The core knob is a submit-time DENY. That is a hard cap by construction, and which tenants that is
+right for is a product question, not a plumbing one:
+
+| Class | Bound by | The knob |
+|---|---|---|
+| BYOK, self-host | nothing else -- they pay us no GPU while their R2 sits on our bill | the byte ceiling IS the cost-recovery mechanism |
+| Prepaid (cp#173) | their CREDIT BALANCE, in the right unit, in the credit ledger | **unset**: a hard cap would deny at exactly the byte where charged overage begins |
+
+Binding a hard ceiling to a prepaid tenant makes overage unreachable code and refuses service to
+somebody **holding credits**, by a cap they were told did not exist. So every tenant can override the
+plane default, including overriding it to no ceiling at all:
+
+| `tenants.r2_storage_quota_mode` | Effective ceiling |
+|---|---|
+| NULL | inherit the plane default (the ordinary state) |
+| `set` | `r2_storage_quota_bytes`, whatever the plane says |
+| `none` | NO ceiling, whatever the plane says |
+
+**`NULL` and `none` are different facts and are stored differently on purpose.** Both bind nothing
+while the plane default is unset, and they diverge the moment an operator sets one: the inheriting
+tenant gets a hard cap, the deliberately-uncapped one must not. A single nullable number would spell
+them identically, which is exactly how a prepaid tenant silently inherits a cap.
+
+The record is the source of truth and the studio var is a projection re-derived at every write, so a
+routine studio upgrade cannot re-cap a tenant somebody uncapped. One resolution seam
+(`resolveStorageQuota`) is used by all three write paths, so they cannot disagree about the answer.
+
+A malformed plane var blocks a tenant who would have INHERITED it, and deliberately does not block
+one who overrode it: that tenant was never going to read the value.
+
+### What a tenant is BORN with, and where an operator changes it
+
+A tenant is born with **whatever `TENANT_R2_STORAGE_QUOTA_BYTES` says on the plane at the moment it
+is provisioned** unless its row already records a decision, and with **no ceiling at all when that
+var is unset**. There is deliberately no
+default in code, on either host: the number prices what an operator is willing to carry per tenant,
+which is policy this repository does not get to invent, and a fallback here would be a pricing
+decision hidden in a config read. Unset behaves exactly like `R2_USAGE_ALERT_BYTES` unset.
+
+An operator changes it in ONE place, the deploy config:
+
+```
+gh variable set TENANT_R2_STORAGE_QUOTA_BYTES --repo skyphusion-labs/vivijure-control-plane --body 107374182400
+```
+
+then redeploys. The var must appear in all four lists or it ships INERT (`wrangler.toml.example`,
+`scripts/render-wrangler.sh` ALLOW_EMPTY, and BOTH `deploy.yml` render env blocks);
+`scripts/var-census.py` asserts the four agree and fails the build otherwise.
+
+Bytes only, no unit suffixes: a mis-parsed unit is an order-of-magnitude error on a bill.
+`107374182400` = 100 GiB, `1073741824` = 1 GiB.
+
+**A malformed value REFUSES rather than rounding down to off.** The studio parses `100GB` and `""`
+identically (quota off), which is right for a studio and dangerous for the plane, because it makes
+"typed it wrong" and "wants no ceiling" the same outcome while the operator believes tenants are
+capped. So a non-empty value that is not a positive integer refuses the provision, refuses a studio
+upgrade preflight, and refuses the converge route, each naming the raw value.
+
+### Three write paths, because one door leaves the estate split
+
+| Path | Reaches |
+|---|---|
+| `runProvisionJob` studio upload | every NEW tenant |
+| `upgradeTenantStudio` (cp#139) | any tenant whose bytes move, as a side effect |
+| `POST /api/admin/tenants/:id/storage-quota` | a tenant already LIVE, without moving bytes |
+
+The var is **re-derived** at every write, never inherited. `inherit` preserves what is bound, which
+for a projection of plane config is exactly wrong: a plane that RAISED or LIFTED its quota could
+otherwise never move it on a live tenant, and the ceiling would be a one-way door. Omitting a
+non-secret binding DROPS it (measured, cp#112), so the studio converges in both directions,
+including all the way back to uncapped.
+
+```
+POST /api/admin/tenants/ten_abc123/storage-quota
+Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN
+
+{}                                  converge only: push the RECORD onto the studio, decide nothing
+{"mode":"inherit"}                  clear the override; follow the plane default
+{"mode":"set","quota_bytes":"500"}  this tenant enforces 500 bytes
+{"mode":"none"}                     this tenant has NO ceiling (the prepaid class)
+```
+
+An empty body changes no decision, which is what makes a re-run safe. `inherit` and `none` are
+separate words because they are separate facts.
+
+The RECORD is written first, and only after the preflight has proven the studio can receive the
+projection. Both halves of that order were chosen: writing before the preflight would leave the
+plane remembering a decision it could not deliver (the cp#136 ordering), and writing after the
+studio patch would leave a studio enforcing a number the record does not know about, which the next
+upgrade would silently revert.
+
+A binding patch, not a re-upload, for the cp#112 reasons (two of the four tenant secrets cannot be
+reproduced, and a re-upload would smuggle a release change in as a config fix), so it changes no
+bytes, no release and no status.
+
+### The reader floor is a PRE-write probe here, unlike cp#164
+
+A studio carrying the core#52 reader serves `GET /api/storage/usage` whether or not a quota is
+configured, so a 404 on that route proves the reader is absent. The preflight therefore REFUSES a
+studio whose bundle predates vivijure-cf v1.11.0 (`studio_predates_quota_reader`) BEFORE writing
+anything, instead of binding a ceiling nothing enforces and diagnosing it afterwards. That is the
+one thing this var can do that `ABUSE_REPORT_URL` could not, and it closes the silent-no-op family
+(cf#98 / cf#118 / cp#112) at the front rather than at the back.
+
+### Green means the STUDIO said so
+
+The route answers on the READBACK, not on the binding patch: after the write it asks the studio what
+`quota_bytes` it reports and compares that to what was bound.
+
+| Status | Meaning |
+|---|---|
+| 200 | bound AND the studio reports the ceiling. `enforced: true`. |
+| 202 | bound, nothing stranded, studio had not reported it inside the confirm budget. `ok` and `enforced` both FALSE. Re-run; it is idempotent. |
+| 409 | a genuine strand (a binding or secret present before and absent after), or a preflight refusal. |
+
+The 202 exists for the same measured reason as cp#164: a settings PATCH returning 200 does not mean
+the isolate answering the next dispatch has it yet. Unlike cp#164 it cannot mean "the bundle is too
+old", because the preflight already read the reader off this studio.
+
+`quota_source` says WHERE the answer came from (`tenant`, `tenant_none`, `plane`, `plane_unset`) and
+`record_written` says whether this call changed the decision or only converged the studio onto it.
+"No ceiling" from a deliberate uncapping and "no ceiling" from a plane that configures none are
+different states, and a number alone cannot tell them apart.
+
+`over_on_arrival` is reported when the tenant is already past the ceiling it was just given. That is
+not an error and not a rollback: the data is untouched and only the next submit denies. An operator
+lowering a ceiling under a heavy tenant should see it in the answer rather than in a support ticket.
+
 ## Finishing a repair: the owner-completed invoke-key handoff (cp#169)
 
 `POST /api/admin/tenants/:id/reprovision-runpod` (cp#137) rebuilds a live tenant's four RunPod

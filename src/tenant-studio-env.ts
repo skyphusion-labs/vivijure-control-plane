@@ -66,6 +66,23 @@ export const TENANT_STUDIO_VAR_DISPOSITION: Record<string, { disposition: VarDis
       "ceiling is not a state that occurs",
   },
 
+  R2_STORAGE_QUOTA_BYTES: {
+    disposition: "conditional",
+    why:
+      "cp#183: the per-tenant storage ceiling, bound from deps.storageQuota.bytes (plane var " +
+      "TENANT_R2_STORAGE_QUOTA_BYTES). vivijure-core v1.3.0 enforces it at submit with an honest " +
+      "507; unset = no ceiling, which is what core reads an absent knob as, so the var is bound " +
+      "only when this plane configures a number. NOT `provisioned`, for the ABUSE_REPORT_URL " +
+      "reason rather than any doubt that it gets bound: `provisioned` joins " +
+      "REQUIRED_TENANT_STUDIO_VARS, which the MODULE upgrade re-checks in its verify census, and " +
+      "that path never touches studio bindings -- so requiring it would fail an unrelated module " +
+      "upgrade on every tenant not yet converged and strand it. A studio without it is fully " +
+      "functional, uncapped, which is the deliberate self-host default. THE DISPOSITION ITSELF IS " +
+      "LOAD-BEARING: vivijure-cf v1.12.0 declares this var in its release manifest, so with no " +
+      "entry here assertDispositionCoversContract refused EVERY provision and EVERY studio " +
+      "upgrade on the pinned release, which is exactly what the guard is for"
+  },
+
   ABUSE_REPORT_URL: {
     disposition: "conditional",
     why:

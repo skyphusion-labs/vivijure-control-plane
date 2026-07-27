@@ -57,6 +57,14 @@ import {
   type AbuseReportUrlResult,
 } from "./tenant-abuse-report";
 import {
+  applyStorageQuota,
+  preflightStorageQuota,
+  tenantStorageQuota,
+  type StorageQuotaIntent,
+  type StorageQuotaRefusal,
+  type StorageQuotaResult,
+} from "./tenant-storage-quota";
+import {
   preflightStudioUpgrade,
   upgradeTenantStudio,
   type StudioUpgradeContext,
@@ -236,6 +244,19 @@ export interface ProvisionerWiring {
     | { ok: true; result: AbuseReportUrlResult }
   >;
   /**
+   * Converge an EXISTING tenant studio onto this plane's per-tenant storage ceiling (cp#183).
+   *
+   * The provision path caps new tenants and the studio upgrade caps tenants whose bytes move;
+   * nothing reached the ones already live, which on this plane is all of them. Same preflight split
+   * and same reasons as setAbuseReportUrl, plus one this var can afford and that one could not: the
+   * preflight PROBES the studio for the core#52 reader first, so a bundle that would silently
+   * ignore the ceiling is refused before anything is written rather than diagnosed afterwards.
+   */
+  setStorageQuota(tenant: Tenant, intent?: StorageQuotaIntent): Promise<
+    | { ok: false; refusal: StorageQuotaRefusal }
+    | { ok: true; result: StorageQuotaResult }
+  >;
+  /**
    * The operator verification client (cp#45): four typed calls against THIS tenant's own studio.
    *
    * It lives on ProvisionerWiring because this is where the KEK and the dispatch binding already
@@ -351,6 +372,15 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     // holds rather than configured beside it. Hosted-only by construction -- it is computed from
     // control-plane env, and the studio bytes we upload are the published release unmodified.
     abuseReportUrl: hostedAbuseReportUrl(env),
+    // cp#183: the per-tenant R2 storage ceiling, CONFIGURED rather than derived (it prices what we
+    // are willing to carry, which no code here knows) and validated once here so no write path
+    // re-parses it. Unset = no ceiling, with NO default: an invented number would be a pricing
+    // decision smuggled in as a fallback, and wrong for any other operator running this plane.
+    storageQuota: tenantStorageQuota(env),
+    // NOTE the shape: this is the plane DEFAULT, not the answer. cp#173 gives us two tenant classes
+    // (BYOK/self-host capped by a refusal threshold, prepaid bounded by a credit balance instead),
+    // so every writer resolves plane-default-plus-tenant-record through resolveStorageQuota rather
+    // than reading this field directly.
     // Prove SERVING at verify: dispatch straight to the tenant worker (bypassing the control-plane
     // status gate, which 503s a still-provisioning tenant) and report the status. A Bearer is
     // attached so an auth-gated root also answers; the static root needs none once ASSETS is bound.
@@ -432,6 +462,14 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       const pre = preflightStudioBindingDetach(tenant);
       if (!pre.ok) return { ok: false, refusal: pre.refusal };
       return { ok: true, result: await detachTenantStudioBinding(deps, tenant, pre.script) };
+    },
+    async setStorageQuota(tenant, intent) {
+      // Preflight FIRST and separately, exactly as the routes beside it: a refusal must leave the
+      // tenant untouched, and this one carries the reader-floor probe, so the refusal that matters
+      // most here happens before any binding is patched.
+      const pre = await preflightStorageQuota(deps, tenant, intent);
+      if (!pre.ok) return { ok: false, refusal: pre.refusal };
+      return { ok: true, result: await applyStorageQuota(deps, tenant, pre.context) };
     },
     async setAbuseReportUrl(tenant) {
       // Preflight FIRST and separately: a refusal must leave the tenant untouched, and this route

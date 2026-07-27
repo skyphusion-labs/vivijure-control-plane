@@ -106,6 +106,9 @@ beforeAll(async () => {
     // URL a real deploy does. Pointed at the live front door, which is where the page is served.
     aiGatewayId: null,
     abuseReportUrl: "https://studio.vivijure.com/report-abuse",
+    // cp#183: a real deploy binds a ceiling, so the live harness binds one too. Small on purpose --
+    // the point is that the var arrives and the studio reports it, not that the number is ours.
+    storageQuota: { bytes: "107374182400", invalid: null },
     runpod: {
       createEndpoints: (key, s, r2) => createTenantEndpoints(key, s, r2),
       convergeTemplateImages: (key, s) => convergeTenantTemplateImages(key, s),

@@ -82,6 +82,9 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,
     kek: kekRing(btoa("0123456789abcdef0123456789abcdef")),
     spendDailyCeiling: null,
+    // cp#183: the fixture plane configures a per-tenant storage ceiling, because a plane that caps
+    // nothing is the state that lane exists to end. Tests covering unset or malformed override it.
+    storageQuota: { bytes: "107374182400", invalid: null },
     now: () => 1_000_000,
     sleep: async () => {},
     fetch: (async () => {
