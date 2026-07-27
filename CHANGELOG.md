@@ -22,7 +22,32 @@ backfilled -- so an older Worker keeps running against the newer schema, which i
 migrate-before-deploy ordering safe here. Stated explicitly rather than discovered, given the cf#80
 history recorded in `deploy.yml`.
 
-Contains two merged PRs: #198, #199.
+**CORRECTED AFTER PUBLICATION (2026-07-27).** This section originally read "Contains two merged
+PRs: #198, #199". That was wrong: `git log v1.16.0..v1.17.0` carries **four** merged PRs, and the
+omitted one shipped code. The scope was cut by the release author and the error is recorded here
+rather than silently rewritten, on the same principle as the SUPERSEDED markers in
+`docs/managed-compute.md` -- a release note is a claim about a diff, and a false one is worth
+correcting in place so the correction is legible.
+
+Contains four merged PRs: #196, #198, #199, **#206**.
+
+### feat(credits): balance and usage read API (cp#192, #206) -- omitted from the original notes
+
+Shipped in this release and undocumented by it:
+
+- **Two new HTTP routes.** `GET /api/tenant/:id/credits` (owner session) and
+  `GET /api/admin/tenants/:id/credits` (admin bearer), served by one reader so a tenant and an
+  operator can never be looking at different balances.
+- **One new var, `CREDITS_ENFORCING`** -- which shipped **INERT**, because it was typed in `env.ts`
+  and read by both routes while being declared in none of `wrangler.toml.example`,
+  `scripts/render-wrangler.sh`, or either `deploy.yml` render block. Behaviour was still correct
+  (absent reads as counting mode, the ruled default), but the knob could not be turned. Fixed
+  separately; see the Unreleased section.
+
+Neither route can refuse anything: nothing consults a balance until the dispatch proxy (cp#191).
+
+`#196` is docs-only (the `docs/managed-compute.md` supersession markers) and was also absent from
+the original list.
 
 ### feat(credits): balance and usage read API (cp#192)
 
