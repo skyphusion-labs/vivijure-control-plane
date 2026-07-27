@@ -54,7 +54,24 @@ export interface ModuleBundleSource {
  */
 export interface TenantModuleSpec {
   module: string;
-  endpointKey: string;
+  /**
+   * Which tenant endpoint this module renders against, or OMITTED for a module that is not
+   * RunPod-backed at all (cf#56).
+   *
+   * Optional because plan-enhance broke the assumption every earlier entry shared. It is an LLM
+   * pass reached through the AI Gateway, so there is no endpoint to point it at, and the honest
+   * encoding is an absent key rather than a sentinel endpoint that exists only to satisfy a type.
+   * uploadTenantModules therefore requires an endpoint ONLY for the specs that declare one; a spec
+   * that declares an endpointKey the tenant lacks still fails loudly, which is the check that
+   * mattered originally and is unchanged.
+   */
+  endpointKey?: string;
+  /**
+   * Bind the AI Gateway trio (AI + GATEWAY_ID + per-tenant CF_AIG_TOKEN) onto this module (cf#56).
+   * Data, not a name check, so the flow stays free of module-specific branching per the
+   * bare-skeleton doctrine.
+   */
+  needsAiGateway?: boolean;
 }
 
 /**
@@ -69,6 +86,15 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   { module: "finish-upscale", endpointKey: "upscale" },
   { module: "finish-lipsync", endpointKey: "lipsync" },
   { module: "speech-upscale", endpointKey: "audio-upscale" },
+  // cf#56: the Opus director pass. NOT endpoint-backed -- it reaches Anthropic through OUR AI
+  // Gateway on unified billing, so the cost is ours and the per-tenant CF_AIG_TOKEN is what makes
+  // that cost attributable and revocable one tenant at a time. Spend stays bounded today by the
+  // tenant studio own SPEND_DAILY_CEILING, which cf#256 put the planner routes inside.
+  //
+  // ORDERING: this entry is only safe once a studio release actually PUBLISHES the plan-enhance
+  // bundle (vivijure-cf PR for cf#56). moduleBundle.fetch throws on a release that predates it, and
+  // that failure is loud at modules_upload rather than silent, but it would fail every provision.
+  { module: "plan-enhance", needsAiGateway: true },
 ];
 
 /**
@@ -106,6 +132,14 @@ export interface TenantModuleDeps {
   cf: CfApi;
   /** The shared dispatch namespace tenant module scripts live in (vivijure-tenant-modules). */
   moduleNamespace: string;
+  /**
+   * The AI Gateway slug bound onto AI-Gateway-backed modules as GATEWAY_ID (cf#56), or null when
+   * this plane has none configured. An identifier, not a secret, so it rides as plain_text exactly
+   * like RUNPOD_ENDPOINT_ID. Null means the module is uploaded WITHOUT the trio and falls back to
+   * the free Workers AI local provider, which is a real degrade rather than a failure: pickProvider
+   * needs GATEWAY_ID and CF_AIG_TOKEN both, and returns "local" when either is missing.
+   */
+  aiGatewayId: string | null;
   moduleBundle: ModuleBundleSource;
   release: string;
   /** Dispatch a GET to one tenant MODULE script over TENANT_MODULE_DISPATCH (cf#114). Separate from
@@ -167,12 +201,20 @@ export async function uploadTenantModules(
   /** Pre-fetched bundles (prefetchModuleBundles). When absent each bundle is fetched inline, which
    *  is the original provision behaviour and is left exactly as it was. */
   prefetched?: Map<string, ModuleBundle>,
+  /**
+   * This tenant freshly-minted AI Gateway Run token VALUE (cf#56), or null when none was minted.
+   * Passed in rather than minted here so this file keeps no credential-minting reach, and so the
+   * caller can persist nothing: the value goes straight into a secret_text binding and is dropped.
+   */
+  aigTokenValue?: string | null,
 ): Promise<string[]> {
   await deps.cf.createDispatchNamespace(deps.moduleNamespace);
   const scriptNames: string[] = [];
   for (const spec of TENANT_MODULE_CATALOG) {
-    const endpoint = endpoints.find((e) => e.key === spec.endpointKey);
-    if (!endpoint) {
+    // A spec WITHOUT an endpointKey is not endpoint-backed (cf#56, plan-enhance) and legitimately
+    // has no endpoint. A spec WITH one that the tenant lacks is still a loud failure, unchanged.
+    const endpoint = spec.endpointKey ? endpoints.find((e) => e.key === spec.endpointKey) : undefined;
+    if (spec.endpointKey && !endpoint) {
       throw new TenantModuleError(
         "modules_upload",
         `module ${spec.module} needs the ${spec.endpointKey} endpoint, which the tenant does not have`,
@@ -190,12 +232,35 @@ export async function uploadTenantModules(
       }
     }
     const scriptName = tenantModuleScriptName(tenantId, spec.module);
-    const bindings: WorkerBinding[] = [
+    const bindings: WorkerBinding[] = [];
+    if (endpoint) {
       // The endpoint id the module renders against. plain_text: not a secret, mirrors how the studio
       // provisioner binds its endpoint-id vars. The module reads env.RUNPOD_ENDPOINT_ID (string-typed
       // via secretValue), so a plain_text binding drops straight in.
-      { type: "plain_text", name: "RUNPOD_ENDPOINT_ID", text: endpoint.id },
-    ];
+      bindings.push({ type: "plain_text", name: "RUNPOD_ENDPOINT_ID", text: endpoint.id });
+    }
+    if (spec.needsAiGateway) {
+      // env.AI is what the module actually calls, BOTH ways: .gateway(GATEWAY_ID).getUrl("anthropic")
+      // for the Opus pass and .run(<model>) for the free local fallback. Bound unconditionally, so a
+      // plane with no gateway configured still gets a working module on the local provider instead
+      // of one that throws on every call.
+      bindings.push({ type: "ai", name: "AI" });
+      // BOTH or NEITHER, deliberately: pickProvider returns "opus" only when GATEWAY_ID and
+      // CF_AIG_TOKEN are both present, so binding one alone would advertise nothing and change
+      // nothing. Half the pair is the silent-no-op case this guard exists to prevent.
+      if (deps.aiGatewayId && aigTokenValue) {
+        bindings.push({ type: "plain_text", name: "GATEWAY_ID", text: deps.aiGatewayId });
+        // Straight from the mint into a worker secret. Never persisted, never logged.
+        bindings.push({ type: "secret_text", name: "CF_AIG_TOKEN", text: aigTokenValue });
+      } else {
+        deps.log("module.ai_gateway_unconfigured", {
+          tenant: tenantId,
+          module: spec.module,
+          gateway: deps.aiGatewayId ? "set" : "unset",
+          token: aigTokenValue ? "set" : "unset",
+        });
+      }
+    }
     await deps.cf.uploadUserWorker({
       namespace: deps.moduleNamespace,
       scriptName,

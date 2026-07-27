@@ -219,7 +219,7 @@ describe("preflight refuses before anything is written", () => {
     expect(pre.context.bundles).toBeInstanceOf(Map);
     // It carries the release the OPERATOR asked for, never the plane-wide deps.release.
     expect(pre.context.release).toBe(NEW_RELEASE);
-    expect(pre.context.bundles.size).toBe(5);
+    expect(pre.context.bundles.size).toBe(6);   // cf#56: plan-enhance joined the catalog
   });
 
   it("fetches every bundle at the REQUESTED release, not the plane-wide pin", async () => {
@@ -234,7 +234,7 @@ describe("preflight refuses before anything is written", () => {
 
     await preflightModuleUpgrade(d, tenant, NEW_RELEASE);
 
-    expect(fetchSpy).toHaveBeenCalledTimes(5);
+    expect(fetchSpy).toHaveBeenCalledTimes(6);   // cf#56: plan-enhance joined the catalog
     // deps.release is OLD_RELEASE; if the explicit release were being dropped this would be it.
     for (const call of fetchSpy.mock.calls as unknown as [string, string][]) {
       expect(call[0]).toBe(NEW_RELEASE);
@@ -257,11 +257,11 @@ describe("upgradeTenantModules", () => {
     const out = await upgradeTenantModules(d, job.id, tenant, await contextFor(d, tenant));
 
     expect(out.ok).toBe(true);
-    // All five catalog modules, uploaded and installed again.
-    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(5);
+    // All SIX catalog modules, uploaded and installed again (cf#56 added plan-enhance).
+    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(6);
     const installs = (d.callTenantStudio as unknown as { mock: { calls: [string, { path: string }][] } }).mock.calls
       .filter((c) => c[1].path === "/api/modules/install");
-    expect(installs).toHaveLength(5);
+    expect(installs).toHaveLength(6);   // cf#56: plan-enhance joined the catalog
   });
 
   it("uses the PRE-FETCHED bundles; it does not re-fetch during upload", async () => {
@@ -294,7 +294,7 @@ describe("upgradeTenantModules", () => {
     expect(out).toEqual({
       ok: true,
       release: NEW_RELEASE,
-      modules: ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale"],
+      modules: ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale", "plan-enhance"],
     });
     const after = (await store.getTenantById(tenant.id)) as Tenant;
     // THE RULE: status untouched. continueProvisionJob would have written awaiting_invoke_key here,

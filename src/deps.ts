@@ -342,6 +342,11 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     kek: studioKekRing(env),
     // Always set a ceiling: a hosted tenant with no daily cap has no cost bound. Operator-tunable.
     spendDailyCeiling: env.TENANT_SPEND_DAILY_CEILING ?? "25",
+    // cf#56: the AI Gateway that AI-Gateway-backed tenant modules bind as GATEWAY_ID. NO default:
+    // an unset var means this plane names no gateway, and plan-enhance then runs on the free local
+    // Workers AI provider. Defaulting to a slug would bind tenants to a gateway nobody chose, and
+    // the wrong gateway is worse than none -- skyphusion-llm is prism, not ours to point tenants at.
+    aiGatewayId: env.TENANT_AI_GATEWAY_ID ?? null,
     // cp#164: the intake page a reporter is sent to, DERIVED from the one host fact this plane
     // holds rather than configured beside it. Hosted-only by construction -- it is computed from
     // control-plane env, and the studio bytes we upload are the published release unmodified.

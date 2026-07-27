@@ -156,6 +156,20 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   TENANT_SPEND_DAILY_CEILING?: string;
 
   /**
+   * The AI Gateway slug tenant modules bind as GATEWAY_ID (cf#56). Set it to `vivijure-hosted`, the
+   * DEDICATED hosted-tenant gateway (authentication ON, verified: a valid token reaches the provider
+   * and a bogus one is refused 401 AT the gateway).
+   *
+   * Do NOT point this at `skyphusion-llm` -- that is prism gateway. A shared gateway would put every
+   * tenant LLM call in the same analytics namespace and defeat the per-tenant attribution this whole
+   * seam exists to provide.
+   *
+   * Unset means no gateway: plan-enhance degrades to the free local Workers AI provider, which is a
+   * genuine working fallback rather than a failure.
+   */
+  TENANT_AI_GATEWAY_ID?: string;
+
+  /**
    * Alert threshold in BYTES for total R2 across all tenant buckets (cf#56). Unset (or malformed)
    * means no threshold and the admin surface reports usage without an alert verdict, which is the
    * correct default: an operator who has not chosen a number has not asked to be alerted. Parsed by

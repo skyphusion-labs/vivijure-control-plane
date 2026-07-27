@@ -157,11 +157,29 @@ export interface VpcServiceBinding {
  * binding from the latest version"). NOT exercised against Cloudflare by any test in this repo --
  * see the live-probe note in tenant-studio-bindings.ts before trusting it.
  */
+/**
+ * The Workers AI binding (cf#56). `env.AI` is what the plan-enhance module calls BOTH ways:
+ * `.gateway(GATEWAY_ID).getUrl("anthropic")` for the Opus director pass, and `.run(<model>)` for the
+ * free Workers AI fallback. Without it the module has no AI at all, so this is not optional garnish
+ * alongside GATEWAY_ID and CF_AIG_TOKEN -- it is the binding the other two configure.
+ *
+ * LIVE-PROVEN that a WfP user worker can carry it, in the same shape as the vpc_service probe above
+ * rather than assumed from the docs: a user worker was uploaded into a throwaway dispatch namespace
+ * with `{type:"ai",name:"AI"}` plus plain_text and secret_text siblings, the upload returned
+ * success, and the bindings were READ BACK off the API as `AI [ai]` before the probe was torn down.
+ * The readback is the point: an upload response echoes no bindings, so success alone is only the
+ * writing client opinion of its own work.
+ */
+export interface AiBinding {
+  type: "ai";
+  name: string;
+}
 export interface InheritBinding {
   type: "inherit";
   name: string;
 }
 export type WorkerBinding =
+  | AiBinding
   | D1Binding
   | R2Binding
   | PlainTextBinding
@@ -371,6 +389,37 @@ export class CfApi {
             resources: {
               [`com.cloudflare.edge.r2.bucket.${this.accountId}_default_${bucket}`]: "*",
             },
+          },
+        ],
+      }),
+    });
+  }
+
+  /**
+   * Mint an ACCOUNT-scoped AI Gateway Run token (cf#56).
+   *
+   * Scoped to the account rather than to one gateway because AI Gateway Run has no per-gateway
+   * resource in the permission model; the tenant boundary is the TOKEN, not the resource scope, and
+   * the isolation that matters is that revoking one tenant token stops exactly that tenant. That
+   * was proven live rather than reasoned about: a minted token reached the gateway (HTTP 200), a
+   * bogus one was refused AT the gateway (401 AiGatewayError 2009), and after revoking a working
+   * token the same call became 401. Revocation is real but NOT instant, roughly 8 to 16 seconds of
+   * propagation, which is a runbook fact for anyone pulling this as a kill switch.
+   *
+   * The returned VALUE is a secret. It is handed back ONLY to be written straight into a worker
+   * secret binding; it is never persisted here, never logged, and never put in control-plane D1.
+   */
+  async mintAigRunToken(name: string, permissionGroupIds: string[]): Promise<{ id: string; value: string }> {
+    return await this.call<{ id: string; value: string }>("tokens.createAig", `/accounts/${this.accountId}/tokens`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name,
+        policies: [
+          {
+            effect: "allow",
+            permission_groups: permissionGroupIds.map((id) => ({ id })),
+            resources: { [`com.cloudflare.api.account.${this.accountId}`]: "*" },
           },
         ],
       }),

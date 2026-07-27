@@ -213,6 +213,12 @@ export interface ProvisionDeps {
    * either installed key, so provisioning keeps working throughout a rotation window.
    */
   kek: KekRing;
+  /**
+   * The AI Gateway slug bound onto AI-Gateway-backed tenant modules as GATEWAY_ID (cf#56), or null
+   * when this plane configures none. Identifier, not a secret. Null degrades plan-enhance to the
+   * free local Workers AI provider rather than breaking it.
+   */
+  aiGatewayId: string | null;
   /** Optional per-tenant daily spend ceiling set as SPEND_DAILY_CEILING; null -> studio default. */
   spendDailyCeiling: string | null;
   /**
@@ -247,6 +253,13 @@ export interface ProvisionDeps {
 export const tenantD1Name = (slug: string) => `vivijure-tenant-${slug}`;
 export const tenantBucketName = (slug: string) => `vivijure-tenant-${slug}`;
 export const tenantR2TokenName = (slug: string) => `vivijure-tenant-${slug}-r2`;
+/**
+ * This tenant AI Gateway Run token (cf#56). DETERMINISTIC from the slug, like the R2 token name and
+ * for the same reason: the value is never stored, so a token whose id we lost can still be revoked
+ * by name (the cf#91 census path). No new column is needed -- unlike the R2 credential, whose id
+ * doubles as the S3 access key id, this token id is only ever needed to revoke.
+ */
+export const tenantAigTokenName = (slug: string) => `vivijure-tenant-${slug}-aig`;
 
 /**
  * The credential a TEARDOWN cycle mints for itself to empty a bucket (cf#72). Deliberately a
@@ -679,7 +692,21 @@ export async function runProvisionJob(
     //    its endpoint id. Key B is NOT bound yet -- it lands in installInvokeKey, alongside the
     //    studio. The studio (with its MODULE_DISPATCH binding) is already up, so the install pass
     //    below can reach these. Idempotent-by-name (adopt-on-exists), like every other step.
-    await uploadTenantModules(deps, tenant.id, endpoints);
+    // cf#56: this tenant AI Gateway Run token, minted fresh. Revoke-then-mint by NAME, the same
+    // shape as the R2 credential above and for the same reason: we never stored the value, so a
+    // retry cannot reuse the old one and must not leave a trail of live grants behind it. A failed
+    // revoke is logged loudly rather than fatal -- it is a live credential we did not clean up, but
+    // stranding the tenant over it would be worse.
+    let aigTokenValue: string | null = null;
+    if (deps.aiGatewayId) {
+      try {
+        await deps.tokenMinter.revokeByName(tenantAigTokenName(tenant.slug));
+      } catch (e) {
+        deps.log("aig_token.revoke_failed", { tenant: tenant.id, error: String(e) });
+      }
+      aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
+    }
+    await uploadTenantModules(deps, tenant.id, endpoints, undefined, aigTokenValue);
     await mark("modules_upload");
 
     // 8. Install each module through the studio's OWN conformance-gated route (cf#99): the studio
@@ -866,7 +893,7 @@ export async function continueProvisionJob(
 
     await runModuleSteps(
       deps,
-      { tenantId: tenant.id, script, endpoints, studioApiToken, release: deps.release },
+      { tenantId: tenant.id, slug: tenant.slug, script, endpoints, studioApiToken, release: deps.release },
       // Resume semantics: skip what the progress record says is already done. The UPGRADE caller
       // passes the opposite (always run), which is the entire behavioural difference between the
       // two and the reason this is a parameter rather than a hardcoded rule.
@@ -950,6 +977,13 @@ export interface ModuleStepsHooks {
 
 export interface ModuleStepsArgs {
   tenantId: string;
+  /**
+   * The tenant SLUG, needed because the per-tenant AI Gateway token name derives from it (cf#56).
+   * Required rather than optional on purpose: an upgrade that could not name the token would upload
+   * plan-enhance WITHOUT its credential and silently drop the tenant onto the free local provider,
+   * which is precisely the quiet degrade this seam exists to make impossible.
+   */
+  slug: string;
   script: string;
   endpoints: TenantEndpoint[];
   studioApiToken: string;
@@ -968,7 +1002,21 @@ export async function runModuleSteps(
   const at: ProvisionDeps = { ...deps, release: args.release };
 
   if (hooks.shouldRun("modules_upload")) {
-    await uploadTenantModules(at, tenantId, endpoints, args.prefetched);
+    // cf#56: an upgrade/converge must (re)mint the tenant AI Gateway token, not just ship bytes.
+    // This is the cp#137 lesson applied to a credential: an EXISTING tenant gains plan-enhance on
+    // converge, and a module uploaded without its credential is a module that quietly runs on the
+    // wrong provider. Revoke-then-mint by name, same shape as provision, so a converge cannot leave
+    // two live grants for one tenant behind it.
+    let aigTokenValue: string | null = null;
+    if (at.aiGatewayId) {
+      try {
+        await at.tokenMinter.revokeByName(tenantAigTokenName(args.slug));
+      } catch (e) {
+        at.log("aig_token.revoke_failed", { tenant: tenantId, error: String(e) });
+      }
+      aigTokenValue = (await at.tokenMinter.mintAigToken(tenantAigTokenName(args.slug))).value;
+    }
+    await uploadTenantModules(at, tenantId, endpoints, args.prefetched, aigTokenValue);
     await hooks.onDone("modules_upload");
   }
   if (hooks.shouldRun("modules_install")) {
@@ -1072,7 +1120,14 @@ export async function preflightModuleUpgrade(
   // Every catalog module must have its endpoint, checked HERE rather than discovered mid-upload:
   // uploadTenantModules throws on a missing endpoint, and finding that out after two modules were
   // already swapped is precisely the mixed state this route exists to avoid.
-  const missing = TENANT_MODULE_CATALOG.filter((spec) => !endpoints.some((e) => e.key === spec.endpointKey));
+  // Only ENDPOINT-BACKED specs can be missing an endpoint (cf#56). A spec with no endpointKey
+  // (plan-enhance, which reaches the AI Gateway rather than RunPod) has nothing to be missing, and
+  // including it here would refuse EVERY upgrade with a nonsense "missing the endpoint(s) needed
+  // by: plan-enhance" -- the check inverted into a permanent blocker. Mirrors the same
+  // endpointKey-guarded lookup in uploadTenantModules, which is the thing this pre-checks.
+  const missing = TENANT_MODULE_CATALOG.filter(
+    (spec) => spec.endpointKey !== undefined && !endpoints.some((e) => e.key === spec.endpointKey),
+  );
   if (missing.length) {
     return refuse(
       "tenant_endpoints_incomplete",
@@ -1200,6 +1255,7 @@ export async function upgradeTenantModules(
       deps,
       {
         tenantId: tenant.id,
+        slug: tenant.slug,
         script: context.script,
         endpoints: context.endpoints,
         studioApiToken: context.studioApiToken,
@@ -1617,6 +1673,24 @@ export async function teardownTenant(
       if (!hit && !tenant.r2_token_id) {
         // Nothing to revoke: either never minted, or already gone. Not a failure.
         deps.log("teardown.r2_token_absent", { tenant: tenant.id, name: tokenName });
+      }
+    });
+  }
+
+  // cf#56: the per-tenant AI Gateway Run token. BY NAME ONLY, because its id is deliberately not
+  // persisted: unlike the R2 credential (whose id doubles as the S3 access key id) this token is
+  // only ever needed in order to revoke it, so the deterministic name IS the handle. Revoked here,
+  // alongside the R2 grant and for the same reason -- a stranded live grant is the worst leftover
+  // this path can produce, and this one bills to US.
+  //
+  // Guarded on the SAME r2_token guard, deliberately: both names derive from the SLUG, so if slug
+  // reuse means another live row owns these credentials, neither may be revoked out from under it.
+  if (!tokenGuarded) {
+    await attempt("aig_token_by_name", async () => {
+      const hit = await deps.tokenMinter.revokeByName(tenantAigTokenName(tenant.slug));
+      if (!hit) {
+        // Never minted (a plane with no gateway configured) or already gone. Not a failure.
+        deps.log("teardown.aig_token_absent", { tenant: tenant.id, name: tenantAigTokenName(tenant.slug) });
       }
     });
   }

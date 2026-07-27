@@ -327,6 +327,7 @@ export async function reprovisionTenantRunPod(
       deps,
       {
         tenantId: tenant.id,
+        slug: tenant.slug,
         script: context.script,
         endpoints,
         studioApiToken: context.studioApiToken,

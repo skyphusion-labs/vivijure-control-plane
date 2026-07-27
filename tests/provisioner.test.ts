@@ -10,6 +10,8 @@ import {
   teardownTenant,
   tenantBucketName,
   tenantD1Name,
+  tenantR2TokenName,
+  tenantAigTokenName,
   type ProvisionDeps,
 } from "../src/provisioner";
 import { CfApiError } from "../src/cf-api";
@@ -94,6 +96,9 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     // cp#164: the default fixture is a plane that publishes an intake page, because that is what a
     // configured deploy is. Tests that care about the unconfigured case override it with null.
     abuseReportUrl: "https://studio.example.com/report-abuse",
+    // cf#56: the default fixture is a plane WITH a gateway configured, because that is what the
+    // hosted plane is. Tests covering the unconfigured degrade override it with null.
+    aiGatewayId: "vivijure-hosted",
     runpod: {
       createEndpoints: vi.fn(async () => (calls.push("runpod.createEndpoints"), ENDPOINTS)),
       convergeTemplateImages: vi.fn(async () => (calls.push("runpod.convergeTemplateImages"), [])),
@@ -106,6 +111,10 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
       mintBucketToken: vi.fn(async (name: string) => (
         calls.push("mintR2Token"),
         { id: name.endsWith("-teardown") ? "emptycred-1" : "tok-1", value: "TOKEN_VALUE_SECRET" }
+      )),
+      mintAigToken: vi.fn(async (name: string) => (
+        calls.push(`mintAigToken:${name}`),
+        { id: "aig-1", value: "AIG_TOKEN_VALUE_SECRET" }
       )),
       revoke: vi.fn(async () => void calls.push("revokeToken")),
       revokeByName: vi.fn(async (name: string) => (calls.push(`revokeByName:${name}`), true)),
@@ -545,6 +554,34 @@ describe("teardownTenant", () => {
     expect(calls).not.toContain("deleteR2Bucket");
   });
 
+  // ---- cf#56: the per-tenant AI Gateway credential ------------------------------------------
+
+  it("REVOKES the tenant AI Gateway token on teardown, by its deterministic name", async () => {
+    const d = deps();
+    await teardownTenant(d, await provisioned(), { deleteData: true });
+    expect(d.tokenMinter.revokeByName).toHaveBeenCalledWith(tenantAigTokenName("hero"));
+  });
+
+  it("mints the AI Gateway token at provision, under the deterministic name", async () => {
+    const t = await tenant();
+    const d = deps();
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    expect(d.tokenMinter.mintAigToken).toHaveBeenCalledWith(tenantAigTokenName("hero"));
+    // Revoke-then-mint: a retry must not leave a trail of live grants behind it.
+    expect(calls.indexOf(`revokeByName:${tenantAigTokenName("hero")}`)).toBeLessThan(
+      calls.indexOf(`mintAigToken:${tenantAigTokenName("hero")}`),
+    );
+  });
+
+  it("mints NO AI Gateway token when the plane names no gateway", async () => {
+    const t = await tenant();
+    const d = deps({ aiGatewayId: null });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    expect(d.tokenMinter.mintAigToken).not.toHaveBeenCalled();
+  });
+
   it("revokes by deterministic name when r2_token_id was never persisted (cf#91)", async () => {
     const d = deps();
     const t = await provisioned();
@@ -564,6 +601,7 @@ describe("teardownTenant", () => {
     const d = deps({
       tokenMinter: {
         mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "TOKEN_VALUE_SECRET" })),
+        mintAigToken: vi.fn(async () => ({ id: "aig-1", value: "AIG_TOKEN_VALUE_SECRET" })),
         revoke: vi.fn(async () => {
           throw new Error("token gone");
         }),
@@ -614,7 +652,11 @@ describe("auto-teardown on provision failure (cf#91)", () => {
     const job = await store.createProvisionJob("job_1", t.id, "provision");
     await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(d.tokenMinter.revoke).toHaveBeenCalledWith("tok-1");
-    expect(d.tokenMinter.revokeByName).not.toHaveBeenCalled();
+    // NARROWED, not dropped (cf#56): revokeByName is now legitimately used for the per-tenant AI
+    // Gateway token, which has no persisted id by design. The guarantee this test exists for is
+    // unchanged and still asserted -- the R2 credential must be revoked by its PERSISTED ID, never
+    // by falling back to a name census.
+    expect(d.tokenMinter.revokeByName).not.toHaveBeenCalledWith(tenantR2TokenName("hero"));
   });
 });
 
@@ -679,7 +721,7 @@ describe("cf#99 tenant module bridge", () => {
       mock: { calls: [{ namespace: string; scriptName: string; bindings: { type: string; name: string; text?: string }[] }][] };
     }).mock.calls.map((c) => c[0]);
 
-  it("uploads all 5 tenant module scripts into the modules namespace, tenant-id-prefixed", async () => {
+  it("uploads all 6 tenant module scripts into the modules namespace, tenant-id-prefixed", async () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision");
@@ -692,6 +734,7 @@ describe("cf#99 tenant module bridge", () => {
         `${t.id}-finish-upscale`,
         `${t.id}-keyframe`,
         `${t.id}-own-gpu`,
+        `${t.id}-plan-enhance`,
         `${t.id}-speech-upscale`,
       ].map((n) => n.replace(/_/g, "-")).sort(),
     );
@@ -750,11 +793,11 @@ describe("cf#99 tenant module bridge", () => {
       (c) => c[1] as { method: string; path: string; body?: string },
     );
     const installs = studioCalls.filter((c) => c.path === "/api/modules/install");
-    expect(installs).toHaveLength(5);
+    expect(installs).toHaveLength(6);   // cf#56: plan-enhance joined the catalog
     // Each install carries the tenant-prefixed script name (not the bare module name).
     const scriptNames = installs.map((c) => JSON.parse(c.body!).script_name).sort();
     expect(scriptNames).toEqual(
-      ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale"]
+      ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale", "plan-enhance"]
         .map((n) => `${t.id}-${n}`.replace(/_/g, "-"))
         .sort(),
     );
