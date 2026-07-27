@@ -71,14 +71,19 @@ discovers an unverified account is a launch that stops with customer money alrea
 
 *Verify:* the Stripe dashboard shows payouts enabled, with no outstanding verification requests.
 
-### 3. Tax configuration
+### 3. Tax configuration: RULED, and NOT a blocker
 
-Prepaid credits are generally taxed **at purchase**, not at use. That makes tax setup a
-launch-blocking step rather than a later cleanup, because it changes what the customer is charged at
-the moment they pay.
+**Conrad, 2026-07-27: "As a reseller here in Texas we do not have to charge sales tax."** His
+domain, his prior experience in this state, and it closes what this document previously listed as a
+launch-blocking step.
 
-This is the one item on this list where the right answer depends on jurisdiction and is a question
-for an accountant, not for us. Flagged rather than answered.
+The scope is stated deliberately rather than generalised to "no tax applies": **Texas, as a
+reseller.** Writing the scope down is what makes this re-checkable if the business situation
+changes, and a scoped ruling is worth more later than a confident unscoped one.
+
+**PARKED, not a blocker:** purchasers outside the US can carry different obligations (VAT and
+similar). That is a future-jurisdiction question, it does not gate the purchase door opening, and it
+is recorded on `cp#193` rather than solved here.
 
 ### 4. Products and prices for the top-up packs
 
@@ -112,7 +117,7 @@ expected amount exactly once.
 
 ### 7. A decision only you can make: refunds, expiry, and account closure
 
-Three questions, and they are consumer-protection surface rather than preferences:
+Unaffected by the tax ruling above; these are consumer-protection surface rather than preferences:
 
 1. Are unused credits refundable, and on what terms?
 2. Do credits expire? (If yes, this interacts with consumer law in several jurisdictions.)
