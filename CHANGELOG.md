@@ -6,6 +6,29 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(credits): balance and usage read API (cp#192)
+
+- `GET /api/tenant/:id/credits` (owner session) and `GET /api/admin/tenants/:id/credits` (admin
+  bearer). Both are served by ONE reader and differ only in what is projected, so an operator can
+  never be looking at a different balance from the one a tenant was refused against.
+- **Holds are projected beside ledger rows.** Under completed-only billing a failed job leaves a
+  released hold and NO ledger row, so a statement built from money rows alone would show a tenant
+  nothing where their failed render should be. Released and expired carry DIFFERENT reasons: "your
+  job did not complete" and "your job never reported back" are different facts.
+- Money crosses the wire as integer micro-USD and is formatted only at the edge. An unreadable
+  balance is **503**, never 200 with zeros; an unwired credit store is **503 credits_unconfigured**,
+  mirroring the existing `provisioner` precedent.
+- The admin projection adds the cost side. `price_to_cost` is **NULL** when cost is unknown or zero,
+  never a fabricated 1.0, and price is summed only over rows whose cost is KNOWN; unmeasured rows are
+  counted (`charges_missing_cost`), not hidden. The tenant view never carries the cost side.
+- `complete` (about the aggregates) and `activity_truncated` (about the feed) are separate flags, so
+  `complete` does not go false on every active tenant and get ignored.
+- New var `CREDITS_ENFORCING`. Enforcement mode is reported on every response.
+- Fixed in passing: `MemoryStore.recordAupAcceptance` declared 4 parameters against the interface's
+  5. TypeScript permits the narrower implementation, so it compiled while dropping `userAgent` and
+  made a correct 5-argument call a type error. Caught by `npm run typecheck`, NOT by the suite, since
+  vitest never typechecks.
+
 ### feat(credits): the prepaid credit ledger primitive (cp#189, under cp#173)
 
 - **Schema change.** New migration `0013_credit_ledger.sql` adds `credit_holds` and `credit_ledger`.
