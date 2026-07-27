@@ -14,6 +14,9 @@
 // steps) lands in #53/#54. A tenant created today therefore parks at status "pending" with a
 // "queued" job until that runner ships. Nothing here claims otherwise to the caller.
 
+import { balanceFromSums, parseEnforcing, type Balance, type HoldRow, type LedgerRow } from "./credits";
+import { buildAdminCreditView, buildTenantCreditView } from "./credits-api";
+import type { CreditStore } from "./store";
 import { ApiTokenError } from "./tenant-api-token";
 import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt } from "./aup";
 import {
@@ -361,6 +364,36 @@ async function me(env: ControlPlaneEnv, deps: ControlPlaneDeps, account: Account
   });
 }
 
+// ---- credit read surface (cp#192) --------------------------------------------------------------
+//
+// ONE reader behind both routes. The tenant view and the admin view differ only in what is
+// PROJECTED, never in what is read, so an operator can never be looking at a different balance from
+// the one the tenant was refused against. Two readers is how those two numbers drift apart.
+
+/** How many activity lines either surface returns. Truncation is reported, never silent. */
+const CREDIT_ACTIVITY_LIMIT = 50;
+
+async function readCreditActivity(
+  credits: CreditStore,
+  tenantId: string,
+): Promise<{ balance: Balance; ledger: LedgerRow[]; holds: HoldRow[]; truncated: boolean }> {
+  // A THROW HERE IS NOT CAUGHT INTO A ZERO. If the aggregates cannot be read, the caller answers 503
+  // and says so; answering 200 with zeros would be an unknown wearing a number's clothes, on the one
+  // surface where that number decides whether somebody can work.
+  const sums = await credits.readBalanceSums(tenantId);
+  const ledger = await credits.listLedger(tenantId, CREDIT_ACTIVITY_LIMIT);
+  const holds = await credits.listHolds(tenantId, CREDIT_ACTIVITY_LIMIT);
+  return {
+    // complete: the aggregates are SQL SUMs over every row, so reading them at all IS completeness.
+    // Feed truncation is a separate flag; conflating them would make `complete` false on every busy
+    // tenant and train everyone to ignore the one warning that matters.
+    balance: balanceFromSums({ settled: sums.settled, held: sums.held, complete: true }),
+    ledger,
+    holds,
+    truncated: ledger.length >= CREDIT_ACTIVITY_LIMIT || holds.length >= CREDIT_ACTIVITY_LIMIT,
+  };
+}
+
 async function tenantRoutes(
   request: Request,
   env: ControlPlaneEnv,
@@ -402,6 +435,28 @@ async function tenantRoutes(
     // is an enumeration oracle.
     if (!tenant || tenant.account_id !== account.id) return err("not_found", 404);
     const action = scoped[2];
+
+    // ---- prepaid credit balance (cp#192) ----------------------------------------------------
+    if (request.method === "GET" && action === "credits") {
+      // Absent store = honest 503, exactly the `provisioner` precedent. A money surface that answers
+      // from nothing is worse than one that refuses to answer.
+      if (!deps.credits) return err("credits_unconfigured", 503);
+      let read;
+      try {
+        read = await readCreditActivity(deps.credits, tenant.id);
+      } catch {
+        return err("balance_unreadable", 503);
+      }
+      return json(
+        buildTenantCreditView({
+          balance: read.balance,
+          ledger: read.ledger,
+          holds: read.holds,
+          enforcing: parseEnforcing(env.CREDITS_ENFORCING),
+          truncated: read.truncated,
+        }),
+      );
+    }
 
     // ---- the tenant's PROGRAMMATIC studio token (cf#94) -------------------------------------
     //
@@ -1067,6 +1122,30 @@ async function adminRoutes(
     // the flag travels into the report instead of being assumed away.
     const census = { tenants, complete: tenants.length < TENANT_PAGE_LIMIT };
     return json({ report: reconcileRunPod(census, parsed.inventory) });
+  }
+
+  const adminCredits = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/credits$/.exec(path);
+  if (request.method === "GET" && adminCredits) {
+    if (!deps.credits) return err("credits_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(adminCredits[1]);
+    if (!tenant) return err("not_found", 404);
+    let read;
+    try {
+      read = await readCreditActivity(deps.credits, tenant.id);
+    } catch {
+      return err("balance_unreadable", 503);
+    }
+    // The admin projection adds the COST side. That is what makes "priced to cover costs" a claim an
+    // operator can check per tenant rather than a sentence on a page.
+    return json(
+      buildAdminCreditView({
+        balance: read.balance,
+        ledger: read.ledger,
+        holds: read.holds,
+        enforcing: parseEnforcing(env.CREDITS_ENFORCING),
+        truncated: read.truncated,
+      }),
+    );
   }
 
   const suspend = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/(suspend|resume)$/.exec(path);
