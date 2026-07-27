@@ -51,7 +51,12 @@ REQUIRED_VARS="CLOUDFLARE_ACCOUNT_ID CONTROL_PLANE_D1_ID TENANT_DISPATCH_NAMESPA
 #     above: an operator who has not chosen a byte count has not chosen a cap, and the plane binds
 #     nothing rather than binding a number nobody picked. A non-empty MALFORMED value is a different
 #     matter and is refused at the write paths, not here.
-ALLOW_EMPTY="GOOGLE_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_ID APPLE_TEAM_ID APPLE_SERVICES_ID TENANT_AI_GATEWAY_ID R2_USAGE_ALERT_BYTES TENANT_R2_STORAGE_QUOTA_BYTES"
+#   CREDITS_ENFORCING (cp#192) -- empty means COUNTING MODE: the credit ledger records and refuses
+#     nothing. It meets the bar in the strongest way on this list, because empty is not merely
+#     tolerable here, it is the ruled default: there is no purchase door yet, so no tenant can hold a
+#     positive balance, and an enforcing default would refuse every submission. The read API reports
+#     which mode produced every answer, so the state is observable rather than inferred.
+ALLOW_EMPTY="GOOGLE_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_ID APPLE_TEAM_ID APPLE_SERVICES_ID TENANT_AI_GATEWAY_ID R2_USAGE_ALERT_BYTES TENANT_R2_STORAGE_QUOTA_BYTES CREDITS_ENFORCING"
 
 # Fail BEFORE rendering, so the error names the missing variable instead of surfacing later as a
 # malformed toml the reader has to reverse-engineer.

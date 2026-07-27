@@ -735,7 +735,7 @@ export async function runProvisionJob(
       }
       aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
     }
-    await uploadTenantModules(deps, tenant.id, endpoints, undefined, aigTokenValue);
+    await uploadTenantModules(deps, tenant.id, tenant.slug, endpoints, undefined, aigTokenValue);
     await mark("modules_upload");
 
     // 8. Install each module through the studio's OWN conformance-gated route (cf#99): the studio
@@ -1045,7 +1045,7 @@ export async function runModuleSteps(
       }
       aigTokenValue = (await at.tokenMinter.mintAigToken(tenantAigTokenName(args.slug))).value;
     }
-    await uploadTenantModules(at, tenantId, endpoints, args.prefetched, aigTokenValue);
+    await uploadTenantModules(at, tenantId, args.slug, endpoints, args.prefetched, aigTokenValue);
     await hooks.onDone("modules_upload");
   }
   if (hooks.shouldRun("modules_install")) {

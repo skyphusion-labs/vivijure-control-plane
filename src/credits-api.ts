@@ -46,6 +46,24 @@ export interface ActivityLine {
 }
 
 export interface TenantCreditView {
+  /**
+   * Whether credits apply to this studio AT ALL.
+   *
+   * THE FIELD EXISTS SO THE UI NEVER HAS TO GUESS. A BYOK tenant pays RunPod directly and has no
+   * credit relationship with us; their balance is legitimately zero forever. A prepaid tenant who has
+   * not topped up yet ALSO has a balance of zero. Those two are indistinguishable from the numbers,
+   * and guessing wrong tells a BYOK tenant they owe us money for a product they never bought. So the
+   * plane states it and the surface renders from the statement.
+   */
+  credits_apply: boolean;
+  /**
+   * Whether a tenant can actually buy credits right now.
+   *
+   * Separate from `credits_apply` because "credits apply to you" and "there is a door to buy them"
+   * are different facts, and they are false at different times. Rendering a purchase control while
+   * this is false would advertise a door that goes nowhere.
+   */
+  topup_available: boolean;
   settled_micro_usd: MicroUsd;
   held_micro_usd: MicroUsd;
   available_micro_usd: MicroUsd;
@@ -93,6 +111,36 @@ export interface AdminCreditView extends TenantCreditView {
  * alone would show a tenant nothing where their failed render should be -- silence that reads as a
  * missing record rather than as a deliberate non-charge.
  */
+/**
+ * Does this tenant have a credit relationship with us? ONE derivation, deliberately in one place.
+ *
+ * TODAY THIS IS ALWAYS FALSE, and that is correct rather than a placeholder. The tenant class that
+ * would make it true (`tenants.compute_mode`, `byok` | `managed`) is designed in
+ * `docs/managed-compute.md` and NOT BUILT: it lands with the dispatch proxy (cp#191). Until then no
+ * tenant is prepaid, so no tenant has credits, so the honest answer for every tenant is false.
+ *
+ * The consequence is deliberate: the credit surface ships DARK. It renders for nobody until there is
+ * somebody it is true of. The alternative -- showing every existing BYOK tenant a USD 0.00 balance --
+ * would invent a billing relationship that does not exist, on a product whose whole pitch is that
+ * there is no paid tier yet.
+ *
+ * WHEN cp#191 LANDS `compute_mode`, this becomes `tenant.compute_mode === "managed"` and nothing else
+ * changes anywhere: the API projects it, the UI renders from it. That is the only edit this file
+ * should need, which is why the derivation is a named function rather than an inline literal.
+ */
+export function creditsApplyToTenant(_tenant: { id: string }): boolean {
+  return false;
+}
+
+/**
+ * Is there a working purchase door? Also always false today, for a different and equally real reason:
+ * no rail is provisioned (cp#193 built the seam and `ManualRail`; Stripe is Conrad's pre-launch task).
+ * Kept separate from the above so the two can flip independently, because they will.
+ */
+export function topUpAvailable(): boolean {
+  return false;
+}
+
 export function buildTenantCreditView(args: {
   balance: Balance;
   ledger: LedgerRow[];
@@ -100,6 +148,8 @@ export function buildTenantCreditView(args: {
   enforcing: boolean;
   /** True when either underlying list was read at its limit. */
   truncated: boolean;
+  creditsApply: boolean;
+  topUpAvailable: boolean;
 }): TenantCreditView {
   const activity: ActivityLine[] = [];
 
@@ -155,6 +205,8 @@ export function buildTenantCreditView(args: {
   activity.sort((a, b) => (a.occurred_at === b.occurred_at ? (a.id < b.id ? 1 : -1) : a.occurred_at < b.occurred_at ? 1 : -1));
 
   return {
+    credits_apply: args.creditsApply,
+    topup_available: args.topUpAvailable,
     settled_micro_usd: args.balance.settled_micro_usd,
     held_micro_usd: args.balance.held_micro_usd,
     available_micro_usd: args.balance.available_micro_usd,
@@ -172,6 +224,8 @@ export function buildAdminCreditView(args: {
   holds: HoldRow[];
   enforcing: boolean;
   truncated: boolean;
+  creditsApply: boolean;
+  topUpAvailable: boolean;
 }): AdminCreditView {
   const base = buildTenantCreditView(args);
 

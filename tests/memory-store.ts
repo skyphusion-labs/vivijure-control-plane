@@ -40,6 +40,10 @@ export class MemoryStore implements ControlPlaneStore {
   tenants = new Map<string, Tenant>();
   jobs = new Map<string, ProvisionJob>();
   settings = new Map<string, string>([["signups_enabled", "true"]]);
+  // cp#207: who wrote the current value, mirroring the platform_settings.updated_by column.
+  // A separate map, not folded into settings itself, so the many existing tests that read/
+  // write settings as a plain string Map keep working unchanged.
+  settingsUpdatedBy = new Map<string, string>();
   audit: { actor: string; action: string; target: string | null; detail: string | null }[] = [];
   holds = new Map<string, PreservationHold>();
 
@@ -132,24 +136,31 @@ export class MemoryStore implements ControlPlaneStore {
     return { ...row };
   }
 
-  aup: { account_id: string; aup_version: string; aup_sha256: string; ip_hash: string | null }[] = [];
+  aup: {
+    account_id: string;
+    aup_version: string;
+    aup_sha256: string;
+    ip_hash: string | null;
+    user_agent: string | null;
+  }[] = [];
   async hasAcceptedAup(account_id: string, version: string) {
     return this.aup.some((r) => r.account_id === account_id && r.aup_version === version);
   }
-  // The 5th parameter is accepted and deliberately not stored. TypeScript lets an implementation
-  // declare FEWER parameters than its interface, so this fake used to end at ip_hash -- which
-  // compiled, but made a correct 5-argument call a type error at any site holding the concrete
-  // MemoryStore type. Taking the parameter costs nothing and removes that trap; what the fake does
-  // with user_agent is a separate question nothing currently asserts on.
+  // cp#192 (joan) first widened this from 4 params to accept the interface 5th param, userAgent,
+  // which closed the compile-time hole: TypeScript lets an implementation declare fewer parameters
+  // than its interface, so the 4-param version compiled but made a correct 5-argument call a type
+  // error at any site holding the concrete MemoryStore type. That fix deliberately left the value
+  // unstored. cp#207 finishes it: D1Store persists user_agent (aup_acceptances.user_agent column),
+  // so the fake now mirrors that instead of discarding it.
   async recordAupAcceptance(
     account_id: string,
     aup_version: string,
     aup_sha256: string,
     ip_hash: string | null,
-    _user_agent?: string | null,
+    user_agent: string | null,
   ) {
     if (!(await this.hasAcceptedAup(account_id, aup_version))) {
-      this.aup.push({ account_id, aup_version, aup_sha256, ip_hash });
+      this.aup.push({ account_id, aup_version, aup_sha256, ip_hash, user_agent });
     }
   }
 
@@ -651,8 +662,11 @@ export class MemoryStore implements ControlPlaneStore {
   async getSetting(key: string) {
     return this.settings.get(key) ?? null;
   }
-  async setSetting(key: string, value: string) {
+  // cp#207: was 2 params against the interface's 3, silently dropping updatedBy. D1Store persists
+  // it (platform_settings.updated_by, upsert on conflict); this mirrors that instead of discarding it.
+  async setSetting(key: string, value: string, updatedBy: string) {
     this.settings.set(key, value);
+    this.settingsUpdatedBy.set(key, updatedBy);
   }
   async recordAdminAction(actor: string, action: string, target: string | null, detail: string | null) {
     this.audit.push({ actor, action, target, detail });
