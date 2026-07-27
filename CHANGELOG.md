@@ -6,6 +6,38 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(credits): the prepaid credit ledger primitive (cp#189, under cp#173)
+
+- **Schema change.** New migration `0013_credit_ledger.sql` adds `credit_holds` and `credit_ledger`.
+  Nothing reads or writes them yet: no route consults a balance until the dispatch proxy lands
+  (cp#191), so this ships inert by design.
+- **Unit is integer micro-USD (1e-6 USD)** throughout, never a float and never cents. Conrad ruled in
+  USD (USD 10 minimum top-up, USD 3-5 per film), and the measured cost basis carries USD 0.001765
+  line items (`docs/cost-basis.md`), which cents cannot represent without rounding away every
+  reconciliation.
+- **Two tables, deliberately.** `credit_ledger` is money that MOVED: append-only, never updated, a
+  correction is a new row. `credit_holds` is a RESERVATION whose lifecycle is genuinely mutable, so it
+  is one keyed row updated by conditional UPDATE. Balance is a SUM over rows and never a stored
+  running total.
+- **Holds exist because billing is COMPLETED-ONLY** (Conrad, 2026-07-27): a failed render costs the
+  tenant nothing and we eat the GPU. A charge that lands only at completion cannot refuse anything at
+  submit on its own, so a tenant with USD 0.50 available could otherwise start a USD 4 film.
+- **The guarantees are the database's, not the caller's:** one debit per hold ever (`idem_ref` IS the
+  hold id, under a unique index); a released hold can never become a debit (the capture INSERT
+  requires `status='captured'`, so completed-only billing is a WHERE clause); one capturer wins
+  (conditional UPDATE on `meta.changes`); a debit cannot carry a positive sign (CHECK constraint);
+  settle and charge cannot come apart (one D1 batch).
+- `cost_micro_usd` sits beside the price and is **NULL when unmeasured, never 0**, so the
+  cost-recovery claim is auditable per tenant rather than asserted.
+- **Counting mode is the default** (`CREDITS_ENFORCING` unset = record everything, refuse nothing).
+  Deliberately not fail-closed: no purchase door exists yet, so no tenant can hold a positive balance
+  and enforcing by default would refuse every submission the instant the migration lands. Flipping
+  enforcement on is a named acceptance criterion of the payment rail (cp#193).
+- Testing: the pure decisions run with no store at all, and everything that is a property of the SQL
+  runs against a real engine built from the real migrations (the node:sqlite harness gains `batch()`
+  as a real transaction). There is deliberately **no fake ledger**. Every guard was watched FAILING
+  under mutation before being trusted.
+
 ### feat(quota): bind R2_STORAGE_QUOTA_BYTES per tenant, at provision and at converge (cp#183)
 
 - **Restores a broken capability, not merely a new knob.** vivijure-cf v1.12.0 declares
@@ -45,7 +77,7 @@ is a separate product on a separate cadence).
 - **Green means the STUDIO said so**: bounded-retry readback of the enforced number, 200 enforced /
   202 bound-but-not-yet-observed / 409 strand, with `ok` and `enforced` both false on the 202.
   `quota_source` and `record_written` travel in the response and the audit row.
-- Carries a schema change: `migrations/0013_tenant_storage_quota.sql`.
+- Carries a schema change: `migrations/0014_tenant_storage_quota.sql`.
 
 ## v1.16.0 -- 2026-07-27
 

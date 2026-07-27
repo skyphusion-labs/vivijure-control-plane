@@ -889,3 +889,83 @@ export interface SmokeRender {
   updated_at: string;
   finished_at: string | null;
 }
+
+// --------------------------------------------------------------------------- credits (cp#189)
+
+/**
+ * The credit data seam, kept SEPARATE from ControlPlaneStore on purpose.
+ *
+ * Every other store method has a MemoryStore fake behind it, which is right for lifecycle logic. It
+ * would be wrong here. A hand-written fake ledger would let money behaviour -- idempotency, the
+ * capture race, the sign constraints -- be "proven" against an implementation that shares none of the
+ * real one's failure modes, which is the precise shape of a stub encoding the author's own assumption.
+ * So there is deliberately NO fake: the pure decisions are tested as pure functions with no store at
+ * all, and everything that is a property of the SQL is tested against a real engine built from the
+ * real migrations. If a future caller wants a fake for convenience, that is the moment to re-read
+ * this paragraph.
+ */
+export interface CreditStore {
+  /**
+   * Append a money row. Idempotent on (tenant_id, idem_ref): a replay returns the EXISTING row with
+   * applied=false rather than writing a second one. Callers must treat applied=false as success.
+   */
+  appendLedgerRow(row: {
+    id: string;
+    tenantId: string;
+    kind: "purchase" | "debit" | "refund" | "adjustment";
+    deltaMicroUsd: number;
+    costMicroUsd: number | null;
+    idemRef: string;
+    priceListId: string | null;
+    externalRef: string | null;
+    note: string | null;
+    now: string;
+  }): Promise<{ applied: boolean; row: import("./credits").LedgerRow }>;
+
+  /** SUM of ledger deltas and SUM of OPEN holds, in micro-USD. Throws if either read fails. */
+  readBalanceSums(tenantId: string): Promise<{ settled: number; held: number }>;
+
+  /** Most recent money rows for a tenant, newest first. */
+  listLedger(tenantId: string, limit: number): Promise<import("./credits").LedgerRow[]>;
+
+  /**
+   * Reserve funds for one job. Idempotent on (tenant_id, job_ref): a retried submit returns the
+   * EXISTING hold with created=false rather than reserving the tenant's balance twice.
+   */
+  takeHold(args: {
+    id: string;
+    tenantId: string;
+    jobRef: string;
+    amountMicroUsd: number;
+    priceListId: string;
+    now: string;
+    expiresAt: string;
+  }): Promise<{ created: boolean; hold: import("./credits").HoldRow }>;
+
+  /**
+   * Settle a hold into a debit, atomically. Returns captured=false when this caller did not win the
+   * race or the hold was no longer open (already released for a failed job, say) -- in which case NO
+   * debit exists and none will be written.
+   */
+  captureHold(args: {
+    holdId: string;
+    ledgerRowId: string;
+    costMicroUsd: number | null;
+    note: string | null;
+    now: string;
+  }): Promise<{ captured: boolean }>;
+
+  /** Release a hold without charging (the completed-only path for a failed job). */
+  releaseHold(holdId: string, now: string): Promise<{ released: boolean }>;
+
+  /** Flip open holds past their expiry. Returns how many were swept. */
+  expireHolds(now: string): Promise<number>;
+
+  getHoldByJobRef(tenantId: string, jobRef: string): Promise<import("./credits").HoldRow | null>;
+
+  /**
+   * Captured holds carrying no debit row. Should always be empty (capture is one atomic batch); it
+   * is queryable anyway, because "should be empty" is a claim and an empty result is the proof.
+   */
+  capturedHoldsMissingDebit(limit: number): Promise<import("./credits").HoldRow[]>;
+}

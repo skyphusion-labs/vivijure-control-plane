@@ -4,6 +4,7 @@
 // wrangler dev verify drives these exact statements against a real D1 built from
 // migrations/0001_init.sql. The in-memory store in tests/ never substitutes for that.
 
+import type { HoldRow, LedgerRow } from "./credits";
 import type {
   Account,
   AuthProvider,
@@ -21,6 +22,7 @@ import type {
   SmokeRenderBounds,
   Tenant,
   TenantLifecycle,
+  CreditStore,
 } from "./store";
 import { classifySlugClaim, TIER_A_STATUSES,
   type TenantResourceKind,
@@ -34,7 +36,7 @@ import { classifySlugClaim, TIER_A_STATUSES,
 // here because that is where callers have always imported it from.
 export { JOB_LEASE_SECONDS };
 
-export class D1Store implements ControlPlaneStore {
+export class D1Store implements ControlPlaneStore, CreditStore {
   constructor(private readonly db: D1Database) {}
 
   // ---- accounts + identities ----
@@ -975,5 +977,190 @@ export class D1Store implements ControlPlaneStore {
       if (script !== null && r.script_name === script) out.push({ tenant_id: r.id, slug: r.slug, status: r.status, resource: "worker" });
     }
     return out;
+  }
+
+  // ---- credits (cp#189) ----
+  //
+  // Money statements. Every one of these is exercised against a REAL SQL engine in
+  // tests/credits-sql.test.ts, because a fake store cannot catch a malformed statement and this file
+  // has already shipped that bug once (the unquoted-literal 500 recorded at the top of
+  // tests/store-d1-sql.test.ts).
+
+  async appendLedgerRow(row: {
+    id: string;
+    tenantId: string;
+    kind: "purchase" | "debit" | "refund" | "adjustment";
+    deltaMicroUsd: number;
+    costMicroUsd: number | null;
+    idemRef: string;
+    priceListId: string | null;
+    externalRef: string | null;
+    note: string | null;
+    now: string;
+  }): Promise<{ applied: boolean; row: LedgerRow }> {
+    // DO NOTHING + RETURNING: on conflict SQLite returns no row, which is exactly how we learn the
+    // write was a replay. The alternative (SELECT first, then INSERT) has a race between the two.
+    const inserted = await this.db
+      .prepare(
+        `INSERT INTO credit_ledger
+           (id, tenant_id, kind, delta_micro_usd, cost_micro_usd, idem_ref, hold_id, price_list_id, external_ref, note, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10)
+         ON CONFLICT (tenant_id, idem_ref) DO NOTHING
+         RETURNING *`,
+      )
+      .bind(
+        row.id,
+        row.tenantId,
+        row.kind,
+        row.deltaMicroUsd,
+        row.costMicroUsd,
+        row.idemRef,
+        row.priceListId,
+        row.externalRef,
+        row.note,
+        row.now,
+      )
+      .first<LedgerRow>();
+    if (inserted) return { applied: true, row: inserted };
+
+    const existing = await this.db
+      .prepare("SELECT * FROM credit_ledger WHERE tenant_id = ?1 AND idem_ref = ?2")
+      .bind(row.tenantId, row.idemRef)
+      .first<LedgerRow>();
+    // A conflict with nothing to read back would mean the unique index fired on something we cannot
+    // see, which is not a state to paper over with a fabricated row.
+    if (!existing) throw new Error("appendLedgerRow: conflict but no existing row");
+    return { applied: false, row: existing };
+  }
+
+  async readBalanceSums(tenantId: string): Promise<{ settled: number; held: number }> {
+    // COALESCE, so a tenant with no rows reads 0 rather than null. That is a genuine zero (no rows
+    // means no money moved), not an unknown, so collapsing it here is honest -- unlike a failed read,
+    // which throws and is reported as incomplete by the caller.
+    const settled = await this.db
+      .prepare("SELECT COALESCE(SUM(delta_micro_usd), 0) AS total FROM credit_ledger WHERE tenant_id = ?1")
+      .bind(tenantId)
+      .first<{ total: number }>();
+    const held = await this.db
+      .prepare(
+        "SELECT COALESCE(SUM(amount_micro_usd), 0) AS total FROM credit_holds WHERE tenant_id = ?1 AND status = 'open'",
+      )
+      .bind(tenantId)
+      .first<{ total: number }>();
+    if (!settled || !held) throw new Error("readBalanceSums: aggregate returned no row");
+    return { settled: Number(settled.total ?? 0), held: Number(held.total ?? 0) };
+  }
+
+  async listLedger(tenantId: string, limit: number): Promise<LedgerRow[]> {
+    const rows = await this.db
+      .prepare("SELECT * FROM credit_ledger WHERE tenant_id = ?1 ORDER BY created_at DESC, id DESC LIMIT ?2")
+      .bind(tenantId, limit)
+      .all<LedgerRow>();
+    return rows.results ?? [];
+  }
+
+  async takeHold(args: {
+    id: string;
+    tenantId: string;
+    jobRef: string;
+    amountMicroUsd: number;
+    priceListId: string;
+    now: string;
+    expiresAt: string;
+  }): Promise<{ created: boolean; hold: HoldRow }> {
+    const inserted = await this.db
+      .prepare(
+        `INSERT INTO credit_holds
+           (id, tenant_id, job_ref, amount_micro_usd, status, price_list_id, created_at, expires_at, settled_at)
+         VALUES (?1, ?2, ?3, ?4, 'open', ?5, ?6, ?7, NULL)
+         ON CONFLICT (tenant_id, job_ref) DO NOTHING
+         RETURNING *`,
+      )
+      .bind(args.id, args.tenantId, args.jobRef, args.amountMicroUsd, args.priceListId, args.now, args.expiresAt)
+      .first<HoldRow>();
+    if (inserted) return { created: true, hold: inserted };
+
+    const existing = await this.db
+      .prepare("SELECT * FROM credit_holds WHERE tenant_id = ?1 AND job_ref = ?2")
+      .bind(args.tenantId, args.jobRef)
+      .first<HoldRow>();
+    if (!existing) throw new Error("takeHold: conflict but no existing hold");
+    return { created: false, hold: existing };
+  }
+
+  async captureHold(args: {
+    holdId: string;
+    ledgerRowId: string;
+    costMicroUsd: number | null;
+    note: string | null;
+    now: string;
+  }): Promise<{ captured: boolean }> {
+    // ONE BATCH, which D1 runs as an implicit transaction, so the reservation and the charge cannot
+    // come apart. Both halves are ALSO individually safe, which is what makes the pair correct under
+    // concurrency rather than merely atomic:
+    //
+    //  - the UPDATE is conditional on status='open', so exactly one caller can win;
+    //  - the INSERT draws its values from the hold row and requires status='captured', so a hold that
+    //    was RELEASED (a failed job) can never produce a debit -- that is completed-only billing
+    //    enforced in SQL rather than in a caller's discipline;
+    //  - idem_ref is the hold id, so "exactly one debit per hold, ever" is a database guarantee.
+    //
+    // The SELECT carries a WHERE clause for a second reason beyond filtering: SQLite needs one to
+    // disambiguate ON CONFLICT from a join's ON clause when an upsert takes values from a SELECT.
+    const res = await this.db.batch([
+      this.db
+        .prepare("UPDATE credit_holds SET status = 'captured', settled_at = ?2 WHERE id = ?1 AND status = 'open'")
+        .bind(args.holdId, args.now),
+      this.db
+        .prepare(
+          `INSERT INTO credit_ledger
+             (id, tenant_id, kind, delta_micro_usd, cost_micro_usd, idem_ref, hold_id, price_list_id, external_ref, note, created_at)
+           SELECT ?2, h.tenant_id, 'debit', -h.amount_micro_usd, ?3, h.id, h.id, h.price_list_id, NULL, ?4, ?5
+             FROM credit_holds h
+            WHERE h.id = ?1 AND h.status = 'captured'
+           ON CONFLICT (tenant_id, idem_ref) DO NOTHING`,
+        )
+        .bind(args.holdId, args.ledgerRowId, args.costMicroUsd, args.note, args.now),
+    ]);
+    // changes on the UPDATE is the only honest signal for "did I win": a 0-row UPDATE is a successful
+    // statement that did nothing, so reporting success off the absence of an error would call a lost
+    // race a capture.
+    return { captured: (res[0]?.meta?.changes ?? 0) === 1 };
+  }
+
+  async releaseHold(holdId: string, now: string): Promise<{ released: boolean }> {
+    const res = await this.db
+      .prepare("UPDATE credit_holds SET status = 'released', settled_at = ?2 WHERE id = ?1 AND status = 'open'")
+      .bind(holdId, now)
+      .run();
+    return { released: (res.meta?.changes ?? 0) === 1 };
+  }
+
+  async expireHolds(now: string): Promise<number> {
+    const res = await this.db
+      .prepare("UPDATE credit_holds SET status = 'expired', settled_at = ?1 WHERE status = 'open' AND expires_at <= ?1")
+      .bind(now)
+      .run();
+    return res.meta?.changes ?? 0;
+  }
+
+  async getHoldByJobRef(tenantId: string, jobRef: string): Promise<HoldRow | null> {
+    return await this.db
+      .prepare("SELECT * FROM credit_holds WHERE tenant_id = ?1 AND job_ref = ?2")
+      .bind(tenantId, jobRef)
+      .first<HoldRow>();
+  }
+
+  async capturedHoldsMissingDebit(limit: number): Promise<HoldRow[]> {
+    const rows = await this.db
+      .prepare(
+        `SELECT h.* FROM credit_holds h
+          WHERE h.status = 'captured'
+            AND NOT EXISTS (SELECT 1 FROM credit_ledger l WHERE l.hold_id = h.id)
+          LIMIT ?1`,
+      )
+      .bind(limit)
+      .all<HoldRow>();
+    return rows.results ?? [];
   }
 }

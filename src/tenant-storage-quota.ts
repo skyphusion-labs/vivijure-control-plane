@@ -20,7 +20,7 @@
 //
 // So the plane var is the DEFAULT and every tenant can override it, including overriding it to NO
 // ceiling. "No per-tenant value, inherit the default" and "deliberately uncapped" are different
-// facts kept in different states (see migrations/0013_tenant_storage_quota.sql): collapsing them is
+// facts kept in different states (see migrations/0014_tenant_storage_quota.sql): collapsing them is
 // how a prepaid tenant silently inherits a hard cap the day an operator sets the plane default.
 //
 // WHY THE NUMBER IS CONFIGURED AND NOT DERIVED, the opposite call from ABUSE_REPORT_URL next door.
