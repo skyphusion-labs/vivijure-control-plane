@@ -57,9 +57,13 @@ export const TENANT_STUDIO_VAR_DISPOSITION: Record<string, { disposition: VarDis
   SPEND_DAILY_CEILING: {
     disposition: "conditional",
     why:
-      "bound ONLY when the operator configures a ceiling (deps.spendDailyCeiling). Deliberately not " +
-      "in the required set: a tenant provisioned without a configured ceiling is a valid state, and " +
-      "requiring it would fail those provisions outright",
+      "bound from deps.spendDailyCeiling. The conditional label describes the TYPE (string or null), " +
+      "not what this deploy does: productionDeps supplies TENANT_SPEND_DAILY_CEILING with a 25 " +
+      "fallback, so the value is never null and the var is bound on EVERY provision here. " +
+      "Live-confirmed present on the testbed tenant studio (cf#56). It stays out of the required " +
+      "set because a plane that configured no ceiling is still a valid deployment shape and " +
+      "requiring it would fail those provisions outright, but on THIS plane a tenant without a " +
+      "ceiling is not a state that occurs",
   },
 
   ABUSE_REPORT_URL: {

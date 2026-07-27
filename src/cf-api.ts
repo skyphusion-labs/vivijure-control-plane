@@ -311,6 +311,31 @@ export class CfApi {
     });
   }
 
+  /**
+   * Read one bucket usage (cf#56 admin surface). READ ONLY.
+   *
+   * Cloudflare returns these counters as STRINGS (payloadSize: "865403931"), not numbers, which is
+   * why they are parsed here rather than trusted through a cast. A silent NaN would flow into the
+   * aggregate as a corrupted total, so an unparseable counter THROWS and the caller records that
+   * bucket as unreadable, which is the honest outcome: a number we could not read is never a zero.
+   */
+  async getR2BucketUsage(bucket: string): Promise<{ payloadBytes: number; objectCount: number }> {
+    const res = await this.call<{ payloadSize?: string; objectCount?: string }>(
+      "r2.bucketUsage",
+      `/accounts/${this.accountId}/r2/buckets/${encodeURIComponent(bucket)}/usage`,
+    );
+    const num = (raw: string | undefined, field: string): number => {
+      const n = Number(raw);
+      if (raw === undefined || raw === null || raw === "" || !Number.isFinite(n)) {
+        throw new CfApiError("r2.bucketUsage", 200, [
+          { code: 0, message: `bucket ${bucket}: unparseable ${field} (${String(raw)})` },
+        ]);
+      }
+      return n;
+    };
+    return { payloadBytes: num(res.payloadSize, "payloadSize"), objectCount: num(res.objectCount, "objectCount") };
+  }
+
   // ---- account tokens (bucket-scoped R2 creds) ----
 
   /**

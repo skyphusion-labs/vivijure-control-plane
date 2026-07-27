@@ -155,6 +155,14 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    *  time. Unset -> the studio's own default applies. A var, not a secret (a public policy number). */
   TENANT_SPEND_DAILY_CEILING?: string;
 
+  /**
+   * Alert threshold in BYTES for total R2 across all tenant buckets (cf#56). Unset (or malformed)
+   * means no threshold and the admin surface reports usage without an alert verdict, which is the
+   * correct default: an operator who has not chosen a number has not asked to be alerted. Parsed by
+   * parseThresholdBytes, which refuses 0 deliberately -- a permanent alert is trained-to-ignore.
+   */
+  R2_USAGE_ALERT_BYTES?: string;
+
   /** Throttles the outbound-email amplifier (/api/auth/email/start) and provisioning. */
   CP_RATE_LIMIT?: RateLimiter;
 }

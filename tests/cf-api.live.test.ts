@@ -22,6 +22,8 @@ declare const process: { env: Record<string, string | undefined> };
 const TOKEN = process.env.CF_PROVISIONER_TOKEN;
 const ACCOUNT = process.env.CF_ACCOUNT_ID;
 const LIVE = Boolean(TOKEN && ACCOUNT);
+/** Set when the loaded credential is the dashboard-minted, token-management-capable provisioner. */
+const FULL = Boolean(process.env.CF_PROVISIONER_FULL);
 
 const stamp = `rollins-verify-${Date.now().toString(36)}`;
 const cf = LIVE ? new CfApi(ACCOUNT!, TOKEN!) : (null as unknown as CfApi);
@@ -80,7 +82,41 @@ describe.skipIf(!LIVE)("CfApi against real Cloudflare", () => {
     await cf.createR2Bucket(stamp); // must not throw
   });
 
-  it("CANNOT mint an R2 token: the known scope hole, asserted rather than assumed", async () => {
+  // cf#56: the admin usage aggregate. A STUBBED CF cannot prove this one, because the thing that
+  // can break it is the RESPONSE SHAPE: Cloudflare returns these counters as STRINGS
+  // (payloadSize: "865403931"), and a client that assumed numbers would hand NaN to the aggregate
+  // and corrupt the total silently. This is the un-stubbable seam, so it is asserted against real CF.
+  it("reads bucket usage, parsing CF string counters into real numbers", async () => {
+    const usage = await cf.getR2BucketUsage(state.bucket!);
+    expect(typeof usage.payloadBytes).toBe("number");
+    expect(typeof usage.objectCount).toBe("number");
+    expect(Number.isNaN(usage.payloadBytes)).toBe(false);
+    expect(Number.isNaN(usage.objectCount)).toBe(false);
+    expect(usage.payloadBytes).toBeGreaterThanOrEqual(0);
+  });
+
+  // NEGATIVE CONTROL: a bucket that does not exist must THROW, not report zero usage. Without this
+  // the test above could pass against a client that silently returns 0 for everything, and the
+  // admin aggregate would read a missing bucket as an empty one.
+  it("NEGATIVE CONTROL: usage on a nonexistent bucket throws rather than reporting 0", async () => {
+    await expect(cf.getR2BucketUsage(`${stamp}-does-not-exist`)).rejects.toThrow();
+  });
+
+  // SKIPPED under the FULL token, and that skip is the finding (cf#56).
+  //
+  // This assertion mints with a BOGUS permission-group id ("0" x 32), which every credential is
+  // refused for, full or reduced. So under the dashboard-minted full token it passes for the wrong
+  // reason: it is a negative control that cannot discriminate, i.e. a vacuous pass dressed as proof.
+  // The original comment claimed it "will start failing the day the right token is staged" -- it
+  // will not, and the right token IS staged: it was live-proven during cf#56 to mint an AI Gateway
+  // Run token successfully (minted, id read back, revoked, census-verified clean).
+  //
+  // Left ACTIVE under the reduced token, where the premise still holds and the refusal is real, and
+  // skipped under the full one rather than being rewritten to assert a success I cannot verify in
+  // the reduced mode I do not hold a credential for. Making it genuinely discriminating (real R2
+  // group ids, so scope is the only possible cause of refusal) needs whoever holds the reduced
+  // token; flagged rather than guessed at.
+  it.skipIf(FULL)("CANNOT mint an R2 token: the known scope hole, asserted rather than assumed", async () => {
     // A negative control with a real job: it proves the TokenMinter seam is blocked on a
     // dashboard-created credential rather than on something I got wrong, and it will start failing
     // (loudly, correctly) the day the right token is staged. CF refuses API-created tokens any

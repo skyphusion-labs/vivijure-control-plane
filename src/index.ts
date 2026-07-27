@@ -38,6 +38,7 @@ import { publicOrigin, studioKekRing, tenantDomainSuffix } from "./env";
 import { kekCensus, sweepReencrypt } from "./kek-rotation";
 import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "./oauth";
 import { parseInventoryBody, reconcileRunPod, TENANT_PAGE_LIMIT } from "./reconcile-runpod";
+import { buildR2UsageReport, parseThresholdBytes } from "./tenant-r2-usage";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
 import { ABUSE_REPORT_URL_VAR } from "./tenant-abuse-report";
@@ -997,6 +998,50 @@ async function adminRoutes(
     await deps.store.setSetting("signups_enabled", value, actor);
     await deps.store.recordAdminAction(actor, "settings.set", "signups_enabled", value);
     return new Response(null, { status: 204 });
+  }
+
+  // ---- Aggregate R2 usage across tenant buckets (cf#56 gate section 5) ------------------------
+  //
+  // READS ONLY, and records no audit row, for the same reason the RunPod reconcile below records
+  // none: nothing changes, so there is nothing to audit, and a write would let the pass alter what
+  // it measures. This is about OUR bill; the per-tenant storage QUOTA is a studio-core knob so that
+  // self-host gets the identical feature (vivijure-core#52), never a hosted-only enforcement path.
+  //
+  // WHY THE CENSUS FLAG TRAVELS INTO THE REPORT. listTenants pages at TENANT_PAGE_LIMIT. A total
+  // computed over a truncated census is not a total, it is a floor wearing a totals label, and an
+  // under-threshold verdict drawn from it is a confident all-clear that can be flat wrong. So the
+  // completeness fact is carried, and buildR2UsageReport refuses to say "under" without it.
+  if (request.method === "GET" && path === "/api/admin/r2-usage") {
+    // Same absence-refusal as every other route needing cloud reach: a deploy without provisioner
+    // env has no credential to read R2 with, and 503 is the honest answer rather than an empty
+    // report that would read as "no tenants are using anything".
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenants = await deps.store.listTenants({});
+    const censusComplete = tenants.length < TENANT_PAGE_LIMIT;
+    // Live tenants only: a deleted rows bucket is already reaped, and counting it would inflate the
+    // bill we are trying to measure. Suspended tenants DO still hold storage, so they stay in.
+    const measured = tenants.filter((t) => t.r2_bucket_name && !t.deleted_at);
+    const measurements = new Map<string, { payloadBytes: number; objectCount: number } | { error: string }>();
+    // SEQUENTIAL, deliberately: each bucket is one subrequest, and a Worker has a bounded subrequest
+    // budget. Fanning these out concurrently would be faster and would also be the thing that makes
+    // this route fail as the tenant count grows, which is precisely when an operator needs it.
+    for (const t of measured) {
+      const bucket = t.r2_bucket_name as string;
+      try {
+        measurements.set(bucket, await deps.provisioner.r2Usage(bucket));
+      } catch (e) {
+        // Recorded as unreadable, NOT as zero. The report counts it and marks the total a floor.
+        measurements.set(bucket, { error: (e as Error).message.slice(0, 200) });
+      }
+    }
+    return json({
+      report: buildR2UsageReport({
+        tenants: measured.map((t) => ({ id: t.id, slug: t.slug, r2_bucket_name: t.r2_bucket_name })),
+        censusComplete,
+        measurements,
+        thresholdBytes: parseThresholdBytes(env.R2_USAGE_ALERT_BYTES),
+      }),
+    });
   }
 
   // ---- RunPod reconciliation: read the drift, change nothing (cp#137) -------------------------
