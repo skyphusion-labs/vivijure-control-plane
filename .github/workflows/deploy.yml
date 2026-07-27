@@ -117,6 +117,36 @@ jobs:
           TENANT_R2_STORAGE_QUOTA_BYTES: ${{ vars.TENANT_R2_STORAGE_QUOTA_BYTES }}
         run: scripts/render-wrangler.sh wrangler.toml
 
+      # ARTIFACT-EXISTENCE GATE (cp#187). Read the step comment on "Deploy control-plane worker"
+      # below: it has always ASSERTED that the studio-releases bucket "must exist AND hold the
+      # artifact for the pinned STUDIO_RELEASE tag". In prose. With nothing checking it.
+      # A comment is not a gate.
+      #
+      # THE NEAR-MISS: cp#184 added plan-enhance to TENANT_MODULE_CATALOG while STUDIO_RELEASE was
+      # still pinned at v1.9.0, whose release publishes no plan-enhance bundle. That pair deploys
+      # perfectly green and then fails EVERY provision at modules_upload -- loud, but every one,
+      # and only once a real tenant hits it. It was caught by a human reading a diff.
+      #
+      # scripts/var-census.py closes the adjacent class (the config lists agreeing with each other)
+      # but by construction cannot look INSIDE an artifact. This step looks inside the artifact:
+      # every catalog module must have a bundle manifest naming that module, and the worker bytes
+      # that manifest promises must be present and hash to the pinned sha256 -- the same checks
+      # src/module-bundle-r2.ts performs at provision time, run BEFORE we deploy instead of after.
+      #
+      # In PREFLIGHT deliberately: a dry run exercises it, and `release` (which needs: preflight)
+      # cannot run on a bad pin. An unreadable bucket reports CANNOT VERIFY and refuses, rather
+      # than reporting every module as missing and sending someone hunting the wrong problem.
+      - name: Pinned release carries every catalog module
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STUDIO_RELEASE: ${{ vars.STUDIO_RELEASE }}
+          STUDIO_RELEASES_BUCKET: ${{ vars.STUDIO_RELEASES_BUCKET }}
+        run: |
+          python3 scripts/check-release-modules.py . \
+            --release "$STUDIO_RELEASE" \
+            --bucket "$STUDIO_RELEASES_BUCKET"
+
       # Show what a deploy WOULD do. On a clean release this prints the no-op line; anything else
       # is the cue that this tag carries schema change. Read-only: list, never apply.
       - name: Report pending migrations
