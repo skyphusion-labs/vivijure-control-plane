@@ -118,6 +118,56 @@ jobs:
           CREDITS_ENFORCING: ${{ vars.CREDITS_ENFORCING }}
         run: scripts/render-wrangler.sh wrangler.toml
 
+      # ARTIFACT-EXISTENCE GATE (cp#187). Read the step comment on "Deploy control-plane worker"
+      # below: it has always ASSERTED that the studio-releases bucket "must exist AND hold the
+      # artifact for the pinned STUDIO_RELEASE tag". In prose. With nothing checking it.
+      # A comment is not a gate.
+      #
+      # THE NEAR-MISS: cp#184 added plan-enhance to TENANT_MODULE_CATALOG while STUDIO_RELEASE was
+      # still pinned at v1.9.0, whose release publishes no plan-enhance bundle. That pair deploys
+      # perfectly green and then fails EVERY provision at modules_upload -- loud, but every one,
+      # and only once a real tenant hits it. It was caught by a human reading a diff.
+      #
+      # scripts/var-census.py closes the adjacent class (the config lists agreeing with each other)
+      # but by construction cannot look INSIDE an artifact. This step looks inside the artifact:
+      # every catalog module must have a bundle manifest naming that module, and the worker bytes
+      # that manifest promises must be present and hash to the pinned sha256 -- the same checks
+      # src/module-bundle-r2.ts performs at provision time, run BEFORE we deploy instead of after.
+      #
+      # SECOND ASSERTION, added after a LIVE outage: the v1.12.0 flip shipped a manifest whose
+      # required_vars include R2_STORAGE_QUOTA_BYTES, for which TENANT_STUDIO_VAR_DISPOSITION had no
+      # entry. assertDispositionCoversContract threw at provision AND upgrade, so the plane could
+      # provision and upgrade NOTHING while this deploy sat green. Same shape as the module case --
+      # the pinned release makes a demand the plane cannot answer -- so it is the same gate, over
+      # the same fetched manifest, rather than a second gate an operator would assume was implied.
+      #
+      # READS THE GITHUB RELEASE, not R2. studio-release.yml calls the GitHub release the "PUBLIC
+      # source of truth" and R2 a "CACHE/MIRROR only, never the source of truth", so this gates on
+      # the canonical artifact. It is also credential-free, which is why the same check runs in
+      # ci.yml on every PR -- the var gap above would have been caught before merge instead of
+      # after deploy. An earlier version read R2 and could not run at all: this deploy token has no
+      # R2 API read and never needed one, because the plane reaches releases through the
+      # STUDIO_RELEASES binding. It refused every deploy without being able to say why, and a gate
+      # that always refuses is a gate somebody disables.
+      #
+      # NOT covered here: that the R2 MIRROR is present and matching. The provisioner reads R2 and
+      # module-bundle-r2.ts has no fallback, so that gap is real; it needs an R2 read grant and is
+      # tracked separately.
+      #
+      # In PREFLIGHT deliberately: a dry run exercises it, and `release` (which needs: preflight)
+      # cannot run on a bad pin. A failed download reports CANNOT VERIFY with the underlying error
+      # rather than reporting every module as missing and sending someone hunting the wrong problem.
+      - name: Pinned release is satisfiable by this plane
+        env:
+          STUDIO_RELEASE: ${{ vars.STUDIO_RELEASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${STUDIO_RELEASE:-}" ]; then
+            echo "::error::STUDIO_RELEASE is empty; refusing to deploy an unverifiable pin"
+            exit 1
+          fi
+          python3 scripts/check-release-modules.py . --release "$STUDIO_RELEASE"
+
       # Show what a deploy WOULD do. On a clean release this prints the no-op line; anything else
       # is the cue that this tag carries schema change. Read-only: list, never apply.
       - name: Report pending migrations
