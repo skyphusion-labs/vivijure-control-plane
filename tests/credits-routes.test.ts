@@ -144,6 +144,20 @@ describe("credit read routes", () => {
     });
   });
 
+  it("reports credits_apply FALSE today, which is what keeps the surface dark", async () => {
+    // No tenant is prepaid yet: `tenants.compute_mode` is designed in docs/managed-compute.md and
+    // lands with cp#191. Until then the honest answer for every tenant is false, and the UI renders
+    // nothing rather than showing a BYOK tenant a USD 0.00 balance they never signed up for.
+    const body = (await (await getTenant()).json()) as Record<string, unknown>;
+    expect(body.credits_apply).toBe(false);
+    expect(body.topup_available).toBe(false);
+  });
+
+  it("the fields are PRESENT even when false, so the client never has to guess from an absence", async () => {
+    const body = (await (await getTenant()).json()) as Record<string, unknown>;
+    expect(Object.keys(body)).toEqual(expect.arrayContaining(["credits_apply", "topup_available"]));
+  });
+
   it("money crosses the wire as integers, never a formatted string", async () => {
     // A formatted number cannot be compared, summed, or re-rendered; rounding at the source is how a
     // balance and its statement come to disagree.

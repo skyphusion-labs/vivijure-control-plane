@@ -129,6 +129,43 @@
         <h2>Your studio is live</h2>
         <p class="lede">Go make something.</p>
         <p><a id="studio-link" class="row-name" href="#">Open my studio</a></p>
+        <!-- cp#194: prepaid credits. Hidden until the plane says credits APPLY to this
+             studio (credits_apply), never inferred from a zero balance: a BYOK tenant's
+             balance is legitimately zero forever, and showing them one would invent a
+             billing relationship they never entered into. -->
+        <section id="credits" class="callout" hidden>
+          <h3 class="small">Credits</h3>
+
+          <p id="credits-unreadable" class="small" hidden>
+            We could not read your balance just now. Rather than show you a number that might be
+            wrong, we are showing you none. Nothing has been charged.
+          </p>
+
+          <div id="credits-figures" hidden>
+            <p><strong id="credits-available"></strong> available</p>
+            <p id="credits-held-row" class="small muted" hidden>
+              <span id="credits-held"></span> is reserved for jobs still running. It is not spent
+              yet, and a job that does not finish gives it back.
+            </p>
+            <p id="credits-counting" class="small muted" hidden>
+              Credits are being recorded but not enforced yet, so nothing is being refused for
+              balance.
+            </p>
+          </div>
+
+          <p id="credits-topup-closed" class="small muted" hidden>
+            Buying credits is not open yet. When it is, it will be here.
+          </p>
+          <p id="credits-topup-open" hidden>
+            <a id="credits-topup-link" class="row-name" href="#">Add credits</a>
+          </p>
+
+          <ul id="credits-activity" class="rows small" hidden></ul>
+          <p id="credits-activity-more" class="small muted" hidden>
+            Older activity is not shown here.
+          </p>
+        </section>
+
         <div class="callout">
           <p class="small">Your films and storyboards are yours, and leaving is a supported path.
           <a href="https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/hosted-tier.md">How
@@ -185,6 +222,7 @@
       <a href="mailto:abuse@skyphusion.org">abuse@skyphusion.org</a>
     </footer>
     <script src="front-door-checks.js"></script>
+    <script src="credits-checks.js"></script>
     <script src="api-token-checks.js"></script>
     <script src="api-token.js"></script>
     <script src="front-door.js"></script>

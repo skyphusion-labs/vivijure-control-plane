@@ -15,7 +15,12 @@
 // "queued" job until that runner ships. Nothing here claims otherwise to the caller.
 
 import { balanceFromSums, parseEnforcing, type Balance, type HoldRow, type LedgerRow } from "./credits";
-import { buildAdminCreditView, buildTenantCreditView } from "./credits-api";
+import {
+  buildAdminCreditView,
+  buildTenantCreditView,
+  creditsApplyToTenant,
+  topUpAvailable,
+} from "./credits-api";
 import type { CreditStore } from "./store";
 import { ApiTokenError } from "./tenant-api-token";
 import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt } from "./aup";
@@ -455,6 +460,8 @@ async function tenantRoutes(
           holds: read.holds,
           enforcing: parseEnforcing(env.CREDITS_ENFORCING),
           truncated: read.truncated,
+          creditsApply: creditsApplyToTenant(tenant),
+          topUpAvailable: topUpAvailable(),
         }),
       );
     }
@@ -1145,6 +1152,8 @@ async function adminRoutes(
         holds: read.holds,
         enforcing: parseEnforcing(env.CREDITS_ENFORCING),
         truncated: read.truncated,
+        creditsApply: creditsApplyToTenant(tenant),
+        topUpAvailable: topUpAvailable(),
       }),
     );
   }
