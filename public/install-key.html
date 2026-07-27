@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Install your render key -- Vivijure hosted studio</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="favicon-16.png" type="image/png" sizes="16x16" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" sizes="180x180" />
+    <meta name="theme-color" content="#0E1730" />
+    <link rel="stylesheet" href="platform.css" />
+    <!--
+      cp#169, PATH 3 (Conrad's ruling): operator-initiated, owner-completed.
+
+      WHO IS READING THIS PAGE. Someone whose studio was repaired by us. Their four RunPod endpoints
+      were rebuilt, which gives them new ids, so the render key their studio holds is scoped to
+      endpoints that no longer exist. Only they can make the new key -- it is their RunPod account --
+      but they did not ask for any of this and may not know it happened. So the page leads with what
+      we did and why they are here, before it asks them for anything.
+
+      WHY THERE IS NO SIGN-IN. The link they followed IS the authorization, and it is deliberately
+      narrow: one tenant, one install, expiring, single-use, and useless without a credential to
+      their own RunPod account (the key they paste still has to reach their four endpoints, which
+      live on their account). Requiring a session here would put the flow back exactly where cp#169
+      found it: a repair that the operator cannot finish and the customer has to be chased about.
+
+      NO SECOND COPY OF THE KEY LOGIC. keyShapeHint and invokeKeyVerdict come from
+      onboarding-checks.js, the same helpers the signup flow uses against the same route. Only what
+      is new to this page (the link itself) lives in handoff-checks.js.
+    -->
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Vivijure">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Vivijure</span>
+      </a>
+      <span class="tag">hosted studio</span>
+    </header>
+
+    <main class="shell">
+      <!-- The link itself failed: expired, used, unknown, or made stale by a later repair. This is
+           the whole page in that case, because nothing below it can be acted on. -->
+      <section class="panel" id="link-bad" hidden>
+        <h1>We could not use this link</h1>
+        <p class="lede" id="link-bad-message">This link is not valid.</p>
+        <p class="muted small">
+          Nothing has changed on your studio, and nothing you paste here would reach it. Whoever
+          sent you this link can issue a new one.
+        </p>
+      </section>
+
+      <section class="panel" id="loading">
+        <h1>Checking your link</h1>
+        <p class="muted">One moment.</p>
+      </section>
+
+      <section class="panel" id="main-panel" hidden>
+        <h1>One key, and your studio is back</h1>
+        <p class="lede">
+          We rebuilt the four RunPod endpoints behind <strong id="slug-name">your studio</strong>.
+          Rebuilt endpoints get new ids, so the render key your studio was holding no longer points
+          at anything. This is the one step we cannot do for you: the key has to be made on your
+          RunPod account, by you.
+        </p>
+
+        <div class="callout">
+          <p><strong>Why you and not us.</strong> The only RunPod credential we ever store is one
+          that can do exactly one thing: run jobs on your four endpoints. We do not hold a key that
+          can create them, and we deliberately have no way for an operator to put a key on your
+          studio. So a repair on our side always ends here, with you.</p>
+        </div>
+
+        <p class="small muted" id="expiry-note" aria-live="polite"></p>
+
+        <h2>These are the four to tick</h2>
+        <p class="small muted">
+          These are the endpoints we just rebuilt. Match the names in the console rather than
+          retyping ids.
+        </p>
+        <div class="rows" id="endpoints" aria-live="polite">loading...</div>
+
+        <h2>The click path</h2>
+        <ol class="small muted">
+          <li>Open your <a href="https://console.runpod.io/user/settings" target="_blank" rel="noopener noreferrer">RunPod key settings</a> and create a new API key.</li>
+          <li>Choose <strong>Restricted</strong>.</li>
+          <li>Set <strong>api.runpod.io/graphql</strong> to <strong>None</strong>. This is the part that matters: it is what stops this key from touching the rest of your account.</li>
+          <li>Set <strong>api.runpod.ai</strong> to <strong>Restricted</strong>, then give <strong>Read/Write</strong> to the four endpoints listed above, and nothing else.</li>
+          <li>Create it, and paste it below.</li>
+        </ol>
+
+        <label for="invoke-key">Paste your render key</label>
+        <div class="field-row">
+          <input type="password" id="invoke-key" autocomplete="off" spellcheck="false"
+                 placeholder="rpa_..." aria-describedby="invoke-hint" />
+          <button type="button" id="invoke-reveal" aria-pressed="false">Show</button>
+        </div>
+        <p class="hint" id="invoke-hint" data-level="" aria-live="polite"></p>
+        <div id="invoke-verdict" aria-live="polite"></div>
+
+        <div class="callout callout-warn">
+          <p class="small"><strong>We check this key before we keep it.</strong> We try your four
+          endpoints with it, and we try an account-level call that should fail. If it turns out to
+          be more powerful than it needs to be, we tell you and we do not store it.</p>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="invoke-submit" class="primary">Install this key</button>
+        </div>
+      </section>
+
+      <section class="panel" id="done-panel" hidden>
+        <h1>Your studio is back</h1>
+        <p class="lede" id="done-message">Your key checks out and your studio is live.</p>
+        <p><a id="studio-link" href="#" class="row-name">Open my studio</a></p>
+        <p class="small muted">
+          This link is now used up. You do not need to keep it.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-foot">
+      <a href="/">Home</a>
+      <span aria-hidden="true">|</span>
+      <a href="/report-abuse">Report abuse</a>
+    </footer>
+
+    <script src="onboarding-checks.js"></script>
+    <script src="handoff-checks.js"></script>
+    <script src="install-key.js"></script>
+  </body>
+</html>

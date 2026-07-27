@@ -107,6 +107,45 @@ export function tenantScriptName(slug: string): string {
 }
 
 /** The 4 endpoint ids the provisioner (#53/#54) records; read by the invoke-key scope check. */
+/**
+ * The endpoint list a HUMAN has to match in the RunPod console: id, plus the name and label the
+ * provisioner gave it (cp#169).
+ *
+ * WHY IT IS SEPARATE FROM tenantEndpointIds. The ids are what verifyInvokeKeyScope probes; the names
+ * are what a person ticks in a console, and a scoping step done by matching a name is measurably
+ * less error-prone than one done by matching an opaque id. The onboarding screen already renders
+ * exactly this shape, so a returning owner (the cp#169 handoff) reads the same list they read at
+ * signup rather than a second dialect of the same fact.
+ *
+ * Tolerant in the same direction as tenantEndpointIds: an element we cannot read is dropped rather
+ * than throwing, and a bare-string element yields an id with no name, which the page can still show.
+ */
+export function tenantEndpointRecipe(tenant: Tenant): { id: string; name: string | null; label: string | null }[] {
+  if (!tenant.endpoints_json) return [];
+  try {
+    const parsed: unknown = JSON.parse(tenant.endpoints_json);
+    if (!Array.isArray(parsed)) return [];
+    const out: { id: string; name: string | null; label: string | null }[] = [];
+    for (const v of parsed) {
+      if (typeof v === "string") {
+        out.push({ id: v, name: null, label: null });
+        continue;
+      }
+      if (!v || typeof v !== "object") continue;
+      const row = v as { id?: unknown; name?: unknown; label?: unknown };
+      if (typeof row.id !== "string") continue;
+      out.push({
+        id: row.id,
+        name: typeof row.name === "string" ? row.name : null,
+        label: typeof row.label === "string" ? row.label : null,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 export function tenantEndpointIds(tenant: Tenant): string[] {
   if (!tenant.endpoints_json) return [];
   try {

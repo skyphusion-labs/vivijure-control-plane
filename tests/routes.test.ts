@@ -2275,6 +2275,233 @@ describe("KEK rotation admin routes (cp#95)", () => {
   });
 });
 
+// cp#169: the operator-initiated, owner-completed invoke-key handoff (Conrad ruling, PATH 3).
+//
+// What only the ROUTER can get wrong is proved here: that the owner-facing routes need NO session
+// (the whole point of the ruling), that a link-level refusal never reads as a key rejection, that
+// the link is burned on a completed install and on nothing else, and that neither the token nor the
+// key ever reaches an audit row. The mint/resolve/staleness semantics live in
+// tests/invoke-key-handoff.test.ts, which owns them.
+describe("cp#169 invoke-key handoff", () => {
+  const admin = () => ({ authorization: `Bearer ${ADMIN_TOKEN}` });
+  const FOUR = JSON.stringify([
+    { key: "backend", label: "Render", id: "ep1", name: "vivijure-hero-backend" },
+  ]);
+
+  async function strandedTenant(): Promise<Tenant> {
+    const t = await store.createTenant("ten_abc123", "hero", "acct_1", "awaiting_invoke_key");
+    t.script_name = "tenant-hero-studio";
+    t.endpoints_json = FOUR;
+    return t;
+  }
+
+  /** Mint through the ADMIN route, and return the token the operator would hand over. */
+  async function issueLink(): Promise<{ token: string; body: Record<string, unknown> }> {
+    const res = await handle(
+      jsonReq("/api/admin/tenants/ten_abc123/invoke-key-handoff", {}, { headers: admin() }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    const url = new URL(String(body.url));
+    return { token: url.searchParams.get("t") as string, body };
+  }
+
+  /** A key that passes verification: graphql denied, every endpoint 200. */
+  function goodKeyProbes() {
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+  }
+
+  describe("POST /api/admin/tenants/:id/invoke-key-handoff", () => {
+    it("REFUSES without the admin token", async () => {
+      await strandedTenant();
+      const res = await handle(
+        jsonReq("/api/admin/tenants/ten_abc123/invoke-key-handoff", {}), env(), ctx, deps,
+      );
+      expect(res.status).toBe(401);
+      expect(store.handoffs.size).toBe(0);
+    });
+
+    it("404s an unknown tenant", async () => {
+      const res = await handle(
+        jsonReq("/api/admin/tenants/ten_nope/invoke-key-handoff", {}, { headers: admin() }),
+        env(), ctx, deps,
+      );
+      expect(res.status).toBe(404);
+    });
+
+    it("returns the link ONCE and audits everything about it EXCEPT the token", async () => {
+      await strandedTenant();
+      const { token, body } = await issueLink();
+
+      expect(body).toMatchObject({ tenant_id: "ten_abc123", slug: "hero", endpoints: ["ep1"] });
+      expect(String(body.url)).toContain("/install-key?t=");
+      // CONTROL FIRST: the audit row exists and carries the correlation id, so "no token in the
+      // audit" is an assertion about a row that is really there.
+      const audit = JSON.stringify(store.audit);
+      expect(audit).toContain("tenant.issue_invoke_key_handoff");
+      expect(audit).toContain(String(body.id));
+      expect(audit).not.toContain(token);
+      // ...and the stored row holds only the hash.
+      expect(JSON.stringify([...store.handoffs.values()])).not.toContain(token);
+    });
+
+    it("refuses a tenant with no endpoints AT MINT TIME, so no dead link is handed over", async () => {
+      const t = await strandedTenant();
+      t.endpoints_json = null;
+      const res = await handle(
+        jsonReq("/api/admin/tenants/ten_abc123/invoke-key-handoff", {}, { headers: admin() }),
+        env(), ctx, deps,
+      );
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: "no_endpoints" });
+      expect(store.handoffs.size).toBe(0);
+    });
+  });
+
+  describe("GET /api/handoff/invoke-key (what the owner sees)", () => {
+    it("needs NO session: that is the entire point of the ruling", async () => {
+      await strandedTenant();
+      const { token } = await issueLink();
+      // No cookie, no bearer. A 401 here would put the flow back where cp#169 found it.
+      const res = await handle(new Request(`https://cp.example/api/handoff/invoke-key?t=${token}`), env(), ctx, deps);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        slug: "hero",
+        status: "awaiting_invoke_key",
+        endpoints: [{ id: "ep1", name: "vivijure-hero-backend", label: "Render" }],
+      });
+    });
+
+    it("does not consume the link", async () => {
+      await strandedTenant();
+      const { token } = await issueLink();
+      await handle(new Request(`https://cp.example/api/handoff/invoke-key?t=${token}`), env(), ctx, deps);
+      expect([...store.handoffs.values()][0].consumed_at).toBeNull();
+    });
+
+    it("404s an unknown token", async () => {
+      const res = await handle(new Request("https://cp.example/api/handoff/invoke-key?t=nope"), env(), ctx, deps);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({ error: "handoff_unknown" });
+    });
+  });
+
+  describe("POST /api/handoff/invoke-key (the owner pastes)", () => {
+    it("installs, promotes the tenant, and BURNS the link", async () => {
+      await strandedTenant();
+      const { token } = await issueLink();
+      goodKeyProbes();
+
+      const res = await handle(
+        jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_good" }), env(), ctx, deps,
+      );
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ status: "live" });
+      // The install ran through the SAME seam the session route uses, with the same key.
+      expect(wiring.installInvokeKey).toHaveBeenCalledTimes(1);
+      const [tenant, key] = wiring.installInvokeKey.mock.calls[0] as [{ id: string }, string];
+      expect(tenant.id).toBe("ten_abc123");
+      expect(key).toBe("rpa_good");
+      expect(store.tenants.get("ten_abc123")?.status).toBe("live");
+      // Single use: burned.
+      expect([...store.handoffs.values()][0].consumed_at).not.toBeNull();
+      // Audited on CONSUMPTION as well as issuance, correlated by the handoff id, and the key is in
+      // neither row. CONTROL first: both rows are present.
+      const actions = store.audit.map((a) => a.action);
+      expect(actions).toEqual(["tenant.issue_invoke_key_handoff", "tenant.install_invoke_key_via_handoff"]);
+      const audit = JSON.stringify(store.audit);
+      expect(audit).not.toContain("rpa_good");
+      expect(audit).not.toContain(token);
+    });
+
+    it("REFUSES a graphql-capable key and does NOT burn the link", async () => {
+      // The custody check runs unrelaxed on this path (the cp#169 constraint), and a refused key
+      // must leave the link usable: burning here would re-strand the customer over a paste error,
+      // which is the failure this whole issue exists to end.
+      await strandedTenant();
+      const { token } = await issueLink();
+      deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+        String(input).includes("graphql")
+          ? new Response(JSON.stringify({ data: { myself: { id: "u" } } }), { status: 200 })
+          : new Response("{}", { status: 200 }),
+      ) as unknown as typeof fetch;
+
+      const res = await handle(
+        jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_toopowerful" }), env(), ctx, deps,
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: "invoke_key_rejected", reason: "graphql_capable" });
+      expect([...store.handoffs.values()][0].consumed_at).toBeNull();
+      expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+      expect(JSON.stringify([...store.tenants.values()])).not.toContain("rpa_toopowerful");
+    });
+
+    it("does NOT burn on a 202, whose own message tells the customer to RETRY", async () => {
+      await strandedTenant();
+      const { token } = await issueLink();
+      goodKeyProbes();
+      wiring.installInvokeKey.mockResolvedValueOnce({
+        verified: ["backend"], unconfirmed: [{ module: "upscale", script: "s", reason: "not ready" }],
+        unverified: [], attempts: 3, elapsedMs: 900,
+      });
+
+      const res = await handle(
+        jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_good" }), env(), ctx, deps,
+      );
+
+      expect(res.status).toBe(202);
+      // A burnt link would make the response's own "retry this request" advice a lie.
+      expect([...store.handoffs.values()][0].consumed_at).toBeNull();
+      expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+    });
+
+    it("refuses a REPLAY of a burned link, and says the key was already installed", async () => {
+      await strandedTenant();
+      const { token } = await issueLink();
+      goodKeyProbes();
+      expect(
+        (await handle(jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_good" }), env(), ctx, deps))
+          .status,
+      ).toBe(200);
+
+      const again = await handle(
+        jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_good" }), env(), ctx, deps,
+      );
+      expect(again.status).toBe(409);
+      expect(await again.json()).toMatchObject({ error: "handoff_consumed" });
+      // The second attempt never reached the install.
+      expect(wiring.installInvokeKey).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses a link whose tenant was reprovisioned again, WITHOUT probing the key", async () => {
+      await strandedTenant();
+      const { token } = await issueLink();
+      goodKeyProbes();
+      (store.tenants.get("ten_abc123") as Tenant).endpoints_json = JSON.stringify([{ id: "ep9" }]);
+
+      const res = await handle(
+        jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_good" }), env(), ctx, deps,
+      );
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: "handoff_endpoints_changed" });
+      expect(wiring.installInvokeKey).not.toHaveBeenCalled();
+    });
+
+    it("400s an empty key before it looks the link up at all", async () => {
+      const res = await handle(jsonReq("/api/handoff/invoke-key", { token: "x" }), env(), ctx, deps);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: "invoke_key_required" });
+    });
+  });
+});
+
 // cp#164: the route that reaches a tenant ALREADY LIVE.
 //
 // The behaviour that matters here is the ROUTE half: what it refuses, what it audits, and that it
@@ -2685,6 +2912,47 @@ describe("POST /api/admin/tenants/:id/reprovision-runpod (cp#137)", () => {
 
     expect((await call()).status).toBe(200);
     expect(wiring.reprovisionRunPod).toHaveBeenCalledTimes(1);
+  });
+
+  // cp#169: the repair now emits its own last step.
+  it("mints the owner handoff link in the SAME response that reports the repair", async () => {
+    // A reprovision ends at awaiting_invoke_key by construction (new endpoints, new ids, the stored
+    // key scoped to the ones just replaced), and until cp#169 the operator had no way to complete
+    // or delegate that step. The link is minted from the tenant re-read AFTER the rebuild, so it is
+    // bound to the ids this run created rather than the ones it replaced.
+    const t = await liveTenant();
+    t.endpoints_json = JSON.stringify([{ key: "backend", label: "Render", id: "ep1", name: "n1" }]);
+
+    const res = await call();
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { invoke_key_handoff: Record<string, unknown> | null };
+    expect(body.invoke_key_handoff).toMatchObject({ endpoints: ["ep1"] });
+    expect(String(body.invoke_key_handoff?.url)).toContain("/install-key?t=");
+    const actions = store.audit.map((a) => a.action);
+    expect(actions).toContain("tenant.issue_invoke_key_handoff");
+    // The token is in the operator's response and NOWHERE else.
+    const token = new URL(String(body.invoke_key_handoff?.url)).searchParams.get("t") as string;
+    expect(JSON.stringify(store.audit)).not.toContain(token);
+    expect(JSON.stringify([...store.handoffs.values()])).not.toContain(token);
+  });
+
+  it("a link that cannot be minted does NOT undo a repair that already happened", async () => {
+    // liveTenant() has no endpoints recorded, so the mint refuses. The endpoints were still rebuilt
+    // and the record still written by the time we get here; failing the whole call would report a
+    // repair that DID happen as one that did not, and invite a re-run that rebuilds four endpoints
+    // for a paperwork problem. The refusal is REPORTED instead, and the standalone mint route is
+    // the retry.
+    await liveTenant();
+
+    const res = await call();
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { invoke_key_handoff: unknown; invoke_key_handoff_refusal: string };
+    expect(body.invoke_key_handoff).toBeNull();
+    expect(body.invoke_key_handoff_refusal).toBe("no_endpoints");
+    // CONTROL: the repair itself is still recorded as having happened.
+    expect(store.audit.map((a) => a.action)).toContain("tenant.reprovision_runpod");
   });
 
   it("passes a preflight refusal through with its own code and status, having written nothing", async () => {

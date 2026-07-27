@@ -40,6 +40,13 @@ import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "
 import { parseInventoryBody, reconcileRunPod, TENANT_PAGE_LIMIT } from "./reconcile-runpod";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
+import {
+  HANDOFF_TOKEN_PARAM,
+  burnInvokeKeyHandoff,
+  mintInvokeKeyHandoff,
+  resolveInvokeKeyHandoff,
+  type HandoffDeps,
+} from "./invoke-key-handoff";
 import { JOB_LEASE_SECONDS, RECLAIM_LEASE_SECONDS, jobAwaitsFirstDriver, jobHasLiveDriver } from "./store";
 import { StudioBindingError } from "./tenant-studio-bindings";
 import { ReprovisionError } from "./tenant-runpod-reprovision";
@@ -52,7 +59,13 @@ import {
   SMOKE_RENDER_COVERAGE,
   startSmokeRender,
 } from "./smoke-render";
-import { slugRejectionMessage, tenantEndpointIds, tenantView, validateSlug } from "./tenants";
+import {
+  slugRejectionMessage,
+  tenantEndpointIds,
+  tenantEndpointRecipe,
+  tenantView,
+  validateSlug,
+} from "./tenants";
 import { TenantModuleError, type ModuleReadiness } from "./tenant-modules";
 import { CONTROL_PLANE_VERSION } from "./version";
 
@@ -154,6 +167,25 @@ export async function handle(
     if (request.method === "POST" && path === "/api/auth/logout") {
       await endSession(deps.store, request, deps.now());
       return new Response(null, { status: 204, headers: { "set-cookie": clearedSessionCookie(sessionCookieDomain(env.CONTROL_PLANE_HOST)) } });
+    }
+
+    // ---- cp#169: the owner-completed invoke-key handoff (unauthenticated by design) ----
+    //
+    // WHY IT SITS ABOVE THE SESSION GATE. The whole point of the ruling is that the owner does not
+    // have to sign in: an operator repaired their studio and handed them a link. Requiring a session
+    // here would put the flow back exactly where cp#169 found it. What replaces the session is not
+    // "nothing" -- it is a one-time 256-bit token bound to ONE tenant and ONE set of endpoint ids,
+    // and a key that still has to pass verifyInvokeKeyScope against endpoints living in the
+    // customer's own RunPod account. Holding the link without a credential to that account installs
+    // nothing.
+    //
+    // THE TOKEN TRAVELS IN THE BODY ON THE WRITE, and in the query only on the read the page cannot
+    // avoid (it arrives as a URL). Same shape as the magic link, and the write is where a token in a
+    // query string would otherwise end up in an access log next to a credential.
+    if (path === "/api/handoff/invoke-key") {
+      if (request.method === "GET") return await handoffContext(request, deps, url);
+      if (request.method === "POST") return await handoffInstall(request, deps);
+      return err("not_found", 404);
     }
 
     // ---- admin (bearer, not session) ----
@@ -688,29 +720,58 @@ async function installInvokeKey(
   const body = (await readJson(request)) as { runpod_invoke_key?: string } | null;
   const key = String(body?.runpod_invoke_key ?? "");
   if (!key) return err("invoke_key_required", 400);
+  return (await performInvokeKeyInstall(deps, tenant, key)).response;
+}
+
+/**
+ * The install itself: verify, store, prove, promote. ONE implementation, two callers.
+ *
+ * cp#169 gave this a second entry point (the owner-completed handoff), and the constraint on that
+ * issue is that the verification runs EXACTLY as it does on the session route -- "the check refusing
+ * a graphql-capable key is the whole custody story". The way to make that true by identity rather
+ * than by imitation is to have one function, so this is it: the session route reads a body and calls
+ * here, the handoff route resolves a one-time token and calls here, and neither owns a copy of the
+ * verification, the readiness probe, or the promotion.
+ *
+ * `installed` is true ONLY on the terminal 200 (the tenant reached `live`). The handoff caller uses
+ * it to decide whether to burn its single-use link, which is why it is a returned FACT and not
+ * inferred from the status code by the caller: a 202 leaves the key stored but the tenant not live,
+ * and its own message tells the customer to retry, so burning the link there would make that advice
+ * a lie.
+ */
+async function performInvokeKeyInstall(
+  deps: ControlPlaneDeps,
+  tenant: Tenant,
+  key: string,
+): Promise<{ response: Response; installed: boolean }> {
+  const no = (response: Response) => ({ response, installed: false });
 
   const endpoints = tenantEndpointIds(tenant);
   if (endpoints.length === 0) {
-    return err("no_endpoints", 409, {
-      message: "your endpoints have not been created yet; there is nothing to scope a key to",
-    });
+    return no(
+      err("no_endpoints", 409, {
+        message: "your endpoints have not been created yet; there is nothing to scope a key to",
+      }),
+    );
   }
   if (!tenant.script_name) {
     // Endpoints exist but the studio upload never completed: a failed provision. Installing a key
     // on a worker that is not there cannot succeed, and pretending otherwise strands the tenant.
-    return err("not_provisioned", 409, {
-      message: "your studio was not fully provisioned; retry provisioning before installing a key",
-    });
+    return no(
+      err("not_provisioned", 409, {
+        message: "your studio was not fully provisioned; retry provisioning before installing a key",
+      }),
+    );
   }
 
   // Same refusal as the provision route: absence of the wiring is a deploy-config fact.
-  if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+  if (!deps.provisioner) return no(err("provisioner_unconfigured", 503));
 
   // Verify BEFORE storing. A wrong key is rejected with the real reason and never written; the most
   // dangerous wrong key is the powerful graphql one, which is exactly what this catches.
   const verdict = await verifyInvokeKeyScope(key, endpoints, deps.fetch);
   if (!verdict.ok) {
-    return err("invoke_key_rejected", 400, { reason: verdict.reason, message: verdict.detail });
+    return no(err("invoke_key_rejected", 400, { reason: verdict.reason, message: verdict.detail }));
   }
 
   // The per-script secrets PUT (spike-proven: rotates in place, no re-upload). The key goes from
@@ -730,7 +791,7 @@ async function installInvokeKey(
     if (e instanceof TenantModuleError) {
       // 503, not 500: the key is stored and the tenant is intact; what failed is our verification of
       // a downstream module. Retryable by the caller, and the message says what to look at.
-      return err("modules_not_ready", 503, { step: e.step, message: e.message });
+      return no(err("modules_not_ready", 503, { step: e.step, message: e.message }));
     }
     throw e; // a non-module failure is not a readiness problem; do not dress it up as one.
   }
@@ -744,7 +805,8 @@ async function installInvokeKey(
     // make this response prettier would be a schema and UI decision smuggled into an error-handling
     // fix, and it would make the reported status a thing no store ever holds. The response reports
     // the TRUE stored state and explains the rest in words.
-    return json(
+    return no(
+      json(
       {
         // cp#20: NO `ok` field, deliberately, and this is the whole point of the fix.
         //
@@ -808,11 +870,14 @@ async function installInvokeKey(
           "is wrong with it.",
       },
       202,
+      ),
     );
   }
 
   await deps.store.setTenantStatus(tenant.id, "live");
-  return json({
+  return {
+    installed: true,
+    response: json({
     // No `ok` here either (cp#20). Dropping it from the 202 alone would leave `ok` meaning
     // "present on success, absent on incomplete", so absence would become the success signal by
     // accident and every caller would still be branching on a summary rather than on the state.
@@ -826,7 +891,76 @@ async function installInvokeKey(
     modules_ready: readiness.unverified.length === 0,
     modules_verified: readiness.verified,
     ...(readiness.unverified.length ? { modules_unverified: readiness.unverified } : {}),
+    }),
+  };
+}
+
+/** The handoff seam, assembled in one place so both routes and the admin mint share a clock. */
+const handoffDeps = (deps: ControlPlaneDeps): HandoffDeps => ({ store: deps.store, now: deps.now });
+
+/**
+ * What the owner needs to SEE before they can act: which studio, which four endpoints to scope a key
+ * to, and how long the link is good for. Reads the handoff; never consumes it.
+ *
+ * It returns endpoint ids and a slug and nothing else about the tenant. Both are identifiers the
+ * owner already holds (the slug is their studio hostname, the ids are rows in their own RunPod
+ * console), which is what makes this safe to serve to a bare token: a stranger who guessed a
+ * 256-bit token would learn two facts they cannot act on without a credential we do not hold.
+ */
+async function handoffContext(request: Request, deps: ControlPlaneDeps, url: URL): Promise<Response> {
+  const token = url.searchParams.get(HANDOFF_TOKEN_PARAM) ?? "";
+  const outcome = await resolveInvokeKeyHandoff(handoffDeps(deps), token);
+  if (!outcome.ok) {
+    return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
+  }
+  const { handoff, tenant } = outcome.context;
+  return json({
+    handoff_id: handoff.id,
+    slug: tenant.slug,
+    status: tenant.status,
+    expires_at: handoff.expires_at,
+    // The RECIPE data, in the shape the onboarding screen already renders: the owner is doing the
+    // same console work they did at signup, so they should be reading the same list. Projected from
+    // the TENANT row rather than copied onto the handoff, so there is one source of truth for what
+    // this studio's endpoints are, and the staleness check above is what guarantees they agree.
+    endpoints: tenantEndpointRecipe(tenant),
   });
+}
+
+/**
+ * The owner pastes their key. Same install as the session route, by identity, then burn the link.
+ *
+ * THE BURN IS AFTER, AND ONLY ON A COMPLETED INSTALL. A rejected key must leave the link usable (a
+ * typo would otherwise re-strand the customer, which is the failure this whole issue is about), and
+ * so must the 202, whose own instruction is to retry. `installed` comes back from the install rather
+ * than being inferred from the status code here, so the two cannot drift.
+ */
+async function handoffInstall(request: Request, deps: ControlPlaneDeps): Promise<Response> {
+  const body = (await readJson(request)) as { token?: unknown; runpod_invoke_key?: unknown } | null;
+  const token = typeof body?.token === "string" ? body.token : "";
+  const key = typeof body?.runpod_invoke_key === "string" ? body.runpod_invoke_key : "";
+  if (!key) return err("invoke_key_required", 400);
+
+  const outcome = await resolveInvokeKeyHandoff(handoffDeps(deps), token);
+  if (!outcome.ok) {
+    return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
+  }
+  const { handoff, tenant } = outcome.context;
+
+  const { response, installed } = await performInvokeKeyInstall(deps, tenant, key);
+  if (!installed) return response;
+
+  const burned = await burnInvokeKeyHandoff(handoffDeps(deps), handoff);
+  // CONSUMPTION IS AUDITED, and it is audited as the OWNER acting, not the operator: the actor
+  // records which handoff was used and who issued it, so an install has a person on both ends. The
+  // key is not here and never was -- the fields are ids and a boolean.
+  await deps.store.recordAdminAction(
+    `handoff:${handoff.id}`,
+    "tenant.install_invoke_key_via_handoff",
+    tenant.id,
+    JSON.stringify({ handoff_id: handoff.id, issued_by: handoff.issued_by, burned }),
+  );
+  return response;
 }
 
 async function adminRoutes(
@@ -1489,6 +1623,43 @@ async function adminRoutes(
     return json({ tenant_id: tenant.id, slug: tenant.slug, ...result }, result.ok ? 200 : 409);
   }
 
+  // ---- cp#169: hand the OWNER a one-time link to install a fresh invoke key -------------------
+  //
+  // WHY THIS ROUTE EXISTS SEPARATELY from the reprovision that mints one automatically. A tenant can
+  // be stranded at awaiting_invoke_key by a repair that happened before this existed, by a link that
+  // expired in a support queue, or by a second reprovision that made an outstanding link stale. All
+  // three need a fresh link WITHOUT re-running a repair, and re-running a repair to obtain one would
+  // rebuild four endpoints to solve a paperwork problem.
+  //
+  // WHY IT IS A LINK AND NOT AN ADMIN INSTALL (option 2 on cp#169, deliberately declined): an
+  // admin-gated install would let an operator credential place a RunPod key on a customer studio.
+  // The ruling keeps the credential decision with the owner and moves only the initiative.
+  //
+  // WHAT THE OPERATOR GETS BACK is the ONLY time the token exists outside this function. It is not
+  // logged, not audited, and cannot be re-read: a lost link is re-minted, never recovered.
+  const handoffMint = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/invoke-key-handoff$/.exec(path);
+  if (request.method === "POST" && handoffMint) {
+    const tenant = await deps.store.getTenantById(handoffMint[1]);
+    if (!tenant) return err("not_found", 404);
+
+    const outcome = await mintInvokeKeyHandoff(handoffDeps(deps), tenant, actor, publicOrigin(env));
+    if (!outcome.ok) return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
+
+    // IDS AND AN EXPIRY. The token is deliberately absent from the audit row: a credential-bearing
+    // URL in an audit table is a credential in an audit table.
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.issue_invoke_key_handoff",
+      tenant.id,
+      JSON.stringify({
+        handoff_id: outcome.minted.id,
+        expires_at: outcome.minted.expires_at,
+        endpoints: outcome.minted.endpoints,
+      }),
+    );
+    return json({ tenant_id: tenant.id, slug: tenant.slug, ...outcome.minted });
+  }
+
   // ---- cp#137: rebuild a tenant's RunPod endpoints, through a plane mechanism ------------------
   //
   // WHY THIS ROUTE EXISTS AT ALL. cp#137's detection half proved a live tenant can point at four
@@ -1577,11 +1748,46 @@ async function adminRoutes(
       }),
     );
 
+    // cp#169: THE REPAIR EMITS ITS OWN LAST STEP. Every reprovision ends at awaiting_invoke_key by
+    // construction (new endpoints, new ids, the stored key B scoped to the ones just replaced), and
+    // until now the operator had no way to complete or to delegate that step: the install route
+    // resolves a session. So the successful repair now mints the one-time link in the same response
+    // that reports it, bound to the endpoints THIS run created, and the operator hands it to the
+    // customer through their support channel.
+    //
+    // A MINT FAILURE MUST NOT UNDO A SUCCESSFUL REPAIR. The endpoints are rebuilt and the record is
+    // written by the time we get here; failing the whole call over a link would report a repair that
+    // did happen as a repair that did not, and invite a re-run that rebuilds four endpoints again.
+    // So the link is reported as ABSENT with the reason attached, and the standalone mint route above
+    // is the retry.
+    let handoff: Record<string, unknown> | null = null;
+    let handoffRefusal: string | null = null;
+    const reread = await deps.store.getTenantById(tenant.id);
+    const minted = reread
+      ? await mintInvokeKeyHandoff(handoffDeps(deps), reread, actor, publicOrigin(env))
+      : null;
+    if (minted?.ok) {
+      handoff = { ...minted.minted };
+      await deps.store.recordAdminAction(
+        actor,
+        "tenant.issue_invoke_key_handoff",
+        tenant.id,
+        JSON.stringify({
+          handoff_id: minted.minted.id,
+          expires_at: minted.minted.expires_at,
+          endpoints: minted.minted.endpoints,
+          via: "reprovision",
+        }),
+      );
+    } else {
+      handoffRefusal = minted ? minted.refusal.code : "tenant_missing";
+    }
+
     // 200 with the readback attached, and NO summary boolean (cp#20): reaching this line already
     // means the studio census came back whole, because a short readback throws at studio_bindings and
     // is answered above as a 409 naming that step. The facts a caller should branch on are `status`
     // (awaiting_invoke_key, every time) and the endpoint ids in `endpoints_after`.
-    return json(result);
+    return json({ ...result, invoke_key_handoff: handoff, invoke_key_handoff_refusal: handoffRefusal });
   }
 
   // ---- cp#95: STUDIO_TOKEN_KEK rotation -------------------------------------------------------

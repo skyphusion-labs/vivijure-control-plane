@@ -8,6 +8,7 @@ import type {
   Account,
   AuthProvider,
   ControlPlaneStore,
+  InvokeKeyHandoff,
   LoginToken,
   OAuthState,
   PreservationHold,
@@ -110,6 +111,40 @@ export class D1Store implements ControlPlaneStore {
       )
       .bind(tokenHash, now)
       .first<LoginToken>();
+  }
+
+  // ---- invoke-key handoffs (cp#169) ----
+
+  async createInvokeKeyHandoff(row: Omit<InvokeKeyHandoff, "created_at" | "consumed_at">): Promise<void> {
+    await this.db
+      .prepare(
+        "INSERT INTO invoke_key_handoffs (token_hash, id, tenant_id, endpoints_json, issued_by, expires_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+      )
+      .bind(row.token_hash, row.id, row.tenant_id, row.endpoints_json, row.issued_by, row.expires_at)
+      .run();
+  }
+
+  async getInvokeKeyHandoff(tokenHash: string): Promise<InvokeKeyHandoff | null> {
+    // Deliberately unfiltered: expired and consumed are DIFFERENT answers for the reader, and a
+    // query that hid them would collapse both into "no such link", which is the one message that
+    // sends a confused owner back to the operator for no reason.
+    return await this.db
+      .prepare("SELECT * FROM invoke_key_handoffs WHERE token_hash = ?1")
+      .bind(tokenHash)
+      .first<InvokeKeyHandoff>();
+  }
+
+  async consumeInvokeKeyHandoff(tokenHash: string, now: string): Promise<InvokeKeyHandoff | null> {
+    // THE WRITE IS THE GATE, same shape as consumeLoginToken: the predicate lives in the UPDATE, so
+    // SQLite's single writer decides the winner rather than a check that ran a moment earlier.
+    return await this.db
+      .prepare(
+        "UPDATE invoke_key_handoffs SET consumed_at = ?2 WHERE token_hash = ?1 AND consumed_at IS NULL " +
+          "AND expires_at > ?2 RETURNING *",
+      )
+      .bind(tokenHash, now)
+      .first<InvokeKeyHandoff>();
   }
 
   // ---- sessions ----
