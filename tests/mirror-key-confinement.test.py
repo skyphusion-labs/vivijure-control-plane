@@ -106,6 +106,65 @@ if bad_prefix:
 else:
     ok("every accepted key is under studio-releases/")
 
+# ---------------------------------------------------------------- the path CI cannot otherwise reach
+# WHY THIS SECTION EXISTS. The mirror code runs only when a credential is present, so on an ordinary
+# PR it is never executed, and an unexercised path is unexercised no matter how well it is reviewed.
+# TWO missing imports (tempfile, then subprocess) survived a fully green CI run, 15 confinement
+# checks and a mutation test, because nothing had ever called r2_get. The first was found by a
+# deploy dry run; the SECOND was found only by then executing the path by hand, because the dry run
+# died at the first and never reached the second.
+#
+# So the path is executed HERE, credential-free. Without a token wrangler fails, which is fine: the
+# assertion is that the code RUNS and REPORTS rather than raising NameError. That turns "nobody has
+# ever called this" into something CI can catch.
+try:
+    data, err = gate.r2_get("no-such-bucket", gate.mirror_key("v0.0.0", "manifest.json"))
+    if data is None and err:
+        ok("r2_get executes and reports an error rather than raising")
+    else:
+        bad("r2_get returned an unexpected result: %r / %r" % (data, err))
+except Exception as e:
+    bad("r2_get RAISED (%s: %s) -- an unexercised path with a real defect" % (type(e).__name__, e))
+
+try:
+    probs = gate.verify_mirror(
+        "no-such-bucket", "v0.0.0", ["keyframe"], b"{}",
+        {"keyframe": {"worker": {"path": "worker.js", "sha256": "deadbeef"}}},
+    )
+    if probs and "CANNOT VERIFY" in probs[0]:
+        ok("verify_mirror executes and reports CANNOT VERIFY rather than raising")
+    else:
+        bad("verify_mirror returned an unexpected result: %r" % (probs,))
+except Exception as e:
+    bad("verify_mirror RAISED (%s: %s)" % (type(e).__name__, e))
+
+# A static sweep for undefined names, which is what a missing import actually is. Cheap, and it
+# covers branches even this file does not execute.
+import ast as _ast
+import builtins as _builtins
+
+_src = (ROOT / "scripts" / "check-release-modules.py").read_text()
+_tree = _ast.parse(_src)
+_defined = set(dir(_builtins))
+for _n in _ast.walk(_tree):
+    if isinstance(_n, (_ast.Import, _ast.ImportFrom)):
+        for _al in _n.names:
+            _defined.add((_al.asname or _al.name).split(".")[0])
+    elif isinstance(_n, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+        _defined.add(_n.name)
+    elif isinstance(_n, _ast.Name) and isinstance(_n.ctx, _ast.Store):
+        _defined.add(_n.id)
+    elif isinstance(_n, _ast.arg):
+        _defined.add(_n.arg)
+    elif isinstance(_n, _ast.ExceptHandler) and _n.name:
+        _defined.add(_n.name)
+_used = {_n.id for _n in _ast.walk(_tree) if isinstance(_n, _ast.Name) and isinstance(_n.ctx, _ast.Load)}
+_missing = sorted(_used - _defined)
+if _missing:
+    bad("undefined names in the gate (a missing import): %r" % (_missing,))
+else:
+    ok("no undefined names anywhere in the gate, including unexecuted branches")
+
 print()
 if failed:
     print("mirror-key confinement: %d FAILURE(S)" % len(failed))
