@@ -135,6 +135,12 @@ export interface ProvisionerWiring {
    * tenant resource name derives from the SLUG rather than the attempt, so two callers issuing
    * these deletes concurrently would delete each other resources.
    */
+  /**
+   * Read ONE tenant bucket usage for the admin aggregate (cf#56). READ ONLY, and a narrow capability
+   * rather than a CfApi handle on purpose: this interface exposes what the plane can DO, not the
+   * client it does it with, so a reads-only surface cannot quietly acquire write reach later.
+   */
+  r2Usage(bucket: string): Promise<{ payloadBytes: number; objectCount: number }>;
   teardown(tenant: Tenant, opts: { deleteData: boolean }): Promise<TeardownOutcome>;
   /**
    * Check everything a module upgrade needs WITHOUT writing anything (cf#103), so the route can
@@ -397,6 +403,7 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
   };
 
   return {
+    r2Usage: (bucket: string) => cf.getR2BucketUsage(bucket),
     apiToken: {
       read: (tenant) => readTenantApiToken(apiTokenDeps, tenant),
       issue: (tenant) => issueTenantApiToken(apiTokenDeps, tenant),
