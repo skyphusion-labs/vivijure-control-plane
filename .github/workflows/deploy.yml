@@ -115,6 +115,7 @@ jobs:
           TENANT_AI_GATEWAY_ID: ${{ vars.TENANT_AI_GATEWAY_ID }}
           R2_USAGE_ALERT_BYTES: ${{ vars.R2_USAGE_ALERT_BYTES }}
           TENANT_R2_STORAGE_QUOTA_BYTES: ${{ vars.TENANT_R2_STORAGE_QUOTA_BYTES }}
+          CREDITS_ENFORCING: ${{ vars.CREDITS_ENFORCING }}
         run: scripts/render-wrangler.sh wrangler.toml
 
       # ARTIFACT-EXISTENCE GATE (cp#187). Read the step comment on "Deploy control-plane worker"
@@ -253,6 +254,7 @@ jobs:
           TENANT_AI_GATEWAY_ID: ${{ vars.TENANT_AI_GATEWAY_ID }}
           R2_USAGE_ALERT_BYTES: ${{ vars.R2_USAGE_ALERT_BYTES }}
           TENANT_R2_STORAGE_QUOTA_BYTES: ${{ vars.TENANT_R2_STORAGE_QUOTA_BYTES }}
+          CREDITS_ENFORCING: ${{ vars.CREDITS_ENFORCING }}
         run: scripts/render-wrangler.sh wrangler.toml
 
       # MIGRATE BEFORE DEPLOY, deliberately. This ordering is load-bearing.

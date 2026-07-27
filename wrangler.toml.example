@@ -212,6 +212,13 @@ TENANT_AI_GATEWAY_ID = "${TENANT_AI_GATEWAY_ID}"
 # verdict rather than inventing a line nobody chose. parseThresholdBytes refuses 0 deliberately --
 # a permanently-firing alert is one the operator learns to ignore.
 R2_USAGE_ALERT_BYTES = "${R2_USAGE_ALERT_BYTES}"
+# cp#192: whether the prepaid credit ledger ENFORCES, or merely counts. EMPTY IS MEANINGFUL and is
+# the deliberate default: counting mode, where the ledger records everything and refuses nothing.
+# Not fail-closed by default, because no purchase door exists yet, so no tenant CAN hold a positive
+# balance and enforcing-by-default would refuse every submission the moment the migration landed.
+# Flipping this on is a named acceptance criterion of cp#193 and must happen in the SAME act as the
+# purchase door opening: a door in front of a counting ledger sells credits that refuse nothing.
+CREDITS_ENFORCING = "${CREDITS_ENFORCING}"
 # cp#183: the per-tenant R2 storage ceiling in BYTES, bound onto every tenant studio as
 # R2_STORAGE_QUOTA_BYTES and enforced there at submit (vivijure-core core#52: honest 507 with both
 # real numbers, fail-CLOSED 503 if the quota is set and its check cannot run).

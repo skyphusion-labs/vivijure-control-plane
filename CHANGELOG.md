@@ -6,6 +6,56 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(deploy): declare CREDITS_ENFORCING, which shipped in v1.17.0 as a knob that could not be turned
+
+- `CREDITS_ENFORCING` (cp#192, released in v1.17.0) was typed in `env.ts` and read by both credit
+  routes, but declared in **none** of `wrangler.toml.example`, `scripts/render-wrangler.sh`, or
+  either `deploy.yml` render block. It therefore never reached the Worker. The DEFAULT behaviour was
+  still correct, because absent reads as counting mode and that is the ruled default, so nothing was
+  broken in production. **What was broken is the ability to change it**: setting the repo variable
+  would have done nothing, and every surface would have kept reporting `enforcing: false` while an
+  operator believed they had switched enforcement on.
+- That matters beyond tidiness: flipping this knob is a named acceptance criterion of cp#193, and its
+  closing evidence is a live read showing `enforcing: true`. A knob that cannot be turned makes that
+  criterion unmeetable, and the failure would have surfaced at the worst moment, next to a live
+  purchase door.
+- Now declared in all four lists as `ALLOW_EMPTY`, on merit: empty is not merely tolerated here, it
+  is the ruled default.
+
+**The census did not catch this, and the reason is worth recording.** `scripts/var-census.py` starts
+from the placeholders in `wrangler.toml.example` and asserts the other three lists agree with it. A
+var that appears in NONE of the four is invisible to it: the lists agree by all omitting it. So the
+census closes the drift class where a var is declared in some places and not others, and cannot see
+the class where a var is declared nowhere and read anyway, which is the original cf#56 shape. Closing
+that would mean censusing `src/env.ts` against the deploy lists, which needs a vars-vs-secrets-vs-
+bindings distinction the current script does not make. Filed rather than bolted on here.
+### feat(hosted): bind TENANT_ID and TENANT_SLUG for per-tenant Opus attribution (cp#185)
+
+The plane side of the per-tenant Opus meter. vivijure-cf#271 made `plan-enhance` EMIT
+`cf-aig-metadata` when these two vars are bound; nothing bound them, so that half shipped inert.
+
+Why a second mechanism exists at all: the AI Gateway records `authentication` as a BOOLEAN. It logs
+THAT a request was authenticated, never WHICH token did it, so the per-tenant `CF_AIG_TOKEN` is an
+access and revocation boundary carrying ZERO attribution. `cf-aig-metadata` is the entire
+attribution mechanism, and Cloudflare computes `cost` natively so we never price Opus ourselves.
+
+- Bound as `plain_text` (neither value is a secret) and scoped to `needsAiGateway` catalog specs.
+- Bound UNCONDITIONALLY for such a module, NOT gated on the token pair: with the trio unconfigured
+  the module runs on the free local provider and never makes a gateway call, so the vars are simply
+  unread. Gating them on the token would couple two unrelated things.
+- The slug is threaded through `uploadTenantModules` as a REQUIRED parameter. Attribution keys on
+  the tenant id, so a missing slug is not a correctness bug, which is exactly why an optional
+  parameter would rot: the compiler catches an omission instead of a human finding a blank label
+  months later.
+
+PARITY: a self-hosted install gets neither var, sends no header, and emits byte-identical requests
+to before. A self-hoster bills their own account and has nothing to attribute.
+
+ORDERING: metadata only flows once BOTH this and a studio release carrying the vivijure-cf#271
+plan-enhance bundle are pinned. Each half alone is inert but harmless, so they can land in either
+order.
+
+
 ## v1.17.0 -- 2026-07-27
 
 MINOR: the per-tenant cost-bound lane. The prepaid credit ledger primitive (inert by design) and the
