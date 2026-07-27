@@ -140,7 +140,10 @@ def wrangler_fetcher(bucket):
             # wrangler ran and said the key is not there: a real, informative ABSENT.
             if "specified key does not exist" in blob.lower():
                 return None, None
-            detail = " ".join(blob.split())[:400] or ("wrangler exited %d with no output" % r.returncode)
+            # 1200, not 400: the first live run of this truncated the wrangler message mid-sentence
+            # and cut the part naming WHICH account and token. Truncating the diagnostic is the same
+            # information-swallowing this function exists to stop, just further along.
+            detail = " ".join(blob.split())[:1200] or ("wrangler exited %d with no output" % r.returncode)
             return None, "wrangler exit %d: %s" % (r.returncode, detail)
         except FileNotFoundError as e:
             return None, "could not execute wrangler: %s" % e
