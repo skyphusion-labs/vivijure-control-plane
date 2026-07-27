@@ -116,6 +116,7 @@ jobs:
           R2_USAGE_ALERT_BYTES: ${{ vars.R2_USAGE_ALERT_BYTES }}
           TENANT_R2_STORAGE_QUOTA_BYTES: ${{ vars.TENANT_R2_STORAGE_QUOTA_BYTES }}
           CREDITS_ENFORCING: ${{ vars.CREDITS_ENFORCING }}
+          MANUAL_CREDIT_CEILING_MICRO_USD: ${{ vars.MANUAL_CREDIT_CEILING_MICRO_USD }}
         run: scripts/render-wrangler.sh wrangler.toml
 
       # ARTIFACT-EXISTENCE GATE (cp#187). Read the step comment on "Deploy control-plane worker"
@@ -255,6 +256,7 @@ jobs:
           R2_USAGE_ALERT_BYTES: ${{ vars.R2_USAGE_ALERT_BYTES }}
           TENANT_R2_STORAGE_QUOTA_BYTES: ${{ vars.TENANT_R2_STORAGE_QUOTA_BYTES }}
           CREDITS_ENFORCING: ${{ vars.CREDITS_ENFORCING }}
+          MANUAL_CREDIT_CEILING_MICRO_USD: ${{ vars.MANUAL_CREDIT_CEILING_MICRO_USD }}
         run: scripts/render-wrangler.sh wrangler.toml
 
       # MIGRATE BEFORE DEPLOY, deliberately. This ordering is load-bearing.

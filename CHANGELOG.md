@@ -31,6 +31,10 @@ is a separate product on a separate cadence).
 - New var `MANUAL_CREDIT_CEILING_MICRO_USD` (default USD 100). A typo catcher, not a policy: it
   exists so a stray keystroke cannot turn USD 10.00 into USD 10,000.00. Refusing above it names the
   knob, so a genuinely large credit is a deliberate config change rather than a slip.
+- `MANUAL_CREDIT_CEILING_MICRO_USD` is declared in all four deploy lists (template, render
+  allowlist, and BOTH deploy render blocks), not only typed in `env.ts`. A knob declared nowhere
+  reaches the Worker as empty and cannot be turned, which is the cf#56 drift class; the sibling fix
+  for `CREDITS_ENFORCING` (which shipped with exactly that defect in v1.17.0) is a separate PR.
 - `docs/payment-rail.md` is the deliverable for Conrad: exactly what to create, what each secret is
   named, how it travels (dashboard straight to `wrangler secret put`, never a tracked file), and what
   to verify afterwards. Includes the refunds/expiry/account-closure decision that is his and Ernst's,
