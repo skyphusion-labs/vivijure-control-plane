@@ -56,7 +56,10 @@ REQUIRED_VARS="CLOUDFLARE_ACCOUNT_ID CONTROL_PLANE_D1_ID TENANT_DISPATCH_NAMESPA
 #     tolerable here, it is the ruled default: there is no purchase door yet, so no tenant can hold a
 #     positive balance, and an enforcing default would refuse every submission. The read API reports
 #     which mode produced every answer, so the state is observable rather than inferred.
-ALLOW_EMPTY="GOOGLE_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_ID APPLE_TEAM_ID APPLE_SERVICES_ID TENANT_AI_GATEWAY_ID R2_USAGE_ALERT_BYTES TENANT_R2_STORAGE_QUOTA_BYTES CREDITS_ENFORCING"
+#   MANUAL_CREDIT_CEILING_MICRO_USD (cp#193) -- empty means the documented default (USD 100) applies.
+#     It meets the bar because the fallback is a real, safe, documented value rather than "no limit":
+#     an unset ceiling still bounds a stray keystroke, which is the entire point of the knob.
+ALLOW_EMPTY="GOOGLE_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_ID APPLE_TEAM_ID APPLE_SERVICES_ID TENANT_AI_GATEWAY_ID R2_USAGE_ALERT_BYTES TENANT_R2_STORAGE_QUOTA_BYTES CREDITS_ENFORCING MANUAL_CREDIT_CEILING_MICRO_USD"
 
 # Fail BEFORE rendering, so the error names the missing variable instead of surfacing later as a
 # malformed toml the reader has to reverse-engineer.

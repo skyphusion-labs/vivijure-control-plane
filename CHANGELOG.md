@@ -6,6 +6,40 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(credits): payment rail seam, ManualRail, and the provisioning list (cp#193)
+
+- **No payment processor is contained, referenced, or created here.** No Stripe client, no API key,
+  no test-mode credential, no account. The ledger gets a `PaymentRail` interface and one rail that
+  needs no processor, which is enough to prove the whole purchase path today.
+- `ManualRail` is a REAL rail, not a stub: comping an account, correcting an incident and honouring a
+  refund are permanent operator needs that outlive any processor. It is also what lets counting mode
+  graduate to enforcing before a processor exists. It has no checkout surface and no webhook, so both
+  interface methods REFUSE rather than returning a plausible URL to a door that goes nowhere.
+- `applySettlement` is the only path that creates credit, and idempotency is anchored on the RAIL's
+  own reference, namespaced by rail id so two processors cannot collide on a shared reference format.
+  A replayed webhook, a retried operator click and a double-submitted form all resolve to one row.
+- New `POST /api/admin/tenants/:id/credits/manual`. It mints money from nothing, so it carries more
+  constraints than any other admin route: `operator`, `reason` and a caller-chosen unique `reference`
+  are all REQUIRED; every attempt is audited INCLUDING replays; a replay answers 200 with
+  `applied:false`, never 409, because a caller retrying after a timeout must be able to reach a
+  success and stop.
+- **The operator field is ASSERTED, NOT AUTHENTICATED, and is recorded as `operator_claimed`.** This
+  plane has one shared admin token, so the bearer proves somebody holds the operator credential and
+  can never prove which human. Recording a claimed name as a verified identity would put a false
+  attribution in a money audit, which is worse than none. Real per-operator identity needs the admin
+  console (cp#89).
+- New var `MANUAL_CREDIT_CEILING_MICRO_USD` (default USD 100). A typo catcher, not a policy: it
+  exists so a stray keystroke cannot turn USD 10.00 into USD 10,000.00. Refusing above it names the
+  knob, so a genuinely large credit is a deliberate config change rather than a slip.
+- `MANUAL_CREDIT_CEILING_MICRO_USD` is declared in all four deploy lists (template, render
+  allowlist, and BOTH deploy render blocks), not only typed in `env.ts`. A knob declared nowhere
+  reaches the Worker as empty and cannot be turned, which is the cf#56 drift class; the sibling fix
+  for `CREDITS_ENFORCING` (which shipped with exactly that defect in v1.17.0) is a separate PR.
+- `docs/payment-rail.md` is the deliverable for Conrad: exactly what to create, what each secret is
+  named, how it travels (dashboard straight to `wrangler secret put`, never a tracked file), and what
+  to verify afterwards. Includes the refunds/expiry/account-closure decision that is his and Ernst's,
+  and the tax-at-purchase step that blocks launch rather than following it.
+
 ### feat(credits): the tenant-facing credit surface (cp#194)
 
 - New `public/credits-checks.js` (pure, no DOM, `node --check` plus a unit suite) and a credit panel
@@ -95,7 +129,32 @@ backfilled -- so an older Worker keeps running against the newer schema, which i
 migrate-before-deploy ordering safe here. Stated explicitly rather than discovered, given the cf#80
 history recorded in `deploy.yml`.
 
-Contains two merged PRs: #198, #199.
+**CORRECTED AFTER PUBLICATION (2026-07-27).** This section originally read "Contains two merged
+PRs: #198, #199". That was wrong: `git log v1.16.0..v1.17.0` carries **four** merged PRs, and the
+omitted one shipped code. The scope was cut by the release author and the error is recorded here
+rather than silently rewritten, on the same principle as the SUPERSEDED markers in
+`docs/managed-compute.md` -- a release note is a claim about a diff, and a false one is worth
+correcting in place so the correction is legible.
+
+Contains four merged PRs: #196, #198, #199, **#206**.
+
+### feat(credits): balance and usage read API (cp#192, #206) -- omitted from the original notes
+
+Shipped in this release and undocumented by it:
+
+- **Two new HTTP routes.** `GET /api/tenant/:id/credits` (owner session) and
+  `GET /api/admin/tenants/:id/credits` (admin bearer), served by one reader so a tenant and an
+  operator can never be looking at different balances.
+- **One new var, `CREDITS_ENFORCING`** -- which shipped **INERT**, because it was typed in `env.ts`
+  and read by both routes while being declared in none of `wrangler.toml.example`,
+  `scripts/render-wrangler.sh`, or either `deploy.yml` render block. Behaviour was still correct
+  (absent reads as counting mode, the ruled default), but the knob could not be turned. Fixed
+  separately; see the Unreleased section.
+
+Neither route can refuse anything: nothing consults a balance until the dispatch proxy (cp#191).
+
+`#196` is docs-only (the `docs/managed-compute.md` supersession markers) and was also absent from
+the original list.
 
 ### feat(credits): balance and usage read API (cp#192)
 
