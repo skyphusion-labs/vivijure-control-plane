@@ -553,6 +553,21 @@ describe("the AUP gate", () => {
     expect(JSON.stringify(store.aup)).not.toContain("203.0.113.9");
   });
 
+  it("records the accepting user agent verbatim (cp#207: MemoryStore used to silently drop it)", async () => {
+    const { cookie } = await signedIn();
+    await handle(
+      jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie, "user-agent": "curl/8.0" } }),
+      env(), ctx, deps,
+    );
+    expect(store.aup[0].user_agent).toBe("curl/8.0");
+  });
+
+  it("records a null user agent rather than the literal word undefined when the header is absent", async () => {
+    const { cookie } = await signedIn();
+    await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie } }), env(), ctx, deps);
+    expect(store.aup[0].user_agent).toBeNull();
+  });
+
   it("leaves /api/me reachable so a gated user can still see why they are gated", async () => {
     const { cookie } = await signedIn();
     const res = await handle(req("/api/me", { headers: { cookie } }), env(), ctx, deps);
@@ -1576,6 +1591,9 @@ describe("admin switches", () => {
     const cfg = await (await handle(req("/api/platform/config"), env(), ctx, deps)).json();
     expect(cfg).toMatchObject({ signups_enabled: false });
     expect(store.audit.map((a) => a.action)).toContain("settings.set");
+    // cp#207: MemoryStore.setSetting used to silently drop the updatedBy attribution the interface
+    // (and D1Store's platform_settings.updated_by column) require.
+    expect(store.settingsUpdatedBy.get("signups_enabled")).toBe("admin-token");
   });
 });
 

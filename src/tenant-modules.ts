@@ -197,6 +197,16 @@ export async function prefetchModuleBundles(
 export async function uploadTenantModules(
   deps: TenantModuleDeps,
   tenantId: string,
+  /**
+   * The tenant display slug, carried into `cf-aig-metadata` as a HUMAN LABEL only (cp#185).
+   *
+   * REQUIRED rather than optional, deliberately. Attribution keys on `tenantId`, so a missing slug
+   * is not a correctness bug -- which is exactly why an optional parameter would rot here: a caller
+   * omits it, nothing fails, spend still meters correctly, and a future session discovers the label
+   * is missing and has to re-plumb it under a live tenant. Required means the COMPILER catches an
+   * omission at the call site instead of a human catching it in a log months later.
+   */
+  tenantSlug: string,
   endpoints: TenantEndpoint[],
   /** Pre-fetched bundles (prefetchModuleBundles). When absent each bundle is fetched inline, which
    *  is the original provision behaviour and is left exactly as it was. */
@@ -245,6 +255,23 @@ export async function uploadTenantModules(
       // plane with no gateway configured still gets a working module on the local provider instead
       // of one that throws on every call.
       bindings.push({ type: "ai", name: "AI" });
+      // Attribution for the hosted per-tenant Opus meter (cp#185). The gateway records
+      // `authentication` as a BOOLEAN -- it logs THAT a request was authenticated, never WHICH
+      // token -- so the per-tenant CF_AIG_TOKEN below is the access and revocation boundary and
+      // carries no attribution at all. `cf-aig-metadata`, built by the module from these two vars,
+      // is the entire attribution mechanism. Two different jobs, kept apart on purpose.
+      //
+      // plain_text, not secret_text: a tenant id is an opaque identifier and the slug is already
+      // public in the tenant own URL. Same treatment as RUNPOD_ENDPOINT_ID.
+      //
+      // Bound UNCONDITIONALLY for a gateway-backed module rather than alongside the token pair
+      // below. If the trio is unconfigured the module runs on the free local provider and never
+      // makes a gateway call, so these are simply unread; gating them on the token would couple two
+      // unrelated things and invite the next reader to think attribution is optional when the
+      // gateway IS configured. A self-hosted install gets neither var and sends no header, which is
+      // the parity-correct behaviour: a self-hoster bills their own account.
+      bindings.push({ type: "plain_text", name: "TENANT_ID", text: tenantId });
+      bindings.push({ type: "plain_text", name: "TENANT_SLUG", text: tenantSlug });
       // BOTH or NEITHER, deliberately: pickProvider returns "opus" only when GATEWAY_ID and
       // CF_AIG_TOKEN are both present, so binding one alone would advertise nothing and change
       // nothing. Half the pair is the silent-no-op case this guard exists to prevent.
