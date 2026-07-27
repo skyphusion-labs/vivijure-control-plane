@@ -1,7 +1,10 @@
 # Managed compute: metering + prepaid credits (Lane B2 design)
 
-Status: DESIGN, ruled by Conrad 2026-07-25 (vivijure-cf#224 comments). Build lands when it fits;
-this document plus the schema draft is the sprint deliverable.
+Status: DESIGN, ruled by Conrad 2026-07-25 (vivijure-cf#224 comments). The architecture below is
+current and load-bearing. **Conrad opened the build lane on 2026-07-27 and made further rulings that
+supersede two points of this document; both are marked SUPERSEDED inline.** Implementation is
+decomposed on cp#173 (issues cp#189 through cp#195), and the money schema of record is cp#189, not
+the draft in this file.
 
 ## The model (the Cloudflare AI Gateway pattern)
 
@@ -46,6 +49,14 @@ tenant studio (managed mode)
 
 - The proxy IS the meter. There is no path to our endpoints that bypasses it, so metering is
   complete by construction.
+- **CORRECTION (verified in live source 2026-07-27): the "auth: studio token (existing)" in the
+  diagram above does not exist.** The per-tenant studio token (`migrations/0004_studio_token.sql`)
+  is DISPATCHER-INJECTED and authenticates callers INTO a studio; it is not a credential a studio
+  can present OUTBOUND to the plane, and the full var disposition table in `src/tenant-studio-env.ts`
+  carries no plane-directed credential at all. Minting that credential is in scope for cp#191 and is
+  named here so nobody builds a billing path on a credential that was assumed rather than checked.
+  Related, same issue: `RUNPOD_BASE` is a hardcoded const in vivijure-core `src/runpod-submit.ts`,
+  so pointing a studio at the proxy needs a host-neutral base-URL knob in core first.
 - `byok` tenants never touch the proxy; their studios keep the existing direct-to-their-endpoints
   wiring. `runpod_key_required` (409) applies to byok provisioning only.
 - Provisioner: `managed` tenants SKIP tenant-account endpoint creation entirely; the studio is
@@ -104,15 +115,25 @@ CREATE TABLE rate_card (
 
 Balance = `SUM(delta_credits)` over the tenant's ledger; enforce non-negative at debit time
 inside a single D1 batch (usage terminal update + debit append) so a crash cannot double-debit.
-Failed/cancelled jobs with `execution_ms` still debit (RunPod billed us); zero-execution
-failures debit nothing.
+
+> **SUPERSEDED (Conrad, 2026-07-27): COMPLETED-ONLY BILLING.** This paragraph originally read
+> "failed/cancelled jobs with `execution_ms` still debit (RunPod billed us)". That is no longer the
+> policy. **We eat the cost of a failed render and the tenant is never charged for one** -- it is the
+> stated differentiator ("you pay for films, not failures"), and cp#180 measured the price tag:
+> failures are roughly a third of submissions, which is why the failure buffer is priced into the
+> film price rather than wished away. Only a COMPLETED job settles.
+>
+> That has a structural consequence this draft did not need: a charge that lands only at completion
+> cannot fail closed at submit on its own, so a tenant with USD 0.50 available could start a USD 4
+> film. The credit design therefore adds a HOLD at submit, captured on completion and released on
+> failure. Schema of record: cp#189.
 
 ## Failure honesty
 
-- Balance exhausted mid-job: the job finishes (we already owe RunPod), the debit takes the
-  balance negative, and further submissions 402 until topped up. Negative balances are visible,
-  not hidden; that bounded overshoot (one in-flight job per class) is the accepted cost of not
-  killing paid work.
+- Balance exhausted mid-job: the job finishes (we already owe RunPod). Under holds the overshoot
+  is bounded at the hold amount rather than at whatever the job turned out to cost, and a job that
+  fails releases its hold instead of settling. Any residual negative balance stays visible, not
+  hidden; further submissions 402 until topped up. Not killing paid work is still the posture.
 - Proxy down: managed studios degrade with the same honest-hooks pattern as every other
   unavailable capability (`host.hooks_unavailable`), never a mock.
 - Meter write failure AFTER RunPod accept: the job proceeds; reconciliation sweeps RunPod job
