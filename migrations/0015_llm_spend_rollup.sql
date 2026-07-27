@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS llm_rollup_periods (
   control_passed INTEGER NOT NULL CHECK (control_passed IN (0,1)),
   -- Present so a suspicious zero is VISIBLE rather than inferred from an absence of rows.
   rows_ingested  INTEGER NOT NULL CHECK (rows_ingested >= 0),
+  -- HAVE NOT FINISHED READING versus THE ROWS ARE GONE. Retention is 10,000,000 rows DELETE_OLDEST
+  -- with no time window, so a roll-up that stops for long enough loses rows permanently. That is a
+  -- different operator response from a page cap: one is resumable, the other is not, and both would
+  -- otherwise read as merely incomplete. Set when the oldest row still in the gateway is NEWER than
+  -- the watermark, which means everything between them was deleted unread.
+  gap_detected   INTEGER NOT NULL DEFAULT 0 CHECK (gap_detected IN (0,1)),
   started_at     TEXT NOT NULL,
   finished_at    TEXT
 );
@@ -73,7 +79,19 @@ CREATE TABLE IF NOT EXISTS llm_spend_events (
   -- silently re-point the spend history of one tenant at another after a rename.
   slug           TEXT,
   model          TEXT,
-  cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
+  -- NULLABLE, ruled 2026-07-27. NOT NULL would force a row where the gateway reported no cost to
+  -- be written as 0, and downstream 0 reads as THIS REQUEST WAS FREE rather than WE DO NOT KNOW.
+  -- Row shapes where that bites: a cached response plausibly has a real 0; an errored or
+  -- rate-limited request may carry no cost field; a model CF does not price natively likewise.
+  -- Once summed those become indistinguishable, and the error is SILENT and ONE-DIRECTIONAL: we
+  -- undercount, therefore undercharge, while the price-to-cost ratio reports cost recovery. In a
+  -- system whose stated intent IS cost recovery, a schema that can only be wrong in the direction
+  -- that flatters us is the worst available shape.
+  --
+  -- Only two live gateway rows have ever been observed, so it is NOT established that every row
+  -- shape carries a cost. The schema therefore does not foreclose the distinction before the
+  -- evidence exists. A NULL-cost row is recorded, visible and UNBILLABLE, never silently free.
+  cost_micro_usd INTEGER CHECK (cost_micro_usd IS NULL OR cost_micro_usd >= 0),
   tokens_in      INTEGER,
   tokens_out     INTEGER,
   cached         INTEGER CHECK (cached IN (0,1)),
@@ -82,6 +100,15 @@ CREATE TABLE IF NOT EXISTS llm_spend_events (
   -- When this roll-up wrote it. Differs from occurred_at by up to one interval; the pair is what
   -- makes lateness detectable rather than invisible.
   inserted_at    TEXT NOT NULL,
+  -- BILLING KEYS ON period_id, NEVER occurred_at (contract with cp#195, explicit not implied).
+  -- Summing a period by its time window would let a row arriving after settlement retroactively
+  -- change a period already billed, breaking never-reprice from the CONSUMER side no matter how
+  -- carefully this side behaves. A late row belongs to the period that INGESTED it, so it is billed
+  -- once, in the next statement.
+  --
+  -- ASSIGNED AT INSERT AND NEVER CHANGED: writes are INSERT OR IGNORE on (source, source_id), so a
+  -- re-run leaves the ORIGINAL row and its ORIGINAL period_id in place. That is what makes the
+  -- contract above hold under replay rather than by coincidence.
   period_id      TEXT NOT NULL REFERENCES llm_rollup_periods(id),
   PRIMARY KEY (source, source_id)
 );
@@ -90,6 +117,12 @@ CREATE TABLE IF NOT EXISTS llm_spend_events (
 -- tenant-scoped, and NULL tenant_id rows group together for the unattributed metric.
 CREATE INDEX IF NOT EXISTS idx_llm_spend_tenant_time
   ON llm_spend_events (tenant_id, occurred_at);
+
+-- THE BILLING READ (joan, cp#195): always this tenant, this period. The primary key is identity,
+-- not an access path, and at the 10M retention ceiling her billing run would otherwise full-scan
+-- per tenant. period_id first because a billing run is period-scoped.
+CREATE INDEX IF NOT EXISTS idx_llm_spend_period_tenant
+  ON llm_spend_events (period_id, tenant_id);
 
 -- Period-scoped reads, for reconciling a window against its completeness record.
 CREATE INDEX IF NOT EXISTS idx_llm_spend_period

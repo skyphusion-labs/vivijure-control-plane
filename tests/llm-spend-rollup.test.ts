@@ -26,13 +26,17 @@ const row = (over: Partial<GatewayLogRow> = {}): GatewayLogRow => ({
   ...over,
 });
 
-function readerOf(pages: GatewayLogRow[][], total: number | null = 2): GatewayLogReader {
+function readerOf(
+  pages: GatewayLogRow[][],
+  total: number | null = 2,
+  oldest: string | null = null,
+): GatewayLogReader {
   return {
     async list({ page, perPage }) {
       return { rows: pages[page - 1] ?? [], totalCount: total };
     },
-    async probeTotal() {
-      return total;
+    async probe() {
+      return { total, oldest };
     },
   };
 }
@@ -76,10 +80,28 @@ describe("parseLogRow", () => {
     expect(e.slug).toBe("acme-films");
   });
 
-  it("drops a row with no id, no timestamp, or an unusable cost", () => {
+  it("drops a row only when it cannot be KEYED (no id, no timestamp)", () => {
     expect(parseLogRow(row({ id: "" }))).toBeNull();
     expect(parseLogRow(row({ created_at: "" }))).toBeNull();
-    expect(parseLogRow(row({ cost: undefined }))).toBeNull();
+  });
+
+  // Ruled 2026-07-27. Dropping an unpriced row is the same silent under-count as writing it as 0,
+  // one layer up: the request happened and the money moved whether or not we can put a number on
+  // it. Recorded, visible and unbillable beats absent.
+  it("KEEPS a row with an unusable cost, with a NULL cost rather than 0 or a drop", () => {
+    for (const bad of [undefined, NaN, -1, "x"]) {
+      const e = parseLogRow(row({ cost: bad as never }));
+      expect(e, String(bad)).not.toBeNull();
+      expect(e!.costMicroUsd, String(bad)).toBeNull();
+      expect(e!.costMicroUsd, String(bad)).not.toBe(0);
+    }
+  });
+
+  // POSITIVE CONTROL for the above: a priced row really does carry a number, so "null" is a
+  // property of the unpriced case and not of the parser always returning null.
+  it("CONTROL: a priced row still yields a number", () => {
+    expect(parseLogRow(row({ cost: 0.000145 }))!.costMicroUsd).toBe(145);
+    expect(parseLogRow(row({ cost: 0 }))!.costMicroUsd).toBe(0);
   });
 });
 
@@ -136,7 +158,7 @@ describe("runRollup positive control", () => {
   it("records failed when the control itself throws", async () => {
     const reader: GatewayLogReader = {
       async list() { return { rows: [], totalCount: null }; },
-      async probeTotal() { throw new Error("401 unauthorized"); },
+      async probe(): Promise<never> { throw new Error("401 unauthorized"); },
     };
     const r = await runRollup(reader, undefined);
     expect(r.status).toBe("failed");
@@ -149,6 +171,39 @@ describe("runRollup positive control", () => {
     const r = await runRollup(readerOf([full, full, full], 500), undefined, 2);
     expect(r.status).toBe("incomplete");
     expect(r.note).toContain("PARTIAL");
+  });
+
+  // HAVE NOT FINISHED READING versus THE ROWS ARE GONE. Retention is count-based, so a roll-up
+  // that stops for long enough loses rows permanently; that is not resumable and wants a different
+  // operator response from a page cap.
+  it("detects a retention GAP and refuses to call the window complete", async () => {
+    const r = await runRollup(
+      readerOf([[row()]], 5, "2026-07-27T12:00:00Z"),
+      "2026-07-27T09:00:00Z",
+    );
+    expect(r.gapDetected).toBe(true);
+    expect(r.status).toBe("incomplete");
+    expect(r.note).toContain("GAP");
+    expect(r.note).toContain("deleted UNREAD");
+  });
+
+  // CONTROL: the gap flag is not simply always on. A first run has no watermark, so no gap.
+  it("CONTROL: reports no gap when the oldest row predates the watermark, and none on a first run", async () => {
+    const withHistory = await runRollup(
+      readerOf([[row()]], 5, "2026-07-27T06:00:00Z"),
+      "2026-07-27T09:00:00Z",
+    );
+    expect(withHistory.gapDetected).toBe(false);
+    expect(withHistory.status).toBe("complete");
+
+    const firstRun = await runRollup(readerOf([[row()]], 5, "2026-07-27T12:00:00Z"), undefined);
+    expect(firstRun.gapDetected).toBe(false);
+  });
+
+  it("names unpriced rows so a NULL cost is visible rather than inferred", async () => {
+    const r = await runRollup(readerOf([[row({ cost: undefined })]]), undefined);
+    expect(r.note).toContain("NULL cost");
+    expect(r.events[0].costMicroUsd).toBeNull();
   });
 
   it("counts and names unattributed rows", async () => {

@@ -39,8 +39,16 @@ export interface GatewayPage {
 export interface GatewayLogReader {
   /** A page of logs. `after` maps to the gateway created_at gt filter, verified in both directions. */
   list(opts: { after?: string; page: number; perPage: number }): Promise<GatewayPage>;
-  /** An UNFILTERED probe used as the positive control. Returns the gateway total_count. */
-  probeTotal(): Promise<number | null>;
+  /**
+   * An UNFILTERED probe. Returns the gateway total_count (the positive control) AND the created_at
+   * of the OLDEST row still present (gap detection).
+   *
+   * The oldest row matters because retention is 10,000,000 rows DELETE_OLDEST with no time window.
+   * If the oldest surviving row is NEWER than our watermark, everything between them was deleted
+   * unread and is gone for good. That is a different fact from an unfinished page walk: one is
+   * resumable, the other is not, and they want different operator responses.
+   */
+  probe(): Promise<{ total: number | null; oldest: string | null }>;
 }
 
 /** The gateway caps per_page at 50. Read off the API, not guessed. */
@@ -65,7 +73,12 @@ export interface SpendEvent {
   tenantId: string | null;
   slug: string | null;
   model: string | null;
-  costMicroUsd: number;
+  /**
+   * NULL when the gateway reported no usable cost. NEVER coerced to 0: downstream a 0 reads as
+   * THIS REQUEST WAS FREE rather than WE DO NOT KNOW, and that error is silent and one-directional
+   * (we undercount, so we undercharge, while the ratio reports cost recovery).
+   */
+  costMicroUsd: number | null;
   tokensIn: number | null;
   tokensOut: number | null;
   cached: 0 | 1 | null;
@@ -94,8 +107,10 @@ export function parseLogRow(row: GatewayLogRow): SpendEvent | null {
   const sourceId = str(row?.id);
   const occurredAt = str(row?.created_at);
   if (!sourceId || !occurredAt) return null;
+  // A row we cannot price is KEPT with a null cost, not dropped. Dropping it is the same silent
+  // under-count one layer up: the request happened and the money moved whether or not we can put a
+  // number on it. Recorded, visible, and unbillable beats absent.
   const costMicroUsd = toMicroUsd(row.cost);
-  if (costMicroUsd === null) return null;
   const meta = row.metadata && typeof row.metadata === "object" ? row.metadata : null;
   return {
     source: "ai_gateway",
@@ -123,6 +138,8 @@ export type RollupStatus = "complete" | "incomplete" | "failed";
 export interface RollupResult {
   status: RollupStatus;
   controlPassed: boolean;
+  /** True when rows were deleted unread (retention), which is NOT the same as unfinished. */
+  gapDetected: boolean;
   events: SpendEvent[];
   rowsSeen: number;
   rowsDropped: number;
@@ -178,29 +195,36 @@ export async function runRollup(
   after: string | undefined,
   pageCap = 200,
 ): Promise<RollupResult> {
-  let total: number | null;
+  let probed: { total: number | null; oldest: string | null };
   try {
-    total = await reader.probeTotal();
+    probed = await reader.probe();
   } catch (e) {
     return {
-      status: "failed", controlPassed: false, events: [], rowsSeen: 0, rowsDropped: 0,
-      newWatermark: null,
+      status: "failed", controlPassed: false, gapDetected: false, events: [], rowsSeen: 0,
+      rowsDropped: 0, newWatermark: null,
       note: "positive control threw, so nothing read is evidence: " + (e as Error).message,
     };
   }
+  const total = probed.total;
   const controlPassed = typeof total === "number" && total > 0;
+  // Rows deleted unread. Only meaningful once we HAVE a watermark: a first run has no gap by
+  // definition, it simply has no history.
+  const gapDetected = Boolean(after && probed.oldest && probed.oldest > after);
 
   let collected;
   try {
     collected = await collectSince(reader, after, pageCap);
   } catch (e) {
     return {
-      status: "failed", controlPassed, events: [], rowsSeen: 0, rowsDropped: 0, newWatermark: null,
-      note: "paging failed: " + (e as Error).message,
+      status: "failed", controlPassed, gapDetected, events: [], rowsSeen: 0, rowsDropped: 0,
+      newWatermark: null, note: "paging failed: " + (e as Error).message,
     };
   }
 
-  const status: RollupStatus = collected.exhausted ? "complete" : "incomplete";
+  // A gap makes the window incomplete even when the page walk finished: we read everything still
+  // THERE, which is not the same as everything that HAPPENED.
+  const status: RollupStatus =
+    collected.exhausted && !gapDetected ? "complete" : "incomplete";
   const notes: string[] = [];
   if (!controlPassed) {
     notes.push(
@@ -210,7 +234,21 @@ export async function runRollup(
     );
   }
   if (!collected.exhausted) {
-    notes.push("page cap " + pageCap + " reached before exhaustion; window is PARTIAL.");
+    notes.push("page cap " + pageCap + " reached before exhaustion; window is PARTIAL and RESUMABLE.");
+  }
+  if (gapDetected) {
+    notes.push(
+      "GAP: the oldest row still in the gateway (" + String(probed.oldest) + ") is newer than the " +
+        "watermark (" + String(after) + "), so rows between them were deleted UNREAD and are gone. " +
+        "Not resumable; this is retention loss, not an unfinished walk.",
+    );
+  }
+  const unpriced = collected.events.filter((e) => e.costMicroUsd === null).length;
+  if (unpriced > 0) {
+    notes.push(
+      unpriced + " row(s) carried no usable cost and were kept with a NULL cost, never 0: a row we " +
+        "cannot price is recorded and unbillable rather than silently free.",
+    );
   }
   if (collected.rowsDropped > 0) {
     notes.push(collected.rowsDropped + " row(s) unparseable and dropped; that is a gap, not a zero.");
@@ -226,6 +264,7 @@ export async function runRollup(
   return {
     status,
     controlPassed,
+    gapDetected,
     events: collected.events,
     rowsSeen: collected.rowsSeen,
     rowsDropped: collected.rowsDropped,
