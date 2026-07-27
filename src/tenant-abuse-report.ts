@@ -34,6 +34,23 @@
 // bundle a self-hoster installs. Their unset var rendering nothing is the correct behaviour, and it
 // stays correct mid-rollout for a hosted tenant we have not converged yet.
 //
+// THE READBACK RACES EDGE PROPAGATION, and this was measured on the live testbed rather than
+// reasoned about (cp#164 acceptance run, 2026-07-27). The FIRST converge on `rollins-e2e` bound the
+// var cleanly -- 19 bindings to 20, nothing stranded, all four secrets intact -- and the studio
+// still served no `host.abuse_report_url`, so the route answered 409 and told the operator to move
+// the studio bytes. Sixty seconds later the same call returned `reader_live: true` with the URL,
+// twice in a row. The studio was fine the whole time; the settings PATCH had simply not reached the
+// isolate serving that dispatch by the time we asked.
+//
+// That is the cf#114 lesson arriving from a new direction -- "the secrets PUT returning 200 does NOT
+// mean the edge serves the key yet" -- and the first cut of this file did not apply it to its own
+// readback. The failure is expensive in the wrong direction: a 409 saying "move the studio bytes"
+// sends an operator to move a live tenant onto a new release to fix a problem that did not exist.
+// So the confirm is now BOUNDED-RETRIED, and an unconfirmed readback is reported as 202 (bound, not
+// yet observed, re-run) rather than 409 (go do something else). Both possible causes are named in
+// the message, because from here they are genuinely indistinguishable: a bundle predating the reader
+// and an edge that has not recycled both answer with the key absent.
+//
 // THE READER FLOOR, and why it is a READBACK rather than a version compare. Setting this var on a
 // studio whose bundle predates the reader (vivijure-cf v1.10.0) is a silent no-op -- the cf#98 /
 // cf#118 / cp#112 failure family, a change that looks applied and reaches nobody. cp#136 guards its
@@ -51,6 +68,18 @@ import { publicOrigin, type ControlPlaneEnv } from "./env";
 import type { ProvisionDeps } from "./provisioner";
 import type { Tenant } from "./store";
 import { decryptStudioToken } from "./token-crypto";
+
+/**
+ * How long to keep asking the studio whether it serves the URL yet, and how often.
+ *
+ * MEASURED, not picked: the live cp#164 converge needed more than one immediate read and less than
+ * one minute (see the header). The budget is deliberately SHORT of that worst case rather than
+ * generous, because this runs inside a request: the honest answer when it does not converge in time
+ * is "bound, not yet observed, re-run me", and the route is idempotent so a re-run costs nothing.
+ * Making the budget long enough to always win would trade an operator's clarity for their patience.
+ */
+export const READBACK_PROBE_MS = 2500;
+export const READBACK_BUDGET_MS = 15000;
 
 /** The studio var the panel reads (vivijure-cf src/abuse-contact.ts). Named once; every writer imports it. */
 export const ABUSE_REPORT_URL_VAR = "ABUSE_REPORT_URL";
@@ -140,11 +169,18 @@ export interface AbuseReportUrlResult {
   served_url_before: string | null;
   served_url_after: string | null;
   /**
-   * Did the studio project the URL back. THIS is the reader floor (see the header): false means the
-   * bytes this tenant runs predate the vivijure-cf v1.10.0 reader, the var reached nobody, and the
-   * fix is to move the studio bytes and re-run -- not to set the var harder.
+   * Did the studio project the URL back, after the bounded confirm.
+   *
+   * False no longer means "the bundle is too old" on its own, and the first cut of this file was
+   * wrong to say so: it means the studio had not served the URL by the end of the budget, which is
+   * EITHER a bundle predating the vivijure-cf v1.10.0 reader OR an edge that has not picked the
+   * binding up yet. The two are indistinguishable from here, so the caller is told both and told to
+   * re-run rather than sent to move a live tenant's bytes.
    */
   reader_live: boolean;
+  /** How many times the studio was asked, and over how long. Numbers, so nobody parses a sentence. */
+  readback_attempts: number;
+  readback_elapsed_ms: number;
 }
 
 const names = (list: { name: string }[]): string[] => list.map((b) => b.name).sort();
@@ -286,10 +322,21 @@ export async function applyAbuseReportUrl(
   const missingBindings = names(before).filter((n) => !afterNames.has(n));
   const missingSecrets = [...secretsBefore].sort().filter((n) => !afterSecrets.has(n));
 
-  // THE READER FLOOR, measured on the artifact: does the panel now project what we bound. A studio
-  // whose bundle predates the reader answers with the key absent, and that is the whole finding.
-  const servedAfterRaw = await servedAbuseReportUrl(deps, script, studioApiToken);
-  const servedAfter = servedAfterRaw === undefined ? null : servedAfterRaw;
+  // THE READER FLOOR, measured on the artifact and RETRIED, because the write reaching Cloudflare is
+  // not the write reaching the isolate that answers the next dispatch (measured live, see header).
+  // First read happens immediately, so a studio that is already current still returns instantly.
+  const probeStarted = deps.now();
+  let servedAfter: string | null = null;
+  let attempts = 0;
+  for (;;) {
+    attempts += 1;
+    const raw = await servedAbuseReportUrl(deps, script, studioApiToken);
+    servedAfter = raw === undefined ? null : raw;
+    if (servedAfter === url) break;
+    if (deps.now() - probeStarted + READBACK_PROBE_MS > READBACK_BUDGET_MS) break;
+    await deps.sleep(READBACK_PROBE_MS);
+  }
+  const readbackElapsed = deps.now() - probeStarted;
 
   const result: AbuseReportUrlResult = {
     ok:
@@ -310,6 +357,8 @@ export async function applyAbuseReportUrl(
     served_url_before: servedBefore,
     served_url_after: servedAfter,
     reader_live: servedAfter === url,
+    readback_attempts: attempts,
+    readback_elapsed_ms: readbackElapsed,
   };
 
   deps.log("abuse_report_url.write", {
@@ -319,6 +368,8 @@ export async function applyAbuseReportUrl(
     already_present: alreadyPresent,
     var_present_after: result.var_present_after,
     reader_live: result.reader_live,
+    readback_attempts: attempts,
+    readback_elapsed_ms: readbackElapsed,
     missing_bindings: missingBindings,
     missing_secrets: missingSecrets,
   });
