@@ -14,13 +14,19 @@
 // steps) lands in #53/#54. A tenant created today therefore parks at status "pending" with a
 // "queued" job until that runner ships. Nothing here claims otherwise to the caller.
 
-import { balanceFromSums, parseEnforcing, type Balance, type HoldRow, type LedgerRow } from "./credits";
+import { balanceFromSums, parseEnforcing, parseMicroUsd, type Balance, type HoldRow, type LedgerRow } from "./credits";
 import {
   buildAdminCreditView,
   buildTenantCreditView,
   creditsApplyToTenant,
   topUpAvailable,
 } from "./credits-api";
+import {
+  DEFAULT_MANUAL_CREDIT_CEILING_MICRO_USD,
+  ManualRail,
+  applySettlement,
+  validateCreditAmount,
+} from "./payment-rail";
 import type { CreditStore } from "./store";
 import { ApiTokenError } from "./tenant-api-token";
 import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt } from "./aup";
@@ -378,6 +384,9 @@ async function me(env: ControlPlaneEnv, deps: ControlPlaneDeps, account: Account
 
 /** How many activity lines either surface returns. Truncation is reported, never silent. */
 const CREDIT_ACTIVITY_LIMIT = 50;
+
+/** Stateless, so one instance. A per-request `new` would imply state this rail does not have. */
+const MANUAL_RAIL = new ManualRail();
 
 async function readCreditActivity(
   credits: CreditStore,
@@ -1130,6 +1139,85 @@ async function adminRoutes(
     // the flag travels into the report instead of being assumed away.
     const census = { tenants, complete: tenants.length < TENANT_PAGE_LIMIT };
     return json({ report: reconcileRunPod(census, parsed.inventory) });
+  }
+
+  // ---- operator credit (cp#193, ManualRail) ------------------------------------------------
+  //
+  // THE MOST ABUSABLE SURFACE IN THE LEDGER: it mints money from nothing. So it carries more
+  // constraints than any other admin route, and each one is here for a stated reason.
+  const manualCredit = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/credits\/manual$/.exec(path);
+  if (request.method === "POST" && manualCredit) {
+    if (!deps.credits) return err("credits_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(manualCredit[1]);
+    if (!tenant) return err("not_found", 404);
+
+    const body = (await readJson(request)) as
+      | { amount_micro_usd?: unknown; operator?: unknown; reason?: unknown; reference?: unknown }
+      | null;
+
+    const ceiling =
+      parseMicroUsd(env.MANUAL_CREDIT_CEILING_MICRO_USD) ?? DEFAULT_MANUAL_CREDIT_CEILING_MICRO_USD;
+    const amount = validateCreditAmount(body?.amount_micro_usd, ceiling);
+    if (!amount.ok) return err("invalid_amount", 400, { message: amount.message });
+
+    // OPERATOR AND REASON ARE BOTH REQUIRED, and the operator field is ASSERTED, NOT AUTHENTICATED.
+    // This plane has ONE shared admin token, so the bearer proves "someone holds the operator
+    // credential" and can never prove WHICH human acted. Recording a claimed name as if it were a
+    // verified identity would put a false attribution in a money audit, which is worse than none, so
+    // the field is stored and labelled as a claim. Real per-operator identity needs the admin console
+    // (cp#89); until then this is the honest maximum.
+    const operator = typeof body?.operator === "string" ? body.operator.trim() : "";
+    const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
+    if (!operator) return err("operator_required", 400, { message: "operator must name who is issuing this credit" });
+    if (!reason) return err("reason_required", 400, { message: "reason must say why this credit is being issued" });
+
+    // The idempotency anchor is the CALLER's reference. Without one, a double-submitted form is two
+    // credits; a route that generated its own id here would make replay protection impossible.
+    const reference = typeof body?.reference === "string" ? body.reference.trim() : "";
+    if (!reference) {
+      return err("reference_required", 400, {
+        message: "reference must be a caller-chosen unique id for this credit, so a retry cannot double-credit",
+      });
+    }
+
+    const now = new Date(deps.now()).toISOString();
+    let applied: boolean;
+    try {
+      ({ applied } = await applySettlement(deps.credits, {
+        railId: MANUAL_RAIL.id,
+        event: {
+          tenant_id: tenant.id,
+          amount_micro_usd: amount.amount,
+          external_ref: reference,
+          note: JSON.stringify({ operator_claimed: operator, reason }),
+        },
+        rowId: newId("led"),
+        now,
+      }));
+    } catch {
+      return err("credit_failed", 503);
+    }
+
+    // AUDITED EVEN ON A REPLAY. "Someone tried to issue this credit again" is itself worth seeing:
+    // a burst of replays is either a broken client or somebody probing, and an audit that records
+    // only first attempts cannot show either.
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.credit_manual",
+      tenant.id,
+      JSON.stringify({
+        amount_micro_usd: amount.amount,
+        reference,
+        operator_claimed: operator,
+        reason,
+        applied,
+        rail: MANUAL_RAIL.id,
+      }),
+    );
+
+    // 200 on a replay, not 409. A caller retrying after a timeout must be able to reach a success
+    // and stop; reporting the replay as an error is how a retry loop becomes infinite.
+    return json({ applied, amount_micro_usd: amount.amount, reference });
   }
 
   const adminCredits = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/credits$/.exec(path);
