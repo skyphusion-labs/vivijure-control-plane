@@ -1476,6 +1476,43 @@ identically (quota off), which is right for a studio and dangerous for the plane
 capped. So a non-empty value that is not a positive integer refuses the provision, refuses a studio
 upgrade preflight, and refuses the converge route, each naming the raw value.
 
+### The ceiling bounds ACCUMULATION, not any single render
+
+`checkStorageQuota` (vivijure-core `src/storage-quota.ts`) denies when `usedBytes >= quotaBytes`,
+evaluated ONCE at submit. That is "refuse when the studio is ALREADY at or over", not "refuse when
+this submission WOULD exceed", and the difference is visible to a tenant:
+
+**A tenant one byte under their ceiling can submit a render that writes gigabytes.** The submit path
+cannot know the output size before the render happens, so a would-exceed check is not implementable
+there without guessing. The ceiling therefore holds accumulation over time and permits an overshoot
+of at most one submission's worth.
+
+At 100 GiB that overshoot is noise against the number it protects. It is written down here because a
+customer should not be the one to discover it, and because "the quota did not stop it" reads like a
+broken gate when it is the designed one. The `>=` (rather than `>`) is deliberate for the same
+reason: a studio exactly at its limit is full, and denying one submission early is honest where
+letting one through is not.
+
+### Probing the deny: read `used_bytes` FIRST, then set the ceiling BELOW it
+
+Learned by getting it wrong on the testbed (cp#183 acceptance, 2026-07-27). Setting a tiny absolute
+ceiling and expecting a 507 is not a test, it is a coin flip, because the ceiling only means
+something relative to what the ledger currently says:
+
+1. `POST /api/admin/tenants/:id/storage-quota` with `{}` and read `used_bytes` out of the response.
+2. Set the ceiling BELOW that number (`{"mode":"set","quota_bytes":"<used-1>"}`), which the response
+   confirms with `over_on_arrival: true`.
+3. Now a submit denies 507, at the gate, before any GPU is dispatched.
+
+**A tenant provisioned before vivijure-core v1.3.0 has a ledger that starts at 0** (accounting begins
+at the version that ships it), so its `used_bytes` is wrong-LOW until a reconcile runs. On such a
+tenant a 1-byte ceiling does NOT deny -- `0 >= 1` is false -- and the submit is correctly accepted,
+which costs a real render to discover. `over_on_arrival` in the converge response is the field that
+tells you which case you are in before you spend anything.
+
+Note also that the operator smoke render (cp#45) carries a **1800s per-tenant cooldown**, so a failed
+probe is not cheap to retry immediately.
+
 ### Three write paths, because one door leaves the estate split
 
 | Path | Reaches |
