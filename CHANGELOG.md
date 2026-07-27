@@ -6,6 +6,43 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(meter): LLM spend roll-up schema and decision core (cp#185)
+
+Part one of the per-tenant Opus meter: the schema, the pure decision core, and the injected gateway
+seam. **Inert until part two** (the concrete reader, the trigger, and the windowed read the credit
+ledger consumes) lands; nothing calls it yet.
+
+- `llm_spend_events` (usage rows, owned by this lane) and `llm_rollup_periods` (the completeness
+  record), plus the ingestion watermark. Integer micro-USD throughout, matching `credit_ledger`,
+  converted ONCE at ingest.
+- **`cost_micro_usd` is NULLABLE.** `NOT NULL` would force a row the gateway did not price to be
+  written as `0`, which downstream reads as "this request was free" rather than "we do not know".
+  A cached response plausibly has a real 0, an errored request may carry no cost field, and once
+  summed they are indistinguishable -- undercounting, therefore undercharging, while the
+  price-to-cost ratio reports cost recovery. Only two live gateway rows have been observed, so it
+  is NOT established that every shape carries a cost, and the schema does not foreclose the
+  distinction before that evidence exists.
+- **A positive control runs on EVERY roll-up, not at build time only.** The AI Gateway logs
+  endpoint answers `200 / success=true / total_count=0` for a gateway id that does not exist, so an
+  empty read is indistinguishable from wrong-gateway, wrong-account, no-permission and
+  rows-aged-out. `control_passed` is a SEPARATE column from `status`, because a run can paginate to
+  exhaustion and still have proven nothing. A period is billable only when `status=complete AND
+  control_passed=1`; absent or incomplete is UNBILLABLE, which is a different fact from zero.
+- **Retention-gap detection.** Gateway retention is 10,000,000 rows `DELETE_OLDEST` with no time
+  window, so "have not finished reading" and "the rows are gone" are different failures: one is
+  resumable, the other is not. `gap_detected` is set when the oldest surviving row is newer than the
+  watermark, and it forces the period out of `complete`.
+- **Attribution is read off the row**, never inferred from a server-side filter having returned it.
+  The metadata filter takes key and value as separate dimensions and the pair-versus-independent
+  semantics could not be proven; if independent, a filter could attribute one tenant spend to
+  another. The filter is a narrowing optimisation only.
+- **Unattributed spend is kept** (`tenant_id NULL`), never dropped and never spread across tenants.
+  A rising unattributed count is how a regression in the emitter becomes visible.
+- Billing keys on `period_id`, never `occurred_at`, so a row arriving after settlement cannot
+  retroactively reprice a period already billed. `period_id` is assigned at insert and never
+  changes, since writes are `INSERT OR IGNORE` on `(source, source_id)`.
+
+
 ### feat(credits): payment rail seam, ManualRail, and the provisioning list (cp#193)
 
 - **No payment processor is contained, referenced, or created here.** No Stripe client, no API key,
