@@ -33,5 +33,7 @@
 -- var, and the plane never does arithmetic on it. Storing it as the thing it is means no integer
 -- round-trip can quietly change the number an operator typed. Validation (positive integer, bytes
 -- only, no unit suffixes) happens at the route, so a malformed value never reaches this column.
+-- RENAMED by 0017 to r2_storage_quota_override. The name here is left as it shipped, because a
+-- migration records what it DID rather than what the schema later became; 0017 carries the why.
 ALTER TABLE tenants ADD COLUMN r2_storage_quota_mode TEXT;
 ALTER TABLE tenants ADD COLUMN r2_storage_quota_bytes TEXT;

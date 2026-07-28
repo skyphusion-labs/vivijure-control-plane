@@ -1,0 +1,19 @@
+-- Rename tenants.r2_storage_quota_mode -> tenants.r2_storage_quota_override (cp#195).
+--
+-- WHY. The column records whether a tenant OVERRIDES the plane storage ceiling: NULL = inherit,
+-- set = use this tenant own bytes, none = deliberately uncapped (0014). That is an override
+-- DISPOSITION, not a mode of anything.
+--
+-- Meanwhile vivijure-core v1.4.0 introduced a studio var genuinely called R2_STORAGE_QUOTA_MODE,
+-- carrying deny or meter: what the ceiling MEANS. So the estate had two unrelated facts behind
+-- the same three words, one a D1 column and one a Worker binding, and the one that is actually a
+-- mode did not own the word.
+--
+-- The sharp edge is not readability. cp#195 implies a future PER-TENANT enforcement mode (prepaid
+-- metered, BYOK capped), and its obvious column name was occupied by something unrelated. Renaming
+-- now, while exactly ONE migration depends on the old name and the data is a day old, is the
+-- cheapest this will ever be.
+--
+-- SQLite RENAME COLUMN is available on D1 and rewrites nothing: no table copy, no data movement, no
+-- window where a row is missing. Values are untouched; only the name changes.
+ALTER TABLE tenants RENAME COLUMN r2_storage_quota_mode TO r2_storage_quota_override;

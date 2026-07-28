@@ -6,6 +6,37 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### refactor(schema): rename `r2_storage_quota_mode` to `r2_storage_quota_override` (cp#195)
+
+The column records whether a tenant OVERRIDES the plane storage ceiling (`NULL` inherit, `set` use
+this tenant own bytes, `none` deliberately uncapped). That is an override DISPOSITION, not a mode of
+anything, so the name was wrong on its own merits before any collision existed.
+
+vivijure-core v1.4.0 then introduced a studio var genuinely called `R2_STORAGE_QUOTA_MODE`, carrying
+`deny` / `meter`. Rollins put the distinction better than the original framing did, so it is his
+wording in the record: **the COLUMN selects which SOURCE a tenant ceiling comes from; the VAR selects
+what the studio DOES at that ceiling.** Orthogonal facts behind three shared words, one a D1 column
+and one a Worker binding, and the one that actually is a mode did not own the word.
+
+- **The sharp edge is not readability.** cp#195 implies a future PER-TENANT enforcement mode (prepaid
+  metered, BYOK capped) and its obvious column name was occupied by something unrelated. Exactly one
+  migration depended on the old name and the data was a day old, so this is the cheapest it will ever
+  be.
+- Migration `0017`. `ALTER TABLE ... RENAME COLUMN` is available on D1 and rewrites nothing: no table
+  copy, no data movement, no window where a row is missing. Values untouched, name only.
+- **`0014` is ANNOTATED, not rewritten.** A migration records what it DID rather than what the schema
+  later became, so the old name stays where it shipped with a pointer to `0017` beside it. Rewriting
+  a migration is how a ledger stops matching the database it built.
+- 19 references renamed across `src/`, `tests/` and `docs/`; zero occurrences of the old name remain
+  outside the migration history.
+
+**A hole in the immutability guard, found by its own control while resolving this PR.** A merge
+produced TWO `## v1.18.0` headings, and `sections()` keys by version, so the dict kept the LAST
+occurrence: the guard compared that one, found it matched its tag, and reported ok while the FIRST
+heading carried entries belonging to no release at all. Right about the section it looked at, blind
+to the one that was wrong. Duplicate version headings are a refusal now, with a control that plants
+a second heading and requires the refusal to say so.
+
 ### docs(meter): the allowance parser contract and the storage-mode name collision, recorded at the vars (cp#195)
 
 Comment-only in `src/env.ts`. No behaviour change; recorded because both facts existed only in crew

@@ -227,7 +227,7 @@ describe("the projection: plane config -> studio var", () => {
 
 describe("two tenant classes: the plane number is a DEFAULT, not the answer (cp#173)", () => {
   const row = (mode: string | null, bytes: string | null = null) => ({
-    r2_storage_quota_mode: mode,
+    r2_storage_quota_override: mode,
     r2_storage_quota_bytes: bytes,
   });
   const plane = { bytes: QUOTA, invalid: null };
@@ -474,7 +474,7 @@ describe("the converge: patch, then PROVE the studio enforces it", () => {
     expect(result.record_written).toBe(true);
     expect(result.quota_source).toBe("tenant");
     const row = await d.store.getTenantById(t.id);
-    expect(row?.r2_storage_quota_mode).toBe("set");
+    expect(row?.r2_storage_quota_override).toBe("set");
     expect(row?.r2_storage_quota_bytes).toBe("500");
   });
 
@@ -523,7 +523,7 @@ describe("the converge: patch, then PROVE the studio enforces it", () => {
     expect(result.served_quota_after).toBeNull();
     expect(result.ok).toBe(true);
     const row = await d.store.getTenantById(t.id);
-    expect(row?.r2_storage_quota_mode).toBe("none");
+    expect(row?.r2_storage_quota_override).toBe("none");
   });
 
   it("refuses a quota_bytes that is not a byte count, before touching the record", async () => {

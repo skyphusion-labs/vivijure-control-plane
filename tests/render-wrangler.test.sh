@@ -332,6 +332,29 @@ else
 fi
 rm -rf "$vac_tmp"
 
+# CONTROL: a DUPLICATED released heading must be refused, not silently half-checked. A dict keyed by
+# version keeps the LAST occurrence, so a changelog carrying `## v1.18.0` twice had one section
+# compared and the other ignored entirely. A bad merge produced exactly that, twice, and the guard
+# reported ok because the section it happened to look at matched its tag.
+dup_tmp="$(mktemp -d)"
+cp -r "$here/.git" "$dup_tmp/.git"
+python3 - "$here/CHANGELOG.md" "$dup_tmp/CHANGELOG.md" <<"PY"
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src).read()
+i = s.index("## v1.18.0")
+open(dst, "w").write(s[:i] + "## v1.18.0 -- 2026-07-28\n\n### a stray section from a bad merge\n\n" + s[i:])
+PY
+dup_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$dup_tmp" 2>&1)" && dup_rc=0 || dup_rc=1
+if [ "$dup_rc" -ne 0 ] && printf "%s" "$dup_out" | grep -q "MORE THAN ONCE"; then
+  echo "  ok   CONTROL: a duplicated released heading is refused, not half-checked"
+  pass=$((pass + 1))
+else
+  echo "  FAILED CONTROL: a duplicated released heading was silently half-checked"
+  fail=$((fail + 1))
+fi
+rm -rf "$dup_tmp"
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ] || exit 1

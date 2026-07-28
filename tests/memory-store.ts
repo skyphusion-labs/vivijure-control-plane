@@ -276,7 +276,7 @@ export class MemoryStore implements ControlPlaneStore {
       video_finish_unreachable: 0,
       video_finish_unreachable_reason: null,
       video_finish_unreachable_at: null,
-      r2_storage_quota_mode: null,
+      r2_storage_quota_override: null,
       r2_storage_quota_bytes: null,
       created_at: new Date().toISOString(),
       live_at: null,
@@ -389,7 +389,7 @@ export class MemoryStore implements ControlPlaneStore {
   ): Promise<void> {
     const t = this.tenants.get(id);
     if (!t) return;
-    t.r2_storage_quota_mode = override ? override.mode : null;
+    t.r2_storage_quota_override = override ? override.mode : null;
     t.r2_storage_quota_bytes = override && override.mode === "set" ? override.bytes : null;
   }
 

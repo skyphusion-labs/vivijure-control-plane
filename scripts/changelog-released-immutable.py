@@ -45,18 +45,32 @@ CORRECTION_MARKER = "**CORRECTED AFTER PUBLICATION"
 
 
 def sections(text):
-    """Map version -> section body, for every released heading in a changelog."""
+    """Map version -> section body, for every released heading in a changelog.
+
+    Returns (sections, duplicates). DUPLICATES ARE RETURNED RATHER THAN SWALLOWED: a dict keyed by
+    version silently keeps the LAST occurrence, so a changelog carrying the same version heading
+    twice would have one of them compared and the other ignored entirely. That is not theoretical.
+    A bad merge produced exactly that here, twice, and this function passed it: the second heading
+    matched its tag, so the guard reported ok while the first one carried entries that did not
+    belong to that release at all. The comparison was right about the section it looked at and blind
+    to the one that was wrong.
+    """
     lines = text.split("\n")
     starts = [(i, m.group(1)) for i, l in enumerate(lines) for m in [HEADING.match(l)] if m]
     out = {}
+    seen = []
+    duplicates = []
     for i, version in starts:
+        if version in seen:
+            duplicates.append(version)
+        seen.append(version)
         end = len(lines)
         for j in range(i + 1, len(lines)):
             if lines[j].startswith("## "):
                 end = j
                 break
         out[version] = "\n".join(lines[i:end]).rstrip()
-    return out
+    return out, duplicates
 
 
 def git(*args):
@@ -66,7 +80,7 @@ def git(*args):
 
 
 text = (root / "CHANGELOG.md").read_text()
-head = sections(text)
+head, head_dupes = sections(text)
 tags = set(git("tag", "--list", "v*").stdout.split())
 problems = []
 checked = 0
@@ -82,7 +96,7 @@ for version, body in head.items():
         # nothing. So it is reported as UNCHECKED rather than counted as a pass.
         print("changelog-immutable: cannot read CHANGELOG.md at " + version + "; NOT checked")
         continue
-    at_tag = sections(shown.stdout).get(version)
+    at_tag = sections(shown.stdout)[0].get(version)
     if at_tag is None:
         print("changelog-immutable: " + version + " has no section in its own tagged file; NOT checked")
         continue
@@ -112,6 +126,15 @@ for version, body in head.items():
 #
 # So an empty comparison is a REFUSAL. If this repo genuinely has no released version yet, that is a
 # one-line allowance to add deliberately, not a silence to inherit.
+for version in sorted(set(head_dupes)):
+    problems.append(
+        "CHANGELOG.md carries the heading for " + version + " MORE THAN ONCE. Only one of them can "
+        "be compared against the tag, so the other is invisible to this check entirely -- which is "
+        "how a bad merge hides misattributed entries behind a section that happens to match. "
+        "Duplicate version headings are almost always a merge that produced two, and the fix is to "
+        "keep one and move the stray entries under `## Unreleased`."
+    )
+
 if checked == 0:
     problems.append(
         "compared ZERO released sections, so this run proves nothing. Every version heading in "
