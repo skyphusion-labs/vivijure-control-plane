@@ -32,6 +32,29 @@ Split per repository, deliberately (cf#85):
 
 They used to share one repo and one tag namespace. They do not any more; do not reintroduce it.
 
+### Promoting the changelog at release time (READ THIS BEFORE CUTTING A TAG)
+
+Renaming `## Unreleased` to `## vX.Y.Z` is the promotion. **Leave a fresh, empty `## Unreleased`
+above it in the same edit.**
+
+That is not tidiness. v1.18.0 was promoted without one, and the next three PRs merged with their
+entries having nowhere to land but under a heading that was already released, so `CHANGELOG.md`
+asserted that v1.18.0 shipped cp#219, cp#223 and the cp#195 settlement trigger. `git merge-base
+--is-ancestor` says none of the three is in the tag. Every one of those PRs was individually
+correct; the release process ate them.
+
+`scripts/changelog-released-immutable.py` now refuses that, and runs in
+`tests/render-wrangler.test.sh` on every PR. For each `## vX.Y.Z` heading with a matching git tag it
+compares the section body against the same section in `CHANGELOG.md` AT THAT TAG. It is a property
+of the tree rather than of a diff, so it needs no base ref and it catches an ADDED entry, which no
+"did this PR touch the changelog" check ever would.
+
+**The one declared exception:** a released section MAY be corrected in place when the original note
+was WRONG about what shipped, which this repo has already done once and was right to (v1.17.0 said
+two PRs when the tag carries four). Mark the section with a line beginning
+`**CORRECTED AFTER PUBLICATION` and the guard permits the drift. An edit WITHOUT the marker is
+refused. Declared intent, never inferred, same shape as the env-census exemptions.
+
 ## Migrations: the doctrine
 
 **No hand-applied schema, ever.** Schema reaches the live control-plane D1 through step 5 or not

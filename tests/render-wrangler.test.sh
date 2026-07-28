@@ -270,6 +270,68 @@ else
 fi
 rm -rf "$census_tmp"
 
+# CHANGELOG IMMUTABILITY (the v1.18.0 incident). A released section records what that artifact
+# actually contains, so an entry landing under a released heading makes the changelog assert
+# something the tag does not have. That is what happened: the release promotion left no fresh
+# `## Unreleased`, and the next three merges had nowhere else to go.
+echo ""
+echo "changelog immutability:"
+if python3 "$here/scripts/changelog-released-immutable.py" "$here" >/dev/null 2>&1; then
+  echo "  ok   every released section still says what it said at its tag"
+  pass=$((pass + 1))
+else
+  echo "  FAIL changelog immutability (run scripts/changelog-released-immutable.py for detail)"
+  fail=$((fail + 1))
+fi
+
+# CONTROL: plant an entry under a RELEASED heading and require a refusal that NAMES the version.
+# Bare non-zero is not enough -- this script exits 1 for a missing Unreleased heading too, so a
+# control accepting any failure would keep printing ok after the immutability check was removed.
+cl_tmp="$(mktemp -d)"
+git -C "$here" worktree list >/dev/null 2>&1
+cp -r "$here/.git" "$cl_tmp/.git" 2>/dev/null || true
+cp "$here/CHANGELOG.md" "$cl_tmp/CHANGELOG.md"
+latest_tag="$(git -C "$here" tag --list "v*" --sort=-v:refname | head -1)"
+python3 - "$cl_tmp/CHANGELOG.md" "$latest_tag" <<"PY"
+import sys
+path, tag = sys.argv[1], sys.argv[2]
+lines = open(path).read().split("\n")
+i = next(n for n, l in enumerate(lines) if l.startswith("## " + tag))
+lines.insert(i + 2, "### feat(planted): an entry that landed under a released heading\n")
+open(path, "w").write("\n".join(lines))
+PY
+cl_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$cl_tmp" 2>&1)" && cl_rc=0 || cl_rc=1
+if [ "$cl_rc" -ne 0 ] && printf "%s" "$cl_out" | grep -q "the ${latest_tag} section has CHANGED"; then
+  echo "  ok   CONTROL: an entry planted under a released heading is refused, by name"
+  pass=$((pass + 1))
+else
+  echo "  FAILED CONTROL: a planted entry under ${latest_tag} went unremarked"
+  fail=$((fail + 1))
+fi
+rm -rf "$cl_tmp"
+
+# CONTROL: "nothing to check" must not read as "everything checks out". The guard printed ok having
+# compared ZERO sections in CI, because a bare actions/checkout is shallow and carries no tags, so
+# every version heading failed the is-it-released test and the loop did nothing. Its own control
+# caught that; this pins the refusal so the silence cannot come back if the guard moves to another
+# job that also lacks tags.
+vac_tmp="$(mktemp -d)"
+if git clone -q --depth 1 --no-tags "file://$here/.git" "$vac_tmp/r" 2>/dev/null; then
+  cp "$here/scripts/changelog-released-immutable.py" "$here/CHANGELOG.md" "$vac_tmp/r/"
+  vac_out="$(cd "$vac_tmp/r" && python3 changelog-released-immutable.py . 2>&1)" && vac_rc=0 || vac_rc=1
+  if [ "$vac_rc" -ne 0 ] && printf "%s" "$vac_out" | grep -q "compared ZERO released sections"; then
+    echo "  ok   CONTROL: a tagless checkout is REFUSED, not reported as a pass"
+    pass=$((pass + 1))
+  else
+    echo "  FAILED CONTROL: the guard reported a pass with no tags to compare against"
+    fail=$((fail + 1))
+  fi
+else
+  echo "  FAILED CONTROL: could not build a tagless clone, so this control tested nothing"
+  fail=$((fail + 1))
+fi
+rm -rf "$vac_tmp"
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ] || exit 1
