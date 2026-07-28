@@ -31,7 +31,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # fetch-depth: 0 is LOAD-BEARING, not a habit. scripts/changelog-released-immutable.py
+      # resolves released sections by matching `## vX.Y.Z` headings against git TAGS, and a bare
+      # checkout is shallow with no tags at all. With none present the guard found zero released
+      # sections, compared nothing, and printed ok: it passed VACUOUSLY in the one place it had to
+      # work. Its control caught that, and the script now refuses an empty comparison outright, but
+      # the tags have to be here for the check to mean anything.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:

@@ -103,6 +103,23 @@ for version, body in head.items():
             + CORRECTION_MARKER + ", which is the declared exception."
         )
 
+# NOTHING TO CHECK AND EVERYTHING CHECKS OUT MUST NOT BE THE SAME OUTPUT.
+#
+# This script printed ok having compared ZERO sections, because a bare actions/checkout is shallow
+# with no tags, so every `## vX.Y.Z` heading failed the "is it released" test and the loop did
+# nothing. The guard was inert in CI while reading green, which is the same failure as a roll-up
+# reporting rows_ingested 0 as success, or a meter reporting complete on a reading it never made.
+#
+# So an empty comparison is a REFUSAL. If this repo genuinely has no released version yet, that is a
+# one-line allowance to add deliberately, not a silence to inherit.
+if checked == 0:
+    problems.append(
+        "compared ZERO released sections, so this run proves nothing. Every version heading in "
+        "CHANGELOG.md failed to match a git tag, which in CI almost always means the checkout is "
+        "shallow and carries no tags: use `fetch-depth: 0` (or `fetch-tags: true`). Refusing "
+        "rather than reporting a pass it did not earn."
+    )
+
 if "## Unreleased" not in text:
     problems.append(
         "CHANGELOG.md has no `## Unreleased` heading. Promoting it at release time without leaving "

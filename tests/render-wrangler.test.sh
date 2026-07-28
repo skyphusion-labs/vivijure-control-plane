@@ -310,6 +310,28 @@ else
 fi
 rm -rf "$cl_tmp"
 
+# CONTROL: "nothing to check" must not read as "everything checks out". The guard printed ok having
+# compared ZERO sections in CI, because a bare actions/checkout is shallow and carries no tags, so
+# every version heading failed the is-it-released test and the loop did nothing. Its own control
+# caught that; this pins the refusal so the silence cannot come back if the guard moves to another
+# job that also lacks tags.
+vac_tmp="$(mktemp -d)"
+if git clone -q --depth 1 --no-tags "file://$here/.git" "$vac_tmp/r" 2>/dev/null; then
+  cp "$here/scripts/changelog-released-immutable.py" "$here/CHANGELOG.md" "$vac_tmp/r/"
+  vac_out="$(cd "$vac_tmp/r" && python3 changelog-released-immutable.py . 2>&1)" && vac_rc=0 || vac_rc=1
+  if [ "$vac_rc" -ne 0 ] && printf "%s" "$vac_out" | grep -q "compared ZERO released sections"; then
+    echo "  ok   CONTROL: a tagless checkout is REFUSED, not reported as a pass"
+    pass=$((pass + 1))
+  else
+    echo "  FAILED CONTROL: the guard reported a pass with no tags to compare against"
+    fail=$((fail + 1))
+  fi
+else
+  echo "  FAILED CONTROL: could not build a tagless clone, so this control tested nothing"
+  fail=$((fail + 1))
+fi
+rm -rf "$vac_tmp"
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ] || exit 1

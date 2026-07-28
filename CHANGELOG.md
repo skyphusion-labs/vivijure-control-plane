@@ -182,6 +182,17 @@ merges had nowhere for their entries to land but under a released heading.
   situation and asserts BOTH directions on it: two-dot passes (reproducing the bug) and three-dot
   refuses (the fix). If the fixture could not reproduce the false pass the fix would be unproven.
   A PR carrying its own entry still passes, so the fix is not merely "always refuse".
+- **And the immutability guard itself was passing VACUOUSLY in CI**, caught by its own control. A
+  bare `actions/checkout` is shallow and carries **no git tags**, and the guard resolves released
+  sections by matching `## vX.Y.Z` headings against tags. With none present it found zero released
+  sections, compared nothing, and printed ok. The planted-entry control refused to, reporting an
+  empty version name, which is what surfaced it. Two fixes, because the control catching it was
+  luck-adjacent: `fetch-depth: 0` on the `ci` checkout so the tags exist, AND the script now
+  **REFUSES an empty comparison** rather than reporting a pass it did not earn. "Nothing to check"
+  and "everything checks out" must not be the same output, which is the same lesson as a roll-up
+  treating `rows_ingested: 0` as proof and a meter reporting `complete` on a reading it never made.
+  A third control pins the tagless refusal so the silence cannot return if the guard moves to
+  another job.
 
 ### fix(smoke-render): a deliberate studio refusal is 422, not 502 (cp#223)
 
