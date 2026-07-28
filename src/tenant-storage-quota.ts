@@ -84,6 +84,17 @@ export const STORAGE_USAGE_PATH = "/api/storage/usage";
 export interface StorageQuotaConfig {
   bytes: string | null;
   invalid: string | null;
+  /**
+   * cp#195: `meter` when this plane meters overage, null or ABSENT for core default `deny`.
+   *
+   * Optional deliberately, unlike an env var, where absence is the bug this repo keeps closing. On
+   * a config OBJECT, no mode and mode-null are the same fact (nobody asked for metering) and core
+   * reads both as `deny`, so requiring every construction site to write `mode: null` would be
+   * ceremony that catches nothing.
+   */
+  mode?: string | null;
+  /** A set-but-unrecognised mode, refused rather than bound. Same posture as `invalid`. */
+  invalidMode?: string | null;
 }
 
 /**
@@ -101,25 +112,74 @@ export function isPositiveIntegerBytes(value: string): boolean {
  */
 export function tenantStorageQuota(env: ControlPlaneEnv): StorageQuotaConfig {
   const raw = env.TENANT_R2_STORAGE_QUOTA_BYTES;
-  if (typeof raw !== "string" || raw.trim() === "") return { bytes: null, invalid: null };
+  const modeRead = tenantStorageQuotaMode(env);
+  if (typeof raw !== "string" || raw.trim() === "")
+    return { bytes: null, invalid: null, mode: modeRead.mode, invalidMode: modeRead.invalid };
   const trimmed = raw.trim();
   // Integer AND positive, the same predicate core applies, so the plane cannot consider a value
   // configured that the studio would read as off. 0 is refused rather than treated as "off": an
   // operator who typed 0 asked for something, and a zero ceiling denies every submit.
-  if (!isPositiveIntegerBytes(trimmed)) return { bytes: null, invalid: trimmed };
+  if (!isPositiveIntegerBytes(trimmed))
+    return { bytes: null, invalid: trimmed, mode: modeRead.mode, invalidMode: modeRead.invalid };
   const n = Number(trimmed);
   // Normalized through Number so "007" and "1e3" cannot reach a studio as a string core parses
   // differently from what an operator read in the deploy config.
-  return { bytes: String(n), invalid: null };
+  return { bytes: String(n), invalid: null, mode: modeRead.mode, invalidMode: modeRead.invalid };
+}
+
+
+/**
+ * The ENFORCEMENT mode var, bound onto the studio beside the ceiling (cp#195, vivijure-core v1.4.0).
+ *
+ * NAME COLLISION WARNING, and it is not a typo in either place. `tenants.r2_storage_quota_mode` in
+ * D1 is a DIFFERENT FACT: it records whether this tenant OVERRIDES the plane ceiling (`set` /
+ * `none` / NULL to inherit), and it predates this var by a day. This constant is the studio var
+ * carrying `deny` / `meter`, which is what the ceiling MEANS. Two unrelated meanings behind the same
+ * three words, one in a column and one in a binding. Tracked; do not wire one to the other.
+ */
+export const STORAGE_QUOTA_MODE_VAR = "R2_STORAGE_QUOTA_MODE";
+
+/** The two values core recognises. Anything else is a misconfiguration, not a third mode. */
+const STORAGE_QUOTA_MODES = ["deny", "meter"] as const;
+
+/**
+ * Read the plane-wide enforcement mode.
+ *
+ * SET-BUT-UNRECOGNISED IS REFUSED HERE, exactly as a malformed byte count is, and for the identical
+ * reason. core normalises an unrecognised mode to `deny` and warns, which is right for a STUDIO (an
+ * unreadable knob must not take a studio down) and dangerous for the PLANE: it would make "the
+ * operator typed metre" and "the operator wants a hard cap" the same outcome, on a tenant the
+ * operator believes is metered, and the divergence only becomes visible on a bill. So the plane
+ * validates and refuses to write a studio while the var is malformed. Loud, bounded to the paths
+ * that would have bound it, and fixed by correcting the deploy var.
+ *
+ * UNSET IS NOT A MISCONFIGURATION. It means this plane has not asked for metering, and core
+ * defaults to `deny`, so nothing is bound and the studio behaves exactly as it does today.
+ */
+export function tenantStorageQuotaMode(env: ControlPlaneEnv): { mode: string | null; invalid: string | null } {
+  const raw = env.TENANT_R2_STORAGE_QUOTA_MODE;
+  if (typeof raw !== "string" || raw.trim() === "") return { mode: null, invalid: null };
+  const trimmed = raw.trim().toLowerCase();
+  if (!(STORAGE_QUOTA_MODES as readonly string[]).includes(trimmed)) {
+    return { mode: null, invalid: raw.trim() };
+  }
+  // `deny` is core default, so binding it is a no-op that costs a var slot. Bind only what CHANGES
+  // behaviour, which also keeps a studio that never asked for metering byte-identical to today.
+  return { mode: trimmed === "meter" ? "meter" : null, invalid: null };
 }
 
 /**
  * The projection onto a studio binding set. Empty when there is no ceiling, because ABSENT is how
  * core reads "no quota" -- there is no value meaning off, and binding "0" would deny every submit.
  */
-export function storageQuotaBindings(bytes: string | null): WorkerBinding[] {
-  if (!bytes) return [];
-  return [{ type: "plain_text", name: STORAGE_QUOTA_VAR, text: bytes }];
+export function storageQuotaBindings(bytes: string | null, mode?: string | null): WorkerBinding[] {
+  const out: WorkerBinding[] = [];
+  if (bytes) out.push({ type: "plain_text", name: STORAGE_QUOTA_VAR, text: bytes });
+  // The mode is bound INDEPENDENTLY of the ceiling. They are separate facts: `meter` with no
+  // ceiling is a coherent state (nothing included, everything overage) and binding one only when
+  // the other is present would make that unexpressible.
+  if (mode) out.push({ type: "plain_text", name: STORAGE_QUOTA_MODE_VAR, text: mode });
+  return out;
 }
 
 /**
@@ -130,8 +190,15 @@ export function storageQuotaBindings(bytes: string | null): WorkerBinding[] {
  * lift it on a live tenant. Dropping is how the ceiling is removed and re-adding is how it reaches
  * a studio that never had one. Same shape and same reason as withAbuseReportUrl.
  */
-export function withStorageQuota(carried: WorkerBinding[], bytes: string | null): WorkerBinding[] {
-  return [...carried.filter((b) => b.name !== STORAGE_QUOTA_VAR), ...storageQuotaBindings(bytes)];
+export function withStorageQuota(
+  carried: WorkerBinding[],
+  bytes: string | null,
+  mode?: string | null,
+): WorkerBinding[] {
+  return [
+    ...carried.filter((b) => b.name !== STORAGE_QUOTA_VAR && b.name !== STORAGE_QUOTA_MODE_VAR),
+    ...storageQuotaBindings(bytes, mode),
+  ];
 }
 
 /** What a tenant row records about its own ceiling. `null` means it inherits the plane default. */

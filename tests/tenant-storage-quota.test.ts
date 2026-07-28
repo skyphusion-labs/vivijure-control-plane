@@ -36,7 +36,9 @@ import {
   storageQuotaBindings,
   tenantStorageQuota,
   withStorageQuota,
+  tenantStorageQuotaMode,
 } from "../src/tenant-storage-quota";
+import { assertDispositionCoversContract } from "../src/tenant-studio-env";
 import { MemoryStore } from "./memory-store";
 
 const KEK = btoa("0123456789abcdef0123456789abcdef");
@@ -170,15 +172,15 @@ beforeEach(() => {
 
 describe("the knob: plane config -> a number, or an honest refusal", () => {
   it("reads a positive integer byte count", () => {
-    expect(tenantStorageQuota(env(QUOTA))).toEqual({ bytes: QUOTA, invalid: null });
+    expect(tenantStorageQuota(env(QUOTA))).toMatchObject({ bytes: QUOTA, invalid: null });
   });
 
   it("treats unset and blank as NO ceiling, with no invented default", () => {
     // The whole reason this ships with no fallback: the number prices what an operator is willing
     // to carry, and a default here would be a pricing decision hidden in a config read.
-    expect(tenantStorageQuota(env(undefined))).toEqual({ bytes: null, invalid: null });
-    expect(tenantStorageQuota(env(""))).toEqual({ bytes: null, invalid: null });
-    expect(tenantStorageQuota(env("   "))).toEqual({ bytes: null, invalid: null });
+    expect(tenantStorageQuota(env(undefined))).toMatchObject({ bytes: null, invalid: null });
+    expect(tenantStorageQuota(env(""))).toMatchObject({ bytes: null, invalid: null });
+    expect(tenantStorageQuota(env("   "))).toMatchObject({ bytes: null, invalid: null });
   });
 
   it("REFUSES a set-but-malformed value instead of rounding it down to off", () => {
@@ -186,13 +188,13 @@ describe("the knob: plane config -> a number, or an honest refusal", () => {
     // the studio and dangerous for the plane, because it makes a typo and a deliberate no-ceiling
     // the same outcome while the operator believes they are capped.
     for (const bad of ["100GB", "10 GiB", "1.5", "-1", "0", "lots", "1_000"]) {
-      expect(tenantStorageQuota(env(bad))).toEqual({ bytes: null, invalid: bad });
+      expect(tenantStorageQuota(env(bad))).toMatchObject({ bytes: null, invalid: bad });
     }
   });
 
   it("normalizes what it accepts, so the studio reads what the operator meant", () => {
-    expect(tenantStorageQuota(env("  1000  "))).toEqual({ bytes: "1000", invalid: null });
-    expect(tenantStorageQuota(env("1e3"))).toEqual({ bytes: "1000", invalid: null });
+    expect(tenantStorageQuota(env("  1000  "))).toMatchObject({ bytes: "1000", invalid: null });
+    expect(tenantStorageQuota(env("1e3"))).toMatchObject({ bytes: "1000", invalid: null });
   });
 });
 
@@ -560,5 +562,81 @@ describe("the converge: patch, then PROVE the studio enforces it", () => {
     expect(result.served_quota_before).toBe(500);
     expect(result.served_quota_after).toBe(Number(QUOTA));
     expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------- cp#195: the enforcement MODE
+
+describe("the enforcement mode: what the ceiling MEANS", () => {
+  const modeEnv = (v?: string) => ({ TENANT_R2_STORAGE_QUOTA_MODE: v }) as unknown as ControlPlaneEnv;
+
+  it("unset is NOT a misconfiguration: nothing bound, core default deny", () => {
+    for (const v of [undefined, "", "   "]) {
+      expect(tenantStorageQuotaMode(modeEnv(v))).toEqual({ mode: null, invalid: null });
+    }
+  });
+
+  it("binds ONLY meter, because deny is core default and binding it changes nothing", () => {
+    expect(tenantStorageQuotaMode(modeEnv("meter"))).toEqual({ mode: "meter", invalid: null });
+    expect(tenantStorageQuotaMode(modeEnv("  METER "))).toEqual({ mode: "meter", invalid: null });
+    // Explicit deny is VALID and binds nothing: the studio already behaves that way, so spending a
+    // var slot to restate it would leave a studio that never asked for metering non-identical to
+    // one that did not have the var at all.
+    expect(tenantStorageQuotaMode(modeEnv("deny"))).toEqual({ mode: null, invalid: null });
+    expect(tenantStorageQuotaMode(modeEnv("Deny"))).toEqual({ mode: null, invalid: null });
+  });
+
+  it("REFUSES a set-but-unrecognised mode rather than falling back the way core does", () => {
+    // core normalises an unrecognised mode to deny and warns, which is right for a STUDIO. On the
+    // PLANE it would make "typed metre" and "wants a hard cap" the same outcome, on a tenant the
+    // operator believes is metered, and the divergence only shows up on a bill.
+    for (const bad of ["metre", "off", "true", "METERED"]) {
+      expect(tenantStorageQuotaMode(modeEnv(bad))).toEqual({ mode: null, invalid: bad });
+    }
+  });
+
+  it("rides on the config object, so provision and converge read one resolution", () => {
+    const env = {
+      TENANT_R2_STORAGE_QUOTA_BYTES: "1024",
+      TENANT_R2_STORAGE_QUOTA_MODE: "meter",
+    } as unknown as ControlPlaneEnv;
+    expect(tenantStorageQuota(env)).toMatchObject({ bytes: "1024", mode: "meter", invalidMode: null });
+  });
+
+  // The mode is bound INDEPENDENTLY of the ceiling: meter with no ceiling is a coherent state
+  // (nothing included, everything overage) and must stay expressible.
+  it("binds the mode with or without a ceiling, and nothing when neither is set", () => {
+    expect(storageQuotaBindings(null, null)).toEqual([]);
+    expect(storageQuotaBindings(null, "meter")).toEqual([
+      { type: "plain_text", name: "R2_STORAGE_QUOTA_MODE", text: "meter" },
+    ]);
+    expect(storageQuotaBindings("1024", "meter")).toEqual([
+      { type: "plain_text", name: "R2_STORAGE_QUOTA_BYTES", text: "1024" },
+      { type: "plain_text", name: "R2_STORAGE_QUOTA_MODE", text: "meter" },
+    ]);
+  });
+
+  it("withStorageQuota RE-DERIVES the mode, so lifting metering reaches a live tenant", () => {
+    const carried = [
+      { type: "inherit" as const, name: "R2_STORAGE_QUOTA_BYTES" },
+      { type: "inherit" as const, name: "R2_STORAGE_QUOTA_MODE" },
+      { type: "inherit" as const, name: "SOMETHING_ELSE" },
+    ];
+    // A plane that stopped metering must DROP the var, not carry it forward, or a tenant keeps a
+    // mode nobody configures any more. Same reason the ceiling is re-derived rather than inherited.
+    const dropped = withStorageQuota(carried, "1024", null);
+    expect(dropped.some((b) => b.name === "R2_STORAGE_QUOTA_MODE")).toBe(false);
+    expect(dropped.some((b) => b.name === "SOMETHING_ELSE")).toBe(true);
+
+    const readded = withStorageQuota(carried, "1024", "meter");
+    expect(readded).toContainEqual({ type: "plain_text", name: "R2_STORAGE_QUOTA_MODE", text: "meter" });
+  });
+
+  // The disposition entry is what lets the cf release declare this var without refusing every
+  // provision. It must exist BEFORE that release is pinned; this pins that it exists at all.
+  it("has a disposition, so the cf release that declares it cannot break provisioning", () => {
+    expect(() => assertDispositionCoversContract(["R2_STORAGE_QUOTA_MODE"])).not.toThrow();
+    // CONTROL: the assert can still fail, so the pass above is not vacuous.
+    expect(() => assertDispositionCoversContract(["NO_SUCH_STUDIO_VAR"])).toThrow(/no disposition/);
   });
 });

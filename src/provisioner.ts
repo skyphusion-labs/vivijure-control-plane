@@ -684,7 +684,7 @@ export async function runProvisionJob(
         // bill that keeps arriving after they stop rendering (and, for a tenant who leaves, the one
         // we inherit). Absent when this plane configures no ceiling: core reads an absent knob as
         // off, so there is no value meaning "unlimited" to bind, and "0" would deny every submit.
-        ...storageQuotaBindings(resolvedQuota.bytes),
+        ...storageQuotaBindings(resolvedQuota.bytes, deps.storageQuota.mode),
         // cf#118: the video-finish tier. Present only when this plane is configured for it; absent
         // means the tenant degrades to per-shot clips WITH THE REASON STATED, which is exactly what
         // tenants get today and what self-host gets without the container.

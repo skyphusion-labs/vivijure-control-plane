@@ -427,6 +427,11 @@ export async function upgradeTenantStudio(
       // recorded its own ceiling (or recorded that it has none) must not have that decision
       // overwritten by a bytes move it did not ask for.
       resolveStorageQuota(deps.storageQuota, tenant).bytes,
+      // cp#195: the enforcement MODE is plane-level, so it is re-derived from plane config alone
+      // rather than from the record. The per-tenant record carries whether a tenant overrides the
+      // CEILING, not what the ceiling means; those are different facts and the column name
+      // (tenants.r2_storage_quota_mode, values set/none) unfortunately suggests otherwise.
+      deps.storageQuota.mode,
     );
 
     try {
