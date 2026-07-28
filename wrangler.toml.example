@@ -250,6 +250,21 @@ DISPATCH_NAMESPACE = "${TENANT_DISPATCH_NAMESPACE}"
 TENANT_MODULE_NAMESPACE = "${TENANT_MODULE_NAMESPACE}"
 # The pinned studio release every new tenant gets (the golden-checkpoint pin; see the Q4 ruling).
 STUDIO_RELEASE = "${STUDIO_RELEASE}"
+# cp#218: the per-tenant daily spend ceiling in USD, bound onto every tenant studio as
+# SPEND_DAILY_CEILING at provision time. EMPTY IS MEANINGFUL and is the shipped default: the plane
+# supplies 25, which is what it has always done (src/deps.ts). This line exists because the var was
+# typed in src/env.ts and read in deps.ts while being declared in NO list, so the knob documented as
+# operator-tunable could not actually be tuned. Declared empty here changes nothing and makes it
+# settable.
+TENANT_SPEND_DAILY_CEILING = "${TENANT_SPEND_DAILY_CEILING}"
+# cp#45: the operator smoke-render bounds. EMPTY IS MEANINGFUL for all three -- the documented
+# default applies (src/smoke-render.ts: 1800s cooldown, 20 renders per rolling 24h, 1200s in-flight),
+# and boundFrom() treats a blank as ABSENT rather than as zero, deliberately: this route costs GPU,
+# so an unfilled config line must never read as "this bound is off". Same cp#218 story as above --
+# typed, read, and declared nowhere, so the bounds could not be moved off their defaults.
+SMOKE_RENDER_COOLDOWN_SECONDS = "${SMOKE_RENDER_COOLDOWN_SECONDS}"
+SMOKE_RENDER_DAILY_CAP = "${SMOKE_RENDER_DAILY_CAP}"
+SMOKE_RENDER_INFLIGHT_SECONDS = "${SMOKE_RENDER_INFLIGHT_SECONDS}"
 
 # cp#95: which installed studio-token KEK NEW ciphertext is written under -- "primary" (the default,
 # and the only correct value outside a rotation) or "next". It NAMES a key; it is not one, so it is a
@@ -259,10 +274,17 @@ STUDIO_RELEASE = "${STUDIO_RELEASE}"
 # must write under the SAME key or the rotation never converges (sweep a row forward, let a provision
 # write the next one backward, forever). Making it a deploy-time fact gives that question one home,
 # and makes flipping the write direction of every stored customer credential a reviewable change in
-# git rather than an unlogged click. Leave it unset until a rotation is actually in progress; setting
-# it to "next" with no STUDIO_TOKEN_KEK_NEXT installed REFUSES to encrypt rather than falling back.
+# git rather than an unlogged click.
+#
+# EMPTY IS MEANINGFUL: "primary", the pre-rotation behaviour (kekRing() normalises blank and any
+# unrecognised value to primary). Setting it to "next" with no STUDIO_TOKEN_KEK_NEXT installed
+# REFUSES to encrypt rather than falling back.
+#
+# cp#218: this line used to be COMMENTED OUT, which meant the rotation runbook step "set
+# STUDIO_TOKEN_KEK_ENCRYPT_SLOT and deploy" was not performable without first editing this template.
+# It is a declared, empty-by-default var now, so a rotation is an Actions variable change.
 # Full procedure: docs/deploy.md, "Rotating STUDIO_TOKEN_KEK".
-# STUDIO_TOKEN_KEK_ENCRYPT_SLOT = "primary"
+STUDIO_TOKEN_KEK_ENCRYPT_SLOT = "${STUDIO_TOKEN_KEK_ENCRYPT_SLOT}"
 
 # Throttles the outbound-email amplifier (/api/auth/email/start).
 [[unsafe.bindings]]
@@ -270,6 +292,30 @@ name = "CP_RATE_LIMIT"
 type = "ratelimit"
 namespace_id = "2001"
 simple = { limit = 5, period = 60 }
+
+# --- Cron: the per-tenant LLM spend meter (cp#185) ---
+#
+# Drives the scheduled() handler in src/index.ts, which pages AI Gateway logs from a watermark and
+# writes integer micro-USD usage rows the credit ledger bills from.
+#
+# WHY 15 MINUTES. Not retention: gateway retention is COUNT based (10,000,000 rows, DELETE_OLDEST)
+# rather than a time window, so at the hosted Opus call rate no plausible cadence loses rows. The
+# interval is chosen against two other things. Shorter would bill in tighter windows but writes a
+# period row per tick forever (a 5-minute cron is 288 rows a day of pure bookkeeping); longer leaves
+# a bigger backlog for one run to page, and a run that hits its page cap reports the window
+# incomplete, which is honest but unbillable until it catches up. 15 minutes is 96 rows a day and a
+# backlog one run clears many times over.
+#
+# CHANGING IT IS SAFE AND NEEDS NO CODE CHANGE. Period windows TILE off the previous run's recorded
+# instant, never off a configured interval, so this number and the ledger can never disagree about
+# where one window ended and the next began.
+#
+# REMOVING IT DISABLES THE METER SILENTLY, which is the one hazard here: nothing else in the system
+# notices an absent cron, because "no period rows" is exactly what an idle plane looks like. The
+# windowed read is what catches it -- a billing window with no roll-up run assigned to it reports
+# complete:false, so a statement built on it refuses rather than bills a zero.
+[triggers]
+crons = ["*/15 * * * *"]
 
 # SECRETS (wrangler secret put, never in this file):
 #   POSTERN_SEND_TOKEN          -- bearer for postern's send door; the sender identity is BOUND to
@@ -279,6 +325,11 @@ simple = { limit = 5, period = 60 }
 #   APPLE_PRIVATE_KEY           -- the .p8; parked with the rest of the Apple seam.
 #   CONTROL_PLANE_ADMIN_TOKEN   -- the admin gate. Unset = no admin surface (fails closed).
 #   CF_PROVISIONER_TOKEN        -- mints tenant D1 + R2 + scoped creds. Consumed by #53, not #52.
+#   AI_GATEWAY_READ_TOKEN       -- cp#185. AI Gateway Read + Metadata Read, nothing else. The LLM
+#                                  meter pages gateway logs with it. UNSET = the meter does not run
+#                                  and writes NO period rows, which is an honest off: an empty
+#                                  period row would be a billable-looking window of zero spend
+#                                  manufactured out of a missing secret.
 
 # --- Routing (#55) ---
 #

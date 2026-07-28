@@ -8,6 +8,11 @@
 import { r2StudioBundleSource } from "./bundle-r2";
 import { r2ModuleBundleSource } from "./module-bundle-r2";
 import { CfApi } from "./cf-api";
+import { aiGatewayLogReader } from "./ai-gateway-logs";
+import type { GatewayLogReader } from "./llm-spend-rollup";
+import type { LlmSpendStore } from "./llm-spend-ingest";
+import type { LlmSpendReadStore } from "./llm-spend-window";
+import { LlmSpendD1 } from "./store-d1";
 import type { ControlPlaneEnv } from "./env";
 import { studioKekRing } from "./env";
 import type { MailSender } from "./email";
@@ -287,6 +292,18 @@ export interface ControlPlaneDeps {
    * whether someone can work.
    */
   credits?: CreditStore;
+  /**
+   * cp#185: the LLM spend meter's READ and WRITE halves of D1. Always present in production (it is
+   * the same database this plane already owns), so unlike `credits` its absence is a test shape
+   * rather than a deployment shape.
+   */
+  llmSpend?: LlmSpendStore & LlmSpendReadStore;
+  /**
+   * cp#185: the live AI Gateway log reader. ABSENT is a real deployment shape -- a plane with no
+   * gateway configured, or no read token installed, genuinely cannot meter -- and the ingest route
+   * then refuses 503 rather than recording an observation it did not make.
+   */
+  gatewayLogs?: GatewayLogReader;
 }
 
 export function productionDeps(env: ControlPlaneEnv): ControlPlaneDeps {
@@ -301,7 +318,39 @@ export function productionDeps(env: ControlPlaneEnv): ControlPlaneDeps {
     // one connection; the split into two interfaces is about what callers may depend on, not about
     // there being two stores.
     credits: store,
+    // The SAME database again, behind its own class: the meter's tables are disjoint from the
+    // platform tables and nothing in ControlPlaneStore should be able to reach them by accident.
+    llmSpend: new LlmSpendD1(env.CP_DB),
+    gatewayLogs: llmMeterReader(env),
   };
+}
+
+/**
+ * The live gateway reader, or undefined when this deploy cannot honestly meter. Exported so the
+ * wiring test takes the SAME construction production takes rather than a re-derivation of it.
+ *
+ * REFUSES RATHER THAN THROWS on a bad gateway id. aiGatewayLogReader throws when pointed at prism,
+ * which is correct at its own boundary, but a throw HERE would take down every unrelated route on
+ * the plane (productionDeps runs on every request) over a misconfigured meter. So the refusal is
+ * caught, logged loudly and named, and the meter reports itself unconfigured -- which is exactly
+ * what it is. Loud and inert beats a plane that will not serve.
+ */
+export function llmMeterReader(env: ControlPlaneEnv): GatewayLogReader | undefined {
+  const accountId = env.CF_ACCOUNT_ID?.trim();
+  const gatewayId = env.TENANT_AI_GATEWAY_ID?.trim();
+  const token = env.AI_GATEWAY_READ_TOKEN;
+  if (!accountId || !gatewayId || !token) return undefined;
+  try {
+    return aiGatewayLogReader({
+      accountId,
+      gatewayId,
+      token,
+      fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+    });
+  } catch (e) {
+    console.error("llm_meter.reader_refused", (e as Error).message);
+    return undefined;
+  }
 }
 
 /**
@@ -374,7 +423,13 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     // rotation is neither refused nor written under a key the sweep has already walked past.
     kek: studioKekRing(env),
     // Always set a ceiling: a hosted tenant with no daily cap has no cost bound. Operator-tunable.
-    spendDailyCeiling: env.TENANT_SPEND_DAILY_CEILING ?? "25",
+    //
+    // EMPTY MEANS ABSENT, and that is not pedantry (cp#218). This var is declared in the four
+    // deploy lists as ALLOW_EMPTY, so an unset knob arrives as "" rather than undefined, and ??
+    // only catches undefined -- every tenant would have been provisioned with SPEND_DAILY_CEILING
+    // set to the empty string, which is not a ceiling. Same rule kekRing() and videoFinishServiceId
+    // already use.
+    spendDailyCeiling: env.TENANT_SPEND_DAILY_CEILING?.trim() || "25",
     // cf#56: the AI Gateway that AI-Gateway-backed tenant modules bind as GATEWAY_ID. NO default:
     // an unset var means this plane names no gateway, and plan-enhance then runs on the free local
     // Workers AI provider. Defaulting to a slug would bind tenants to a gateway nobody chose, and
