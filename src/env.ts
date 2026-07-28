@@ -220,6 +220,65 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   CP_RATE_LIMIT?: RateLimiter;
 }
 
+
+/**
+ * CENSUS CLASSIFICATION (cp#218). The declared intent `scripts/var-census.py` reads.
+ *
+ * WHY THIS EXISTS. The census used to anchor on the placeholders in `wrangler.toml.example` and
+ * assert the other three lists agreed with that set. That catches "declared in some lists, missing
+ * from others" and is structurally BLIND to "declared in no list, read in code anyway": all four
+ * lists agree, by all omitting it. `CREDITS_ENFORCING` shipped in v1.17.0 that way and never
+ * reached the Worker. Census green, deploy green, tests green, feature dead.
+ *
+ * Closing that needs a distinction this interface does not otherwise carry, because
+ * `ControlPlaneEnv` mixes three kinds of thing that reach the Worker by three different routes:
+ *
+ *   - a VAR is delivered by the four lists (template placeholder, render allowlist, both deploy
+ *     render blocks). Anything not named below is one, and it MUST be declared.
+ *   - a SECRET is delivered by `wrangler secret put`, out of band, and must NEVER appear in a
+ *     tracked deploy list.
+ *   - a BINDING is delivered by a wrangler binding table (`[[d1_databases]]`, `[[r2_buckets]]`,
+ *     `[[dispatch_namespaces]]`, `assets`, `[[unsafe.bindings]]`), never as a var.
+ *
+ * The classification is by DELIVERY MECHANISM, not by how sensitive a value looks.
+ * `VIDEO_FINISH_VPC_SERVICE_ID` is not a credential, and it is listed as a secret because that is
+ * how it is actually installed on the Worker (read back from the live script settings as
+ * `secret_text`). Guessing from the type would have got that one wrong in the safe-looking
+ * direction, which is the whole reason this is a declaration rather than a heuristic.
+ *
+ * FLAGGING A SECRET AS A MISSING VAR WOULD BE ACTIVELY WRONG: it invites someone to "fix" the
+ * census by putting a credential name into a tracked deploy list. Flagging bindings would put noise
+ * on every deploy, and a noisy guard is one people learn to ignore, which is worse than the gap.
+ *
+ * ADDING A FIELD. Add it to one of these lists, or declare it in the four var lists. There is no
+ * third option and no silent one: a field in neither is a census FAILURE, because silence is the
+ * bug this exists to catch.
+ *
+ * `satisfies` is load-bearing. It makes tsc reject a name that is not a field of the interface, so
+ * a renamed or deleted field cannot leave a stale entry sitting here looking like coverage.
+ */
+export const ENV_SECRETS = [
+  "POSTERN_SEND_TOKEN",
+  "GOOGLE_OAUTH_CLIENT_SECRET",
+  "GITHUB_OAUTH_CLIENT_SECRET",
+  "APPLE_PRIVATE_KEY",
+  "CONTROL_PLANE_ADMIN_TOKEN",
+  "CF_PROVISIONER_TOKEN",
+  "CF_WORKER_UPLOAD_TOKEN",
+  "VIDEO_FINISH_VPC_SERVICE_ID",
+  "STUDIO_TOKEN_KEK",
+  "STUDIO_TOKEN_KEK_NEXT",
+] as const satisfies readonly (keyof ControlPlaneEnv)[];
+
+export const ENV_BINDINGS = [
+  "ASSETS",
+  "CP_DB",
+  "TENANT_DISPATCH",
+  "TENANT_MODULE_DISPATCH",
+  "STUDIO_RELEASES",
+  "CP_RATE_LIMIT",
+] as const satisfies readonly (keyof ControlPlaneEnv)[];
+
 /**
  * cp#95: the KEK ring this deploy runs on, DERIVED in one place.
  *
