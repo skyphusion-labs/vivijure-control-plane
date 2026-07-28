@@ -81,6 +81,18 @@ than us. A configured zero IS a decision and still bills from the first micro-US
 `overageIdemRef(meter, periodKey)` is deterministic and separates meter classes, since one tenant can
 owe an LLM overage and a storage overage in the same period and those are two rows.
 
+- **`src/meter-settle.ts`** -- `settleMeterOverage()`, the ONLY path from a decision to a money row.
+  There is no override, no force flag and no second entry point, so an incomplete window cannot be
+  billed by any path through the module. A debit writes a NEGATIVE delta (matching `captureHold`) and
+  carries `cost_micro_usd` = the FULL window usage rather than the charged overage, so the allowance
+  we absorbed stays visible instead of the ratio reporting full cost recovery.
+- **`already_settled` is distinct from `debited`.** The ledger is idempotent on
+  (`tenant_id`, `idem_ref`) and a replay is a success, but collapsing the two would make a settlement
+  run report N fresh charges when it re-ran over N existing ones, which cannot answer "did this month
+  settle twice".
+- A refusal DEFERS billing, it does not forfeit it: a period refused on an incomplete window settles
+  normally once the meter catches up. Tested.
+
 Verification: typecheck clean, 1323 unit tests green, and 7 planted defects each watched turning the
 suite red (allowance checked before completeness, unset allowance treated as zero, the total billed
 instead of the difference, the allowance boundary flipped, the meter class dropped from the
