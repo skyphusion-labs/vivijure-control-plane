@@ -274,6 +274,7 @@ not a third-party email vendor.
 | Provision job records | Short. They exist to make a failed provision resumable and debuggable. |
 | CSAM-related preservation | **1 year** from CyberTipline submission, per 18 U.S.C. 2258A(h), on a segregated path (`PRESERVATION-PATH.md`; posture in `ABUSE-AND-NCMEC.md`, procedure in `ABUSE-RESPONSE-RUNBOOK.md`). The year is the **floor** of the duty, not an expiry: preserving longer is permitted (2258A(h)(5)) and destruction happens on a law enforcement request (2258B(c)), never on a timer of ours. This overrides deletion requests. |
 | Operational logs | As today: render-state, not creative payload, on our own Loki, up to 90 days. |
+| **Operator-access audit records** (Section 2.3) | **A record class of its own, retained deliberately.** It is NOT an operational log and does not age out on the 90-day operational tier above: it exists to make "we hold access we do not routinely use" checkable after the fact, so it must outlive the dispute, complaint, or access request that would test it, and near-zero volume makes long retention cheap (Section 2.3's own argument). Because each row names an identified operator and an identified tenant, its retention period is itself a privacy commitment: **counsel sets the number** (T1-14), the same precedent as AUP acceptance records (T1-5). |
 
 **Deletion has a limit and the policy must say so:** an AUP acceptance record, and anything under a
 legal preservation obligation, survives an account deletion request. Promising unconditional
