@@ -938,13 +938,37 @@ we do a few times per release.
 
 | Route | What it does |
 | --- | --- |
-| `POST /api/admin/tenants/:id/smoke-render` | Opens a smoke render, builds the canonical bundle and submits it. `202` with the row, or `429` when a spend bound refuses. |
+| `POST /api/admin/tenants/:id/smoke-render` | Opens a smoke render, builds the canonical bundle and submits it. `202` with the row, `429` when a spend bound refuses, `422` when the tenant studio deliberately refuses (cp#223), `502` when it could not be reached or could not be parsed. |
 | `GET /api/admin/tenants/:id/smoke-render/:smk` | Drives it. This is the call that FETCHES the artifact and decides whether anything is verified. |
 | `GET /api/admin/tenants/:id/smoke-render/:smk/artifact` | Streams the bytes back through the plane, so an operator can LOOK at them. |
 
 All three are behind the existing admin bearer. Note that `adminRoutes` checks the bearer BEFORE
 matching a path, so **every** `/api/admin/*` string returns 401 unauthenticated, including routes
 that do not exist: a 401 here is never evidence that a route is wired.
+
+### What the outer status means when the tenant studio says no (cp#223)
+
+A smoke render can be refused by the tenant studio for two very different reasons, and the outer
+status distinguishes them so an operator does not go hunting the wrong problem.
+
+| Outer | When | Body |
+| --- | --- | --- |
+| `422 studio_refused` | the studio ANSWERED, with a 4xx or 5xx. A DECISION, very often on a ceiling this operator configured (a `507` from the cp#183 storage quota is the common one). | `studio_status` carries what the studio answered; `message` carries the words it sent, including its real numbers |
+| `502 studio_refused` | the studio could not be reached, or answered something this plane could not parse (a 2xx whose body has no bundle key or job id). | same shape, `studio_status` is what came back, if anything did |
+
+**Why not simply propagate the studio status.** Answering `507` outward would say THIS plane is out
+of storage, which is a lie about who ran out; it would also widen the set of statuses this route can
+emit to whatever a tenant studio happens to return. The studio status belongs in the body, where it
+is data rather than a claim about the plane.
+
+**Why 502 was wrong for the common case.** 502 means bad gateway: the upstream is broken or
+unreachable. A studio refusing on a configured ceiling is neither, and an operator reading 502 in a
+log reasonably concludes the tenant studio is unhealthy. Since cp#183 that refusal is routine rather
+than exotic: any tenant at their ceiling produces it, and any operator testing a quota produces it
+deliberately.
+
+Nothing was hidden before this change; `studio_refused` is namespaced and the message was always
+honest. This is the outer status only, and both real numbers still ride in the message.
 
 ### phase=done is not a pass
 
