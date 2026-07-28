@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Operator console -- Vivijure</title>
+    <meta name="robots" content="noindex, nofollow" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32" />
+    <meta name="theme-color" content="#0E1730" />
+    <link rel="stylesheet" href="platform.css" />
+    <link rel="stylesheet" href="admin.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Vivijure">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Vivijure</span>
+      </a>
+      <span class="tag">operator console</span>
+      <span class="topbar-spacer"></span>
+      <span class="muted small" id="principal"></span>
+      <button type="button" id="lock" class="icon-btn" hidden>Lock</button>
+    </header>
+
+    <main class="shell">
+      <div id="banner" class="callout callout-bad" hidden>
+        <p id="banner-text"></p>
+      </div>
+
+      <!-- LOCKED. The credential is entered here and never leaves memory. -->
+      <section class="panel" data-screen="locked">
+        <h1>Operator console</h1>
+        <p class="lede">
+          Present an operator credential. It is held in memory for this tab only: it is never written
+          to storage, never put in a cookie, and never placed in a URL, so reloading this page asks
+          for it again. That is deliberate on a surface meant to be used on a report rather than
+          daily.
+        </p>
+
+        <div class="callout">
+          <p><strong>Everything you do here is recorded against your credential.</strong></p>
+          <p class="small">
+            A named credential records <code>operator:&lt;name&gt;</code>. The shared root credential
+            records <code>admin-token</code> and names nobody, which is what it is for. Reading a
+            single tenant's data writes an audit row, including fetching a rendered smoke-render
+            artifact.
+            <a href="https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/operator-access.md">How this works, exactly</a>
+          </p>
+        </div>
+
+        <form id="unlock-form" autocomplete="off">
+          <label for="credential">Operator credential</label>
+          <div class="field-row">
+            <input
+              type="password"
+              id="credential"
+              name="credential"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              placeholder="64 hex characters"
+            />
+            <button type="submit" class="primary" id="unlock">Unlock</button>
+          </div>
+          <p class="hint" id="credential-hint" data-level=""></p>
+        </form>
+      </section>
+
+      <!-- UNLOCKED. Every section below is rendered from GET /api/admin/whoami. -->
+      <section class="panel" data-screen="identity" hidden>
+        <h2>This credential</h2>
+        <p id="identity-line" class="lede"></p>
+        <ul class="scope-list" id="scope-list"></ul>
+        <p class="small muted">
+          A scope bounds what this credential can DO. It is only loosely a bound on what its holder
+          can SEE: reading a tenant reaches their rendered smoke-render output. Ask for the narrowest
+          set that does the job.
+        </p>
+      </section>
+
+      <section class="panel" data-screen="breakGlassNotice" hidden>
+        <h2>Break-glass credential</h2>
+        <div class="callout callout-warn">
+          <p><strong>This console will not drive routine work with the shared root credential.</strong></p>
+          <p class="small">
+            The privacy policy says routine support access is made with a named credential tied to one
+            operator, and that the shared credential is for emergencies and for managing credentials.
+            Its actions record <code>admin-token</code> and name no person, so using it for ordinary
+            support would make the trail un-attributable and that sentence untrue. Mint yourself a
+            named credential below and sign in with it.
+          </p>
+          <p class="small">
+            The API itself still accepts this credential, deliberately: disarming break-glass in the
+            gate would remove it at the moment it exists for. This restriction is the console
+            declining, not the platform refusing.
+          </p>
+        </div>
+      </section>
+
+      <section class="panel" data-screen="tenants" hidden>
+        <h2>Tenants</h2>
+        <div class="field-row">
+          <input type="text" id="tenant-q" placeholder="filter by slug or id" autocomplete="off" />
+          <button type="button" id="tenant-refresh">Refresh</button>
+        </div>
+        <div class="rows" id="tenant-rows"></div>
+        <p class="muted small" id="tenant-empty" hidden>No tenants matched.</p>
+      </section>
+
+      <section class="panel" data-screen="audit" hidden>
+        <h2>Audit trail</h2>
+        <p class="small muted">
+          Newest first. Rows marked <span class="pill pill-read">read</span> are an operator reaching
+          into one tenant; rows marked <span class="pill pill-unattributed">unattributed</span> were
+          made with the shared root credential and name no person.
+        </p>
+        <div class="field-row">
+          <input type="text" id="audit-target" placeholder="filter by tenant id (blank for everything)" autocomplete="off" />
+          <button type="button" id="audit-refresh">Refresh</button>
+        </div>
+        <div class="rows" id="audit-rows"></div>
+        <p class="muted small" id="audit-empty" hidden>Nothing recorded yet.</p>
+      </section>
+
+      <section class="panel" data-screen="credentials" hidden>
+        <h2>Operator credentials</h2>
+        <p class="small muted">
+          Only the shared root credential can mint or revoke. A scoped credential that could mint an
+          unscoped one would hold every scope in two requests.
+        </p>
+
+        <div class="rows" id="credential-rows"></div>
+
+        <h3>Mint a credential</h3>
+        <form id="mint-form" autocomplete="off">
+          <label for="mint-name">Operator name (a person, not a purpose)</label>
+          <input type="text" id="mint-name" autocomplete="off" spellcheck="false" placeholder="joan" />
+
+          <p class="label-ish">Scopes</p>
+          <div id="mint-scopes"></div>
+
+          <label for="mint-expiry">Expires in days (blank for no expiry)</label>
+          <input type="text" id="mint-expiry" autocomplete="off" inputmode="numeric" placeholder="" />
+
+          <div class="actions">
+            <button type="submit" class="primary" id="mint">Mint</button>
+          </div>
+          <p class="hint" id="mint-hint" data-level=""></p>
+        </form>
+
+        <div class="callout callout-warn" id="minted" hidden>
+          <p><strong>Copy this now. It is not stored anywhere and cannot be shown again.</strong></p>
+          <p class="minted-token" id="minted-token"></p>
+          <div class="actions">
+            <button type="button" id="minted-dismiss">Done, clear it</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" data-screen="settings" hidden>
+        <h2>Platform settings</h2>
+        <div class="checkbox-row">
+          <input type="checkbox" id="signups" />
+          <label for="signups">Signups enabled</label>
+        </div>
+        <p class="hint" id="settings-hint" data-level=""></p>
+      </section>
+    </main>
+
+    <script src="admin-checks.js"></script>
+    <script src="admin.js"></script>
+  </body>
+</html>
