@@ -237,6 +237,22 @@ MANUAL_CREDIT_CEILING_MICRO_USD = "${MANUAL_CREDIT_CEILING_MICRO_USD}"
 # converge route rather than being rounded down to "off": the studio would read it as no ceiling,
 # and "typed it wrong" must not silently become "wanted no ceiling". 107374182400 = 100 GiB.
 TENANT_R2_STORAGE_QUOTA_BYTES = "${TENANT_R2_STORAGE_QUOTA_BYTES}"
+
+# cp#195: the INCLUDED LLM allowance per tenant per billing period, in integer MICRO-USD.
+# EMPTY means no allowance has been chosen, and the settlement run then reports every tenant
+# UNBILLABLE rather than billing them from the first micro-USD. Unset is the absence of a decision,
+# not a decision of zero; a configured "0" IS a decision and bills from the first micro-USD.
+# Unit is in the NAME because a bare _ALLOWANCE invites someone to put dollars in it.
+TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD = "${TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD}"
+
+# cp#195: the per-tenant storage enforcement POSTURE, bound onto tenant studios as
+# R2_STORAGE_QUOTA_MODE once the studio-core knob ships. "deny" (default, today's submit-time 507)
+# or "meter" (no deny; the bytes knob becomes an INCLUDED quota and the plane bills the overage).
+# EMPTY means deny, which is the conservative side: a mistake there costs a late deny rather than
+# unmetered spend. Note this is the OPPOSITE default from the BYTES knob above, where empty means
+# OFF -- absent knob, absent behaviour is right for a ceiling nobody set, and wrong for a mode that
+# still has to pick a posture. Do not "fix" one to match the other.
+TENANT_R2_STORAGE_QUOTA_MODE = "${TENANT_R2_STORAGE_QUOTA_MODE}"
 CF_ACCOUNT_ID = "${CLOUDFLARE_ACCOUNT_ID}"
 DISPATCH_NAMESPACE = "${TENANT_DISPATCH_NAMESPACE}"
 # The shared dispatch namespace tenant MODULE workers are uploaded into (cf#99), distinct from

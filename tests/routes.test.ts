@@ -3399,3 +3399,132 @@ describe("LLM meter admin surfaces", () => {
     expect(await res.json()).toEqual({ error: "llm_meter_unavailable", reason: "no_spend_store" });
   });
 });
+
+// ---- the periodic overage settlement surface (cp#195) -----------------------------------------
+
+describe("LLM overage settlement route", () => {
+  const admin = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${ADMIN_TOKEN}`, ...extra });
+
+  /**
+   * A minimal append-only ledger. Deliberately a double HERE and only here: this suite proves the
+   * ROUTE (gate, period parsing, knob refusal, audit), while the money semantics -- the negative
+   * delta, the cost basis, and idempotency on (tenant_id, idem_ref) -- are proven against real
+   * SQLite in meter-settle.test.ts and meter-settle-run.test.ts. It still enforces the uniqueness
+   * so a route test cannot pass against a ledger that would double-charge.
+   */
+  const fakeLedger = () => {
+    const seen = new Map<string, { id: string }>();
+    return {
+      written: seen,
+      appendLedgerRow: async (row: { id: string; tenantId: string; idemRef: string }) => {
+        const key = `${row.tenantId}:${row.idemRef}`;
+        const existing = seen.get(key);
+        if (existing) return { applied: false, row: existing };
+        seen.set(key, { id: row.id });
+        return { applied: true, row: { id: row.id } };
+      },
+    };
+  };
+
+  const settleDeps = (over: Partial<ControlPlaneDeps> = {}): ControlPlaneDeps => ({
+    ...deps,
+    credits: fakeLedger() as unknown as NonNullable<ControlPlaneDeps["credits"]>,
+    llmSpend: {
+      readLlmWatermark: async () => null,
+      readLastPeriodEnd: async () => null,
+      openLlmRollupPeriod: async () => {},
+      writeLlmSpendEvents: async () => 0,
+      closeLlmRollupPeriod: async () => {},
+      advanceLlmWatermark: async () => {},
+      readTenantLlmSpend: async ({ windowStart, windowEnd }) => ({
+        cost_micro_usd: 0,
+        requests: 0,
+        window_start: windowStart,
+        window_end: windowEnd,
+        complete: true,
+        reason: null,
+        periods: 1,
+        unpriced_requests: 0,
+      }),
+    },
+    ...over,
+  });
+
+  const post = (q = "", env_ = env(), d = settleDeps()) =>
+    handle(req(`/api/admin/meter-settle${q}`, { method: "POST", headers: admin() }), env_, ctx, d);
+
+  it("REFUSES without the admin token", async () => {
+    const r = await handle(req("/api/admin/meter-settle", { method: "POST" }), env(), ctx, settleDeps());
+    expect(r.status).toBe(401);
+  });
+
+  it("CONTROL: settles the LAST CLOSED period by default and reports what it did", async () => {
+    const r = await post();
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { report: { periodKey: string; windowEnd: string } };
+    // Never the current month: a month still accumulating would be billed from a partial window and,
+    // being idempotent on the key, could never be corrected upward.
+    expect(Date.parse(body.report.windowEnd)).toBeLessThanOrEqual(Date.now());
+    expect(body.report.periodKey).toMatch(/^\d{4}-\d{2}$/);
+  });
+
+  it("accepts an explicit period and settles THAT one", async () => {
+    const r = await post("?period=2026-07");
+    const body = (await r.json()) as { report: { periodKey: string; windowStart: string } };
+    expect(body.report.periodKey).toBe("2026-07");
+    expect(body.report.windowStart).toBe("2026-07-01T00:00:00.000Z");
+  });
+
+  // The key BECOMES the ledger's idempotency reference, so a key whose window disagrees with it
+  // could settle one month under another month's identity. Refused, never normalised.
+  it("REFUSES a malformed period rather than normalising it", async () => {
+    for (const bad of ["2026-7", "2026-13", "july", "2026-07-01", "2026"]) {
+      const r = await post(`?period=${encodeURIComponent(bad)}`);
+      expect(r.status, bad).toBe(400);
+      expect((await r.json()) as { error: string }).toMatchObject({ error: "invalid_period" });
+    }
+  });
+
+  // "Typed it wrong" and "chose none" must not be the same outcome. Both are safe for the tenant,
+  // but only one is a mistake somebody needs to hear about, and a sweep that quietly settles nothing
+  // looks identical to a month where nobody owed anything.
+  it("REFUSES a MALFORMED allowance knob instead of sweeping and settling nothing", async () => {
+    for (const bad of ["abc", "1.5", "-1", "1_000"]) {
+      const r = await post("", env({ TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD: bad }));
+      expect(r.status, bad).toBe(400);
+      expect((await r.json()) as { error: string }).toMatchObject({ error: "invalid_allowance" });
+    }
+  });
+
+  // CONTROL for the refusal above: an UNSET knob is a different case and must NOT 400. It runs and
+  // reports every tenant unbillable, because unset is the absence of a decision, not a typo.
+  it("CONTROL: an UNSET allowance runs and reports, rather than refusing", async () => {
+    const r = await post();
+    expect(r.status).toBe(200);
+  });
+
+  // ...and a configured ZERO is a real decision, so it must parse rather than read as unset.
+  it('CONTROL: a configured "0" allowance is accepted, not treated as unset', async () => {
+    const r = await post("", env({ TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD: "0" }));
+    expect(r.status).toBe(200);
+  });
+
+  it("REFUSES 503 when the meter store or the ledger is absent", async () => {
+    expect((await post("", env(), settleDeps({ llmSpend: undefined }))).status).toBe(503);
+    expect((await post("", env(), settleDeps({ credits: undefined }))).status).toBe(503);
+  });
+
+  // This route MOVES MONEY, unlike the read-only admin surfaces, so the run is audited.
+  it("AUDITS the run: who, which period, and what it did", async () => {
+    await post("?period=2026-07", env({ TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD: "520000" }));
+    // EXACT action, never a substring: `toContain("meter.settle_llm")` also matches
+    // "meter.settle_llm_noop" or any other name that merely starts the same way, so a renamed or
+    // hollowed-out audit call would slip straight through. Found by the mutation pass, which is
+    // exactly what it is for.
+    const actions = store.audit.map((a: { action: string }) => a.action);
+    expect(actions).toContain("meter.settle_llm");
+    const audit = JSON.stringify(store.audit);
+    expect(audit).toContain("2026-07");
+    expect(audit).toContain("allowance_configured");
+  });
+});

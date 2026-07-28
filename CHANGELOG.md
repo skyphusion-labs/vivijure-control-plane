@@ -46,6 +46,47 @@ green, deploy green, tests green, feature dead.
   The pre-existing control now copies `src/env.ts` into its tree; without it the census would have
   died on a missing file, still exiting non-zero, and that control would have gone on printing `ok`
   while proving nothing.
+### feat(credits): the settlement trigger, operator-runnable, on a derived period key (cp#195)
+
+The periodic overage settlement. Wires nothing onto tenant studios yet: the plane uses the allowance
+for its OWN settlement, and the tenant binding follows strummer's core train.
+
+- **`src/meter-period.ts`** -- `billingPeriodContaining`, `lastClosedBillingPeriod`,
+  `parseBillingPeriodKey`. UTC calendar month, half-open, and **derived rather than stored**: the key
+  becomes the ledger's idempotency reference, so a stored key a retry could not find would mint a
+  new one and charge twice.
+- **`lastClosedBillingPeriod` is the default**, never the current month. Settling a month still
+  accumulating computes the debit from a partial window and, being idempotent on the key, the later
+  correct figure can never replace it: one early settlement permanently under-bills that month.
+- **`src/meter-settle-run.ts`** -- the sweep. Sequential (matching the R2 usage sweep), skips deleted
+  tenants deliberately, records a throwing tenant as unbillable and CONTINUES, and carries
+  `censusComplete`. A truncated tenant census is missing MONEY rather than a wrong number: unsettled
+  tenants look exactly like tenants who owed nothing.
+- **`POST /api/admin/meter-settle`** -- operator-runnable, so a settlement can be forced and its
+  actual result read rather than inferred from a cron log. Audited, unlike the read-only admin
+  surfaces, because it moves money.
+- **A MALFORMED allowance refuses the whole run** (400) rather than sweeping and reporting every
+  tenant unbillable. The house rule `TENANT_R2_STORAGE_QUOTA_BYTES` already states: "typed it wrong"
+  and "chose none" must not be the same outcome. An unset knob still runs and reports honestly; a
+  configured `"0"` is a real decision and bills from the first micro-USD.
+- **New vars, names approved by mackaye 2026-07-28**: `TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD` and
+  `TENANT_R2_STORAGE_QUOTA_MODE`. Declared ahead of their bindings and NOT yet bound onto tenant
+  studios, because the studio-core knobs they mirror do not exist until the core train lands, and
+  binding a var the consuming code cannot answer is the shape that took provisioning down on
+  2026-07-27.
+
+Verification: typecheck clean, 1359 tests green, and **10 planted defects each watched turning the
+suite red**. Two of them escaped on the first pass and both were defects in MY TESTS, which is the
+point of running it: the period round-trip check had no input that could distinguish it (every other
+bad key was caught by the regex), and the audit assertion used `toContain`, which a renamed
+`meter.settle_llm_noop` satisfies as a substring. Both tests were strengthened and both mutations
+then caught.
+
+Writing the control for the round-trip check also found a real inconsistency in this module:
+`Date.UTC` maps a year of 0..99 to 1900+year, so `"0026-07"` would have produced a window for 1926,
+and separately the key generator emitted an unpadded year the parser's `\d{4}` would refuse. The
+year is now padded and both directions round-trip.
+
 ### feat(credits): the shared unbillable vocabulary and the overage decision core (cp#195)
 
 The half of cp#195's LLM bundled allowance that does not depend on where the allowance knob lives.
