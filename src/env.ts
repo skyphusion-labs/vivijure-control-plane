@@ -227,6 +227,18 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    * costs the TENANT rather than us. A configured "0" IS a decision and does bill from the first
    * micro-USD. See decideOverageDebit in meter-debit.ts.
    *
+   * PARSING AGREES WITH CORE ON EVERYTHING EXCEPT EXPONENT NOTATION, and the difference is
+   * deliberate rather than an oversight (ruled 2026-07-28). Verified against the shipped
+   * parseMicroUsd rather than read off the source: "0" -> 0, "1000" -> 1000, and "1.5" / "-1" /
+   * "5USD" / empty / unset all -> null, matching core. But `Number()` accepts exponent notation, so
+   * core's first cut read "1e3" as 1000 while this side's `^[0-9]+$` refuses it.
+   *
+   * THIS SIDE DOES NOT LOOSEN. "1e3" in a money config is an accident of `Number()`, not an intent
+   * anybody holds, and refusing loudly with `invalid_allowance` is the correct direction. The core
+   * knob gets its own strict parser when it lands (vivijure-core#107); it is NOT in core v1.4.0,
+   * which shipped storage-mode only. Until then the plane's value is the only one that exists, so
+   * there is nothing to disagree with.
+   *
    * NOT YET BOUND ONTO TENANT STUDIOS, on purpose. The studio-core knob it mirrors does not exist
    * until strummer's core train lands, and binding a var the consuming code cannot answer is exactly
    * the shape that took provisioning down on 2026-07-27. The plane uses it for its OWN settlement
@@ -245,6 +257,24 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    * knob means absent behaviour for a ceiling nobody set. For the MODE knob, garbage means DENY,
    * because the absent case still has to pick an enforcement posture and the conservative side is
    * the one where a mistake costs us a late deny rather than unmetered spend.
+   *
+   * NAME COLLISION, AND IT IS NOT COSMETIC. `tenants.r2_storage_quota_mode` already exists as a D1
+   * COLUMN (migration 0014) and means something ORTHOGONAL to this var:
+   *
+   *   the COLUMN  (NULL | 'set' | 'none')   which SOURCE a tenant's ceiling comes from:
+   *                                         inherit the plane default, use this tenant's bytes, or
+   *                                         no ceiling for this tenant at all.
+   *   this VAR    ("deny" | "meter")        what the studio DOES when usage reaches the ceiling.
+   *
+   * Three shared words, unrelated facts, one a column and one a binding. **Do NOT wire one to the
+   * other.** A tenant whose column says 'none' has no ceiling, which is a different statement from a
+   * tenant whose studio is in "meter" posture, and conflating them would silently turn "no ceiling
+   * configured" into "bill the overage" or the reverse.
+   *
+   * The bite lands later, not now: when a per-tenant ENFORCEMENT override is eventually wanted, its
+   * obvious column name is already taken by an unrelated meaning. Flagged by strummer, awaiting a
+   * naming ruling; recorded here rather than in a message because this is where whoever wires the
+   * R2 overage half will be reading.
    *
    * DECLARED HERE AHEAD OF ITS BINDING, and not yet bound, for the same reason as the allowance
    * above: the core knob ships first.

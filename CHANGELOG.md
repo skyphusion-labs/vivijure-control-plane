@@ -6,6 +6,27 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### docs(meter): the allowance parser contract and the storage-mode name collision, recorded at the vars (cp#195)
+
+Comment-only in `src/env.ts`. No behaviour change; recorded because both facts existed only in crew
+messages and both will be needed by whoever wires the R2 overage half.
+
+- **The allowance parser agrees with vivijure-core on everything except exponent notation, and this
+  side does NOT loosen.** Verified against the shipped `parseMicroUsd` rather than read off the
+  source: `"0"` -> `0`, `"1000"` -> `1000`, and `"1.5"` / `"-1"` / `"5USD"` / empty / unset all ->
+  `null`, matching core. `Number()` accepts exponent notation, so core's first cut read `"1e3"` as
+  `1000` while this side's `^[0-9]+$` refuses it. Ruled 2026-07-28: `1e3` in a money config is an
+  accident of `Number()` rather than an intent anybody holds, so the core knob gets its own strict
+  parser when it lands (vivijure-core#107) instead of the plane relaxing. That knob is NOT in core
+  v1.4.0, which shipped storage-mode only.
+- **`tenants.r2_storage_quota_mode` is NOT `TENANT_R2_STORAGE_QUOTA_MODE`.** The D1 column
+  (migration 0014) selects which SOURCE a tenant ceiling comes from (`NULL` inherit / `'set'` /
+  `'none'`); the var selects what the studio DOES at the ceiling (`deny` / `meter`). Three shared
+  words, orthogonal facts, one a column and one a binding. Wiring one to the other would silently
+  turn "no ceiling configured" into "bill the overage", or the reverse. Flagged rather than fixed;
+  a naming ruling is pending, and the bite lands when a per-tenant ENFORCEMENT override is wanted
+  and finds its obvious column name already taken.
+
 ### feat(admin): the operator console, a page in front of /api/admin/* (cp#89)
 
 There was no admin UI at all: `public/` was the tenant front door and nothing else, and every operator
