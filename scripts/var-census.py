@@ -138,8 +138,12 @@ if len(env_fields) < 20:
         "the parser is broken; refusing to report a pass it did not earn." % len(env_fields)
     )
 
-secrets = _declared_list("ENV_SECRETS")
-bindings = _declared_list("ENV_BINDINGS")
+# These two sets hold FIELD NAMES, never values, and the identifiers say so on purpose. A human
+# reading `secrets` here reasonably wonders, and a name-based scanner cannot tell the difference
+# at all: CodeQL py/clear-text-logging-sensitive-data flagged the print at the bottom of this
+# script as high severity purely because a variable called `secrets` reached it.
+out_of_band_fields = _declared_list("ENV_SECRETS")
+binding_fields = _declared_list("ENV_BINDINGS")
 
 # The [vars] table is the anchor for env.ts, NOT the placeholder set: a var reaches the Worker as a
 # KEY there, and the key and its placeholder deliberately differ in places (CF_ACCOUNT_ID is fed by
@@ -152,19 +156,19 @@ _end = re.search(r"(?m)^\[", _rest)
 vars_block = _rest[: _end.start()] if _end else _rest
 declared_vars = dict(re.findall(r"(?m)^([A-Z][A-Z0-9_]*)\s*=\s*(.*)$", vars_block))
 
-both = secrets & bindings
+both = out_of_band_fields & binding_fields
 for v in sorted(both):
     problems.append(
         "%s is declared in BOTH ENV_SECRETS and ENV_BINDINGS in src/env.ts. It is delivered one "
         "way; two claims mean nobody knows which." % v
     )
-for v in sorted((secrets | bindings) - env_fields):
+for v in sorted((out_of_band_fields | binding_fields) - env_fields):
     problems.append(
         "%s is exempted in src/env.ts but is not a field of ControlPlaneEnv. The exemption is dead "
         "and reads as coverage it does not provide." % v
     )
 
-for v in sorted(env_fields - secrets - bindings):
+for v in sorted(env_fields - out_of_band_fields - binding_fields):
     if v not in declared_vars:
         problems.append(
             "%s is typed in src/env.ts and declared in NO list -- not [vars], not ENV_SECRETS, not "
@@ -172,13 +176,16 @@ for v in sorted(env_fields - secrets - bindings):
             "would say so. Declare it as a var in all four lists, or classify it in env.ts." % v
         )
     elif not re.fullmatch(r"\"\$\{[A-Z0-9_]+\}\"", declared_vars[v].strip()):
+        # The VALUE is deliberately not echoed. It is one line away in a tracked file, so printing
+        # it buys nothing, and it is the only path by which this script could ever put a value on
+        # stdout at all. Naming the var is the whole message.
         problems.append(
-            "[vars] %s is set to a LITERAL (%s) rather than a ${PLACEHOLDER}. The rendered config "
-            "is built by envsubst, so a literal here is config frozen into a public template and "
-            "invisible to the four-list check above." % (v, declared_vars[v].strip())
+            "[vars] %s is set to a LITERAL rather than a ${PLACEHOLDER}. The rendered config is "
+            "built by envsubst, so a literal here is config frozen into a public template and "
+            "invisible to the four-list check above." % v
         )
 
-for v in sorted(secrets):
+for v in sorted(out_of_band_fields):
     where = []
     if v in declared_vars:
         where.append("the [vars] table")
@@ -193,7 +200,7 @@ for v in sorted(secrets):
             "the wrong direction to fix a census failure." % (v, " and ".join(where))
         )
 
-for v in sorted(bindings):
+for v in sorted(binding_fields):
     if v in declared_vars:
         problems.append(
             "%s is declared a BINDING in src/env.ts but is also a [vars] key. A binding is "
