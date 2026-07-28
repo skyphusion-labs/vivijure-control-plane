@@ -6,6 +6,46 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(credits): the shared unbillable vocabulary and the overage decision core (cp#195)
+
+The half of cp#195's LLM bundled allowance that does not depend on where the allowance knob lives.
+NOT YET WIRED: nothing calls it until the `TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD` name is settled
+with strummer's core train.
+
+- **`src/meter-window.ts`** -- `MeterWindow` (`window_start`, `window_end`, `complete`, `reason`)
+  EXTRACTED rather than duplicated, on mackaye's ruling: the storage meter and the LLM meter speak
+  one vocabulary, so a consumer writes ONE unbillable check that works for every metered class.
+  `LlmSpendWindow` now extends it; the agreed cp#195 five fields are unchanged.
+- **`isUnbillable()`** reads the flag as an assertion: billable ONLY on an explicit `true`, so a
+  window from an older shape or a hand-built fixture cannot read as a free pass.
+- **`src/meter-debit.ts`** -- `decideOverageDebit()`, pure, with the allowance INJECTED.
+
+**Three outcomes, not two, and this is the whole design.** `debit` writes the overage. `within`
+writes NO ledger row and is a complete, correct, finished answer (cp#195: usage inside the allowance
+produces no ledger row). `unbillable` writes nothing because we could not establish what the usage
+was. `within` and `unbillable` both write nothing, which is exactly why they must not share a name:
+one says "we looked, nothing is owed", the other says "we could not look". Collapsing them turns
+every gap in the meter into a silent free ride.
+
+**Completeness is checked FIRST**, before the allowance and before any arithmetic. Checking the
+allowance first would let an incomplete window whose PARTIAL total happens to sit under the
+allowance report `within` -- a confident "nothing is owed" derived from data we never had, and the
+most dangerous shape available here because it looks exactly like the healthy case.
+
+**An unset allowance is UNBILLABLE, not an allowance of zero.** Same posture as
+`R2_STORAGE_QUOTA_BYTES` (no default in code, because the number is a policy this repo does not get
+to invent), and the direction matters: treating unset as zero would bill a tenant for every
+micro-USD of something nobody configured, the one failure in this lane that costs the TENANT rather
+than us. A configured zero IS a decision and still bills from the first micro-USD.
+
+`overageIdemRef(meter, periodKey)` is deterministic and separates meter classes, since one tenant can
+owe an LLM overage and a storage overage in the same period and those are two rows.
+
+Verification: typecheck clean, 1323 unit tests green, and 7 planted defects each watched turning the
+suite red (allowance checked before completeness, unset allowance treated as zero, the total billed
+instead of the difference, the allowance boundary flipped, the meter class dropped from the
+idempotency key, `isUnbillable` reading `=== false`, and the malformed-usage refusal removed).
+
 ### feat(meter): the LLM meter read path -- live gateway reader, cron trigger, windowed read (cp#185)
 
 Part two, and the part that makes part one do anything. The meter now RUNS: a concrete

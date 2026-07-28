@@ -9,6 +9,8 @@
 // diagnostic fields beyond the agreed five are additive: a consumer that only reads the five
 // behaves exactly as specified.
 
+import type { MeterWindow } from "./meter-window";
+
 /** One roll-up run as the ledger recorded it. Mirrors llm_rollup_periods (migration 0015). */
 export interface RollupPeriodRow {
   id: string;
@@ -21,16 +23,16 @@ export interface RollupPeriodRow {
   finished_at: string | null;
 }
 
-export interface LlmSpendWindow {
+/**
+ * EXTENDS MeterWindow (cp#195): window_start, window_end, complete and reason come from the shared
+ * vocabulary every metered class speaks, so a consumer's unbillable check is written once and works
+ * for storage overage too. The agreed cp#195 five are still exactly present and unchanged.
+ */
+export interface LlmSpendWindow extends MeterWindow {
   /** Integer micro-USD, matching credit_ledger. Never a float, never a currency string. */
   cost_micro_usd: number;
   requests: number;
-  window_start: string;
-  window_end: string;
-  complete: boolean;
   // ---- diagnostics beyond the agreed five ----
-  /** Why complete is false, in the operator's words. NULL when complete. */
-  reason: string | null;
   /** How many roll-up runs were assigned to this window. Zero is why complete would be false. */
   periods: number;
   /** Requests whose cost the gateway did not report. They are IN `requests` and NOT in the sum. */
