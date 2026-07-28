@@ -32,6 +32,16 @@ export type DebitDecision =
       outcome: "debit";
       /** Integer micro-USD to charge. ALWAYS positive: a zero overage is `within`, not a zero debit. */
       amountMicroUsd: number;
+      /**
+       * What the whole window cost US, which is the FULL usage and not the charged overage.
+       *
+       * credit_ledger keeps delta (what the tenant is charged) and cost (what we paid) apart
+       * precisely so the difference is visible. Writing the overage into both would erase the
+       * allowance from the record: the ratio would report full cost recovery on a period where we
+       * deliberately absorbed the allowance, and in a system whose stated intent IS cost recovery,
+       * a number that can only be wrong in the direction that flatters us is the worst shape.
+       */
+      costMicroUsd: number;
       /** Deterministic, so a retried settlement run is a no-op on (tenant_id, idem_ref). */
       idemRef: string;
       note: string;
@@ -146,6 +156,7 @@ export function decideOverageDebit(args: {
   return {
     outcome: "debit",
     amountMicroUsd,
+    costMicroUsd: usedMicroUsd,
     idemRef: overageIdemRef(meter, periodKey),
     note:
       `${meter} overage for ${periodKey}: ${usedMicroUsd} micro-USD used against a ` +
