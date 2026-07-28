@@ -6,6 +6,27 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(smoke-render): a deliberate studio refusal is 422, not 502 (cp#223)
+
+The operator smoke-render route answered `502 studio_refused` whenever the tenant studio would not
+build or accept the render, including when the studio refused correctly on a ceiling the operator
+themselves configured. 502 means bad gateway: the upstream is broken or unreachable. Here the
+upstream answered promptly and correctly, and an operator reading 502 in a log reasonably concludes
+the tenant studio is unhealthy and starts looking for an infrastructure fault that does not exist.
+Since cp#183 that refusal is routine rather than exotic: any tenant at their storage ceiling
+produces it, and any operator testing a quota produces it deliberately.
+
+- **A studio that ANSWERED 4xx or 5xx made a decision, so the route now answers `422`.** `502` is
+  kept strictly for transport failures: the studio could not be reached, or answered something this
+  plane could not parse (a 2xx carrying no bundle key or job id).
+- **The studio status rides in the body as `studio_status`,** rather than being propagated outward.
+  Answering `507` would claim THIS plane is out of storage, which is a lie about who ran out, and it
+  would widen the statuses this route can emit to whatever a tenant studio happens to return.
+- The `studio_refused` code, the message and both real numbers are unchanged. Nothing was hidden
+  before; this is the outer status only.
+- Callers branching on `502` from this route see `422` for the refusal case now. Every consumer
+  today is an operator reading JSON.
+
 ### feat(meter): LLM spend roll-up schema and decision core (cp#185)
 
 Part one of the per-tenant Opus meter: the schema, the pure decision core, and the injected gateway

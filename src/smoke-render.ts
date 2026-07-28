@@ -201,7 +201,14 @@ export interface SmokeRenderDeps {
 export type SmokeRenderStart =
   | { ok: true; smoke: SmokeRender }
   | { ok: false; code: "spend_guard"; message: string }
-  | { ok: false; code: "studio_refused"; smoke: SmokeRender; message: string };
+  | {
+      ok: false;
+      code: "studio_refused";
+      smoke: SmokeRender;
+      message: string;
+      /** The status the TENANT STUDIO answered with. cp#223: it decides the outer status. */
+      studioStatus: number;
+    };
 
 /**
  * Open a smoke render and drive it as far as the studio's own submit -- bundle, then render submit.
@@ -210,6 +217,32 @@ export type SmokeRenderStart =
  * behind it), so they run inline: a submit failure is then a DIRECT answer to the operator rather
  * than a row they have to poll to discover. The GPU half is what the poll route drives.
  */
+/**
+ * The OUTER status for a `studio_refused` result (cp#223).
+ *
+ * 502 means bad gateway: the upstream is broken or unreachable. A tenant studio refusing on a
+ * ceiling the operator themselves configured is neither. It answered promptly and correctly, and an
+ * operator reading 502 in a dashboard reasonably concludes the studio is unhealthy and goes looking
+ * for an infrastructure fault that does not exist. Since cp#183 that is a routine outcome rather
+ * than an exotic one: any tenant at their storage ceiling produces it, and any operator testing a
+ * quota produces it deliberately.
+ *
+ * So a deliberate refusal is 422 (the request was understood and refused on its content), and 502
+ * is kept strictly for transport failures: the studio could not be reached, or answered something
+ * this plane could not parse.
+ *
+ * WHY THE STUDIO STATUS IS NOT SIMPLY PROPAGATED. Passing 507 outward would say THIS plane is out
+ * of storage, which is a lie about who ran out; and it would widen what statuses this route can
+ * emit to whatever a tenant studio happens to return. The studio status is carried in the body as
+ * `studio_status` instead, where it is data rather than a claim about the plane.
+ *
+ * A 4xx or 5xx from the studio is an ANSWER, so it is deliberate. Anything else reaching this
+ * function means the studio replied 2xx/3xx and the reply could not be read (no bundle key, no job
+ * id), which is the unparseable case and genuinely a gateway problem.
+ */
+export const smokeRefusalStatus = (studioStatus: number): 422 | 502 =>
+  studioStatus >= 400 && studioStatus <= 599 ? 422 : 502;
+
 export async function startSmokeRender(
   deps: SmokeRenderDeps,
   tenant: Tenant,
@@ -234,7 +267,7 @@ export async function startSmokeRender(
     const message = `the tenant studio would not build the smoke bundle (HTTP ${bundle.status}): ${truncate(bundle.text)}`;
     await deps.store.finishSmokeRender(smoke.id, { status: "failed", error: message });
     deps.log("smoke_render.bundle_failed", { tenant: tenant.id, smoke: smoke.id, status: bundle.status });
-    return { ok: false, code: "studio_refused", smoke, message };
+    return { ok: false, code: "studio_refused", smoke, message, studioStatus: bundle.status };
   }
 
   const submit = await deps.studio.submitKeyframeRender(tenant, bundleKey);
@@ -243,7 +276,7 @@ export async function startSmokeRender(
     const message = `the tenant studio would not accept the smoke render (HTTP ${submit.status}): ${truncate(submit.text)}`;
     await deps.store.finishSmokeRender(smoke.id, { status: "failed", error: message });
     deps.log("smoke_render.submit_failed", { tenant: tenant.id, smoke: smoke.id, status: submit.status });
-    return { ok: false, code: "studio_refused", smoke, message };
+    return { ok: false, code: "studio_refused", smoke, message, studioStatus: submit.status };
   }
 
   await deps.store.setSmokeRenderSubmitted(smoke.id, studioJobId, bundleKey);

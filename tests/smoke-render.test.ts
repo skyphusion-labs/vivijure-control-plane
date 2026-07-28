@@ -20,6 +20,7 @@ import {
   DEFAULT_SMOKE_BOUNDS,
   SMOKE_PROJECT_NAME,
   resolveSmokeRenderBounds,
+  smokeRefusalStatus,
   startSmokeRender,
   type SmokeRenderDeps,
   type StudioBytes,
@@ -415,6 +416,54 @@ describe("POST /api/admin/tenants/:id/smoke-render", () => {
     expect(res.status).toBe(429);
     expect(await res.json()).toMatchObject({ error: "smoke_render_rate_limited", bounds: DEFAULT_SMOKE_BOUNDS });
   });
+  // cp#223. A tenant studio refusing on a ceiling the operator themselves configured is not a bad
+  // gateway: it answered promptly and correctly. 502 sends an operator hunting an infrastructure
+  // fault that does not exist, and since cp#183 this is a routine outcome rather than an exotic
+  // one -- any tenant at their storage ceiling produces it.
+  it("422s a DELIBERATE studio refusal, and carries the studio status in the body", async () => {
+    const refusing = fakeStudio({
+      async putCanonicalBundle(): Promise<StudioReply> {
+        return {
+          status: 507,
+          text: JSON.stringify({
+            error:
+              "storage quota reached: 2248 bytes stored of the 1-byte R2_STORAGE_QUOTA_BYTES " +
+              "ceiling; delete renders or raise the knob",
+          }),
+        };
+      },
+    });
+    const res = await handle(adminReq(`/api/admin/tenants/${TENANT_ID}/smoke-render`, "POST"), env(), ctx, {
+      ...deps,
+      provisioner: { smokeClient: refusing.client } as unknown as ProvisionerWiring,
+    });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as Record<string, unknown>;
+    // The studio status is DATA in the body, never the outer status: propagating 507 outward would
+    // claim THIS plane is out of storage, which is a lie about who ran out.
+    expect(body).toMatchObject({ error: "studio_refused", studio_status: 507 });
+    // Both real numbers and the words the studio sent survive intact. That was already true at 502
+    // and this change must not cost it.
+    expect(String(body.message)).toContain("HTTP 507");
+    expect(String(body.message)).toContain("2248 bytes stored");
+    expect(String(body.message)).toContain("R2_STORAGE_QUOTA_BYTES");
+  });
+
+  it("keeps 502 for a studio that answered something this plane could not parse", async () => {
+    const garbling = fakeStudio({
+      async putCanonicalBundle(): Promise<StudioReply> {
+        return { status: 200, text: "<html>an origin error page</html>" };
+      },
+    });
+    const res = await handle(adminReq(`/api/admin/tenants/${TENANT_ID}/smoke-render`, "POST"), env(), ctx, {
+      ...deps,
+      provisioner: { smokeClient: garbling.client } as unknown as ProvisionerWiring,
+    });
+    // 200 with an unreadable body is not a decision the studio made; it is a gateway failing to
+    // speak the contract, which is exactly what 502 is for.
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ error: "studio_refused", studio_status: 200 });
+  });
 });
 
 describe("GET /api/admin/tenants/:id/smoke-render/:smokeId", () => {
@@ -517,5 +566,41 @@ describe("cp#137: the canonical storyboard is normalization-stable", () => {
     const previous = "Control Plane Smoke Render";
     expect(normalizeProjectName(previous)).not.toBe(SMOKE_PROJECT_NAME);
     expect(normalizeProjectName(previous)).toBe("Control_Plane_Smoke_Render");
+  });
+});
+
+// ---- cp#223: which outer status a studio refusal earns -----------------------------------------
+
+describe("cp#223: 422 for a decision, 502 for a transport failure", () => {
+  it("treats any 4xx or 5xx answer as a DELIBERATE refusal", () => {
+    for (const s of [400, 403, 409, 422, 429, 500, 503, 507, 599]) {
+      expect(smokeRefusalStatus(s)).toBe(422);
+    }
+  });
+
+  it("keeps 502 for anything that is not an answer this plane could read", () => {
+    // 0 is the no-response case; the 2xx and 3xx values reach this function only when the reply
+    // could not be parsed, which is a gateway problem rather than a studio decision.
+    for (const s of [0, 200, 201, 204, 302, 399, 600]) {
+      expect(smokeRefusalStatus(s)).toBe(502);
+    }
+  });
+
+  // Separate tests, not one: a second startSmokeRender against the same tenant in the same test
+  // hits the COOLDOWN and returns spend_guard, so the assertion would be about the wrong refusal.
+  it("carries the studio status out of startSmokeRender: the bundle leg", async () => {
+    studio = fakeStudio({
+      putCanonicalBundle: async () => ({ status: 507, text: JSON.stringify({ error: "storage quota reached" }) }),
+    });
+    const out = await startSmokeRender(smokeDeps(), tenant, "smk_1");
+    expect(out).toMatchObject({ ok: false, code: "studio_refused", studioStatus: 507 });
+  });
+
+  it("carries the studio status out of startSmokeRender: the submit leg", async () => {
+    studio = fakeStudio({
+      submitKeyframeRender: async () => ({ status: 503, text: "no keyframe module installed" }),
+    });
+    const out = await startSmokeRender(smokeDeps(), tenant, "smk_1");
+    expect(out).toMatchObject({ ok: false, code: "studio_refused", studioStatus: 503 });
   });
 });

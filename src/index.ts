@@ -74,6 +74,7 @@ import {
   resolveSmokeRenderBounds,
   sha256Hex,
   SMOKE_RENDER_COVERAGE,
+  smokeRefusalStatus,
   startSmokeRender,
 } from "./smoke-render";
 import {
@@ -2294,11 +2295,16 @@ async function adminRoutes(
     }
     if (!started.ok) {
       await deps.store.recordAdminAction(actor, "tenant.smoke_render_refused", tenant.id, started.message);
-      // 502: the refusal came from the tenant studio, not from us. The row is already recorded
-      // FAILED carrying the studio's own words.
-      return err("studio_refused", 502, {
+      // cp#223: the refusal came from the tenant studio, not from us, and WHICH kind of refusal
+      // decides the outer status. A studio that answered 4xx/5xx made a deliberate decision, very
+      // often on a ceiling this operator configured, so that is 422; 502 is kept for a studio that
+      // could not be reached or answered unparseably. The studio own status rides in the body as
+      // studio_status rather than being propagated outward, where 507 would claim THIS plane is out
+      // of storage. The row is already recorded FAILED carrying the words the studio sent.
+      return err("studio_refused", smokeRefusalStatus(started.studioStatus), {
         smoke_render_id: started.smoke.id,
         message: started.message,
+        studio_status: started.studioStatus,
         coverage: SMOKE_RENDER_COVERAGE,
       });
     }
