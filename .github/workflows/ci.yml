@@ -62,6 +62,13 @@ jobs:
       - name: Config render guards
         run: bash tests/render-wrangler.test.sh
 
+      # The changelog job guards a PR; THIS guards the changelog job. It used to compare two-dot
+      # against a moving base and pass a PR whose entry was somebody else. The fixture reproduces
+      # that false pass before asserting the fix, because a guard whose fix cannot be watched
+      # failing is a guard nobody has verified.
+      - name: Changelog-entry guard, and the control that reproduces its old false pass
+        run: python3 tests/changelog-entry-required.test.py
+
       # Structural guards on deploy.yml. The dry run was once a STEP calling `exit 0`, which ends
       # the step and NOT the job, so a dry_run dispatch ran on into migrate + deploy. No code test
       # would have caught it -- the defect lived in the workflow shape. These assert every write to

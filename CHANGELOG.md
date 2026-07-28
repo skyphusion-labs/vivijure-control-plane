@@ -151,6 +151,16 @@ merges had nowhere for their entries to land but under a released heading.
   comparison removed, the control goes red.
 - The promotion rule is written into `docs/deploy.md` beside the release steps, so the next person
   cutting a tag reads it where they are already looking.
+- **And the `changelog` job itself was passing VACUOUSLY.** It compared `git diff BASE HEAD`,
+  two-dot, against a base that MOVES, so once another PR merged to main its files appeared in this
+  PR changed list. #242 touched three files under `src/` with no entry of its own and the check went
+  green, because somebody else merged PR had touched `CHANGELOG.md`: **another PR entry satisfied
+  this PR requirement.** Now three-dot (`BASE...HEAD`, from the merge base), with the logic moved
+  into `scripts/changelog-entry-required.py` so it can be tested at all.
+- `tests/changelog-entry-required.test.py` builds a synthetic repository shaped exactly like that
+  situation and asserts BOTH directions on it: two-dot passes (reproducing the bug) and three-dot
+  refuses (the fix). If the fixture could not reproduce the false pass the fix would be unproven.
+  A PR carrying its own entry still passes, so the fix is not merely "always refuse".
 
 ### fix(smoke-render): a deliberate studio refusal is 422, not 502 (cp#223)
 
