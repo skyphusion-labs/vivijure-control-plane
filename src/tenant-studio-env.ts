@@ -83,6 +83,24 @@ export const TENANT_STUDIO_VAR_DISPOSITION: Record<string, { disposition: VarDis
       "upgrade on the pinned release, which is exactly what the guard is for"
   },
 
+  R2_STORAGE_QUOTA_MODE: {
+    disposition: "conditional",
+    why:
+      "cp#195: what the ceiling MEANS, bound from deps.storageQuota.mode (plane var " +
+      "TENANT_R2_STORAGE_QUOTA_MODE). vivijure-core v1.4.0 reads `deny` (a hard cap, the DEFAULT " +
+      "and byte-identical to core#52) or `meter` (an included quota, nothing refused, the biller " +
+      "meters overage). Bound ONLY when this plane configures `meter`, because core defaults to " +
+      "`deny` and binding the default would spend a var slot to change nothing -- so a studio on a " +
+      "plane that has not asked for metering is byte-identical to today. `conditional` for the " +
+      "same reason as the ceiling next door rather than any doubt it gets bound: `provisioned` " +
+      "joins REQUIRED_TENANT_STUDIO_VARS, which the MODULE upgrade re-checks in a path that never " +
+      "touches studio bindings, so requiring it would fail an unrelated module upgrade on every " +
+      "tenant not yet converged. THE ENTRY EXISTS AHEAD OF ITS MANIFEST ENTRY ON PURPOSE: the cf " +
+      "release that declares this var in required_vars must land AFTER this disposition is " +
+      "deployed, or assertDispositionCoversContract refuses every provision and every upgrade on " +
+      "the pinned release, which is exactly what v1.12.0 did",
+  },
+
   ABUSE_REPORT_URL: {
     disposition: "conditional",
     why:
