@@ -4,7 +4,106 @@ All notable changes to the Vivijure control plane. Versions are SemVer; a `v*` t
 repository deploys the control plane (a `v*` tag in `vivijure-cf` deploys the Studio panel, which
 is a separate product on a separate cadence).
 
-## v1.18.0 -- 2026-07-28
+## Unreleased
+
+### fix(changelog): move three post-tag entries out of v1.18.0, and guard the heading
+
+`CHANGELOG.md` asserted that **v1.18.0 shipped three things the tag does not contain**: cp#219
+(#228), cp#223 (#230) and the cp#195 settlement trigger (#236). Verified rather than inferred:
+`git merge-base --is-ancestor` reports each of the three commits NOT an ancestor of `v1.18.0`.
+
+Root cause is the release process, not any of those PRs. #235 promoted `## Unreleased` to
+`## v1.18.0` without leaving a fresh empty `## Unreleased`, the tag was cut, and the next three
+merges had nowhere for their entries to land but under a released heading.
+
+- The three sections move to a fresh `## Unreleased`. v1.18.0 keeps only what `git log v1.18.0`
+  contains.
+- **`scripts/changelog-released-immutable.py`** refuses it recurring. For every `## vX.Y.Z` heading
+  with a matching git tag, the section body must be byte-identical to the same section in
+  `CHANGELOG.md` AT THAT TAG. A property of the TREE rather than of a diff: no base ref, and it
+  catches an entry ADDED under a released heading, which no line-based "did you update the
+  changelog" check would notice.
+- **One declared exception**, because the strict rule would have forbidden the honest thing this
+  repo already did: a released section may be corrected in place when the original note was WRONG
+  about what shipped (v1.17.0 said two PRs when the tag carries four), marked with a line beginning
+  `**CORRECTED AFTER PUBLICATION`. Declared, never inferred, same shape as the env-census
+  exemptions. An unmarked edit is refused.
+- A CONTROL plants an entry under the latest released heading and requires a refusal that NAMES the
+  version, since the script also exits 1 for a missing `## Unreleased` and a control accepting any
+  failure would keep passing after the immutability check was gone. Watched to fail: with the
+  comparison removed, the control goes red.
+- The promotion rule is written into `docs/deploy.md` beside the release steps, so the next person
+  cutting a tag reads it where they are already looking.
+
+### feat(admin): scoped operator credentials, authenticated attribution, and a readable audit trail (cp#219)
+
+The shared admin bearer is no longer the only way in. `/api/admin/*` now resolves a PRINCIPAL: a
+named credential carrying an explicit scope list and an authenticated operator identity, or the
+shared root token, which survives as break-glass. Nothing about the existing token changed for
+existing callers; every route it reached before, it reaches now.
+
+**Full contract, written to be reproducible without the code: `docs/operator-access.md`.**
+
+- **Named credentials.** A random 256-bit token; the plane stores only its SHA-256 hex, so a dump of
+  `operator_credentials` yields nothing replayable, and the plaintext exists exactly once, in the
+  mint response. Optional expiry, enforced on presentation rather than by a sweep. Soft revocation
+  that takes effect on the very next request and kills exactly one credential, so one member's
+  credential can die without rotating everyone.
+- **Seven scopes, one per hazard class rather than one per route**: `tenants:read`, `tenants:write`,
+  `tenants:destroy` (irreversible, never folded into write), `studio:operate`, `credits:write`,
+  `platform:settings`, `keys:rotate`. An unknown scope at mint is REFUSED, never dropped: a
+  credential quietly minted without the scope its holder asked for surfaces later as a confusing 403
+  during whatever incident prompted it.
+- **Authorization is a TABLE consulted before dispatch, and the default is DENY.** A path with no
+  entry is refused to everyone including root. A per-handler check is correct exactly as long as
+  every future handler remembers to write one, and the failure mode of forgetting is an ungated admin
+  route that no test notices because it works; here, forgetting makes the route unreachable. A test
+  walks the router's own path patterns and fails if one is gated by nothing.
+- **Credential lifecycle is ROOT-ONLY**, enforced by that table. A scoped credential able to mint an
+  unscoped one would hold every scope in two requests. Same constraint Cloudflare puts on its own API
+  tokens, surfaced at design time rather than at mint time.
+- **cp#193's `operator_claimed` is closed.** An authenticated principal records
+  `operator_authenticated` in both the ledger note and the audit detail. A body naming somebody else
+  is REFUSED (`operator_mismatch`), not ignored: silently dropping it would let a UI display a name
+  that is not the one recorded, which is the same false-attribution failure in a different coat. The
+  root token keeps the old contract exactly, claim and all, because it still cannot prove who holds
+  it.
+- **Reads that reach into ONE tenant are now audited** (`tenant.read.*`), including the smoke-render
+  artifact route, which returns rendered tenant content and is recorded BEFORE the fetch so a failed
+  fetch is not a retry loophole. Fleet-level reads (the census, our own R2 bill, RunPod
+  reconciliation, the trail itself) are deliberately NOT audited: they read our inventory, not any
+  one tenant's material, and auditing them would bury the rows that matter.
+- **The trail is readable**: `GET /api/admin/audit`, newest first, filterable by tenant. It has been
+  append-only with no reader since migration 0001, which is durable and not reviewable, and the
+  ruling on operator access asks for both.
+- **`GET /api/admin/whoami`** serves the caller's identity, scopes, and the whole scope catalogue, so
+  the operator console renders from what the backend declares rather than from a list baked into the
+  page.
+
+**The merged privacy text is now tested, not assumed.** `PRIVACY-DELTA.md` Section 2.3 and AUP
+Section 5 promise that any access reaching into a specific tenant records who (authenticated by the
+credential), what, which tenant, and when. Every tenant-scoped route in `ADMIN_REQUIREMENTS` must be
+CLASSIFIED as audited or the suite fails, the four fields are asserted on a real row written through
+the real router, and the root credential is proven NOT exempt (it writes the same row, attributed to
+the credential rather than a person, exactly as the text discloses).
+
+**The fail-closed default proved itself TWICE during this sprint, on two different lanes.** cp#185's
+two new admin routes (`POST /api/admin/llm-meter/run`, `GET /api/admin/llm-spend`) landed on main
+while this branch was open, carried no requirement, and therefore went unreachable the moment the
+table arrived, with seven tests going red. They are now gated: the tick gets its own `meter:operate` scope (it mints no
+money and is not a switch; it moves the cursor a billing period is built from), and the per-tenant
+spend read is gated as a tenant read and audited as one, because leaving it out would make "reaching
+into a specific tenant leaves a record" quietly false. It happened again on the rebase onto cp#195:
+`POST /api/admin/meter-settle` landed ungated and went unreachable, and it is now `meter:operate`
+alongside the ingest tick. Deliberately NOT `credits:write`: that scope mints money from nothing on
+the manual rail, while settlement turns already-measured usage into the ledger rows it implies.
+Different acts, different blast radius, different people should be able to hold them.
+
+Migration `0016_operator_credentials.sql`. New: `src/operator-auth.ts`,
+`tests/operator-scopes.test.ts` (44 tests, every scope boundary watched refusing WITH a positive
+control beside it; the gate was sabotaged six ways and each sabotage was watched turning exactly the
+right tests red, including planting a fake tenant-scoped route to prove the classification check
+names it).
 
 ### fix(smoke-render): a deliberate studio refusal is 422, not 502 (cp#223)
 
@@ -26,46 +125,7 @@ produces it, and any operator testing a quota produces it deliberately.
   before; this is the outer status only.
 - Callers branching on `502` from this route see `422` for the refusal case now. Every consumer
   today is an operator reading JSON.
-### fix(census): census `src/env.ts` against the deploy lists, and declare five vars that reached nothing (cp#218)
 
-`scripts/var-census.py` anchored on the placeholders in `wrangler.toml.example` and asserted the
-other three lists agreed. That catches "declared in some lists, missing from others" and is
-structurally blind to "declared in NO list, read in code anyway": the four lists agree, by all
-omitting it. `CREDITS_ENFORCING` shipped in v1.17.0 that way and never reached the Worker. Census
-green, deploy green, tests green, feature dead.
-
-- **The census now reads `src/env.ts`.** Every field of `ControlPlaneEnv` (following `extends`)
-  must resolve to exactly one of: a declared var (a key in the `[vars]` table), a declared-exempt
-  secret, or a declared-exempt binding. A field in none of the three FAILS, because silence is the
-  bug.
-- **Classification is DECLARED INTENT, not a guess from the type.** `ENV_SECRETS` and
-  `ENV_BINDINGS` in `env.ts`, each `satisfies readonly (keyof ControlPlaneEnv)[]` so `tsc` rejects
-  an entry that is not a field and a renamed field cannot leave a stale exemption looking like
-  coverage. Flagging a secret as a missing var would have invited somebody to "fix" the census by
-  writing a credential name into a tracked deploy list; flagging bindings would have put noise on
-  every deploy, and a noisy guard is one people learn to ignore.
-- The census refuses that wrong fix explicitly: a declared secret appearing in `[vars]`, in a
-  placeholder, or in the render allowlist is named as such.
-- Classification is by DELIVERY MECHANISM rather than sensitivity, which is why
-  `VIDEO_FINISH_VPC_SERVICE_ID`, not a credential, is a declared secret: that is how it is
-  installed, read back from the live Worker settings as `secret_text`. It and
-  `CF_WORKER_UPLOAD_TOKEN` were both live on the Worker and missing from the documented secret list.
-- **Five live instances of the gap, all now declared in all four lists**, all empty by default so
-  behaviour is unchanged: `TENANT_SPEND_DAILY_CEILING`, `STUDIO_TOKEN_KEK_ENCRYPT_SLOT`,
-  `SMOKE_RENDER_COOLDOWN_SECONDS`, `SMOKE_RENDER_DAILY_CAP`, `SMOKE_RENDER_INFLIGHT_SECONDS`.
-  Every one was typed, read in production code, and unreachable by any deploy: the operator knobs
-  documented as tunable could not be tuned, and the KEK rotation runbook step "set the slot and
-  deploy" was not performable without editing the template first.
-- **`deps.ts` now treats an empty spend ceiling as absent.** Declaring an ALLOW_EMPTY var makes it
-  arrive as `""`, not `undefined`, so `env.TENANT_SPEND_DAILY_CEILING ?? "25"` would have
-  provisioned every tenant with an empty ceiling. `boundFrom()` and `kekRing()` already had this
-  rule; this is the third site.
-- **Two new positive controls**, watched to fail with the check removed: a var typed in `env.ts` and
-  declared nowhere is refused (and the refusal must NAME it, so a census failing for an unrelated
-  reason cannot keep the control green), and a declared secret added to a deploy list is refused.
-  The pre-existing control now copies `src/env.ts` into its tree; without it the census would have
-  died on a missing file, still exiting non-zero, and that control would have gone on printing `ok`
-  while proving nothing.
 ### feat(credits): the settlement trigger, operator-runnable, on a derived period key (cp#195)
 
 The periodic overage settlement. Wires nothing onto tenant studios yet: the plane uses the allowance
@@ -107,6 +167,48 @@ Writing the control for the round-trip check also found a real inconsistency in 
 and separately the key generator emitted an unpadded year the parser's `\d{4}` would refuse. The
 year is now padded and both directions round-trip.
 
+## v1.18.0 -- 2026-07-28
+
+### fix(census): census `src/env.ts` against the deploy lists, and declare five vars that reached nothing (cp#218)
+
+`scripts/var-census.py` anchored on the placeholders in `wrangler.toml.example` and asserted the
+other three lists agreed. That catches "declared in some lists, missing from others" and is
+structurally blind to "declared in NO list, read in code anyway": the four lists agree, by all
+omitting it. `CREDITS_ENFORCING` shipped in v1.17.0 that way and never reached the Worker. Census
+green, deploy green, tests green, feature dead.
+
+- **The census now reads `src/env.ts`.** Every field of `ControlPlaneEnv` (following `extends`)
+  must resolve to exactly one of: a declared var (a key in the `[vars]` table), a declared-exempt
+  secret, or a declared-exempt binding. A field in none of the three FAILS, because silence is the
+  bug.
+- **Classification is DECLARED INTENT, not a guess from the type.** `ENV_SECRETS` and
+  `ENV_BINDINGS` in `env.ts`, each `satisfies readonly (keyof ControlPlaneEnv)[]` so `tsc` rejects
+  an entry that is not a field and a renamed field cannot leave a stale exemption looking like
+  coverage. Flagging a secret as a missing var would have invited somebody to "fix" the census by
+  writing a credential name into a tracked deploy list; flagging bindings would have put noise on
+  every deploy, and a noisy guard is one people learn to ignore.
+- The census refuses that wrong fix explicitly: a declared secret appearing in `[vars]`, in a
+  placeholder, or in the render allowlist is named as such.
+- Classification is by DELIVERY MECHANISM rather than sensitivity, which is why
+  `VIDEO_FINISH_VPC_SERVICE_ID`, not a credential, is a declared secret: that is how it is
+  installed, read back from the live Worker settings as `secret_text`. It and
+  `CF_WORKER_UPLOAD_TOKEN` were both live on the Worker and missing from the documented secret list.
+- **Five live instances of the gap, all now declared in all four lists**, all empty by default so
+  behaviour is unchanged: `TENANT_SPEND_DAILY_CEILING`, `STUDIO_TOKEN_KEK_ENCRYPT_SLOT`,
+  `SMOKE_RENDER_COOLDOWN_SECONDS`, `SMOKE_RENDER_DAILY_CAP`, `SMOKE_RENDER_INFLIGHT_SECONDS`.
+  Every one was typed, read in production code, and unreachable by any deploy: the operator knobs
+  documented as tunable could not be tuned, and the KEK rotation runbook step "set the slot and
+  deploy" was not performable without editing the template first.
+- **`deps.ts` now treats an empty spend ceiling as absent.** Declaring an ALLOW_EMPTY var makes it
+  arrive as `""`, not `undefined`, so `env.TENANT_SPEND_DAILY_CEILING ?? "25"` would have
+  provisioned every tenant with an empty ceiling. `boundFrom()` and `kekRing()` already had this
+  rule; this is the third site.
+- **Two new positive controls**, watched to fail with the check removed: a var typed in `env.ts` and
+  declared nowhere is refused (and the refusal must NAME it, so a census failing for an unrelated
+  reason cannot keep the control green), and a declared secret added to a deploy list is refused.
+  The pre-existing control now copies `src/env.ts` into its tree; without it the census would have
+  died on a missing file, still exiting non-zero, and that control would have gone on printing `ok`
+  while proving nothing.
 ### feat(credits): the shared unbillable vocabulary and the overage decision core (cp#195)
 
 The half of cp#195's LLM bundled allowance that does not depend on where the allowance knob lives.
@@ -211,75 +313,6 @@ Verification: `npm run typecheck` clean, 1308 unit tests green, 8 live tests gre
 gateway, and **16 planted defects each watched turning the suite red** (half-open window assignment
 flipped to overlap, `OR IGNORE` to `OR REPLACE`, the watermark's `MAX()` to a plain overwrite,
 summation by `occurred_at` instead of `period_id`, the prism refusal removed, and so on).
-### feat(admin): scoped operator credentials, authenticated attribution, and a readable audit trail (cp#219)
-
-The shared admin bearer is no longer the only way in. `/api/admin/*` now resolves a PRINCIPAL: a
-named credential carrying an explicit scope list and an authenticated operator identity, or the
-shared root token, which survives as break-glass. Nothing about the existing token changed for
-existing callers; every route it reached before, it reaches now.
-
-**Full contract, written to be reproducible without the code: `docs/operator-access.md`.**
-
-- **Named credentials.** A random 256-bit token; the plane stores only its SHA-256 hex, so a dump of
-  `operator_credentials` yields nothing replayable, and the plaintext exists exactly once, in the
-  mint response. Optional expiry, enforced on presentation rather than by a sweep. Soft revocation
-  that takes effect on the very next request and kills exactly one credential, so one member's
-  credential can die without rotating everyone.
-- **Seven scopes, one per hazard class rather than one per route**: `tenants:read`, `tenants:write`,
-  `tenants:destroy` (irreversible, never folded into write), `studio:operate`, `credits:write`,
-  `platform:settings`, `keys:rotate`. An unknown scope at mint is REFUSED, never dropped: a
-  credential quietly minted without the scope its holder asked for surfaces later as a confusing 403
-  during whatever incident prompted it.
-- **Authorization is a TABLE consulted before dispatch, and the default is DENY.** A path with no
-  entry is refused to everyone including root. A per-handler check is correct exactly as long as
-  every future handler remembers to write one, and the failure mode of forgetting is an ungated admin
-  route that no test notices because it works; here, forgetting makes the route unreachable. A test
-  walks the router's own path patterns and fails if one is gated by nothing.
-- **Credential lifecycle is ROOT-ONLY**, enforced by that table. A scoped credential able to mint an
-  unscoped one would hold every scope in two requests. Same constraint Cloudflare puts on its own API
-  tokens, surfaced at design time rather than at mint time.
-- **cp#193's `operator_claimed` is closed.** An authenticated principal records
-  `operator_authenticated` in both the ledger note and the audit detail. A body naming somebody else
-  is REFUSED (`operator_mismatch`), not ignored: silently dropping it would let a UI display a name
-  that is not the one recorded, which is the same false-attribution failure in a different coat. The
-  root token keeps the old contract exactly, claim and all, because it still cannot prove who holds
-  it.
-- **Reads that reach into ONE tenant are now audited** (`tenant.read.*`), including the smoke-render
-  artifact route, which returns rendered tenant content and is recorded BEFORE the fetch so a failed
-  fetch is not a retry loophole. Fleet-level reads (the census, our own R2 bill, RunPod
-  reconciliation, the trail itself) are deliberately NOT audited: they read our inventory, not any
-  one tenant's material, and auditing them would bury the rows that matter.
-- **The trail is readable**: `GET /api/admin/audit`, newest first, filterable by tenant. It has been
-  append-only with no reader since migration 0001, which is durable and not reviewable, and the
-  ruling on operator access asks for both.
-- **`GET /api/admin/whoami`** serves the caller's identity, scopes, and the whole scope catalogue, so
-  the operator console renders from what the backend declares rather than from a list baked into the
-  page.
-
-**The merged privacy text is now tested, not assumed.** `PRIVACY-DELTA.md` Section 2.3 and AUP
-Section 5 promise that any access reaching into a specific tenant records who (authenticated by the
-credential), what, which tenant, and when. Every tenant-scoped route in `ADMIN_REQUIREMENTS` must be
-CLASSIFIED as audited or the suite fails, the four fields are asserted on a real row written through
-the real router, and the root credential is proven NOT exempt (it writes the same row, attributed to
-the credential rather than a person, exactly as the text discloses).
-
-**The fail-closed default proved itself TWICE during this sprint, on two different lanes.** cp#185's
-two new admin routes (`POST /api/admin/llm-meter/run`, `GET /api/admin/llm-spend`) landed on main
-while this branch was open, carried no requirement, and therefore went unreachable the moment the
-table arrived, with seven tests going red. They are now gated: the tick gets its own `meter:operate` scope (it mints no
-money and is not a switch; it moves the cursor a billing period is built from), and the per-tenant
-spend read is gated as a tenant read and audited as one, because leaving it out would make "reaching
-into a specific tenant leaves a record" quietly false. It happened again on the rebase onto cp#195:
-`POST /api/admin/meter-settle` landed ungated and went unreachable, and it is now `meter:operate`
-alongside the ingest tick. Deliberately NOT `credits:write`: that scope mints money from nothing on
-the manual rail, while settlement turns already-measured usage into the ledger rows it implies.
-Different acts, different blast radius, different people should be able to hold them.
-
-Migration `0016_operator_credentials.sql`. New: `src/operator-auth.ts`,
-`tests/operator-scopes.test.ts` (44 tests, every scope boundary watched refusing WITH a positive
-control beside it; the gate was sabotaged six ways and each sabotage was watched turning exactly the
-right tests red, including planting a fake tenant-scoped route to prove the classification check
-names it).
 
 ### feat(meter): LLM spend roll-up schema and decision core (cp#185)
 
