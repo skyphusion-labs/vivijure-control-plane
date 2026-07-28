@@ -13,13 +13,15 @@ this tenant own bytes, `none` deliberately uncapped). That is an override DISPOS
 anything, so the name was wrong on its own merits before any collision existed.
 
 vivijure-core v1.4.0 then introduced a studio var genuinely called `R2_STORAGE_QUOTA_MODE`, carrying
-`deny` / `meter`: what the ceiling MEANS. Two unrelated facts behind the same three words, one a D1
-column and one a Worker binding, and the one that actually is a mode did not own the word.
+`deny` / `meter`. Rollins put the distinction better than the original framing did, so it is his
+wording in the record: **the COLUMN selects which SOURCE a tenant ceiling comes from; the VAR selects
+what the studio DOES at that ceiling.** Orthogonal facts behind three shared words, one a D1 column
+and one a Worker binding, and the one that actually is a mode did not own the word.
 
 - **The sharp edge is not readability.** cp#195 implies a future PER-TENANT enforcement mode (prepaid
   metered, BYOK capped) and its obvious column name was occupied by something unrelated. Exactly one
-  migration depended on the old name and the data was a day old, so this is the cheapest it will
-  ever be.
+  migration depended on the old name and the data was a day old, so this is the cheapest it will ever
+  be.
 - Migration `0017`. `ALTER TABLE ... RENAME COLUMN` is available on D1 and rewrites nothing: no table
   copy, no data movement, no window where a row is missing. Values untouched, name only.
 - **`0014` is ANNOTATED, not rewritten.** A migration records what it DID rather than what the schema
@@ -28,213 +30,34 @@ column and one a Worker binding, and the one that actually is a mode did not own
 - 19 references renamed across `src/`, `tests/` and `docs/`; zero occurrences of the old name remain
   outside the migration history.
 
-## v1.18.0 -- 2026-07-28
+**A hole in the immutability guard, found by its own control while resolving this PR.** A merge
+produced TWO `## v1.18.0` headings, and `sections()` keys by version, so the dict kept the LAST
+occurrence: the guard compared that one, found it matched its tag, and reported ok while the FIRST
+heading carried entries belonging to no release at all. Right about the section it looked at, blind
+to the one that was wrong. Duplicate version headings are a refusal now, with a control that plants
+a second heading and requires the refusal to say so.
 
-### fix(smoke-render): a deliberate studio refusal is 422, not 502 (cp#223)
+### docs(meter): the allowance parser contract and the storage-mode name collision, recorded at the vars (cp#195)
 
-The operator smoke-render route answered `502 studio_refused` whenever the tenant studio would not
-build or accept the render, including when the studio refused correctly on a ceiling the operator
-themselves configured. 502 means bad gateway: the upstream is broken or unreachable. Here the
-upstream answered promptly and correctly, and an operator reading 502 in a log reasonably concludes
-the tenant studio is unhealthy and starts looking for an infrastructure fault that does not exist.
-Since cp#183 that refusal is routine rather than exotic: any tenant at their storage ceiling
-produces it, and any operator testing a quota produces it deliberately.
+Comment-only in `src/env.ts`. No behaviour change; recorded because both facts existed only in crew
+messages and both will be needed by whoever wires the R2 overage half.
 
-- **A studio that ANSWERED 4xx or 5xx made a decision, so the route now answers `422`.** `502` is
-  kept strictly for transport failures: the studio could not be reached, or answered something this
-  plane could not parse (a 2xx carrying no bundle key or job id).
-- **The studio status rides in the body as `studio_status`,** rather than being propagated outward.
-  Answering `507` would claim THIS plane is out of storage, which is a lie about who ran out, and it
-  would widen the statuses this route can emit to whatever a tenant studio happens to return.
-- The `studio_refused` code, the message and both real numbers are unchanged. Nothing was hidden
-  before; this is the outer status only.
-- Callers branching on `502` from this route see `422` for the refusal case now. Every consumer
-  today is an operator reading JSON.
-### fix(census): census `src/env.ts` against the deploy lists, and declare five vars that reached nothing (cp#218)
+- **The allowance parser agrees with vivijure-core on everything except exponent notation, and this
+  side does NOT loosen.** Verified against the shipped `parseMicroUsd` rather than read off the
+  source: `"0"` -> `0`, `"1000"` -> `1000`, and `"1.5"` / `"-1"` / `"5USD"` / empty / unset all ->
+  `null`, matching core. `Number()` accepts exponent notation, so core's first cut read `"1e3"` as
+  `1000` while this side's `^[0-9]+$` refuses it. Ruled 2026-07-28: `1e3` in a money config is an
+  accident of `Number()` rather than an intent anybody holds, so the core knob gets its own strict
+  parser when it lands (vivijure-core#107) instead of the plane relaxing. That knob is NOT in core
+  v1.4.0, which shipped storage-mode only.
+- **`tenants.r2_storage_quota_mode` is NOT `TENANT_R2_STORAGE_QUOTA_MODE`.** The D1 column
+  (migration 0014) selects which SOURCE a tenant ceiling comes from (`NULL` inherit / `'set'` /
+  `'none'`); the var selects what the studio DOES at the ceiling (`deny` / `meter`). Three shared
+  words, orthogonal facts, one a column and one a binding. Wiring one to the other would silently
+  turn "no ceiling configured" into "bill the overage", or the reverse. Flagged rather than fixed;
+  a naming ruling is pending, and the bite lands when a per-tenant ENFORCEMENT override is wanted
+  and finds its obvious column name already taken.
 
-`scripts/var-census.py` anchored on the placeholders in `wrangler.toml.example` and asserted the
-other three lists agreed. That catches "declared in some lists, missing from others" and is
-structurally blind to "declared in NO list, read in code anyway": the four lists agree, by all
-omitting it. `CREDITS_ENFORCING` shipped in v1.17.0 that way and never reached the Worker. Census
-green, deploy green, tests green, feature dead.
-
-- **The census now reads `src/env.ts`.** Every field of `ControlPlaneEnv` (following `extends`)
-  must resolve to exactly one of: a declared var (a key in the `[vars]` table), a declared-exempt
-  secret, or a declared-exempt binding. A field in none of the three FAILS, because silence is the
-  bug.
-- **Classification is DECLARED INTENT, not a guess from the type.** `ENV_SECRETS` and
-  `ENV_BINDINGS` in `env.ts`, each `satisfies readonly (keyof ControlPlaneEnv)[]` so `tsc` rejects
-  an entry that is not a field and a renamed field cannot leave a stale exemption looking like
-  coverage. Flagging a secret as a missing var would have invited somebody to "fix" the census by
-  writing a credential name into a tracked deploy list; flagging bindings would have put noise on
-  every deploy, and a noisy guard is one people learn to ignore.
-- The census refuses that wrong fix explicitly: a declared secret appearing in `[vars]`, in a
-  placeholder, or in the render allowlist is named as such.
-- Classification is by DELIVERY MECHANISM rather than sensitivity, which is why
-  `VIDEO_FINISH_VPC_SERVICE_ID`, not a credential, is a declared secret: that is how it is
-  installed, read back from the live Worker settings as `secret_text`. It and
-  `CF_WORKER_UPLOAD_TOKEN` were both live on the Worker and missing from the documented secret list.
-- **Five live instances of the gap, all now declared in all four lists**, all empty by default so
-  behaviour is unchanged: `TENANT_SPEND_DAILY_CEILING`, `STUDIO_TOKEN_KEK_ENCRYPT_SLOT`,
-  `SMOKE_RENDER_COOLDOWN_SECONDS`, `SMOKE_RENDER_DAILY_CAP`, `SMOKE_RENDER_INFLIGHT_SECONDS`.
-  Every one was typed, read in production code, and unreachable by any deploy: the operator knobs
-  documented as tunable could not be tuned, and the KEK rotation runbook step "set the slot and
-  deploy" was not performable without editing the template first.
-- **`deps.ts` now treats an empty spend ceiling as absent.** Declaring an ALLOW_EMPTY var makes it
-  arrive as `""`, not `undefined`, so `env.TENANT_SPEND_DAILY_CEILING ?? "25"` would have
-  provisioned every tenant with an empty ceiling. `boundFrom()` and `kekRing()` already had this
-  rule; this is the third site.
-- **Two new positive controls**, watched to fail with the check removed: a var typed in `env.ts` and
-  declared nowhere is refused (and the refusal must NAME it, so a census failing for an unrelated
-  reason cannot keep the control green), and a declared secret added to a deploy list is refused.
-  The pre-existing control now copies `src/env.ts` into its tree; without it the census would have
-  died on a missing file, still exiting non-zero, and that control would have gone on printing `ok`
-  while proving nothing.
-### feat(credits): the settlement trigger, operator-runnable, on a derived period key (cp#195)
-
-The periodic overage settlement. Wires nothing onto tenant studios yet: the plane uses the allowance
-for its OWN settlement, and the tenant binding follows strummer's core train.
-
-- **`src/meter-period.ts`** -- `billingPeriodContaining`, `lastClosedBillingPeriod`,
-  `parseBillingPeriodKey`. UTC calendar month, half-open, and **derived rather than stored**: the key
-  becomes the ledger's idempotency reference, so a stored key a retry could not find would mint a
-  new one and charge twice.
-- **`lastClosedBillingPeriod` is the default**, never the current month. Settling a month still
-  accumulating computes the debit from a partial window and, being idempotent on the key, the later
-  correct figure can never replace it: one early settlement permanently under-bills that month.
-- **`src/meter-settle-run.ts`** -- the sweep. Sequential (matching the R2 usage sweep), skips deleted
-  tenants deliberately, records a throwing tenant as unbillable and CONTINUES, and carries
-  `censusComplete`. A truncated tenant census is missing MONEY rather than a wrong number: unsettled
-  tenants look exactly like tenants who owed nothing.
-- **`POST /api/admin/meter-settle`** -- operator-runnable, so a settlement can be forced and its
-  actual result read rather than inferred from a cron log. Audited, unlike the read-only admin
-  surfaces, because it moves money.
-- **A MALFORMED allowance refuses the whole run** (400) rather than sweeping and reporting every
-  tenant unbillable. The house rule `TENANT_R2_STORAGE_QUOTA_BYTES` already states: "typed it wrong"
-  and "chose none" must not be the same outcome. An unset knob still runs and reports honestly; a
-  configured `"0"` is a real decision and bills from the first micro-USD.
-- **New vars, names approved by mackaye 2026-07-28**: `TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD` and
-  `TENANT_R2_STORAGE_QUOTA_MODE`. Declared ahead of their bindings and NOT yet bound onto tenant
-  studios, because the studio-core knobs they mirror do not exist until the core train lands, and
-  binding a var the consuming code cannot answer is the shape that took provisioning down on
-  2026-07-27.
-
-Verification: typecheck clean, 1359 tests green, and **10 planted defects each watched turning the
-suite red**. Two of them escaped on the first pass and both were defects in MY TESTS, which is the
-point of running it: the period round-trip check had no input that could distinguish it (every other
-bad key was caught by the regex), and the audit assertion used `toContain`, which a renamed
-`meter.settle_llm_noop` satisfies as a substring. Both tests were strengthened and both mutations
-then caught.
-
-Writing the control for the round-trip check also found a real inconsistency in this module:
-`Date.UTC` maps a year of 0..99 to 1900+year, so `"0026-07"` would have produced a window for 1926,
-and separately the key generator emitted an unpadded year the parser's `\d{4}` would refuse. The
-year is now padded and both directions round-trip.
-
-### feat(credits): the shared unbillable vocabulary and the overage decision core (cp#195)
-
-The half of cp#195's LLM bundled allowance that does not depend on where the allowance knob lives.
-NOT YET WIRED: nothing calls it until the `TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD` name is settled
-with strummer's core train.
-
-- **`src/meter-window.ts`** -- `MeterWindow` (`window_start`, `window_end`, `complete`, `reason`)
-  EXTRACTED rather than duplicated, on mackaye's ruling: the storage meter and the LLM meter speak
-  one vocabulary, so a consumer writes ONE unbillable check that works for every metered class.
-  `LlmSpendWindow` now extends it; the agreed cp#195 five fields are unchanged.
-- **`isUnbillable()`** reads the flag as an assertion: billable ONLY on an explicit `true`, so a
-  window from an older shape or a hand-built fixture cannot read as a free pass.
-- **`src/meter-debit.ts`** -- `decideOverageDebit()`, pure, with the allowance INJECTED.
-
-**Three outcomes, not two, and this is the whole design.** `debit` writes the overage. `within`
-writes NO ledger row and is a complete, correct, finished answer (cp#195: usage inside the allowance
-produces no ledger row). `unbillable` writes nothing because we could not establish what the usage
-was. `within` and `unbillable` both write nothing, which is exactly why they must not share a name:
-one says "we looked, nothing is owed", the other says "we could not look". Collapsing them turns
-every gap in the meter into a silent free ride.
-
-**Completeness is checked FIRST**, before the allowance and before any arithmetic. Checking the
-allowance first would let an incomplete window whose PARTIAL total happens to sit under the
-allowance report `within` -- a confident "nothing is owed" derived from data we never had, and the
-most dangerous shape available here because it looks exactly like the healthy case.
-
-**An unset allowance is UNBILLABLE, not an allowance of zero.** Same posture as
-`R2_STORAGE_QUOTA_BYTES` (no default in code, because the number is a policy this repo does not get
-to invent), and the direction matters: treating unset as zero would bill a tenant for every
-micro-USD of something nobody configured, the one failure in this lane that costs the TENANT rather
-than us. A configured zero IS a decision and still bills from the first micro-USD.
-
-`overageIdemRef(meter, periodKey)` is deterministic and separates meter classes, since one tenant can
-owe an LLM overage and a storage overage in the same period and those are two rows.
-
-- **`src/meter-settle.ts`** -- `settleMeterOverage()`, the ONLY path from a decision to a money row.
-  There is no override, no force flag and no second entry point, so an incomplete window cannot be
-  billed by any path through the module. A debit writes a NEGATIVE delta (matching `captureHold`) and
-  carries `cost_micro_usd` = the FULL window usage rather than the charged overage, so the allowance
-  we absorbed stays visible instead of the ratio reporting full cost recovery.
-- **`already_settled` is distinct from `debited`.** The ledger is idempotent on
-  (`tenant_id`, `idem_ref`) and a replay is a success, but collapsing the two would make a settlement
-  run report N fresh charges when it re-ran over N existing ones, which cannot answer "did this month
-  settle twice".
-- A refusal DEFERS billing, it does not forfeit it: a period refused on an incomplete window settles
-  normally once the meter catches up. Tested.
-
-Verification: typecheck clean, 1323 unit tests green, and 7 planted defects each watched turning the
-suite red (allowance checked before completeness, unset allowance treated as zero, the total billed
-instead of the difference, the allowance boundary flipped, the meter class dropped from the
-idempotency key, `isUnbillable` reading `=== false`, and the malformed-usage refusal removed).
-
-### feat(meter): the LLM meter read path -- live gateway reader, cron trigger, windowed read (cp#185)
-
-Part two, and the part that makes part one do anything. The meter now RUNS: a concrete
-`GatewayLogReader` over the AI Gateway logs API, a 15-minute cron, D1 persistence, and the windowed
-read cp#195 bills from.
-
-- **`src/ai-gateway-logs.ts`** -- the shipping reader, and the one place a real gateway is reached.
-  Has its own live regression suite (`tests/ai-gateway-logs.live.test.ts`, 8 assertions, run green
-  against `vivijure-hosted` on 2026-07-28) because every fact it rests on is vendor behaviour.
-- **`src/llm-spend-ingest.ts`** -- one run, persisted in an order chosen for crash safety: open the
-  period (unfinished), write events, close it with the TRUE count, then advance the watermark. Die
-  anywhere and the record is honestly WORSE than the truth rather than better.
-- **`src/llm-spend-window.ts`** -- the cp#195 contract:
-  `{ cost_micro_usd, requests, window_start, window_end, complete }`, integer micro-USD.
-- **`LlmSpendD1`** in `store-d1.ts`; **`scheduled()`** in `index.ts`; admin
-  `POST /api/admin/llm-meter/run` and `GET /api/admin/llm-spend`.
-- **New worker secret `AI_GATEWAY_READ_TOKEN`** (AI Gateway Read + Metadata Read). Absent = the
-  meter does not run and writes NO period rows. See `docs/deploy.md`.
-
-**Three vendor facts established live, correcting or refining what part one recorded:**
-
-- **The metadata filter is NOT pair-matched.** cp#221 recorded this as unprovable; it is provable,
-  and the answer is the dangerous one. `metadata.key eq "tenant_id"` AND
-  `metadata.value eq "rollins-e2e"` returns the row whose `tenant_id` is `ten_de43...` -- because
-  `rollins-e2e` is the value of `slug`. The dimensions are ANDed independently, so a per-tenant
-  filter CAN return another tenant's row. The shipping reader therefore sends **no metadata filter
-  at all** and attributes off the row. cp#221's defensive posture was right and is now load-bearing
-  rather than precautionary.
-- **`order_by_direction=asc` is supported**, which part one did not know. It matters: the default
-  order is descending, so a row arriving mid-walk shifts older rows a position later and a paged
-  walk re-reads one row while SKIPPING another. The walk is ascending.
-- **`created_at gt` compares at whole-SECOND granularity**, not the millisecond the timestamps are
-  rendered in (`gt ...20.999Z` returns the row at `...20.710Z`; `gt ...21.000Z` does not). So a
-  watermark never skips a row, at the cost of re-reading one second per run -- free, since writes
-  are `INSERT OR IGNORE` on the gateway's row id. The safe direction, now documented so nobody
-  "fixes" the duplicate read into a silent skip.
-
-**`complete: false` is reachable six distinct ways and each one is tested**: no run assigned to the
-window (the shape a dead cron produces, and the one that must never bill as a zero), an unfinished
-run, a run that did not paginate to exhaustion, a FAILED positive control, a retention gap, an
-unpriced row, and a truncated period census. A clean window still reports `complete: true`, so the
-suite cannot pass by refusing everything.
-
-**`skyphusion-llm` is refused by name at construction.** Every other wrong gateway id lands on
-Cloudflare's `200 / success:true / total_count:0` answer and the positive control catches it. prism's
-gateway holds ~99,000 rows, so the control would PASS while attributing another product's spend to
-vivijure tenants: the one misconfiguration the control cannot see.
-
-Verification: `npm run typecheck` clean, 1308 unit tests green, 8 live tests green against the real
-gateway, and **16 planted defects each watched turning the suite red** (half-open window assignment
-flipped to overlap, `OR IGNORE` to `OR REPLACE`, the watermark's `MAX()` to a plain overwrite,
-summation by `occurred_at` instead of `period_id`, the prism refusal removed, and so on).
 ### feat(admin): the operator console, a page in front of /api/admin/* (cp#89)
 
 There was no admin UI at all: `public/` was the tenant front door and nothing else, and every operator
@@ -351,6 +174,265 @@ Migration `0016_operator_credentials.sql`. New: `src/operator-auth.ts`,
 control beside it; the gate was sabotaged six ways and each sabotage was watched turning exactly the
 right tests red, including planting a fake tenant-scoped route to prove the classification check
 names it).
+
+### fix(changelog): move three post-tag entries out of v1.18.0, and guard the heading
+
+`CHANGELOG.md` asserted that **v1.18.0 shipped three things the tag does not contain**: cp#219
+(#228), cp#223 (#230) and the cp#195 settlement trigger (#236). Verified rather than inferred:
+`git merge-base --is-ancestor` reports each of the three commits NOT an ancestor of `v1.18.0`.
+
+Root cause is the release process, not any of those PRs. #235 promoted `## Unreleased` to
+`## v1.18.0` without leaving a fresh empty `## Unreleased`, the tag was cut, and the next three
+merges had nowhere for their entries to land but under a released heading.
+
+- The three sections move to a fresh `## Unreleased`. v1.18.0 keeps only what `git log v1.18.0`
+  contains.
+- **`scripts/changelog-released-immutable.py`** refuses it recurring. For every `## vX.Y.Z` heading
+  with a matching git tag, the section body must be byte-identical to the same section in
+  `CHANGELOG.md` AT THAT TAG. A property of the TREE rather than of a diff: no base ref, and it
+  catches an entry ADDED under a released heading, which no line-based "did you update the
+  changelog" check would notice.
+- **One declared exception**, because the strict rule would have forbidden the honest thing this
+  repo already did: a released section may be corrected in place when the original note was WRONG
+  about what shipped (v1.17.0 said two PRs when the tag carries four), marked with a line beginning
+  `**CORRECTED AFTER PUBLICATION`. Declared, never inferred, same shape as the env-census
+  exemptions. An unmarked edit is refused.
+- A CONTROL plants an entry under the latest released heading and requires a refusal that NAMES the
+  version, since the script also exits 1 for a missing `## Unreleased` and a control accepting any
+  failure would keep passing after the immutability check was gone. Watched to fail: with the
+  comparison removed, the control goes red.
+- The promotion rule is written into `docs/deploy.md` beside the release steps, so the next person
+  cutting a tag reads it where they are already looking.
+- **And the `changelog` job itself was passing VACUOUSLY.** It compared `git diff BASE HEAD`,
+  two-dot, against a base that MOVES, so once another PR merged to main its files appeared in this
+  PR changed list. #242 touched three files under `src/` with no entry of its own and the check went
+  green, because somebody else merged PR had touched `CHANGELOG.md`: **another PR entry satisfied
+  this PR requirement.** Now three-dot (`BASE...HEAD`, from the merge base), with the logic moved
+  into `scripts/changelog-entry-required.py` so it can be tested at all.
+- `tests/changelog-entry-required.test.py` builds a synthetic repository shaped exactly like that
+  situation and asserts BOTH directions on it: two-dot passes (reproducing the bug) and three-dot
+  refuses (the fix). If the fixture could not reproduce the false pass the fix would be unproven.
+  A PR carrying its own entry still passes, so the fix is not merely "always refuse".
+- **And the immutability guard itself was passing VACUOUSLY in CI**, caught by its own control. A
+  bare `actions/checkout` is shallow and carries **no git tags**, and the guard resolves released
+  sections by matching `## vX.Y.Z` headings against tags. With none present it found zero released
+  sections, compared nothing, and printed ok. The planted-entry control refused to, reporting an
+  empty version name, which is what surfaced it. Two fixes, because the control catching it was
+  luck-adjacent: `fetch-depth: 0` on the `ci` checkout so the tags exist, AND the script now
+  **REFUSES an empty comparison** rather than reporting a pass it did not earn. "Nothing to check"
+  and "everything checks out" must not be the same output, which is the same lesson as a roll-up
+  treating `rows_ingested: 0` as proof and a meter reporting `complete` on a reading it never made.
+  A third control pins the tagless refusal so the silence cannot return if the guard moves to
+  another job.
+
+### fix(smoke-render): a deliberate studio refusal is 422, not 502 (cp#223)
+
+The operator smoke-render route answered `502 studio_refused` whenever the tenant studio would not
+build or accept the render, including when the studio refused correctly on a ceiling the operator
+themselves configured. 502 means bad gateway: the upstream is broken or unreachable. Here the
+upstream answered promptly and correctly, and an operator reading 502 in a log reasonably concludes
+the tenant studio is unhealthy and starts looking for an infrastructure fault that does not exist.
+Since cp#183 that refusal is routine rather than exotic: any tenant at their storage ceiling
+produces it, and any operator testing a quota produces it deliberately.
+
+- **A studio that ANSWERED 4xx or 5xx made a decision, so the route now answers `422`.** `502` is
+  kept strictly for transport failures: the studio could not be reached, or answered something this
+  plane could not parse (a 2xx carrying no bundle key or job id).
+- **The studio status rides in the body as `studio_status`,** rather than being propagated outward.
+  Answering `507` would claim THIS plane is out of storage, which is a lie about who ran out, and it
+  would widen the statuses this route can emit to whatever a tenant studio happens to return.
+- The `studio_refused` code, the message and both real numbers are unchanged. Nothing was hidden
+  before; this is the outer status only.
+- Callers branching on `502` from this route see `422` for the refusal case now. Every consumer
+  today is an operator reading JSON.
+
+### feat(credits): the settlement trigger, operator-runnable, on a derived period key (cp#195)
+
+The periodic overage settlement. Wires nothing onto tenant studios yet: the plane uses the allowance
+for its OWN settlement, and the tenant binding follows strummer's core train.
+
+- **`src/meter-period.ts`** -- `billingPeriodContaining`, `lastClosedBillingPeriod`,
+  `parseBillingPeriodKey`. UTC calendar month, half-open, and **derived rather than stored**: the key
+  becomes the ledger's idempotency reference, so a stored key a retry could not find would mint a
+  new one and charge twice.
+- **`lastClosedBillingPeriod` is the default**, never the current month. Settling a month still
+  accumulating computes the debit from a partial window and, being idempotent on the key, the later
+  correct figure can never replace it: one early settlement permanently under-bills that month.
+- **`src/meter-settle-run.ts`** -- the sweep. Sequential (matching the R2 usage sweep), skips deleted
+  tenants deliberately, records a throwing tenant as unbillable and CONTINUES, and carries
+  `censusComplete`. A truncated tenant census is missing MONEY rather than a wrong number: unsettled
+  tenants look exactly like tenants who owed nothing.
+- **`POST /api/admin/meter-settle`** -- operator-runnable, so a settlement can be forced and its
+  actual result read rather than inferred from a cron log. Audited, unlike the read-only admin
+  surfaces, because it moves money.
+- **A MALFORMED allowance refuses the whole run** (400) rather than sweeping and reporting every
+  tenant unbillable. The house rule `TENANT_R2_STORAGE_QUOTA_BYTES` already states: "typed it wrong"
+  and "chose none" must not be the same outcome. An unset knob still runs and reports honestly; a
+  configured `"0"` is a real decision and bills from the first micro-USD.
+- **New vars, names approved by mackaye 2026-07-28**: `TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD` and
+  `TENANT_R2_STORAGE_QUOTA_MODE`. Declared ahead of their bindings and NOT yet bound onto tenant
+  studios, because the studio-core knobs they mirror do not exist until the core train lands, and
+  binding a var the consuming code cannot answer is the shape that took provisioning down on
+  2026-07-27.
+
+Verification: typecheck clean, 1359 tests green, and **10 planted defects each watched turning the
+suite red**. Two of them escaped on the first pass and both were defects in MY TESTS, which is the
+point of running it: the period round-trip check had no input that could distinguish it (every other
+bad key was caught by the regex), and the audit assertion used `toContain`, which a renamed
+`meter.settle_llm_noop` satisfies as a substring. Both tests were strengthened and both mutations
+then caught.
+
+Writing the control for the round-trip check also found a real inconsistency in this module:
+`Date.UTC` maps a year of 0..99 to 1900+year, so `"0026-07"` would have produced a window for 1926,
+and separately the key generator emitted an unpadded year the parser's `\d{4}` would refuse. The
+year is now padded and both directions round-trip.
+
+## v1.18.0 -- 2026-07-28
+
+### fix(census): census `src/env.ts` against the deploy lists, and declare five vars that reached nothing (cp#218)
+
+`scripts/var-census.py` anchored on the placeholders in `wrangler.toml.example` and asserted the
+other three lists agreed. That catches "declared in some lists, missing from others" and is
+structurally blind to "declared in NO list, read in code anyway": the four lists agree, by all
+omitting it. `CREDITS_ENFORCING` shipped in v1.17.0 that way and never reached the Worker. Census
+green, deploy green, tests green, feature dead.
+
+- **The census now reads `src/env.ts`.** Every field of `ControlPlaneEnv` (following `extends`)
+  must resolve to exactly one of: a declared var (a key in the `[vars]` table), a declared-exempt
+  secret, or a declared-exempt binding. A field in none of the three FAILS, because silence is the
+  bug.
+- **Classification is DECLARED INTENT, not a guess from the type.** `ENV_SECRETS` and
+  `ENV_BINDINGS` in `env.ts`, each `satisfies readonly (keyof ControlPlaneEnv)[]` so `tsc` rejects
+  an entry that is not a field and a renamed field cannot leave a stale exemption looking like
+  coverage. Flagging a secret as a missing var would have invited somebody to "fix" the census by
+  writing a credential name into a tracked deploy list; flagging bindings would have put noise on
+  every deploy, and a noisy guard is one people learn to ignore.
+- The census refuses that wrong fix explicitly: a declared secret appearing in `[vars]`, in a
+  placeholder, or in the render allowlist is named as such.
+- Classification is by DELIVERY MECHANISM rather than sensitivity, which is why
+  `VIDEO_FINISH_VPC_SERVICE_ID`, not a credential, is a declared secret: that is how it is
+  installed, read back from the live Worker settings as `secret_text`. It and
+  `CF_WORKER_UPLOAD_TOKEN` were both live on the Worker and missing from the documented secret list.
+- **Five live instances of the gap, all now declared in all four lists**, all empty by default so
+  behaviour is unchanged: `TENANT_SPEND_DAILY_CEILING`, `STUDIO_TOKEN_KEK_ENCRYPT_SLOT`,
+  `SMOKE_RENDER_COOLDOWN_SECONDS`, `SMOKE_RENDER_DAILY_CAP`, `SMOKE_RENDER_INFLIGHT_SECONDS`.
+  Every one was typed, read in production code, and unreachable by any deploy: the operator knobs
+  documented as tunable could not be tuned, and the KEK rotation runbook step "set the slot and
+  deploy" was not performable without editing the template first.
+- **`deps.ts` now treats an empty spend ceiling as absent.** Declaring an ALLOW_EMPTY var makes it
+  arrive as `""`, not `undefined`, so `env.TENANT_SPEND_DAILY_CEILING ?? "25"` would have
+  provisioned every tenant with an empty ceiling. `boundFrom()` and `kekRing()` already had this
+  rule; this is the third site.
+- **Two new positive controls**, watched to fail with the check removed: a var typed in `env.ts` and
+  declared nowhere is refused (and the refusal must NAME it, so a census failing for an unrelated
+  reason cannot keep the control green), and a declared secret added to a deploy list is refused.
+  The pre-existing control now copies `src/env.ts` into its tree; without it the census would have
+  died on a missing file, still exiting non-zero, and that control would have gone on printing `ok`
+  while proving nothing.
+### feat(credits): the shared unbillable vocabulary and the overage decision core (cp#195)
+
+The half of cp#195's LLM bundled allowance that does not depend on where the allowance knob lives.
+NOT YET WIRED: nothing calls it until the `TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD` name is settled
+with strummer's core train.
+
+- **`src/meter-window.ts`** -- `MeterWindow` (`window_start`, `window_end`, `complete`, `reason`)
+  EXTRACTED rather than duplicated, on mackaye's ruling: the storage meter and the LLM meter speak
+  one vocabulary, so a consumer writes ONE unbillable check that works for every metered class.
+  `LlmSpendWindow` now extends it; the agreed cp#195 five fields are unchanged.
+- **`isUnbillable()`** reads the flag as an assertion: billable ONLY on an explicit `true`, so a
+  window from an older shape or a hand-built fixture cannot read as a free pass.
+- **`src/meter-debit.ts`** -- `decideOverageDebit()`, pure, with the allowance INJECTED.
+
+**Three outcomes, not two, and this is the whole design.** `debit` writes the overage. `within`
+writes NO ledger row and is a complete, correct, finished answer (cp#195: usage inside the allowance
+produces no ledger row). `unbillable` writes nothing because we could not establish what the usage
+was. `within` and `unbillable` both write nothing, which is exactly why they must not share a name:
+one says "we looked, nothing is owed", the other says "we could not look". Collapsing them turns
+every gap in the meter into a silent free ride.
+
+**Completeness is checked FIRST**, before the allowance and before any arithmetic. Checking the
+allowance first would let an incomplete window whose PARTIAL total happens to sit under the
+allowance report `within` -- a confident "nothing is owed" derived from data we never had, and the
+most dangerous shape available here because it looks exactly like the healthy case.
+
+**An unset allowance is UNBILLABLE, not an allowance of zero.** Same posture as
+`R2_STORAGE_QUOTA_BYTES` (no default in code, because the number is a policy this repo does not get
+to invent), and the direction matters: treating unset as zero would bill a tenant for every
+micro-USD of something nobody configured, the one failure in this lane that costs the TENANT rather
+than us. A configured zero IS a decision and still bills from the first micro-USD.
+
+`overageIdemRef(meter, periodKey)` is deterministic and separates meter classes, since one tenant can
+owe an LLM overage and a storage overage in the same period and those are two rows.
+
+- **`src/meter-settle.ts`** -- `settleMeterOverage()`, the ONLY path from a decision to a money row.
+  There is no override, no force flag and no second entry point, so an incomplete window cannot be
+  billed by any path through the module. A debit writes a NEGATIVE delta (matching `captureHold`) and
+  carries `cost_micro_usd` = the FULL window usage rather than the charged overage, so the allowance
+  we absorbed stays visible instead of the ratio reporting full cost recovery.
+- **`already_settled` is distinct from `debited`.** The ledger is idempotent on
+  (`tenant_id`, `idem_ref`) and a replay is a success, but collapsing the two would make a settlement
+  run report N fresh charges when it re-ran over N existing ones, which cannot answer "did this month
+  settle twice".
+- A refusal DEFERS billing, it does not forfeit it: a period refused on an incomplete window settles
+  normally once the meter catches up. Tested.
+
+Verification: typecheck clean, 1323 unit tests green, and 7 planted defects each watched turning the
+suite red (allowance checked before completeness, unset allowance treated as zero, the total billed
+instead of the difference, the allowance boundary flipped, the meter class dropped from the
+idempotency key, `isUnbillable` reading `=== false`, and the malformed-usage refusal removed).
+
+### feat(meter): the LLM meter read path -- live gateway reader, cron trigger, windowed read (cp#185)
+
+Part two, and the part that makes part one do anything. The meter now RUNS: a concrete
+`GatewayLogReader` over the AI Gateway logs API, a 15-minute cron, D1 persistence, and the windowed
+read cp#195 bills from.
+
+- **`src/ai-gateway-logs.ts`** -- the shipping reader, and the one place a real gateway is reached.
+  Has its own live regression suite (`tests/ai-gateway-logs.live.test.ts`, 8 assertions, run green
+  against `vivijure-hosted` on 2026-07-28) because every fact it rests on is vendor behaviour.
+- **`src/llm-spend-ingest.ts`** -- one run, persisted in an order chosen for crash safety: open the
+  period (unfinished), write events, close it with the TRUE count, then advance the watermark. Die
+  anywhere and the record is honestly WORSE than the truth rather than better.
+- **`src/llm-spend-window.ts`** -- the cp#195 contract:
+  `{ cost_micro_usd, requests, window_start, window_end, complete }`, integer micro-USD.
+- **`LlmSpendD1`** in `store-d1.ts`; **`scheduled()`** in `index.ts`; admin
+  `POST /api/admin/llm-meter/run` and `GET /api/admin/llm-spend`.
+- **New worker secret `AI_GATEWAY_READ_TOKEN`** (AI Gateway Read + Metadata Read). Absent = the
+  meter does not run and writes NO period rows. See `docs/deploy.md`.
+
+**Three vendor facts established live, correcting or refining what part one recorded:**
+
+- **The metadata filter is NOT pair-matched.** cp#221 recorded this as unprovable; it is provable,
+  and the answer is the dangerous one. `metadata.key eq "tenant_id"` AND
+  `metadata.value eq "rollins-e2e"` returns the row whose `tenant_id` is `ten_de43...` -- because
+  `rollins-e2e` is the value of `slug`. The dimensions are ANDed independently, so a per-tenant
+  filter CAN return another tenant's row. The shipping reader therefore sends **no metadata filter
+  at all** and attributes off the row. cp#221's defensive posture was right and is now load-bearing
+  rather than precautionary.
+- **`order_by_direction=asc` is supported**, which part one did not know. It matters: the default
+  order is descending, so a row arriving mid-walk shifts older rows a position later and a paged
+  walk re-reads one row while SKIPPING another. The walk is ascending.
+- **`created_at gt` compares at whole-SECOND granularity**, not the millisecond the timestamps are
+  rendered in (`gt ...20.999Z` returns the row at `...20.710Z`; `gt ...21.000Z` does not). So a
+  watermark never skips a row, at the cost of re-reading one second per run -- free, since writes
+  are `INSERT OR IGNORE` on the gateway's row id. The safe direction, now documented so nobody
+  "fixes" the duplicate read into a silent skip.
+
+**`complete: false` is reachable six distinct ways and each one is tested**: no run assigned to the
+window (the shape a dead cron produces, and the one that must never bill as a zero), an unfinished
+run, a run that did not paginate to exhaustion, a FAILED positive control, a retention gap, an
+unpriced row, and a truncated period census. A clean window still reports `complete: true`, so the
+suite cannot pass by refusing everything.
+
+**`skyphusion-llm` is refused by name at construction.** Every other wrong gateway id lands on
+Cloudflare's `200 / success:true / total_count:0` answer and the positive control catches it. prism's
+gateway holds ~99,000 rows, so the control would PASS while attributing another product's spend to
+vivijure tenants: the one misconfiguration the control cannot see.
+
+Verification: `npm run typecheck` clean, 1308 unit tests green, 8 live tests green against the real
+gateway, and **16 planted defects each watched turning the suite red** (half-open window assignment
+flipped to overlap, `OR IGNORE` to `OR REPLACE`, the watermark's `MAX()` to a plain overwrite,
+summation by `occurred_at` instead of `period_id`, the prism refusal removed, and so on).
 
 ### feat(meter): LLM spend roll-up schema and decision core (cp#185)
 

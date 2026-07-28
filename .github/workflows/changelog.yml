@@ -15,6 +15,12 @@ name: changelog
 #
 # Not part of the aviation-grade-main required-check set (ci / coverage / CodeQL); this job id
 # can be renamed freely, unlike those three.
+#
+# THREE-DOT, NOT TWO. This job compared `git diff BASE HEAD` against a base that MOVES, so once
+# another PR merged to main its files appeared in this PR changed list -- and #242 shipped three
+# src/ files with no entry of its own while the check went green, because somebody else merged PR
+# had touched CHANGELOG.md. Another PR entry satisfied this PR requirement. `BASE...HEAD` diffs
+# from the merge base, so the job sees only what this PR did.
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -36,6 +42,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The logic lives in a SCRIPT, not here, so it can be driven by a test against a synthetic
+      # repository -- including a fixture that reproduces the false pass this job used to produce.
+      # See tests/changelog-entry-required.test.py, which runs in ci.yml.
       - name: CHANGELOG.md entry required for src/ or public/ changes
         env:
           LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
@@ -43,21 +52,4 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-
-          if echo "$LABELS_JSON" | grep -q "\"no-changelog\""; then
-            echo "no-changelog label present: deliberate skip, recorded on the PR. Passing."
-            exit 0
-          fi
-
-          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-          echo "Changed files:"
-          echo "$changed"
-
-          if echo "$changed" | grep -qE "^(src|public)/"; then
-            if ! echo "$changed" | grep -qx "CHANGELOG.md"; then
-              echo "::error::This PR touches src/ or public/ but CHANGELOG.md is unchanged. Add an entry under \"## Unreleased\", or apply the \"no-changelog\" label if this is a deliberate skip."
-              exit 1
-            fi
-          fi
-
-          echo "OK: either no src/ or public/ changes, or CHANGELOG.md was updated."
+          python3 scripts/changelog-entry-required.py . "$BASE_SHA" "$HEAD_SHA" "$LABELS_JSON"
