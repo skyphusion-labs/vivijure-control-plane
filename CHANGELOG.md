@@ -211,6 +211,53 @@ Verification: `npm run typecheck` clean, 1308 unit tests green, 8 live tests gre
 gateway, and **16 planted defects each watched turning the suite red** (half-open window assignment
 flipped to overlap, `OR IGNORE` to `OR REPLACE`, the watermark's `MAX()` to a plain overwrite,
 summation by `occurred_at` instead of `period_id`, the prism refusal removed, and so on).
+### feat(admin): the operator console, a page in front of /api/admin/* (cp#89)
+
+There was no admin UI at all: `public/` was the tenant front door and nothing else, and every operator
+action was a bearer-token curl. This is the page, vanilla JS/HTML/CSS with no framework and no build
+step, at `/admin.html`.
+
+- **The console is a PROJECTION, and not one scope id is written down in the frontend.**
+  `GET /api/admin/whoami` now serves the caller's scopes, the whole scope catalogue, AND the gate's
+  own authorization table (`ADMIN_REQUIREMENTS`), so the page decides whether to offer a button by
+  asking the SAME rows the gate enforces. A copy would drift the day a requirement changed
+  server-side, leaving the console offering an action that now refuses or hiding one that now works.
+  A scope added to `src/operator-auth.ts` appears in this UI, in the mint form and in the identity
+  panel, with zero frontend change.
+- **Browser credential custody: MEMORY ONLY.** The credential lives in a closure variable, is sent as
+  a bearer header, and dies with the tab. Never storage, never a cookie, never a URL, never the DOM
+  after submit. Reloading asks again, which is correct for a surface meant to be opened on a report.
+  A consequence worth stating: there is NO ambient credential, so there is no CSRF surface at all --
+  a cross-site request carries no cookie and cannot set an Authorization header, which makes every
+  state-changing route here unreachable from another origin by construction. An idle lock zeroes the
+  credential after 15 minutes, so the exposure window is "while an operator is working" rather than
+  "while a tab is open". Rejected alternatives and the residual risk are recorded at the top of
+  `public/admin.js`.
+- **The document is served with a strict CSP** (`default-src 'none'; script-src 'self'; connect-src
+  'self'; frame-ancestors 'none'`), plus `no-store`, `DENY`, `nosniff`, `no-referrer`. That bounds the
+  residual risk: an injected inline script does not execute and an injected fetch cannot reach a
+  third-party origin. A test asserts the page carries no inline script, style or handler, so the day
+  someone adds one it fails rather than the policy being widened to accommodate it.
+- **The audit trail is legible rather than raw**: rows an operator made against one tenant are marked
+  `read`, and rows made with the shared root credential are marked `unattributed`, because "an event
+  happened" and "a person did this" are different kinds of evidence and the whole point of cp#219 is
+  the difference between them. A row whose detail will not parse is SHOWN raw, never dropped.
+
+- **The console REFUSES to drive routine work with the break-glass credential**, offering credential
+  management and nothing else, and it does not load the panels it declines to show, so it cannot
+  write an access it refused to display. The merged privacy text says routine support access is made
+  with a named credential and that the shared credential is "not used for routine support"; the
+  console is the routine path, so this turns that sentence into a property of the tool rather than a
+  claim about our habits. The API stays open to the root credential deliberately: disarming
+  break-glass in the gate would remove it at the moment it exists for.
+
+Sections render only when the credential can use them, including the credentials section, which the
+backend makes root-only: a console that offered that button to a scoped credential would teach
+operators that refusals are noise.
+
+New: `public/admin.html`, `public/admin.js`, `public/admin-checks.js` (+ `.d.ts`), `public/admin.css`,
+`tests/admin-console.test.ts`.
+
 ### feat(admin): scoped operator credentials, authenticated attribution, and a readable audit trail (cp#219)
 
 The shared admin bearer is no longer the only way in. `/api/admin/*` now resolves a PRINCIPAL: a

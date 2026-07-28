@@ -192,7 +192,11 @@ operator or somebody probing which ids exist.
   without rotating everyone.
 - Keep the root token out of daily use. Everything it does is recorded as `admin-token` and is
   therefore un-attributable; that is what it is for (break-glass), and it is not what daily work
-  should look like.
+  should look like. **The console enforces this**: presented with the root credential it offers
+  credential management and nothing else, and it does not even LOAD the panels it declines to show,
+  so it cannot write an access it refused to display. The API stays open to the root credential
+  deliberately, because disarming break-glass in the gate would remove it at the moment it exists
+  for. The restriction is the console declining, not the platform refusing.
 
 ## What the merged privacy text promises, and where that is tested
 
