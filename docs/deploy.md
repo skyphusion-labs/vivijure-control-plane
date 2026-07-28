@@ -146,6 +146,18 @@ can drift, and a reader built from a recorded sample is only as fresh as the sam
   tenant. Bytes only, no unit suffixes (`107374182400` = 100 GiB). A non-empty value that is not a
   positive integer REFUSES the provision, the studio-upgrade preflight and the converge route rather
   than being read as "off" -- see `docs/control-plane.md`.
+- `TENANT_SPEND_DAILY_CEILING` (cp#218) -- the per-tenant daily spend ceiling in USD, bound onto
+  every tenant studio as `SPEND_DAILY_CEILING`. Empty = the plane default of 25, which is what it
+  has always sent. Declared as of cp#218: it was typed in `env.ts` and read in `deps.ts` while being
+  in no list at all, so the knob documented as operator-tunable could not be tuned.
+- `STUDIO_TOKEN_KEK_ENCRYPT_SLOT` (cp#95) -- which installed KEK new ciphertext is written under.
+  Empty = `primary`, the only correct value outside a rotation. Declared as of cp#218: the template
+  line was commented out, which made the rotation runbook step below unperformable without a repo
+  edit first.
+- `SMOKE_RENDER_COOLDOWN_SECONDS`, `SMOKE_RENDER_DAILY_CAP`, `SMOKE_RENDER_INFLIGHT_SECONDS`
+  (cp#45) -- the operator smoke-render bounds. Empty = the documented defaults (1800s, 20 per
+  rolling 24h, 1200s). Declared as of cp#218 for the same reason as the two above: all three were
+  typed, read, and undeclared, so every bound was pinned at its default with no way to move it.
 
 ### Which AI Gateway is which (cp#203)
 
@@ -206,8 +218,15 @@ carry `GATEWAY_ID` were read back at `vivijure-dev`.
 
 Worker **secrets** (`wrangler secret put`, never in Actions): `POSTERN_SEND_TOKEN`,
 `GOOGLE_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `APPLE_PRIVATE_KEY`,
-`CONTROL_PLANE_ADMIN_TOKEN`, `CF_PROVISIONER_TOKEN`, `STUDIO_TOKEN_KEK`, `AI_GATEWAY_READ_TOKEN`
-(cp#185), and -- only while a rotation is in progress -- `STUDIO_TOKEN_KEK_NEXT` (cp#95).
+`CONTROL_PLANE_ADMIN_TOKEN`, `CF_PROVISIONER_TOKEN`, `CF_WORKER_UPLOAD_TOKEN`,
+`VIDEO_FINISH_VPC_SERVICE_ID`, `STUDIO_TOKEN_KEK`, `AI_GATEWAY_READ_TOKEN` (cp#185), and -- only
+while a rotation is in progress -- `STUDIO_TOKEN_KEK_NEXT` (cp#95).
+
+`VIDEO_FINISH_VPC_SERVICE_ID` is NOT a credential; it is a Connectivity Directory service id.
+It is in this list because that is how it is delivered (read back from the live Worker settings
+as a `secret_text` binding), and the var census classifies by delivery mechanism rather than by
+sensitivity. Both it and `CF_WORKER_UPLOAD_TOKEN` were live on the Worker and missing from this
+list until cp#218.
 
 These are `secret_text` bindings on the worker and they **persist across `wrangler deploy`**, so the
 pipeline does not carry them and a deploy does not need them staged in Actions. They are set once,
@@ -286,9 +305,11 @@ does not open under the write slot), so there is no cursor to go stale and a sec
      https://studio.vivijure.com/api/admin/kek/status
    ```
 
-4. **Flip the write direction**: set `STUDIO_TOKEN_KEK_ENCRYPT_SLOT = "next"` in the wrangler config
-   and deploy. From here new tokens are written under the new key, which is what lets the sweep
-   converge instead of chasing live writes.
+4. **Flip the write direction**: set the `STUDIO_TOKEN_KEK_ENCRYPT_SLOT` Actions **variable** to
+   `next` and deploy. (Before cp#218 the template line was commented out, so this step needed a
+   repo edit first; it is a declared, empty-by-default var now.) From here new tokens are
+   written under the new key, which is what lets the sweep converge instead of chasing live
+   writes.
 
 5. **Sweep**, and re-run until it answers 200:
 
@@ -398,34 +419,45 @@ Re-keying an ADMIN TOKEN (not the KEK) is cheap and non-destructive: the admin g
 touches it, and the check is two curls (bearer -> 200, bare -> 401). Re-key on unknown provenance;
 do NOT reflexively re-key because a value passed through a trusted boundary such as a transcript.
 
-### Empty is a value, but only for four of them
+### Empty is a value, but only where empty MEANS something
 
 `scripts/render-wrangler.sh` treats **everything as required unless it is on an explicit
 allowlist**, and the direction matters. `envsubst` turns an unset variable into an empty string, so
 "empty", "misspelled the variable name", and "forgot to set it" all render identically and all look
 fine. Guarding a hand-picked few leaves every other value silently defaultable to empty.
 
-`ALLOW_EMPTY` is exactly seven names:
+`ALLOW_EMPTY` in `scripts/render-wrangler.sh` is the authority for the current set; this section
+gives the BAR for being on it, deliberately without repeating a count that goes stale (it read
+"exactly seven names" while the list held nine).
 
-`GOOGLE_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_SERVICES_ID`,
-`TENANT_AI_GATEWAY_ID`, `R2_USAGE_ALERT_BYTES`, `TENANT_R2_STORAGE_QUOTA_BYTES`
+**The bar: empty must be a coherent working state that somebody could have chosen on purpose.**
 
-Each is half of an SSO provider pair, and a provider is offered only when both halves are present,
-so an unconfigured provider is *absent* rather than broken. Empty is how that is expressed. They are
-additionally **absent** as repository variables rather than empty, because the GitHub API rejects an
-empty variable value with a 422 -- the workflow cannot set them to the empty string it wants.
+- **A feature is simply not offered.** `GOOGLE_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_ID`,
+  `APPLE_TEAM_ID`, `APPLE_SERVICES_ID` -- each is half of an SSO pair, and a provider is offered
+  only when both halves are present, so an unconfigured provider is *absent* rather than broken.
+  These are additionally **absent** as repository variables rather than empty, because the GitHub
+  API rejects an empty variable value with a 422.
+- **The operator has not chosen a number, and has therefore not asked for the thing.**
+  `R2_USAGE_ALERT_BYTES` (no threshold, so no alert verdict), `TENANT_R2_STORAGE_QUOTA_BYTES` (no
+  ceiling, and no invented default, because the number prices what an operator is willing to carry).
+- **Empty names no target.** `TENANT_AI_GATEWAY_ID` empty means this plane names no gateway, and the
+  provisioner binds **neither** `GATEWAY_ID` nor `CF_AIG_TOKEN` (both or neither, since
+  `pickProvider` needs both), so empty is coherent rather than half-configured.
+- **Empty means the documented default applies.** `CREDITS_ENFORCING` (counting mode),
+  `MANUAL_CREDIT_CEILING_MICRO_USD` (USD 100), `TENANT_SPEND_DAILY_CEILING` (25),
+  `STUDIO_TOKEN_KEK_ENCRYPT_SLOT` (`primary`), and the three `SMOKE_RENDER_*` bounds.
 
-The two cf#56 names meet the same bar rather than being parked there to quiet a deploy.
-`TENANT_AI_GATEWAY_ID` empty means this plane names no gateway, and the provisioner then binds
-**neither** `GATEWAY_ID` nor `CF_AIG_TOKEN` (both or neither, since `pickProvider` needs both), so
-empty is a coherent working state rather than a half-configured one. `R2_USAGE_ALERT_BYTES` empty
-means an operator has not chosen a threshold, and has therefore not asked to be alerted.
-`TENANT_R2_STORAGE_QUOTA_BYTES` (cp#183) meets it for the same reason: an operator who has not
-chosen a byte count has not chosen a cap, and the plane binds nothing rather than a number nobody
-picked. A non-empty MALFORMED value is a different matter and is refused at the write paths, which
-is why it is allowed to be empty but never allowed to be wrong.
+A non-empty MALFORMED value is a different matter and is refused at the write paths, which is why
+these are allowed to be empty but never allowed to be wrong.
 
-### The var census (cf#56)
+**The empty-string trap that comes with membership.** A declared-but-empty var arrives at the Worker
+as `""`, not `undefined`, so `??` does not catch it and every `?? "default"` on an ALLOW_EMPTY name
+is a bug waiting for the var to be declared. `boundFrom()` in `smoke-render.ts` and `kekRing()` in
+`token-crypto.ts` already treat blank as absent; `deps.ts` did not, and putting
+`TENANT_SPEND_DAILY_CEILING` on this list without fixing it would have provisioned every tenant with
+an empty ceiling (cp#218). Reach for `?.trim() ||`, not `??`, when you add a name here.
+
+### The var census (cf#56, extended by cp#218)
 
 A `[vars]` entry only reaches the Worker if it appears in **wrangler.toml.example**, in one of the
 two allowlists in **render-wrangler.sh**, and in **both** render env blocks in **deploy.yml**.
@@ -433,11 +465,30 @@ Nothing connected those lists, so a var could be typed in `env.ts`, read in `dep
 passed: it renders EMPTY, the deploy goes green, and the feature ships **inert**. Both cf#56 vars
 hit exactly that, caught by review rather than by the pipeline.
 
-`scripts/var-census.py` now checks that all four lists agree, and it runs inside
+`scripts/var-census.py` checks that all four lists agree, and it runs inside
 `tests/render-wrangler.test.sh` with a control proving it can fail. Add a var to one list and the
 census names the lists it is missing from.
 
-Do not extend that list to silence a failing deploy. Adding a name to it asserts that empty is
+**cp#218 closed the other half, and it is the half that actually shipped.** Anchoring on the
+template placeholders can only compare lists that already mention a var; a field declared in NO list
+is invisible, because all four lists agree by all omitting it. `CREDITS_ENFORCING` shipped in
+v1.17.0 that way and never reached the Worker. The census now reads `src/env.ts` as well: every
+field of `ControlPlaneEnv` must resolve to exactly one of a declared var (a key in the `[vars]`
+table), a declared-exempt secret, or a declared-exempt binding. A field in none of the three is a
+failure, because silence is the bug.
+
+The exemptions are **declared intent**, `ENV_SECRETS` and `ENV_BINDINGS` in `src/env.ts`, never a
+guess from the type. Two reasons, both about what a wrong guess would cost: flagging a secret as a
+missing var would invite somebody to "fix" the census by writing a credential name into a tracked
+deploy list (the census refuses that too, and says so), and flagging bindings would produce noise on
+every deploy, which is how a guard gets ignored. Classification is by DELIVERY MECHANISM rather than
+by sensitivity, which is why `VIDEO_FINISH_VPC_SERVICE_ID`, not a credential, is listed as a secret:
+that is how it is actually installed, read back from the live Worker settings as `secret_text`.
+
+A `satisfies readonly (keyof ControlPlaneEnv)[]` on both lists makes `tsc` reject an entry that is
+not a field, so a renamed field cannot leave a stale exemption sitting there looking like coverage.
+
+Do not extend `ALLOW_EMPTY` to silence a failing deploy. Adding a name to it asserts that empty is
 correct for that value, which for everything else here is false.
 
 The D1 id is checked by *shape* (a uuid), not merely non-emptiness, because a wrong-but-present id
