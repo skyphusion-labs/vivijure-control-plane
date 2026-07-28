@@ -6,6 +6,46 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(census): census `src/env.ts` against the deploy lists, and declare five vars that reached nothing (cp#218)
+
+`scripts/var-census.py` anchored on the placeholders in `wrangler.toml.example` and asserted the
+other three lists agreed. That catches "declared in some lists, missing from others" and is
+structurally blind to "declared in NO list, read in code anyway": the four lists agree, by all
+omitting it. `CREDITS_ENFORCING` shipped in v1.17.0 that way and never reached the Worker. Census
+green, deploy green, tests green, feature dead.
+
+- **The census now reads `src/env.ts`.** Every field of `ControlPlaneEnv` (following `extends`)
+  must resolve to exactly one of: a declared var (a key in the `[vars]` table), a declared-exempt
+  secret, or a declared-exempt binding. A field in none of the three FAILS, because silence is the
+  bug.
+- **Classification is DECLARED INTENT, not a guess from the type.** `ENV_SECRETS` and
+  `ENV_BINDINGS` in `env.ts`, each `satisfies readonly (keyof ControlPlaneEnv)[]` so `tsc` rejects
+  an entry that is not a field and a renamed field cannot leave a stale exemption looking like
+  coverage. Flagging a secret as a missing var would have invited somebody to "fix" the census by
+  writing a credential name into a tracked deploy list; flagging bindings would have put noise on
+  every deploy, and a noisy guard is one people learn to ignore.
+- The census refuses that wrong fix explicitly: a declared secret appearing in `[vars]`, in a
+  placeholder, or in the render allowlist is named as such.
+- Classification is by DELIVERY MECHANISM rather than sensitivity, which is why
+  `VIDEO_FINISH_VPC_SERVICE_ID`, not a credential, is a declared secret: that is how it is
+  installed, read back from the live Worker settings as `secret_text`. It and
+  `CF_WORKER_UPLOAD_TOKEN` were both live on the Worker and missing from the documented secret list.
+- **Five live instances of the gap, all now declared in all four lists**, all empty by default so
+  behaviour is unchanged: `TENANT_SPEND_DAILY_CEILING`, `STUDIO_TOKEN_KEK_ENCRYPT_SLOT`,
+  `SMOKE_RENDER_COOLDOWN_SECONDS`, `SMOKE_RENDER_DAILY_CAP`, `SMOKE_RENDER_INFLIGHT_SECONDS`.
+  Every one was typed, read in production code, and unreachable by any deploy: the operator knobs
+  documented as tunable could not be tuned, and the KEK rotation runbook step "set the slot and
+  deploy" was not performable without editing the template first.
+- **`deps.ts` now treats an empty spend ceiling as absent.** Declaring an ALLOW_EMPTY var makes it
+  arrive as `""`, not `undefined`, so `env.TENANT_SPEND_DAILY_CEILING ?? "25"` would have
+  provisioned every tenant with an empty ceiling. `boundFrom()` and `kekRing()` already had this
+  rule; this is the third site.
+- **Two new positive controls**, watched to fail with the check removed: a var typed in `env.ts` and
+  declared nowhere is refused (and the refusal must NAME it, so a census failing for an unrelated
+  reason cannot keep the control green), and a declared secret added to a deploy list is refused.
+  The pre-existing control now copies `src/env.ts` into its tree; without it the census would have
+  died on a missing file, still exiting non-zero, and that control would have gone on printing `ok`
+  while proving nothing.
 ### feat(credits): the shared unbillable vocabulary and the overage decision core (cp#195)
 
 The half of cp#195's LLM bundled allowance that does not depend on where the allowance knob lives.

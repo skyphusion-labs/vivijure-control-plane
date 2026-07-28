@@ -201,10 +201,16 @@ fi
 
 # CONTROL: the census must be able to FAIL, or the pass above only proves the script ran. Feed it a
 # tree whose template carries a placeholder nothing allowlists and confirm it objects.
+#
+# The tree carries src/env.ts as of cp#218: the census reads it now, and a control tree missing it
+# would make the census die on a missing file. That still exits non-zero, so this control would go
+# on printing "ok" while proving nothing about the check it names. A control that passes for the
+# wrong reason is the disease, not the cure.
 census_tmp="$(mktemp -d)"
-mkdir -p "$census_tmp/scripts" "$census_tmp/.github/workflows"
+mkdir -p "$census_tmp/scripts" "$census_tmp/.github/workflows" "$census_tmp/src"
 cp "$here/scripts/render-wrangler.sh" "$census_tmp/scripts/"
 cp "$here/.github/workflows/deploy.yml" "$census_tmp/.github/workflows/"
+cp "$here/src/env.ts" "$census_tmp/src/"
 { cat "$here/wrangler.toml.example"; echo "CENSUS_CONTROL_VAR = \"\${CENSUS_CONTROL_VAR}\""; } > "$census_tmp/wrangler.toml.example"
 if python3 "$here/scripts/var-census.py" "$census_tmp" >/dev/null 2>&1; then
   echo "  FAILED CONTROL: the census accepted an unlisted placeholder -- it proves nothing"
@@ -212,6 +218,55 @@ if python3 "$here/scripts/var-census.py" "$census_tmp" >/dev/null 2>&1; then
 else
   echo "  ok   CONTROL: the census refuses an unlisted placeholder"
   pass=$((pass + 1))
+fi
+rm -rf "$census_tmp"
+
+# CONTROL (cp#218): the class the census used to be BLIND to. A var typed in src/env.ts and
+# declared in NO list is invisible to a check anchored on the template, because all four lists agree
+# by all omitting it. CREDITS_ENFORCING shipped in v1.17.0 that way and never reached the Worker.
+#
+# Plant exactly that shape and require the census to refuse AND to NAME the planted field. Bare
+# non-zero is not enough: the census can exit 1 for a dozen unrelated reasons, and a control that
+# accepts any failure would keep printing ok after the check it is guarding was deleted.
+census_tmp="$(mktemp -d)"
+mkdir -p "$census_tmp/scripts" "$census_tmp/.github/workflows" "$census_tmp/src"
+cp "$here/scripts/render-wrangler.sh" "$census_tmp/scripts/"
+cp "$here/.github/workflows/deploy.yml" "$census_tmp/.github/workflows/"
+cp "$here/wrangler.toml.example" "$census_tmp/"
+sed "s|^export interface ControlPlaneEnv extends SmokeRenderBoundEnv {|&\n  CENSUS_CONTROL_PLANTED_VAR?: string;|" \
+  "$here/src/env.ts" > "$census_tmp/src/env.ts"
+if grep -q "CENSUS_CONTROL_PLANTED_VAR" "$census_tmp/src/env.ts"; then
+  census_out="$(python3 "$here/scripts/var-census.py" "$census_tmp" 2>&1)" && census_rc=0 || census_rc=1
+  if [ "$census_rc" -ne 0 ] && printf "%s" "$census_out" | grep -q "CENSUS_CONTROL_PLANTED_VAR is typed in src/env.ts and declared in NO list"; then
+    echo "  ok   CONTROL: the census refuses a var typed in env.ts and declared nowhere"
+    pass=$((pass + 1))
+  else
+    echo "  FAILED CONTROL: the census accepted (or misreported) a var declared in NO list -- the cp#218 gap is open"
+    fail=$((fail + 1))
+  fi
+else
+  echo "  FAILED CONTROL: could not plant the field, so this control tested nothing"
+  fail=$((fail + 1))
+fi
+rm -rf "$census_tmp"
+
+# CONTROL (cp#218): the WRONG fix must also be refused. The tempting way to silence a census failure
+# is to add the name to a deploy list, and for a secret that is exactly backwards -- it would put a
+# credential name into a tracked file. Plant that and require a refusal that says so.
+census_tmp="$(mktemp -d)"
+mkdir -p "$census_tmp/scripts" "$census_tmp/.github/workflows" "$census_tmp/src"
+cp "$here/.github/workflows/deploy.yml" "$census_tmp/.github/workflows/"
+cp "$here/wrangler.toml.example" "$census_tmp/"
+cp "$here/src/env.ts" "$census_tmp/src/"
+sed "s|^ALLOW_EMPTY=\"|ALLOW_EMPTY=\"CF_PROVISIONER_TOKEN |" \
+  "$here/scripts/render-wrangler.sh" > "$census_tmp/scripts/render-wrangler.sh"
+census_out="$(python3 "$here/scripts/var-census.py" "$census_tmp" 2>&1)" && census_rc=0 || census_rc=1
+if [ "$census_rc" -ne 0 ] && printf "%s" "$census_out" | grep -q "CF_PROVISIONER_TOKEN is declared a SECRET"; then
+  echo "  ok   CONTROL: the census refuses a declared secret named in a tracked deploy list"
+  pass=$((pass + 1))
+else
+  echo "  FAILED CONTROL: a credential name in a deploy list went unremarked"
+  fail=$((fail + 1))
 fi
 rm -rf "$census_tmp"
 

@@ -423,7 +423,13 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     // rotation is neither refused nor written under a key the sweep has already walked past.
     kek: studioKekRing(env),
     // Always set a ceiling: a hosted tenant with no daily cap has no cost bound. Operator-tunable.
-    spendDailyCeiling: env.TENANT_SPEND_DAILY_CEILING ?? "25",
+    //
+    // EMPTY MEANS ABSENT, and that is not pedantry (cp#218). This var is declared in the four
+    // deploy lists as ALLOW_EMPTY, so an unset knob arrives as "" rather than undefined, and ??
+    // only catches undefined -- every tenant would have been provisioned with SPEND_DAILY_CEILING
+    // set to the empty string, which is not a ceiling. Same rule kekRing() and videoFinishServiceId
+    // already use.
+    spendDailyCeiling: env.TENANT_SPEND_DAILY_CEILING?.trim() || "25",
     // cf#56: the AI Gateway that AI-Gateway-backed tenant modules bind as GATEWAY_ID. NO default:
     // an unset var means this plane names no gateway, and plan-enhance then runs on the free local
     // Workers AI provider. Defaulting to a slug would bind tenants to a gateway nobody chose, and
