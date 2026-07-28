@@ -6,6 +6,27 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(quota): bind `R2_STORAGE_QUOTA_MODE` onto tenant studios, and give it a disposition (cp#195)
+
+Step 2 of the storage-mode train. vivijure-core v1.4.0 reads `deny` (hard cap, the default) or
+`meter` (included quota, overage billed). This binds the mode per tenant from
+`TENANT_R2_STORAGE_QUOTA_MODE` on provision, studio upgrade, and the converge route.
+
+- **Only `meter` is bound.** `deny` is core default, so binding it would spend a var slot to change
+  nothing and would leave a studio on a plane that never asked for metering non-identical to one
+  that never had the var. An explicitly configured `deny` is valid and binds nothing.
+- **Set-but-unrecognised is REFUSED, not normalised.** core falls back to `deny` and warns, which is
+  right for a studio and wrong for the plane: it would make "typed `metre`" and "wants a hard cap"
+  the same outcome on a tenant the operator believes is metered.
+- **The mode binds independently of the ceiling.** `meter` with no ceiling is coherent (nothing
+  included, everything overage).
+- **`withStorageQuota` re-derives the mode** so a plane that stops metering drops the var from a
+  live tenant instead of carrying a mode nobody configures any more.
+
+This lands before the cf release that declares the var in `ORCHESTRATOR_VAR_KEYS`, because
+`assertDispositionCoversContract` throws at provision and upgrade for any manifest var with no
+disposition entry.
+
 ### refactor(schema): rename `r2_storage_quota_mode` to `r2_storage_quota_override` (cp#195)
 
 The column records whether a tenant OVERRIDES the plane storage ceiling (`NULL` inherit, `set` use
