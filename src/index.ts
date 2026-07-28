@@ -50,6 +50,7 @@ import { productionDeps } from "./deps";
 import type { ControlPlaneEnv } from "./env";
 import { publicOrigin, studioKekRing, tenantDomainSuffix } from "./env";
 import { kekCensus, sweepReencrypt } from "./kek-rotation";
+import { ingestLlmSpend } from "./llm-spend-ingest";
 import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "./oauth";
 import { parseInventoryBody, reconcileRunPod, TENANT_PAGE_LIMIT } from "./reconcile-runpod";
 import { buildR2UsageReport, parseThresholdBytes } from "./tenant-r2-usage";
@@ -99,7 +100,74 @@ export default {
   async fetch(request: Request, env: ControlPlaneEnv, ctx: ExecutionContext): Promise<Response> {
     return await handle(request, env, ctx, productionDeps(env));
   },
+
+  /**
+   * cp#185: the LLM meter's trigger. Cron, declared in wrangler.toml.
+   *
+   * WHY CRON AND NOT PULL-ON-DEMAND. Ruled with migration 0015: the credit ledger must be able to
+   * refuse from a STORED balance, gateway log retention is count-based so a live aggregate silently
+   * changes its own answer as rows age out, and only a watermarked roll-up can be idempotent.
+   *
+   * NOT ctx.waitUntil. A scheduled handler is ALLOWED to await -- its whole invocation is the work
+   * -- and waitUntil here would let the runtime consider the tick finished while the roll-up was
+   * still paging, which is how a run gets cut mid-write. Awaiting means a torn run is at worst an
+   * unfinished period, which reads as incomplete rather than as a clean observation.
+   */
+  async scheduled(_event: ScheduledController, env: ControlPlaneEnv, _ctx: ExecutionContext): Promise<void> {
+    await runLlmMeterTick(env, productionDeps(env));
+  },
 };
+
+/**
+ * One metered tick. Exported so a test drives the SAME body the cron drives.
+ *
+ * Refusing when the meter is unconfigured is the important half. An unconfigured plane must write
+ * NO period row: a period is an assertion that an observation happened, and an empty one would
+ * manufacture a billable-looking window of zero spend out of a missing secret.
+ */
+export async function runLlmMeterTick(
+  env: ControlPlaneEnv,
+  deps: ControlPlaneDeps,
+): Promise<{ ran: boolean; reason?: string }> {
+  if (!deps.llmSpend || !deps.gatewayLogs) {
+    // LOUD, and it names which half is missing, because the two have different fixes: no reader
+    // means CF_ACCOUNT_ID / TENANT_AI_GATEWAY_ID / AI_GATEWAY_READ_TOKEN, no store means the
+    // migration has not run. Silence here would look exactly like a gateway with no traffic.
+    const reason = !deps.gatewayLogs ? "no_gateway_reader" : "no_spend_store";
+    console.error("llm_meter.skipped", reason);
+    return { ran: false, reason };
+  }
+  try {
+    const outcome = await ingestLlmSpend({
+      store: deps.llmSpend,
+      reader: deps.gatewayLogs,
+      now: deps.now,
+      newId: () => newId("llmp"),
+    });
+    // Logged at error level when the run is not a clean observation, so an operator's log filter
+    // surfaces it. A meter that only whispers about its own gaps is a meter nobody checks.
+    const clean = outcome.status === "complete" && outcome.controlPassed && !outcome.gapDetected;
+    (clean ? console.log : console.error)(
+      "llm_meter.tick",
+      JSON.stringify({
+        period: outcome.periodId,
+        status: outcome.status,
+        control_passed: outcome.controlPassed,
+        gap_detected: outcome.gapDetected,
+        rows_seen: outcome.rowsSeen,
+        rows_dropped: outcome.rowsDropped,
+        events_written: outcome.eventsWritten,
+        note: outcome.note,
+      }),
+    );
+    return { ran: true };
+  } catch (e) {
+    // The tick swallows nothing silently. A throw here has already left an unfinished period (or
+    // none), which the windowed read reports as incomplete; the log is how anyone finds out WHY.
+    console.error("llm_meter.tick_failed", (e as Error).message);
+    return { ran: false, reason: "threw" };
+  }
+}
 
 /** Exported for tests: the same router production takes, with the dep bundle swapped. */
 export async function handle(
@@ -1070,6 +1138,52 @@ async function adminRoutes(
     await deps.store.setSetting("signups_enabled", value, actor);
     await deps.store.recordAdminAction(actor, "settings.set", "signups_enabled", value);
     return new Response(null, { status: 204 });
+  }
+
+  // ---- The per-tenant LLM meter (cp#185) ------------------------------------------------------
+  //
+  // Two surfaces, deliberately separate. The RUN route is a manual trigger for the same body the
+  // cron drives, so an operator can force a tick and READ WHAT IT ACTUALLY DID rather than infer it
+  // from a green cron log. The READ route is the cp#195 billing contract, exposed so the number a
+  // statement is built from can be checked by hand against the gateway.
+
+  if (request.method === "POST" && path === "/api/admin/llm-meter/run") {
+    const outcome = await runLlmMeterTick(env, deps);
+    if (!outcome.ran) {
+      // 503 and the reason NAMED. Not 200-with-a-null: an operator asking the meter to run and
+      // getting a success back has been told the meter ran.
+      return err("llm_meter_unavailable", 503, { reason: outcome.reason });
+    }
+    return json({ ran: true });
+  }
+
+  if (request.method === "GET" && path === "/api/admin/llm-spend") {
+    if (!deps.llmSpend) return err("llm_meter_unavailable", 503, { reason: "no_spend_store" });
+    const tenantId = url.searchParams.get("tenant");
+    const windowStart = url.searchParams.get("start");
+    const windowEnd = url.searchParams.get("end");
+    if (!tenantId || !windowStart || !windowEnd) {
+      return err("invalid_query", 400, { need: ["tenant", "start", "end"] });
+    }
+    // The window is compared as a STRING against stored ISO timestamps, so a caller passing
+    // anything else silently compares garbage and gets a confident zero. Refused instead. Both
+    // bounds are normalised through Date so "2026-07-28" and a full timestamp behave identically.
+    const startMs = Date.parse(windowStart);
+    const endMs = Date.parse(windowEnd);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      return err("invalid_window", 400, { detail: "start and end must parse as timestamps" });
+    }
+    if (endMs <= startMs) {
+      // A backwards or empty window matches no period and would answer a complete-looking zero.
+      return err("invalid_window", 400, { detail: "end must be after start" });
+    }
+    return json({
+      spend: await deps.llmSpend.readTenantLlmSpend({
+        tenantId,
+        windowStart: new Date(startMs).toISOString(),
+        windowEnd: new Date(endMs).toISOString(),
+      }),
+    });
   }
 
   // ---- Aggregate R2 usage across tenant buckets (cf#56 gate section 5) ------------------------

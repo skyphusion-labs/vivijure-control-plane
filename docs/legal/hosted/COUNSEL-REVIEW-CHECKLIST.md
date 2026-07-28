@@ -283,6 +283,28 @@ production credentials.
 
 ---
 
+### T1-14. Operator support access under the Stored Communications Act
+
+**Question:** the hosted privacy text now discloses four triggers on which an operator reaches
+tenant data (run or repair the service, tenant request, legal compulsion, abuse report;
+`PRIVACY-DELTA.md` Section 2.3, AUP Section 5). Does that posture sit inside the SCA's provider
+provisions: 18 U.S.C. 2701(c)(1) for the provider's own access to stored content, and, if
+support work ever involves divulging content to anyone outside the provider, the 2702(b)
+exceptions (2702(b)(3) consent, 2702(b)(5) protection of the provider's rights and property)?
+And does clickwrap acceptance of the AUP (T1-7) carry the tenant-consent weight the "at your
+request" trigger leans on?
+
+**Why it is live:** the disclosure is now explicit, which is the ruled posture (disclosure, not
+technical pretense; cp#219), so its statutory footing should be confirmed rather than assumed.
+This is narrower than T1-13: that one is about preserved CSAM material under 2258A/2258B; this
+one is ordinary support access to ordinary tenant content.
+
+**A usable answer:** confirm the four triggers map onto lawful provider access; flag any trigger
+that needs tighter wording or an explicit consent mechanic; say whether the operator-access
+audit record itself needs a defined retention period.
+
+---
+
 ## Band T2: before our-GPUs and payments
 
 ### T2-1. Deepfake and NCII exposure, once we own the GPUs

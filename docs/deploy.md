@@ -89,6 +89,54 @@ Repository **variables**:
   **Never `skyphusion-llm`** -- that is prism's gateway, and sharing it would put every tenant LLM
   call in one analytics namespace, defeating the per-tenant attribution the token exists to provide.
   Empty = no gateway named, so `plan-enhance` runs on the free local Workers AI provider.
+
+#### `AI_GATEWAY_READ_TOKEN` and the LLM meter (cp#185)
+
+The per-tenant Opus meter pages AI Gateway logs on a cron (`*/15 * * * *`, declared in
+`wrangler.toml`) and writes integer micro-USD usage rows the credit ledger bills from. It needs
+three things, all of which must be present or it does not run:
+
+| what | where | note |
+| --- | --- | --- |
+| `CF_ACCOUNT_ID` | Actions secret, rendered into `wrangler.toml` | already set |
+| `TENANT_AI_GATEWAY_ID` | Actions variable | must be `vivijure-hosted`; **never `skyphusion-llm`** |
+| `AI_GATEWAY_READ_TOKEN` | worker secret, `wrangler secret put` | AI Gateway Read + Metadata Read, nothing else |
+
+**A missing piece is an honest OFF, not a degraded mode.** With any of the three absent the meter
+writes **no period rows at all**, and the windowed read then reports `complete: false` for every
+window ("no roll-up run is assigned to this window"). That is deliberate and it is the single most
+important property here: a period row asserts that an observation happened, so emitting empty ones
+would manufacture billable-looking windows of zero spend out of a missing secret. A meter that
+silently under-counts bills **us**, not the tenant.
+
+Two things that are NOT the meter's problem and should not be read as one:
+
+- **`skyphusion-llm` is refused by name at construction.** Every other wrong gateway id lands on
+  Cloudflare's proven `200 / success:true / total_count:0` answer, which the roll-up's positive
+  control catches. prism's gateway is not empty, so the control would *pass* while attributing
+  another product's spend to vivijure tenants. It is the one misconfiguration the control cannot
+  see, so it is refused explicitly rather than trusted to this document.
+- **Re-reading rows is normal.** Cloudflare's `created_at gt` filter compares at whole-SECOND
+  granularity (measured, not assumed), so each run re-reads the second holding the watermark. Writes
+  are `INSERT OR IGNORE` on the gateway's own row id, so a re-read costs nothing. Do not "fix" it:
+  the alternative is skipping a row that shares the watermark's millisecond, permanently.
+
+Verify it live after installing the secret:
+
+```
+# force a tick and read what it actually did, rather than trusting a green cron
+curl -sS -X POST -H "authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
+  https://studio.vivijure.com/api/admin/llm-meter/run
+
+# then read a window back; complete:false with a reason is a working meter reporting honestly
+curl -sS -H "authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
+  "https://studio.vivijure.com/api/admin/llm-spend?tenant=<id>&start=<iso>&end=<iso>"
+```
+
+The reader itself has a live regression suite against the real gateway
+(`tests/ai-gateway-logs.live.test.ts`), because every vendor fact it depends on is behaviour that
+can drift, and a reader built from a recorded sample is only as fresh as the sample.
+
 - `R2_USAGE_ALERT_BYTES` (cf#56) -- alert threshold in BYTES for total R2 across tenant buckets on
   the admin usage surface. Empty = no threshold, and the surface reports a `no_threshold` verdict.
 - `TENANT_R2_STORAGE_QUOTA_BYTES` (cp#183) -- the PER-TENANT storage ceiling in BYTES, bound onto
@@ -111,11 +159,68 @@ Repository **variables**:
   rolling 24h, 1200s). Declared as of cp#218 for the same reason as the two above: all three were
   typed, read, and undeclared, so every bound was pinned at its default with no way to move it.
 
+### Which AI Gateway is which (cp#203)
+
+Seven gateways exist on the account and they are NOT interchangeable. Pointing a consumer at the
+wrong one is not a correctness bug, which is exactly why it survives: everything works, and the
+spend lands in another product cost picture.
+
+This table is the WHOLE ACCOUNT, deliberately, not the vivijure subset. A table listing only the
+vivijure gateways would reproduce the very failure this section exists to prevent: the next reader
+looks up the gateway id actually in front of them, does not find it, and guesses. Read 2026-07-28
+with `result_info` checked (`count: 7, page: 1, total_count: 7`), so it is a complete census rather
+than a first page.
+
+| Gateway | Auth | Disposition |
+| --- | --- | --- |
+| `vivijure-hosted` | ON | TENANT traffic only. The per-tenant token is the access boundary and `cf-aig-metadata` carries the tenant id; this is the namespace the meter reads. Dev traffic here would forge tenant numbers. |
+| `vivijure-dev` | ON | Crew DEV boxes and local studios (`vivijure-local` on a GPU dev box, any hand-run panel). Its own per-function token, `vivijure-dev-aig-run`. |
+| `vivijure-demo` | OFF | Pre-existing demo surface. NO vivijure consumers, and do not add one; see the authentication note below. |
+| `skyphusion-llm` | ON | **prism, a different product.** Never vivijure, in any environment. This is the one a vivijure dev config was actually pointed at, which is what cp#203 was. |
+| `common-thread` | ON | Another product on this account. No vivijure consumers. |
+| `openwebui-friends` | ON | Another product on this account. No vivijure consumers. |
+| `default` | OFF | The account default gateway. No vivijure consumers. |
+
+**A gateway that is not in this table is not a vivijure gateway.** That rule outlives the census:
+anything created after 2026-07-28 carries no vivijure traffic until it is added here with a
+disposition. Vivijure points at exactly two ids, `vivijure-hosted` for tenants and `vivijure-dev`
+for crew dev work, and at nothing else.
+
+**Dev traffic is AUTHENTICATED, deliberately.** The cheap option was to reuse `vivijure-demo`
+(`authentication: false`) and skip the token. The standing rationale from cp#185 rules that out: an
+unauthenticated gateway has a public, guessable URL, and keyless Unified Billing works THROUGH it,
+so an unauthenticated gateway is an open proxy to our credit balance. That argument does not weaken
+because the caller is a dev box; the exposed surface is the gateway, not the caller. A dev gateway
+is also the one most likely to end up in a pasted snippet.
+
+**Per-function token, not a shared one.** `vivijure-dev-aig-run` (CF token id
+`74e596d3998335b93a3a4fa8fad63f3a`, permission group `AI Gateway Run`, minted by Strummer
+2026-07-28, home `~strummer/.vivijure-dev-aig.env` on the primary crew box, `chmod 600`). It reaches
+one capability on one account, so revoking it stops dev traffic and touches nothing else. It is NOT
+a Worker secret and is deliberately absent from the owners table above, which covers
+`wrangler secret put` bindings on this Worker.
+
+Scope limit worth stating rather than implying: `AI Gateway Run` is an ACCOUNT-scoped permission
+group, so this token is not confined to `vivijure-dev` at the API layer. The confinement is the URL
+the consumer is configured with. That is why the gateway id and the token are rotated together and
+recorded together.
+
+Verified live at mint time (2026-07-28), all three legs against `vivijure-dev`: valid token **200**
+with a real Anthropic response body, no `cf-aig-authorization` header **401** (`AiGatewayError`
+2009), bogus token **401**. The gateway log then showed exactly one request, `cost=0.000145`,
+`status=200`, a clean namespace with nothing else in it.
+
+Known consumers repointed in the same pass: `~strummer/local.env` and
+`~strummer/propagandhi-vivijure.env` on the crew box, and the LIVE `vivijure-local` stack on
+a GPU dev box (its own `.env` plus a `docker compose up -d`, since a fixed file over a running
+container that still holds the old value is the defect wearing a fix). All seven containers that
+carry `GATEWAY_ID` were read back at `vivijure-dev`.
+
 Worker **secrets** (`wrangler secret put`, never in Actions): `POSTERN_SEND_TOKEN`,
 `GOOGLE_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `APPLE_PRIVATE_KEY`,
 `CONTROL_PLANE_ADMIN_TOKEN`, `CF_PROVISIONER_TOKEN`, `CF_WORKER_UPLOAD_TOKEN`,
-`VIDEO_FINISH_VPC_SERVICE_ID`, `STUDIO_TOKEN_KEK`, and -- only while a
-rotation is in progress -- `STUDIO_TOKEN_KEK_NEXT` (cp#95).
+`VIDEO_FINISH_VPC_SERVICE_ID`, `STUDIO_TOKEN_KEK`, `AI_GATEWAY_READ_TOKEN` (cp#185), and -- only
+while a rotation is in progress -- `STUDIO_TOKEN_KEK_NEXT` (cp#95).
 
 `VIDEO_FINISH_VPC_SERVICE_ID` is NOT a credential; it is a Connectivity Directory service id.
 It is in this list because that is how it is delivered (read back from the live Worker settings
@@ -143,6 +248,7 @@ So: **a worker secret is not considered set until this table names its owner and
 | `POSTERN_SEND_TOKEN` | Strummer | send identity recorded in `crew-secrets/operator/postern/vivijure-control-plane-send-identity.fragment.json` |
 | `CF_PROVISIONER_TOKEN` | Rollins (hosted sprint mint, 2026-07-17) | `~/.vivijure-provisioner-full.env` on the primary crew box (dischord, `chmod 600`); mirrored to repo Actions secret `CF_PROVISIONER_TOKEN` for live gates |
 | `STUDIO_TOKEN_KEK` | Rollins (recovered 2026-07-25); escrow: Mackaye | `~/.vivijure-studio-token-kek` on the primary crew box (dischord, `chmod 600`); **escrowed 2026-07-25** to crew-secrets tier `secrets-vivijure-kek` (mackaye + conrad-operator recipients only; recovery runbook `crew-secrets/docs/vivijure-kek-escrow-recovery.md`) |
+| `AI_GATEWAY_READ_TOKEN` | Strummer (minted 2026-07-27) | repo Actions secret `VIVIJURE_AIGW_READ_TOKEN`. **NOT YET INSTALLED ON THE WORKER** as of 2026-07-28: the meter ships inert until someone holding the value runs `wrangler secret put AI_GATEWAY_READ_TOKEN`. Inert is honest, not broken -- see below |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `APPLE_PRIVATE_KEY` | unset (SSO not offered) | n/a |

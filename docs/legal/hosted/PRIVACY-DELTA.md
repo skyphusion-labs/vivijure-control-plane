@@ -93,7 +93,8 @@ scandal when someone reads the architecture. Say the true thing instead. It is s
 - No proactive monitoring, no content scanning, no automated review.
 - No training on tenant content. No profiling. No sale of anything.
 - Access only to run or repair the service, at the tenant's request, where the law compels us, or
-  when acting on an abuse report (`ABUSE-AND-NCMEC.md`).
+  when acting on an abuse report (`ABUSE-AND-NCMEC.md`). Access that reaches into a specific tenant is recorded
+  (Section 2.3).
 - The one exception is CSAM, and it is stated as an exception rather than hidden.
 - **And if you want a studio we genuinely cannot see, self-host it.** That option is free, fully
   featured, and we point at it rather than bury it. The hosted tier sells convenience, not secrecy.
@@ -124,6 +125,57 @@ cannot be allowed to delete. Those two facts together are the whole of it.
 all. That is not us being generous; it is the AGPL and the parity commitment making the alternative
 real. (It removes **us**. Anyone wiring their own GPU provider, cloud AI endpoint, or third-party
 storage still has those parties in their own chain, under their own contracts.)
+
+### 2.3 Operator support access: held, used on a report, recorded (RULED 2026-07-27)
+
+Support is part of a hosted product. Tenants will expect us to fix things, and fixing things
+sometimes requires an operator to reach into a tenant studio. That capability is inherent to
+hosting, not a defect in it, so this section discloses it rather than minimizing it.
+
+- **What an operator can reach.** An operator credential reaches what the platform holds: the
+  control-plane records of Section 1.1 (account, tenant, quota, and billing/credit rows) and a
+  tenant studio's data plane of Section 1.2 (its database and its file storage). It does not
+  reach the tenant's own RunPod account (Section 4.3), and it can never reach a self-hosted
+  instance.
+- **When it is used.** Only on the triggers already stated in Section 2.2: to run or repair the
+  service, at the tenant's request, where the law compels us, or acting on an abuse report.
+  Operator access is not routine, and nobody browses. This is the same shape as the CSAM
+  enforcement posture (`ABUSE-AND-NCMEC.md` Section 2): capability held, exercised on a report,
+  never proactively.
+- **What is recorded.** Routine support access is made with a named credential tied to one
+  operator. Any access that reaches into a specific tenant, including viewing a tenant's
+  rendered output, writes a durable audit record: which operator, authenticated by the
+  credential rather than typed in on the honor system; what was done; which tenant; and when.
+  Reads of our own fleet-level inventory (a tenant count, our own storage bill, a provider
+  reconciliation) do not reach into any one tenant's material and are not individually
+  recorded. Credentials are revocable one at a time.
+- **What scopes do, and what they do not.** Each named credential carries an explicit list of
+  scopes and grants nothing outside it. Scopes bound what a credential can DO: a read-only
+  credential cannot tear a studio down. They are a blast-radius control, not a privacy
+  boundary, and we will not pretend a scope limits what an operator could see; what bounds
+  seeing is the behavior commitment above and the record.
+- **One break-glass credential exists, and it is the exception to attribution.** A single
+  shared root credential survives for emergencies, and it is the only credential that can
+  create or revoke operator credentials (a scoped credential that could mint credentials would
+  hold every scope at one remove). Its use is recorded like any other access, but it is
+  attributed to the credential, not a person. It is not used for routine support, and its
+  appearance in the audit trail is an event to review, never noise.
+- **Why the record is the point.** "We hold access we do not routinely use" is checkable only if
+  use leaves a mark. Expected volume is near zero, which makes the audit trail cheap to keep and
+  makes any growth in it a signal to review, not noise to file.
+- **The assured alternative is self-hosting.** Total isolation from an operator is not
+  achievable on somebody else's infrastructure, under any operator, and we will not pretend
+  otherwise for ours. Self-host, at full parity, is where zero-operator-access is real, and we
+  point at it rather than bury it.
+
+**This subsection is a constraint on the build, not a description of today** (the same rule as
+Section 3). As of this draft the plane holds ONE shared admin token with no scope dimension, and
+the money audit records `operator_claimed`: a name asserted, never authenticated. The named,
+scoped, individually revocable credentials and authenticated audit rows described above are
+cp#219. **This text must not enter force, and hosted signups must not open, before that
+capability is live**, or the recording claim above is false on its first day. The break-glass
+credential is disclosed above because it survives cp#219 by design; if its role ever widens
+beyond emergencies and credential management, this section is false and changes in the same PR.
 
 ---
 
@@ -222,6 +274,7 @@ not a third-party email vendor.
 | Provision job records | Short. They exist to make a failed provision resumable and debuggable. |
 | CSAM-related preservation | **1 year** from CyberTipline submission, per 18 U.S.C. 2258A(h), on a segregated path (`PRESERVATION-PATH.md`; posture in `ABUSE-AND-NCMEC.md`, procedure in `ABUSE-RESPONSE-RUNBOOK.md`). The year is the **floor** of the duty, not an expiry: preserving longer is permitted (2258A(h)(5)) and destruction happens on a law enforcement request (2258B(c)), never on a timer of ours. This overrides deletion requests. |
 | Operational logs | As today: render-state, not creative payload, on our own Loki, up to 90 days. |
+| **Operator-access audit records** (Section 2.3) | **A record class of its own, retained deliberately.** It is NOT an operational log and does not age out on the 90-day operational tier above: it exists to make "we hold access we do not routinely use" checkable after the fact, so it must outlive the dispute, complaint, or access request that would test it, and near-zero volume makes long retention cheap (Section 2.3's own argument). Because each row names an identified operator and an identified tenant, its retention period is itself a privacy commitment: **counsel sets the number** (T1-14), the same precedent as AUP acceptance records (T1-5). |
 
 **Deletion has a limit and the policy must say so:** an AUP acceptance record, and anything under a
 legal preservation obligation, survives an account deletion request. Promising unconditional
@@ -285,6 +338,7 @@ Specified here so the launch-gate flip is mechanical rather than a rewrite under
 | Section 7 | retention | Add the hosted table from Section 5 above, including the acceptance-record and preservation carve-outs. **Also add the custody-boundary limit on deletion** (Section 5 above): deleting a hosted studio destroys what we hold and does **not** reach the tenant's own RunPod endpoints or the templates underneath them, which survive on their account under their contract. Say what to delete (**both** classes) rather than leaving a user to discover it on an invoice. |
 | Section 9 | children | Add: on the hosted surface, reporting is a statutory duty under 2258A, not only a moral one. |
 | Section 2 or 7 (new) | nothing today | **ADD the operator-capability disclosure**, per Conrad's ruling 2026-07-25 (disclosure, not technical pretense). This is the row that **executes** the ruling: Section 2.2 above and `PRESERVATION-PATH.md` Section 4.3 are internal documents, and **a disclosure that never reaches a signed-up human is documentation, not notification.** The customer-facing text must carry, in plain words: (1) preserved material goes to a separate store the running service cannot reach; (2) we remain technically able to **administer** that store, including removing the deletion-protection, and that is **measured**, not theoretical; (3) whether an operator credential can **read** preserved material is unsettled and we are not claiming it cannot; (4) **why** the capability exists (multi-tenant provisioning needs account-scoped storage rights; 2258A requires preserving material a tenant must not be able to delete); (5) what limits it (a written rule, an audit trail, a small named set of people, not a technical barrier); and (6) **self-hosting as a first-class alternative, not a footnote** -- self-host and no platform operator is in your custody chain at all, which is credible because the studio and the control plane are both AGPL and the control plane is not needed to self-host. Scope (6) honestly: it removes **us**, not every third party the self-hoster chooses to wire. |
+| Section 2 or 7 (new) | nothing today | **ADD the operator support-access and audit disclosure** (Section 2.3 here): what an operator credential reaches, the four access triggers, the named per-operator scoped credential, the authenticated audit record written on every access that reaches into a specific tenant, the break-glass exception to attribution, per-credential revocation, and self-hosting as the zero-operator-access alternative. **Blocked on cp#219 being live**: shipping this text ahead of the capability makes it false. |
 
 ### `vivijure-cf docs/legal/TERMS.md`
 | Location | Current text | Required change |
