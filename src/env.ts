@@ -209,6 +209,49 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   TENANT_AI_GATEWAY_ID?: string;
 
   /**
+   * cp#195: the INCLUDED LLM allowance per tenant per billing period, in integer MICRO-USD.
+   *
+   * Name approved by mackaye 2026-07-28 alongside the core knob it will mirror
+   * (`LLM_SPEND_ALLOWANCE_MICRO_USD`, strummer's core train). `_MICRO_USD` is in the name and not
+   * only in the docs because a bare `_ALLOWANCE` invites someone to put dollars in it, and a
+   * mis-parsed unit is an order-of-magnitude error on a bill.
+   *
+   * NOT the same unit as `SPEND_DAILY_CEILING` despite living beside it conceptually: that knob
+   * counts SUBMISSIONS per UTC day, not money (vivijure-cf src/rate-limit.ts). Checked rather than
+   * assumed, because "beside SPEND_DAILY_CEILING" reads like a unit instruction and is not one.
+   *
+   * UNSET = UNBILLABLE, and deliberately NOT an allowance of zero. An unset knob is the absence of a
+   * decision, not a decision, and this repo does not get to invent one -- the same posture
+   * `TENANT_R2_STORAGE_QUOTA_BYTES` takes. The direction matters: unset-as-zero would bill a tenant
+   * for every micro-USD of something nobody configured, which is the one failure in this lane that
+   * costs the TENANT rather than us. A configured "0" IS a decision and does bill from the first
+   * micro-USD. See decideOverageDebit in meter-debit.ts.
+   *
+   * NOT YET BOUND ONTO TENANT STUDIOS, on purpose. The studio-core knob it mirrors does not exist
+   * until strummer's core train lands, and binding a var the consuming code cannot answer is exactly
+   * the shape that took provisioning down on 2026-07-27. The plane uses it for its OWN settlement
+   * now; the tenant binding follows the core release.
+   */
+  TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD?: string;
+
+  /**
+   * cp#195: the per-tenant storage enforcement POSTURE, bound onto tenant studios as
+   * `R2_STORAGE_QUOTA_MODE` (strummer's core train). "deny" (the default, and byte-identical to
+   * today's submit-time 507) or "meter" (no deny; the bytes knob becomes an INCLUDED quota and the
+   * plane bills the overage).
+   *
+   * Note the asymmetry with `TENANT_R2_STORAGE_QUOTA_BYTES`, which is intentional and is documented
+   * so nobody "fixes" one to match the other: for the BYTES knob, garbage means OFF, because absent
+   * knob means absent behaviour for a ceiling nobody set. For the MODE knob, garbage means DENY,
+   * because the absent case still has to pick an enforcement posture and the conservative side is
+   * the one where a mistake costs us a late deny rather than unmetered spend.
+   *
+   * DECLARED HERE AHEAD OF ITS BINDING, and not yet bound, for the same reason as the allowance
+   * above: the core knob ships first.
+   */
+  TENANT_R2_STORAGE_QUOTA_MODE?: string;
+
+  /**
    * cp#185: the AI Gateway READ credential the per-tenant LLM meter pages logs with. Its permission
    * groups are AI Gateway Read + Metadata Read and NOTHING else (verified with positive and negative
    * controls: 403/401 on everything outside them).

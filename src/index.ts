@@ -51,6 +51,8 @@ import type { ControlPlaneEnv } from "./env";
 import { publicOrigin, studioKekRing, tenantDomainSuffix } from "./env";
 import { kekCensus, sweepReencrypt } from "./kek-rotation";
 import { ingestLlmSpend } from "./llm-spend-ingest";
+import { lastClosedBillingPeriod, parseBillingPeriodKey } from "./meter-period";
+import { runLlmSettlement } from "./meter-settle-run";
 import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "./oauth";
 import { parseInventoryBody, reconcileRunPod, TENANT_PAGE_LIMIT } from "./reconcile-runpod";
 import { buildR2UsageReport, parseThresholdBytes } from "./tenant-r2-usage";
@@ -1185,6 +1187,76 @@ async function adminRoutes(
         windowEnd: new Date(endMs).toISOString(),
       }),
     });
+  }
+
+  // ---- Periodic LLM overage settlement (cp#195) -----------------------------------------------
+  //
+  // OPERATOR-RUNNABLE, on mackaye's instruction and for the same reason the meter tick is: a
+  // settlement can be forced and its ACTUAL result read, rather than inferred from a cron log
+  // reporting that something ran.
+  //
+  // DEFAULTS TO THE LAST CLOSED PERIOD, never the current one. Settling a month still accumulating
+  // computes the debit from a partial window, and because the write is idempotent on the period key
+  // the later correct figure can never replace it: one early settlement permanently under-bills that
+  // month with nothing anywhere to show it happened.
+  if (request.method === "POST" && path === "/api/admin/meter-settle") {
+    if (!deps.llmSpend) return err("llm_meter_unavailable", 503, { reason: "no_spend_store" });
+    if (!deps.credits) return err("credits_unconfigured", 503);
+
+    const requested = url.searchParams.get("period");
+    const period = requested ? parseBillingPeriodKey(requested) : lastClosedBillingPeriod(new Date(deps.now()));
+    // Refused rather than normalised to something adjacent: the key BECOMES the ledger's
+    // idempotency reference, so a key whose window disagrees with it would make that reference a lie
+    // and could settle one month under another month's identity.
+    if (!period) return err("invalid_period", 400, { detail: 'period must be "YYYY-MM"' });
+
+    // Parsed ONCE here rather than inside the sweep, so a knob problem is one honest fact about the
+    // run instead of an identical refusal repeated per tenant.
+    //
+    // A MALFORMED knob REFUSES THE WHOLE RUN rather than sweeping and reporting every tenant
+    // unbillable. That is the house rule TENANT_R2_STORAGE_QUOTA_BYTES already states: "typed it
+    // wrong" and "chose none" must not be the same outcome. Both are safe for the tenant, but only
+    // one of them is a mistake somebody needs to hear about, and a sweep that quietly settles
+    // nothing looks identical to a month where nobody owed anything.
+    const rawAllowance = env.TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD;
+    const allowanceMicroUsd = parseMicroUsd(rawAllowance);
+    if (typeof rawAllowance === "string" && rawAllowance.trim() !== "" && allowanceMicroUsd === null) {
+      return err("invalid_allowance", 400, {
+        detail:
+          "TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD is set but is not a whole number of micro-USD; " +
+          "refusing to settle rather than treating a typo as no allowance",
+      });
+    }
+
+    const report = await runLlmSettlement(
+      {
+        listTenants: async () => await deps.store.listTenants({}),
+        censusComplete: (n) => n < TENANT_PAGE_LIMIT,
+        spend: deps.llmSpend,
+        ledger: deps.credits,
+        allowanceMicroUsd,
+        newId: () => newId("led"),
+        now: () => new Date(deps.now()).toISOString(),
+      },
+      period,
+    );
+    // AUDITED, unlike the read-only admin surfaces above: this one MOVES MONEY, so the fact that an
+    // operator ran it, for which period, and what it did belongs in the audit trail.
+    await deps.store.recordAdminAction(
+      actor,
+      "meter.settle_llm",
+      period.key,
+      JSON.stringify({
+        debited: report.debited,
+        already_settled: report.alreadySettled,
+        within: report.within,
+        unbillable: report.unbillable,
+        total_micro_usd: report.totalDebitedMicroUsd,
+        census_complete: report.censusComplete,
+        allowance_configured: allowanceMicroUsd !== null,
+      }),
+    );
+    return json({ report });
   }
 
   // ---- Aggregate R2 usage across tenant buckets (cf#56 gate section 5) ------------------------
