@@ -149,6 +149,22 @@ hosting, not a defect in it, so this section discloses it rather than minimizing
   Reads of our own fleet-level inventory (a tenant count, our own storage bill, a provider
   reconciliation) do not reach into any one tenant's material and are not individually
   recorded. Credentials are revocable one at a time.
+- **The operator must also STATE which of the four triggers the access is made under, and that
+  part is asserted rather than verified.** The record carries one of `run_or_repair`,
+  `tenant_request`, `legal_compulsion` or `abuse_report`, chosen by the operator at the moment
+  of access. It is required: an access with no trigger, or one naming something outside those
+  four, is refused rather than recorded with a default, because a defaulted reason is a
+  fabricated one on a record whose whole purpose is accountability. The break-glass credential
+  is not exempt; a trigger describes the access, not the credential making it, and an emergency
+  still has a reason.
+
+  **We can authenticate who; we cannot authenticate why**, and we will not imply otherwise. The
+  identity on that record is proven by the credential. The stated reason is the operator's word,
+  stored in a column named `trigger_asserted` so that nobody reading this table later mistakes
+  it for a verified fact. What makes it worth recording anyway is that it is checkable after the
+  event: a stated `abuse_report` can be held against whether a report exists, a pattern of
+  `run_or_repair` on a tenant with no incident is visible, and an operator who states a reason
+  has put something on the record they can be held to.
 - **What scopes do, and what they do not.** Each named credential carries an explicit list of
   scopes and grants nothing outside it. Scopes bound what a credential can DO: a read-only
   credential cannot tear a studio down. They are a blast-radius control, not a privacy
@@ -274,7 +290,7 @@ not a third-party email vendor.
 | Provision job records | Short. They exist to make a failed provision resumable and debuggable. |
 | CSAM-related preservation | **1 year** from CyberTipline submission, per 18 U.S.C. 2258A(h), on a segregated path (`PRESERVATION-PATH.md`; posture in `ABUSE-AND-NCMEC.md`, procedure in `ABUSE-RESPONSE-RUNBOOK.md`). The year is the **floor** of the duty, not an expiry: preserving longer is permitted (2258A(h)(5)) and destruction happens on a law enforcement request (2258B(c)), never on a timer of ours. This overrides deletion requests. |
 | Operational logs | As today: render-state, not creative payload, on our own Loki, up to 90 days. |
-| **Operator-access audit records** (Section 2.3) | **A record class of its own, retained deliberately.** It is NOT an operational log and does not age out on the 90-day operational tier above: it exists to make "we hold access we do not routinely use" checkable after the fact, so it must outlive the dispute, complaint, or access request that would test it, and near-zero volume makes long retention cheap (Section 2.3's own argument). Because each row names an identified operator and an identified tenant, its retention period is itself a privacy commitment: **counsel sets the number** (T1-14), the same precedent as AUP acceptance records (T1-5). |
+| **Operator-access audit records** (Section 2.3) | **A record class of its own, retained deliberately.** Each row carries the authenticated operator, what was done, which tenant, when, and the operator's STATED trigger (asserted, never verified). It is NOT an operational log and does not age out on the 90-day operational tier above: it exists to make "we hold access we do not routinely use" checkable after the fact, so it must outlive the dispute, complaint, or access request that would test it, and near-zero volume makes long retention cheap (Section 2.3's own argument). Because each row names an identified operator and an identified tenant, its retention period is itself a privacy commitment: **counsel sets the number** (T1-14), the same precedent as AUP acceptance records (T1-5). |
 
 **Deletion has a limit and the policy must say so:** an AUP acceptance record, and anything under a
 legal preservation obligation, survives an account deletion request. Promising unconditional
@@ -338,7 +354,7 @@ Specified here so the launch-gate flip is mechanical rather than a rewrite under
 | Section 7 | retention | Add the hosted table from Section 5 above, including the acceptance-record and preservation carve-outs. **Also add the custody-boundary limit on deletion** (Section 5 above): deleting a hosted studio destroys what we hold and does **not** reach the tenant's own RunPod endpoints or the templates underneath them, which survive on their account under their contract. Say what to delete (**both** classes) rather than leaving a user to discover it on an invoice. |
 | Section 9 | children | Add: on the hosted surface, reporting is a statutory duty under 2258A, not only a moral one. |
 | Section 2 or 7 (new) | nothing today | **ADD the operator-capability disclosure**, per Conrad's ruling 2026-07-25 (disclosure, not technical pretense). This is the row that **executes** the ruling: Section 2.2 above and `PRESERVATION-PATH.md` Section 4.3 are internal documents, and **a disclosure that never reaches a signed-up human is documentation, not notification.** The customer-facing text must carry, in plain words: (1) preserved material goes to a separate store the running service cannot reach; (2) we remain technically able to **administer** that store, including removing the deletion-protection, and that is **measured**, not theoretical; (3) whether an operator credential can **read** preserved material is unsettled and we are not claiming it cannot; (4) **why** the capability exists (multi-tenant provisioning needs account-scoped storage rights; 2258A requires preserving material a tenant must not be able to delete); (5) what limits it (a written rule, an audit trail, a small named set of people, not a technical barrier); and (6) **self-hosting as a first-class alternative, not a footnote** -- self-host and no platform operator is in your custody chain at all, which is credible because the studio and the control plane are both AGPL and the control plane is not needed to self-host. Scope (6) honestly: it removes **us**, not every third party the self-hoster chooses to wire. |
-| Section 2 or 7 (new) | nothing today | **ADD the operator support-access and audit disclosure** (Section 2.3 here): what an operator credential reaches, the four access triggers, the named per-operator scoped credential, the authenticated audit record written on every access that reaches into a specific tenant, the break-glass exception to attribution, per-credential revocation, and self-hosting as the zero-operator-access alternative. **Blocked on cp#219 being live**: shipping this text ahead of the capability makes it false. |
+| Section 2 or 7 (new) | nothing today | **ADD the operator support-access and audit disclosure** (Section 2.3 here): what an operator credential reaches, the four access triggers AND the requirement that the operator STATE which one applies (asserted, never verified), the named per-operator scoped credential, the authenticated audit record written on every access that reaches into a specific tenant, the break-glass exception to attribution, per-credential revocation, and self-hosting as the zero-operator-access alternative. **Blocked on cp#219 being live**: shipping this text ahead of the capability makes it false. |
 
 ### `vivijure-cf docs/legal/TERMS.md`
 | Location | Current text | Required change |
