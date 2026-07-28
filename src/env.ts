@@ -209,6 +209,24 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   TENANT_AI_GATEWAY_ID?: string;
 
   /**
+   * cp#185: the AI Gateway READ credential the per-tenant LLM meter pages logs with. Its permission
+   * groups are AI Gateway Read + Metadata Read and NOTHING else (verified with positive and negative
+   * controls: 403/401 on everything outside them).
+   *
+   * SEPARATE from every other credential on this plane on purpose. The provisioner mints and the
+   * upload token writes scripts; this one only reads a log stream, so a leak of it exposes usage
+   * metadata and no ability to change anything.
+   *
+   * OPTIONAL, and its absence is an honest OFF rather than a degraded mode: with it unset the meter
+   * does not run and writes NO period rows at all. That matters more than it looks. A period row is
+   * an assertion that an observation happened, so an unconfigured plane emitting empty periods would
+   * manufacture billable-looking windows of zero spend out of a missing secret, which is precisely
+   * the under-bill this whole lane is built to prevent. No observation is recorded as no
+   * observation.
+   */
+  AI_GATEWAY_READ_TOKEN?: string;
+
+  /**
    * Alert threshold in BYTES for total R2 across all tenant buckets (cf#56). Unset (or malformed)
    * means no threshold and the admin surface reports usage without an alert verdict, which is the
    * correct default: an operator who has not chosen a number has not asked to be alerted. Parsed by
