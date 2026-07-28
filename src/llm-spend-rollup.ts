@@ -93,12 +93,26 @@ const num = (v: unknown): number | null =>
  * Turn one log row into a usage row, or null when it is unusable.
  *
  * ATTRIBUTION IS READ OFF THE ROW, never inferred from the fact that a server-side filter returned
- * it. The gateway metadata filter takes metadata.key and metadata.value as SEPARATE dimensions, and
- * whether they evaluate as a matched PAIR or as two independent conditions could not be proven
- * against the two rows that exist. If independent, a filter could match a row whose tenant_id is
- * NOT the one asked for, and one tenant spend would be attributed to another. So the filter is a
- * narrowing optimisation only and this function is the sole source of truth for whose row it is.
- * That holds whether or not the filter semantics are ever settled.
+ * it. The gateway metadata filter takes metadata.key and metadata.value as SEPARATE dimensions.
+ *
+ * SETTLED 2026-07-28 (rollins), and it is the dangerous answer. This comment previously read that
+ * pair-vs-independent "could not be proven against the two rows that exist" and narrowed
+ * defensively. It IS provable with those two rows, and the dimensions are INDEPENDENT. Live against
+ * vivijure-hosted:
+ *
+ *   metadata.key eq "tenant_id" AND metadata.value eq "rollins-e2e"  ->  1 row,
+ *   whose metadata is {"tenant_id":"ten_de436e3260e92e737c30006a","slug":"rollins-e2e"}
+ *
+ * `rollins-e2e` is the value of `slug`, NOT of `tenant_id`. The row came back anyway, so the two
+ * conditions are ANDed across the whole metadata map and a per-tenant filter CAN return another
+ * tenant's row. Control in the same result set: metadata.key eq "slug" with the same value also
+ * returns 1, so the filter is not merely matching everything.
+ *
+ * The defensive posture was therefore CORRECT and is now load-bearing rather than precautionary:
+ * this function is the sole source of truth for whose row it is. The shipping reader
+ * (ai-gateway-logs.ts) goes one step further and sends no metadata filter at all, since a narrowing
+ * filter that can return the wrong tenant buys nothing and leaves a trap for the next reader.
+ * Regression-tested live in tests/ai-gateway-logs.live.test.ts.
  *
  * A row with no usable id or timestamp is dropped and COUNTED as dropped by the caller: an
  * unparseable row is a gap in the meter, not a zero.

@@ -43,7 +43,9 @@ export function randomToken(): string {
  * existing `hold` prefix, which belongs to preservation holds: two unrelated things sharing an id
  * prefix is how a support query about "hold_..." returns the wrong table's row.
  */
-export function newId(prefix: "acct" | "ten" | "job" | "smk" | "hold" | "ikh" | "led" | "chld"): string {
+export function newId(
+  prefix: "acct" | "ten" | "job" | "smk" | "hold" | "ikh" | "led" | "chld" | "llmp",
+): string {
   const buf = new Uint8Array(12);
   crypto.getRandomValues(buf);
   return `${prefix}_${[...buf].map((b) => b.toString(16).padStart(2, "0")).join("")}`;

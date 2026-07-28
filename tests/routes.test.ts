@@ -3284,3 +3284,118 @@ describe("POST /api/admin/tenants/:id/reprovision-runpod (cp#137)", () => {
     expect(audit).not.toContain(KEY_A);
   });
 });
+
+// ---- the LLM meter surfaces (cp#185) ---------------------------------------------------------
+//
+// Two routes, and the bias is the same as everywhere above: watch each guard REFUSE on the real
+// refusal path before trusting it, with a positive control beside it so a route that refused
+// everything could not pass the section.
+
+describe("LLM meter admin surfaces", () => {
+  const admin = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${ADMIN_TOKEN}`, ...extra });
+
+  /** A meter store with a scripted answer, standing in for LlmSpendD1 (proven against real SQL). */
+  const meterDeps = (spend: unknown, over: Partial<ControlPlaneDeps> = {}): ControlPlaneDeps => ({
+    ...deps,
+    llmSpend: {
+      readLlmWatermark: async () => null,
+      readLastPeriodEnd: async () => null,
+      openLlmRollupPeriod: async () => {},
+      writeLlmSpendEvents: async () => 0,
+      closeLlmRollupPeriod: async () => {},
+      advanceLlmWatermark: async () => {},
+      readTenantLlmSpend: async () => spend as never,
+    },
+    ...over,
+  });
+
+  const WINDOW = "tenant=ten_abc&start=2026-07-28T00:00:00Z&end=2026-07-29T00:00:00Z";
+
+  it("REFUSES both routes without the admin token", async () => {
+    expect((await handle(req(`/api/admin/llm-spend?${WINDOW}`), env(), ctx, deps)).status).toBe(401);
+    expect(
+      (await handle(req("/api/admin/llm-meter/run", { method: "POST" }), env(), ctx, deps)).status,
+    ).toBe(401);
+  });
+
+  // A plane with no gateway reader genuinely cannot meter, and an operator who asks it to run must
+  // be TOLD that rather than handed a 200 that reads as "the meter ran".
+  it("run REFUSES 503 naming which half is missing, and writes no period", async () => {
+    const d = meterDeps(null, { gatewayLogs: undefined });
+    const res = await handle(req("/api/admin/llm-meter/run", { method: "POST", headers: admin() }), env(), ctx, d);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "llm_meter_unavailable", reason: "no_gateway_reader" });
+  });
+
+  it("CONTROL: run reports success once a reader is wired", async () => {
+    const d = meterDeps(null, {
+      gatewayLogs: {
+        async list() {
+          return { rows: [], totalCount: 3 };
+        },
+        async probe() {
+          return { total: 3, oldest: null };
+        },
+      },
+    });
+    const res = await handle(req("/api/admin/llm-meter/run", { method: "POST", headers: admin() }), env(), ctx, d);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ran: true });
+  });
+
+  it("read REFUSES a missing tenant or bound rather than answering a partial query", async () => {
+    const d = meterDeps({});
+    for (const q of ["", "tenant=ten_abc", "tenant=ten_abc&start=2026-07-28T00:00:00Z"]) {
+      const res = await handle(req(`/api/admin/llm-spend?${q}`, { headers: admin() }), env(), ctx, d);
+      expect(res.status, q).toBe(400);
+      expect((await res.json()) as { error: string }).toMatchObject({ error: "invalid_query" });
+    }
+  });
+
+  // The window is compared as a STRING against stored ISO timestamps. An unparseable bound would
+  // compare garbage and come back a confident zero, which is the exact under-bill shape.
+  it("read REFUSES an unparseable or backwards window", async () => {
+    const d = meterDeps({});
+    const bad = [
+      "tenant=ten_abc&start=last-tuesday&end=2026-07-29T00:00:00Z",
+      "tenant=ten_abc&start=2026-07-28T00:00:00Z&end=nonsense",
+      "tenant=ten_abc&start=2026-07-29T00:00:00Z&end=2026-07-28T00:00:00Z",
+      "tenant=ten_abc&start=2026-07-28T00:00:00Z&end=2026-07-28T00:00:00Z",
+    ];
+    for (const q of bad) {
+      const res = await handle(req(`/api/admin/llm-spend?${q}`, { headers: admin() }), env(), ctx, d);
+      expect(res.status, q).toBe(400);
+      expect((await res.json()) as { error: string }).toMatchObject({ error: "invalid_window" });
+    }
+  });
+
+  // POSITIVE CONTROL for both refusal blocks above: the valid query really does reach the store and
+  // return the cp#195 contract intact. Without this, a route that 400'd unconditionally would pass
+  // every assertion in this describe.
+  it("CONTROL: a valid window returns the cp#195 contract unchanged", async () => {
+    const spend = {
+      cost_micro_usd: 400,
+      requests: 2,
+      window_start: "2026-07-28T00:00:00.000Z",
+      window_end: "2026-07-29T00:00:00.000Z",
+      complete: true,
+      reason: null,
+      periods: 1,
+      unpriced_requests: 0,
+    };
+    const res = await handle(req(`/api/admin/llm-spend?${WINDOW}`, { headers: admin() }), env(), ctx, meterDeps(spend));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ spend });
+  });
+
+  it("read REFUSES 503 when the meter store is absent, rather than reporting zero spend", async () => {
+    const res = await handle(
+      req(`/api/admin/llm-spend?${WINDOW}`, { headers: admin() }),
+      env(),
+      ctx,
+      { ...deps, llmSpend: undefined },
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "llm_meter_unavailable", reason: "no_spend_store" });
+  });
+});
