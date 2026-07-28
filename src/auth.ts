@@ -216,8 +216,9 @@ export async function upsertAccountForVerifiedEmail(
   return { ok: true, account, created: !existing };
 }
 
-/** Admin gate: constant-time bearer compare. Fails CLOSED when the secret is unset. */
-export async function isAdmin(presented: string | null, secret: string | undefined): Promise<boolean> {
-  if (!presented || !secret) return false;
-  return await constantTimeEqual(presented, secret);
-}
+// The admin gate MOVED to src/operator-auth.ts (cp#219). It is no longer a single constant-time
+// compare against one shared secret: a bearer now resolves to a PRINCIPAL carrying an authenticated
+// operator identity and a scope list, and the shared secret survives only as the root break-glass
+// credential. `resolveOperator` is the replacement, and it still fails closed when that secret is
+// unset. Left as a note rather than deleted silently, because "where did isAdmin go" is the first
+// question anyone reading the old route code will have.

@@ -25,6 +25,7 @@ import type {
   SmokeRender,
   SmokeRenderArtifact,
   SmokeRenderBounds,
+  OperatorCredential,
   TenantResourceKind,
   TenantResourceRefs,
   ResourceReferrer,
@@ -670,6 +671,64 @@ export class MemoryStore implements ControlPlaneStore {
   }
   async recordAdminAction(actor: string, action: string, target: string | null, detail: string | null) {
     this.audit.push({ actor, action, target, detail });
+  }
+
+  // cp#219: the trail READ path. Newest first, mirroring D1Store's ORDER BY id DESC. The ids here
+  // are the array position + 1, which is exactly what an autoincrement key is.
+  async listAdminAudit(opts: { target?: string; limit: number }) {
+    const limit = Math.max(1, Math.min(500, Math.trunc(opts.limit) || 1));
+    return this.audit
+      .map((row, i) => ({ id: i + 1, created_at: this.sqliteNow(), ...row }))
+      .filter((row) => (opts.target ? row.target === opts.target : true))
+      .reverse()
+      .slice(0, limit);
+  }
+
+  // ---- named operator credentials (cp#219) ----
+  //
+  // Mirrors D1Store's SEMANTICS, and is not evidence about the shipped SQL: the live-name unique
+  // index and the token-hash unique constraint are schema, exercised against real SQLite in
+  // tests/store-d1-sql.test.ts. What is reproduced here is the behaviour the ROUTES depend on --
+  // that a duplicate live name THROWS rather than replacing, and that a second revoke reports false.
+  operatorCredentials = new Map<string, OperatorCredential>();
+
+  async createOperatorCredential(
+    row: Omit<OperatorCredential, "created_at" | "last_used_at" | "revoked_at" | "revoked_by">,
+  ) {
+    for (const existing of this.operatorCredentials.values()) {
+      if (existing.token_sha256 === row.token_sha256) throw new Error("UNIQUE constraint failed: operator_credentials.token_sha256");
+      if (existing.name === row.name && !existing.revoked_at) {
+        throw new Error("UNIQUE constraint failed: idx_operator_credentials_live_name");
+      }
+    }
+    this.operatorCredentials.set(row.id, {
+      ...row,
+      created_at: this.sqliteNow(),
+      last_used_at: null,
+      revoked_at: null,
+      revoked_by: null,
+    });
+  }
+
+  async getOperatorCredentialByHash(tokenHash: string) {
+    for (const c of this.operatorCredentials.values()) if (c.token_sha256 === tokenHash) return c;
+    return null;
+  }
+
+  async listOperatorCredentials() {
+    return [...this.operatorCredentials.values()].reverse();
+  }
+
+  async revokeOperatorCredential(id: string, revokedBy: string, now: string) {
+    const c = this.operatorCredentials.get(id);
+    if (!c || c.revoked_at) return false;
+    this.operatorCredentials.set(id, { ...c, revoked_at: now, revoked_by: revokedBy });
+    return true;
+  }
+
+  async touchOperatorCredential(id: string, now: string) {
+    const c = this.operatorCredentials.get(id);
+    if (c) this.operatorCredentials.set(id, { ...c, last_used_at: now });
   }
 
   // ---- operator smoke renders (cp#45) ----

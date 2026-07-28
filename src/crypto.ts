@@ -42,9 +42,13 @@ export function randomToken(): string {
  * `led` = a credit_ledger row, `chld` = a credit_holds row (cp#189). Deliberately NOT reusing the
  * existing `hold` prefix, which belongs to preservation holds: two unrelated things sharing an id
  * prefix is how a support query about "hold_..." returns the wrong table's row.
+ *
+ * `opc` = an operator credential (cp#219). The id is public: it appears in the credential list and
+ * in a revoke call. The credential VALUE it stands for is stored nowhere, so this id is the only
+ * handle anyone has on it.
  */
 export function newId(
-  prefix: "acct" | "ten" | "job" | "smk" | "hold" | "ikh" | "led" | "chld" | "llmp",
+  prefix: "acct" | "ten" | "job" | "smk" | "hold" | "ikh" | "led" | "chld" | "llmp" | "opc",
 ): string {
   const buf = new Uint8Array(12);
   crypto.getRandomValues(buf);

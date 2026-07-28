@@ -24,6 +24,8 @@ import type {
   SmokeRender,
   SmokeRenderArtifact,
   SmokeRenderBounds,
+  AdminAuditRow,
+  OperatorCredential,
   Tenant,
   TenantLifecycle,
   CreditStore,
@@ -725,6 +727,78 @@ export class D1Store implements ControlPlaneStore, CreditStore {
     await this.db
       .prepare("INSERT INTO admin_audit (actor, action, target, detail) VALUES (?1, ?2, ?3, ?4)")
       .bind(actor, action, target, detail)
+      .run();
+  }
+
+  /**
+   * The trail reader (cp#219). Ordered by `id` DESC rather than created_at: created_at has
+   * one-second resolution here, so several rows from one operator action share a timestamp and
+   * ordering by it would shuffle them. The autoincrement key is the only strict order there is.
+   */
+  async listAdminAudit(opts: { target?: string; limit: number }): Promise<AdminAuditRow[]> {
+    // The limit is clamped rather than trusted: this is an operator surface, but an unbounded LIMIT
+    // read straight off a query string is how a review page becomes a way to time out the Worker.
+    const limit = Math.max(1, Math.min(500, Math.trunc(opts.limit) || 1));
+    const stmt = opts.target
+      ? this.db
+          .prepare("SELECT id, actor, action, target, detail, created_at FROM admin_audit WHERE target = ?1 ORDER BY id DESC LIMIT ?2")
+          .bind(opts.target, limit)
+      : this.db
+          .prepare("SELECT id, actor, action, target, detail, created_at FROM admin_audit ORDER BY id DESC LIMIT ?1")
+          .bind(limit);
+    const { results } = await stmt.all<AdminAuditRow>();
+    return results ?? [];
+  }
+
+  // ---- named operator credentials (cp#219) ------------------------------------------------------
+
+  async createOperatorCredential(
+    row: Omit<OperatorCredential, "created_at" | "last_used_at" | "revoked_at" | "revoked_by">,
+  ): Promise<void> {
+    // No ON CONFLICT clause anywhere in this statement, deliberately. The live-name unique index and
+    // the token hash unique constraint are the guards, and an upsert here would silently REPLACE a
+    // colleague's live credential with a new one on a name collision -- a revocation nobody asked
+    // for and nobody would see. Letting the constraint throw is the correct, loud outcome.
+    await this.db
+      .prepare(
+        "INSERT INTO operator_credentials (id, name, token_sha256, scopes, created_by, expires_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+      )
+      .bind(row.id, row.name, row.token_sha256, row.scopes, row.created_by, row.expires_at)
+      .run();
+  }
+
+  async getOperatorCredentialByHash(tokenHash: string): Promise<OperatorCredential | null> {
+    return (
+      (await this.db
+        .prepare("SELECT * FROM operator_credentials WHERE token_sha256 = ?1")
+        .bind(tokenHash)
+        .first<OperatorCredential>()) ?? null
+    );
+  }
+
+  async listOperatorCredentials(): Promise<OperatorCredential[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM operator_credentials ORDER BY created_at DESC, id DESC")
+      .all<OperatorCredential>();
+    return results ?? [];
+  }
+
+  async revokeOperatorCredential(id: string, revokedBy: string, now: string): Promise<boolean> {
+    // `revoked_at IS NULL` in the WHERE is what makes the return value mean something: a second
+    // revoke matches no row and reports false, instead of overwriting the original timestamp and
+    // rewriting when the credential actually died.
+    const { meta } = await this.db
+      .prepare("UPDATE operator_credentials SET revoked_at = ?2, revoked_by = ?3 WHERE id = ?1 AND revoked_at IS NULL")
+      .bind(id, now, revokedBy)
+      .run();
+    return (meta?.changes ?? 0) > 0;
+  }
+
+  async touchOperatorCredential(id: string, now: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE operator_credentials SET last_used_at = ?2 WHERE id = ?1")
+      .bind(id, now)
       .run();
   }
 
