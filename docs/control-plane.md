@@ -1454,7 +1454,7 @@ Binding a hard ceiling to a prepaid tenant makes overage unreachable code and re
 somebody **holding credits**, by a cap they were told did not exist. So every tenant can override the
 plane default, including overriding it to no ceiling at all:
 
-| `tenants.r2_storage_quota_mode` | Effective ceiling |
+| `tenants.r2_storage_quota_override` | Effective ceiling |
 |---|---|
 | NULL | inherit the plane default (the ordinary state) |
 | `set` | `r2_storage_quota_bytes`, whatever the plane says |

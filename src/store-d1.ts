@@ -487,7 +487,7 @@ export class D1Store implements ControlPlaneStore, CreditStore {
     // its number or a stale number survive a switch to 'none' (cp#183). Same shape and same reason
     // as setTenantVideoFinishUnreachable above.
     await this.db
-      .prepare("UPDATE tenants SET r2_storage_quota_mode = ?2, r2_storage_quota_bytes = ?3 WHERE id = ?1")
+      .prepare("UPDATE tenants SET r2_storage_quota_override = ?2, r2_storage_quota_bytes = ?3 WHERE id = ?1")
       .bind(id, override ? override.mode : null, override && override.mode === "set" ? override.bytes : null)
       .run();
   }

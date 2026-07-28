@@ -112,7 +112,7 @@ export interface Tenant {
    * at exactly the byte where charged overage begins. "Inherit" and "deliberately uncapped" are
    * therefore different facts, and a single nullable number would spell them identically.
    */
-  r2_storage_quota_mode: string | null;
+  r2_storage_quota_override: string | null;
   /** The ceiling in BYTES, as the string that gets bound. Meaningful only when mode is 'set'. */
   r2_storage_quota_bytes: string | null;
 }

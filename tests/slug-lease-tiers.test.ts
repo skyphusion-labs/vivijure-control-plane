@@ -40,7 +40,7 @@ function row(over: Partial<Tenant>): Tenant {
     video_finish_unreachable: 0,
     video_finish_unreachable_reason: null,
     video_finish_unreachable_at: null,
-  r2_storage_quota_mode: null,
+  r2_storage_quota_override: null,
   r2_storage_quota_bytes: null,
   teardown_at: null,
   api_token_rotated_at: null,

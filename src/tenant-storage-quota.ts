@@ -139,7 +139,7 @@ export type StorageQuotaOverride = { mode: "set"; bytes: string } | { mode: "non
 
 /** The two columns, as they come off a tenant row. */
 export interface StorageQuotaRow {
-  r2_storage_quota_mode: string | null;
+  r2_storage_quota_override: string | null;
   r2_storage_quota_bytes: string | null;
 }
 
@@ -157,7 +157,7 @@ export interface ResolvedStorageQuota {
 
 /** Read a tenant row's override, or null when it inherits. Unknown modes are NOT silently ignored. */
 export function tenantStorageQuotaOverride(row: StorageQuotaRow): StorageQuotaOverride | "corrupt" | null {
-  const mode = row.r2_storage_quota_mode;
+  const mode = row.r2_storage_quota_override;
   if (mode === null || mode === "") return null;
   if (mode === "none") return { mode: "none" };
   if (mode === "set") {
@@ -183,7 +183,7 @@ export function resolveStorageQuota(plane: StorageQuotaConfig, row: StorageQuota
       bytes: null,
       source: "tenant",
       blocked:
-        `this tenant's storage-quota record is unreadable (mode=${JSON.stringify(row.r2_storage_quota_mode)}, ` +
+        `this tenant's storage-quota record is unreadable (mode=${JSON.stringify(row.r2_storage_quota_override)}, ` +
         `bytes=${JSON.stringify(row.r2_storage_quota_bytes)}); refusing rather than guessing whether it ` +
         "should be capped, because both guesses are wrong in opposite directions",
     };
@@ -379,10 +379,10 @@ export async function preflightStorageQuota(
     intent === undefined
       ? tenant
       : intent.mode === "inherit"
-        ? { r2_storage_quota_mode: null, r2_storage_quota_bytes: null }
+        ? { r2_storage_quota_override: null, r2_storage_quota_bytes: null }
         : intent.mode === "none"
-          ? { r2_storage_quota_mode: "none", r2_storage_quota_bytes: null }
-          : { r2_storage_quota_mode: "set", r2_storage_quota_bytes: intent.bytes };
+          ? { r2_storage_quota_override: "none", r2_storage_quota_bytes: null }
+          : { r2_storage_quota_override: "set", r2_storage_quota_bytes: intent.bytes };
   const resolved = resolveStorageQuota(deps.storageQuota, row);
   if (resolved.blocked !== null) {
     // Two different causes, two different codes, because they need opposite follow-up: fix the
