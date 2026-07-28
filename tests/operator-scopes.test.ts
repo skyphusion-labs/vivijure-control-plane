@@ -624,6 +624,14 @@ describe("scoped operator credentials (cp#219)", () => {
         credential_id: cred.id,
         scopes: ["keys:rotate"],
         catalogue: OPERATOR_SCOPES.map((s) => ({ id: s.id, summary: s.summary })),
+        // The gate's OWN table, served so the console can ask it rather than keep a copy that
+        // drifts. Asserted here against the live constant, so adding a route to the gate cannot
+        // silently stop being served to the UI.
+        requirements: ADMIN_REQUIREMENTS.map((r) => ({
+          method: r.method,
+          pattern: r.pattern.source,
+          requires: r.requires,
+        })),
       });
       expect((await handle(req("/api/admin/whoami"), env(), ctx, deps)).status).toBe(401);
     });

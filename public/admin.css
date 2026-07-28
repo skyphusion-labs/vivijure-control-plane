@@ -1,0 +1,37 @@
+/* Operator console (cp#89). Additive to platform.css: this page is operator-only, so its styles
+   live apart from the tenant front door rather than growing the shared sheet. No build step. */
+
+.scope-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
+.scope-list li {
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+  background: var(--panel-2); font-size: 13px;
+}
+.scope-list li[data-held="false"] { opacity: 0.5; }
+.scope-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; }
+.scope-held { float: right; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
+.scope-list li[data-held="true"] .scope-held { color: var(--on); }
+.scope-list li[data-held="false"] .scope-held { color: var(--muted); }
+.scope-summary { display: block; margin-top: 4px; color: var(--muted); }
+
+.pill {
+  display: inline-block; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; margin-left: 6px;
+}
+.pill-read { border-color: var(--warn); color: var(--warn); }
+.pill-unattributed { border-color: var(--muted); color: var(--muted); }
+.pill-live { border-color: var(--on); color: var(--on); }
+.pill-revoked { border-color: var(--bad); color: var(--bad); }
+.pill-expired { border-color: var(--muted); color: var(--muted); }
+
+.audit-detail {
+  display: block; margin-top: 4px; font-size: 12px; color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere;
+}
+
+.label-ish { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+.minted-token {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  overflow-wrap: anywhere; user-select: all; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+}
+.icon-btn { padding: 5px 12px; font-size: 13px; }
