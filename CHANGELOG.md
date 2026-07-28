@@ -6,6 +6,59 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(meter): the LLM meter read path -- live gateway reader, cron trigger, windowed read (cp#185)
+
+Part two, and the part that makes part one do anything. The meter now RUNS: a concrete
+`GatewayLogReader` over the AI Gateway logs API, a 15-minute cron, D1 persistence, and the windowed
+read cp#195 bills from.
+
+- **`src/ai-gateway-logs.ts`** -- the shipping reader, and the one place a real gateway is reached.
+  Has its own live regression suite (`tests/ai-gateway-logs.live.test.ts`, 8 assertions, run green
+  against `vivijure-hosted` on 2026-07-28) because every fact it rests on is vendor behaviour.
+- **`src/llm-spend-ingest.ts`** -- one run, persisted in an order chosen for crash safety: open the
+  period (unfinished), write events, close it with the TRUE count, then advance the watermark. Die
+  anywhere and the record is honestly WORSE than the truth rather than better.
+- **`src/llm-spend-window.ts`** -- the cp#195 contract:
+  `{ cost_micro_usd, requests, window_start, window_end, complete }`, integer micro-USD.
+- **`LlmSpendD1`** in `store-d1.ts`; **`scheduled()`** in `index.ts`; admin
+  `POST /api/admin/llm-meter/run` and `GET /api/admin/llm-spend`.
+- **New worker secret `AI_GATEWAY_READ_TOKEN`** (AI Gateway Read + Metadata Read). Absent = the
+  meter does not run and writes NO period rows. See `docs/deploy.md`.
+
+**Three vendor facts established live, correcting or refining what part one recorded:**
+
+- **The metadata filter is NOT pair-matched.** cp#221 recorded this as unprovable; it is provable,
+  and the answer is the dangerous one. `metadata.key eq "tenant_id"` AND
+  `metadata.value eq "rollins-e2e"` returns the row whose `tenant_id` is `ten_de43...` -- because
+  `rollins-e2e` is the value of `slug`. The dimensions are ANDed independently, so a per-tenant
+  filter CAN return another tenant's row. The shipping reader therefore sends **no metadata filter
+  at all** and attributes off the row. cp#221's defensive posture was right and is now load-bearing
+  rather than precautionary.
+- **`order_by_direction=asc` is supported**, which part one did not know. It matters: the default
+  order is descending, so a row arriving mid-walk shifts older rows a position later and a paged
+  walk re-reads one row while SKIPPING another. The walk is ascending.
+- **`created_at gt` compares at whole-SECOND granularity**, not the millisecond the timestamps are
+  rendered in (`gt ...20.999Z` returns the row at `...20.710Z`; `gt ...21.000Z` does not). So a
+  watermark never skips a row, at the cost of re-reading one second per run -- free, since writes
+  are `INSERT OR IGNORE` on the gateway's row id. The safe direction, now documented so nobody
+  "fixes" the duplicate read into a silent skip.
+
+**`complete: false` is reachable six distinct ways and each one is tested**: no run assigned to the
+window (the shape a dead cron produces, and the one that must never bill as a zero), an unfinished
+run, a run that did not paginate to exhaustion, a FAILED positive control, a retention gap, an
+unpriced row, and a truncated period census. A clean window still reports `complete: true`, so the
+suite cannot pass by refusing everything.
+
+**`skyphusion-llm` is refused by name at construction.** Every other wrong gateway id lands on
+Cloudflare's `200 / success:true / total_count:0` answer and the positive control catches it. prism's
+gateway holds ~99,000 rows, so the control would PASS while attributing another product's spend to
+vivijure tenants: the one misconfiguration the control cannot see.
+
+Verification: `npm run typecheck` clean, 1308 unit tests green, 8 live tests green against the real
+gateway, and **16 planted defects each watched turning the suite red** (half-open window assignment
+flipped to overlap, `OR IGNORE` to `OR REPLACE`, the watermark's `MAX()` to a plain overwrite,
+summation by `occurred_at` instead of `period_id`, the prism refusal removed, and so on).
+
 ### feat(meter): LLM spend roll-up schema and decision core (cp#185)
 
 Part one of the per-tenant Opus meter: the schema, the pure decision core, and the injected gateway

@@ -5,6 +5,10 @@
 // migrations/0001_init.sql. The in-memory store in tests/ never substitutes for that.
 
 import type { HoldRow, LedgerRow } from "./credits";
+import type { LlmSpendStore, RollupPeriodWrite } from "./llm-spend-ingest";
+import type { SpendEvent } from "./llm-spend-rollup";
+import type { LlmSpendReadStore, LlmSpendWindow, RollupPeriodRow } from "./llm-spend-window";
+import { MAX_PERIODS_PER_WINDOW, summariseWindow } from "./llm-spend-window";
 import type {
   Account,
   AuthProvider,
@@ -1170,5 +1174,192 @@ export class D1Store implements ControlPlaneStore, CreditStore {
       .bind(limit)
       .all<HoldRow>();
     return rows.results ?? [];
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// cp#185: the LLM spend meter. Ingestion half (LlmSpendStore) and read half (LlmSpendReadStore).
+//
+// Statements live here with the rest of the D1 SQL rather than beside the decision code, for the
+// standing reason: this class is the artifact that ships, and a live wrangler dev verify drives
+// these exact statements against a real D1 built from the real migrations.
+
+export class LlmSpendD1 implements LlmSpendStore, LlmSpendReadStore {
+  /**
+   * `maxPeriodsPerWindow` is a PARAMETER, not a test seam: production takes the default and there is
+   * exactly one code path. It is a parameter because a truncation guard that cannot be watched
+   * FAILING is an assumption with a green checkmark, and planting 20,001 period rows to watch it is
+   * not a test anyone would keep running.
+   */
+  constructor(
+    private readonly db: D1Database,
+    private readonly maxPeriodsPerWindow: number = MAX_PERIODS_PER_WINDOW,
+  ) {}
+
+  async readLlmWatermark(source: string): Promise<string | null> {
+    const row = await this.db
+      .prepare("SELECT last_seen_at FROM llm_rollup_watermark WHERE id = ?1")
+      .bind(source)
+      .first<{ last_seen_at: string }>();
+    return row?.last_seen_at ?? null;
+  }
+
+  async readLastPeriodEnd(): Promise<string | null> {
+    const row = await this.db
+      .prepare("SELECT window_end FROM llm_rollup_periods ORDER BY window_end DESC LIMIT 1")
+      .bind()
+      .first<{ window_end: string }>();
+    return row?.window_end ?? null;
+  }
+
+  async openLlmRollupPeriod(period: RollupPeriodWrite): Promise<void> {
+    // rows_ingested 0 and finished_at NULL: the row exists so events have a parent, and it claims
+    // nothing until closeLlmRollupPeriod stamps what was actually written.
+    await this.db
+      .prepare(
+        `INSERT INTO llm_rollup_periods
+           (id, window_start, window_end, status, control_passed, rows_ingested, gap_detected, started_at, finished_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, NULL)`,
+      )
+      .bind(
+        period.id,
+        period.windowStart,
+        period.windowEnd,
+        period.status,
+        period.controlPassed ? 1 : 0,
+        period.gapDetected ? 1 : 0,
+        period.startedAt,
+      )
+      .run();
+  }
+
+  async writeLlmSpendEvents(
+    periodId: string,
+    events: SpendEvent[],
+    insertedAt: string,
+  ): Promise<number> {
+    let written = 0;
+    // CHUNKED, because a single batch of an unbounded statement list is how a cold-start backlog
+    // takes the whole run down. The chunk is a transaction (D1 batch is one), so a chunk lands
+    // whole or not at all; a torn run leaves an unfinished period, which reads as incomplete.
+    const CHUNK = 50;
+    for (let i = 0; i < events.length; i += CHUNK) {
+      const slice = events.slice(i, i + CHUNK);
+      const statements = slice.map((e) =>
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO llm_spend_events
+               (source, source_id, tenant_id, slug, model, cost_micro_usd, tokens_in, tokens_out,
+                cached, occurred_at, inserted_at, period_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
+          )
+          .bind(
+            e.source,
+            e.sourceId,
+            e.tenantId,
+            e.slug,
+            e.model,
+            e.costMicroUsd,
+            e.tokensIn,
+            e.tokensOut,
+            e.cached,
+            e.occurredAt,
+            insertedAt,
+            periodId,
+          ),
+      );
+      const results = await this.db.batch(statements);
+      // The ENGINE's changes count, not the statement count. They differ exactly when OR IGNORE
+      // suppressed a duplicate, which is the normal case on the second-granular watermark re-read
+      // (see ai-gateway-logs.ts), and reporting the statement count instead would over-claim.
+      for (const r of results) written += Number((r as { meta?: { changes?: number } })?.meta?.changes ?? 0);
+    }
+    return written;
+  }
+
+  async closeLlmRollupPeriod(periodId: string, rowsIngested: number, finishedAt: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE llm_rollup_periods SET rows_ingested = ?2, finished_at = ?3 WHERE id = ?1")
+      .bind(periodId, rowsIngested, finishedAt)
+      .run();
+  }
+
+  async advanceLlmWatermark(source: string, lastSeenAt: string, updatedAt: string): Promise<void> {
+    // MONOTONIC BY THE STATEMENT, not by the caller remembering. Two runs overlapping (a slow run
+    // and the next cron tick) could otherwise write the older value last and silently re-read, or
+    // worse, a bug elsewhere could walk the cursor BACKWARD past rows already billed into a period.
+    await this.db
+      .prepare(
+        `INSERT INTO llm_rollup_watermark (id, last_seen_at, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT (id) DO UPDATE SET
+           last_seen_at = MAX(llm_rollup_watermark.last_seen_at, excluded.last_seen_at),
+           updated_at = excluded.updated_at`,
+      )
+      .bind(source, lastSeenAt, updatedAt)
+      .run();
+  }
+
+  async readTenantLlmSpend(args: {
+    tenantId: string;
+    windowStart: string;
+    windowEnd: string;
+  }): Promise<LlmSpendWindow> {
+    // The period census. LIMIT + 1 so a truncation is DETECTED rather than assumed absent: a
+    // negative conclusion drawn from a list that was silently cut off is a floor wearing a total's
+    // label, and every completeness judgement below is drawn from this list.
+    const censused = await this.db
+      .prepare(
+        `SELECT id, window_start, window_end, status, control_passed, gap_detected, finished_at
+           FROM llm_rollup_periods
+          WHERE window_end >= ?1 AND window_end < ?2
+          ORDER BY window_end
+          LIMIT ?3`,
+      )
+      .bind(args.windowStart, args.windowEnd, this.maxPeriodsPerWindow + 1)
+      .all<RollupPeriodRow>();
+    const all = censused.results ?? [];
+    const truncated = all.length > this.maxPeriodsPerWindow;
+    const periods = truncated ? all.slice(0, this.maxPeriodsPerWindow) : all;
+
+    if (periods.length === 0) {
+      // No periods means no IN list to build, and an empty IN list is a SQL error in some engines
+      // and an accidental match-everything in others. Answer from the pure function directly.
+      return summariseWindow({
+        periods: [],
+        windowStart: args.windowStart,
+        windowEnd: args.windowEnd,
+        sums: { costMicroUsd: 0, requests: 0, unpricedRequests: 0 },
+        periodCensusTruncated: truncated,
+      });
+    }
+
+    // Summed over period_id, NEVER over occurred_at. Migration 0015 rules that a row belongs to the
+    // period that INGESTED it, so that a late arrival cannot retroactively change a settled
+    // statement. Summing by occurred_at here would break that contract from the read side no matter
+    // how carefully the write side behaves.
+    const placeholders = periods.map((_, i) => "?" + (i + 2)).join(",");
+    const sums = await this.db
+      .prepare(
+        `SELECT COALESCE(SUM(cost_micro_usd), 0) AS cost,
+                COUNT(*) AS requests,
+                SUM(CASE WHEN cost_micro_usd IS NULL THEN 1 ELSE 0 END) AS unpriced
+           FROM llm_spend_events
+          WHERE tenant_id = ?1 AND period_id IN (${placeholders})`,
+      )
+      .bind(args.tenantId, ...periods.map((p) => p.id))
+      .first<{ cost: number | null; requests: number | null; unpriced: number | null }>();
+    if (!sums) throw new Error("readTenantLlmSpend: aggregate returned no row");
+
+    return summariseWindow({
+      periods,
+      windowStart: args.windowStart,
+      windowEnd: args.windowEnd,
+      sums: {
+        costMicroUsd: Number(sums.cost ?? 0),
+        requests: Number(sums.requests ?? 0),
+        unpricedRequests: Number(sums.unpriced ?? 0),
+      },
+      periodCensusTruncated: truncated,
+    });
   }
 }

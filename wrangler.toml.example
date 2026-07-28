@@ -271,6 +271,30 @@ type = "ratelimit"
 namespace_id = "2001"
 simple = { limit = 5, period = 60 }
 
+# --- Cron: the per-tenant LLM spend meter (cp#185) ---
+#
+# Drives the scheduled() handler in src/index.ts, which pages AI Gateway logs from a watermark and
+# writes integer micro-USD usage rows the credit ledger bills from.
+#
+# WHY 15 MINUTES. Not retention: gateway retention is COUNT based (10,000,000 rows, DELETE_OLDEST)
+# rather than a time window, so at the hosted Opus call rate no plausible cadence loses rows. The
+# interval is chosen against two other things. Shorter would bill in tighter windows but writes a
+# period row per tick forever (a 5-minute cron is 288 rows a day of pure bookkeeping); longer leaves
+# a bigger backlog for one run to page, and a run that hits its page cap reports the window
+# incomplete, which is honest but unbillable until it catches up. 15 minutes is 96 rows a day and a
+# backlog one run clears many times over.
+#
+# CHANGING IT IS SAFE AND NEEDS NO CODE CHANGE. Period windows TILE off the previous run's recorded
+# instant, never off a configured interval, so this number and the ledger can never disagree about
+# where one window ended and the next began.
+#
+# REMOVING IT DISABLES THE METER SILENTLY, which is the one hazard here: nothing else in the system
+# notices an absent cron, because "no period rows" is exactly what an idle plane looks like. The
+# windowed read is what catches it -- a billing window with no roll-up run assigned to it reports
+# complete:false, so a statement built on it refuses rather than bills a zero.
+[triggers]
+crons = ["*/15 * * * *"]
+
 # SECRETS (wrangler secret put, never in this file):
 #   POSTERN_SEND_TOKEN          -- bearer for postern's send door; the sender identity is BOUND to
 #                                  this token by postern's registry, so we never pass a From.
@@ -279,6 +303,11 @@ simple = { limit = 5, period = 60 }
 #   APPLE_PRIVATE_KEY           -- the .p8; parked with the rest of the Apple seam.
 #   CONTROL_PLANE_ADMIN_TOKEN   -- the admin gate. Unset = no admin surface (fails closed).
 #   CF_PROVISIONER_TOKEN        -- mints tenant D1 + R2 + scoped creds. Consumed by #53, not #52.
+#   AI_GATEWAY_READ_TOKEN       -- cp#185. AI Gateway Read + Metadata Read, nothing else. The LLM
+#                                  meter pages gateway logs with it. UNSET = the meter does not run
+#                                  and writes NO period rows, which is an honest off: an empty
+#                                  period row would be a billable-looking window of zero spend
+#                                  manufactured out of a missing secret.
 
 # --- Routing (#55) ---
 #
