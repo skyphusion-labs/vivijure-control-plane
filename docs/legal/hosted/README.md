@@ -105,7 +105,7 @@ read `1.0.0`. Version files are never deleted.
 
 | Version | Date | Status | Change |
 |---|---|---|---|
-| `1.0.0` | (unreleased) | DRAFT | Initial hosted AUP. Not in force; awaiting counsel review and launch. **Amended in place 2026-07-17 (pre-serve, zero acceptance records): Conrad's ruling incorporated the hub's opening language.** Legitimate under the first-serve rule above; would NOT be legitimate after serving starts. **Amended in place again 2026-07-28 (pre-serve, still zero acceptance records): added the operator support-access recording bullet to Section 5, the cp#219 disclosure gate.** |
+| `1.0.0` | (unreleased) | DRAFT | Initial hosted AUP. Not in force; awaiting counsel review and launch. **Amended in place 2026-07-17 (pre-serve, zero acceptance records): Conrad's ruling incorporated the hub's opening language.** Legitimate under the first-serve rule above; would NOT be legitimate after serving starts. **Amended in place again 2026-07-28, three times, all pre-serve with zero acceptance records (the cp#219 disclosure gate, PR #224): (1) added the operator support-access recording bullet to Section 5; (2) rewrote that bullet to disclose the break-glass credential as the stated exception to attribution and to scope the recording claim to access that reaches into a specific studio; (3) added the sentence bounding tenant visibility (the record is ours; no self-serve view promised).** |
 
 ## Drift: this AUP vs the canonical constellation AUP
 
