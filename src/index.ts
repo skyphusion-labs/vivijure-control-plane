@@ -27,13 +27,12 @@ import {
   applySettlement,
   validateCreditAmount,
 } from "./payment-rail";
-import type { CreditStore } from "./store";
+import type { CreditStore, OperatorCredential } from "./store";
 import { ApiTokenError } from "./tenant-api-token";
 import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt } from "./aup";
 import {
   clearedSessionCookie,
   endSession,
-  isAdmin,
   looksLikeEmail,
   normalizeEmail,
   redeemMagicLink,
@@ -44,7 +43,19 @@ import {
   startSession,
   upsertAccountForVerifiedEmail,
 } from "./auth";
-import { bearerFrom, newId } from "./crypto";
+import { bearerFrom, newId, randomToken, sha256Hex as sha256HexOfString } from "./crypto";
+import {
+  ALL_SCOPES,
+  OPERATOR_SCOPES,
+  canonicaliseScopes,
+  formatScopes,
+  hasScope,
+  isValidOperatorName,
+  parseScopes,
+  resolveOperator,
+  type OperatorPrincipal,
+  type OperatorScope,
+} from "./operator-auth";
 import type { ControlPlaneDeps } from "./deps";
 import { productionDeps } from "./deps";
 import type { ControlPlaneEnv } from "./env";
@@ -1108,6 +1119,140 @@ async function handoffInstall(request: Request, deps: ControlPlaneDeps): Promise
   return response;
 }
 
+/**
+ * WHAT EACH ADMIN ROUTE REQUIRES (cp#219). ONE table, consulted BEFORE dispatch, and the fallback is
+ * DENY.
+ *
+ * WHY A TABLE RATHER THAN A CHECK INSIDE EACH HANDLER. A per-handler check is correct exactly as
+ * long as every future handler remembers to write one, and the failure mode of forgetting is an
+ * UNGATED admin route that no test would notice, because it works. Here, a route absent from this
+ * table is refused to everyone, INCLUDING the root credential, so forgetting is loud and immediate
+ * rather than silent and permanent. That is the whole reason for the shape.
+ *
+ * The patterns are anchored and duplicate the id shapes the handlers below parse, deliberately: a
+ * loose pattern here would gate `/smoke-render/smk_x/artifact` with whatever `/smoke-render` needs.
+ * tests/operator-scopes.test.ts drives this table directly and asserts every route reachable in
+ * adminRoutes has an entry.
+ */
+export type AdminRequirement = OperatorScope | "authenticated" | "root";
+
+const TEN = "ten_[a-f0-9]+";
+
+export const ADMIN_REQUIREMENTS: ReadonlyArray<{ method: string; pattern: RegExp; requires: AdminRequirement }> = [
+  // Who am I, and what may I do. Needs authentication and NO scope: a credential must always be able
+  // to discover its own reach, or an operator cannot tell a missing scope from a broken route.
+  { method: "GET", pattern: /^\/api\/admin\/whoami$/, requires: "authenticated" },
+
+  // CREDENTIAL LIFECYCLE IS ROOT-ONLY, and this is the single most important line in the table. A
+  // scoped credential able to mint another credential holds every scope by way of two requests, so
+  // minting can never itself be a scope. Same shape as the Cloudflare constraint we hit in July: an
+  // API-created token cannot carry token-management rights, and pretending otherwise at design time
+  // is how a custody model turns out to be circular at deploy time.
+  { method: "GET", pattern: /^\/api\/admin\/operators$/, requires: "root" },
+  { method: "POST", pattern: /^\/api\/admin\/operators$/, requires: "root" },
+  { method: "POST", pattern: /^\/api\/admin\/operators\/opc_[a-f0-9]+\/revoke$/, requires: "root" },
+
+  { method: "GET", pattern: /^\/api\/admin\/audit$/, requires: "tenants:read" },
+  { method: "GET", pattern: /^\/api\/admin\/tenants$/, requires: "tenants:read" },
+  { method: "GET", pattern: /^\/api\/admin\/settings$/, requires: "tenants:read" },
+  { method: "POST", pattern: /^\/api\/admin\/settings$/, requires: "platform:settings" },
+  { method: "GET", pattern: /^\/api\/admin\/r2-usage$/, requires: "tenants:read" },
+  // POST that only reads (the operator brings a RunPod snapshot in the body), so it is gated as the
+  // read it is. The verb is about where the payload travels, never about what the route does.
+  { method: "POST", pattern: /^\/api\/admin\/reconcile\/runpod$/, requires: "tenants:read" },
+  // The LLM meter (cp#185, merged while this table was being written). The RUN forces an ingest and
+  // moves the watermark; the READ answers for ONE tenant, so it sits with the other tenant reads.
+  { method: "POST", pattern: /^\/api\/admin\/llm-meter\/run$/, requires: "meter:operate" },
+  // cp#195's settlement runner, gated the same way and for the same reason: it is the second half of
+  // the metering pipeline, operator-runnable so a settlement can be forced and its ACTUAL result
+  // read. It is deliberately NOT credits:write -- that scope mints money from nothing on the manual
+  // rail, while this one turns already-measured usage into the ledger rows it implies. Different
+  // acts, different blast radius, different people should hold them.
+  { method: "POST", pattern: /^\/api\/admin\/meter-settle$/, requires: "meter:operate" },
+  { method: "GET", pattern: /^\/api\/admin\/llm-spend$/, requires: "tenants:read" },
+  { method: "GET", pattern: /^\/api\/admin\/kek\/status$/, requires: "keys:rotate" },
+  { method: "POST", pattern: /^\/api\/admin\/kek\/reencrypt$/, requires: "keys:rotate" },
+
+  { method: "GET", pattern: new RegExp(`^/api/admin/tenants/${TEN}/credits$`), requires: "tenants:read" },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/credits/manual$`), requires: "credits:write" },
+  { method: "GET", pattern: new RegExp(`^/api/admin/tenants/${TEN}/preservation-holds$`), requires: "tenants:read" },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/preservation-holds$`), requires: "tenants:write" },
+  {
+    method: "POST",
+    pattern: new RegExp(`^/api/admin/tenants/${TEN}/preservation-holds/hold_[a-f0-9]+/release$`),
+    requires: "tenants:write",
+  },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/(?:suspend|resume)$`), requires: "tenants:write" },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/video-finish-binding$`), requires: "tenants:write" },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/video-finish-tier-state$`), requires: "tenants:write" },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/abuse-report-url$`), requires: "tenants:write" },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/storage-quota$`), requires: "tenants:write" },
+  // Irreversible, so it is its own scope and is never reachable with tenants:write.
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/teardown$`), requires: "tenants:destroy" },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/upgrade-modules$`), requires: "studio:operate" },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/upgrade-studio$`), requires: "studio:operate" },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/refresh-studio-bindings$`), requires: "studio:operate" },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/invoke-key-handoff$`), requires: "studio:operate" },
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/reprovision-runpod$`), requires: "studio:operate" },
+  // Spends GPU, so it sits with the operate scope rather than with the reads beside it.
+  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/smoke-render$`), requires: "studio:operate" },
+  { method: "GET", pattern: new RegExp(`^/api/admin/tenants/${TEN}/smoke-render/smk_[a-f0-9]+$`), requires: "tenants:read" },
+  {
+    method: "GET",
+    pattern: new RegExp(`^/api/admin/tenants/${TEN}/smoke-render/smk_[a-f0-9]+/artifact$`),
+    requires: "tenants:read",
+  },
+];
+
+/** First match wins. null means NO ENTRY, which every caller must treat as a refusal. */
+export function adminRequirement(method: string, path: string): AdminRequirement | null {
+  for (const row of ADMIN_REQUIREMENTS) if (row.method === method && row.pattern.test(path)) return row.requires;
+  return null;
+}
+
+/**
+ * RECORD AN OPERATOR READ AGAINST ONE TENANT (cp#219).
+ *
+ * WHY READS ARE AUDITED AT ALL, when every write route here already is. The ruling on hosted
+ * operator access is that access is HELD and exercised only on a report, and that the claim is
+ * marketing unless it is checkable. What a customer cares about is somebody LOOKING at their
+ * material, and looking is a read. An audit trail containing only writes can show that we changed
+ * nothing and cannot show that we saw nothing.
+ *
+ * WHAT IS DELIBERATELY NOT AUDITED, stated so the line is legible rather than accidental: the tenant
+ * census, our own R2 usage report, the RunPod reconciliation, and the trail itself. Those read OUR
+ * inventory and OUR bill, not any one tenant's material, and auditing them would bury the rows that
+ * matter under rows that do not. The rule is: reaching into ONE tenant leaves a record.
+ *
+ * Awaited rather than fired off, unlike the credential touch: this row is the point of the read, and
+ * serving the tenant's data while failing to record that we did is the one ordering that must not
+ * happen.
+ */
+async function auditTenantRead(
+  deps: ControlPlaneDeps,
+  actor: string,
+  tenantId: string,
+  what: string,
+  detail: Record<string, unknown> = {},
+): Promise<void> {
+  await deps.store.recordAdminAction(actor, `tenant.read.${what}`, tenantId, JSON.stringify(detail));
+}
+
+/** The credential list projection. There is no token value to omit; there is none stored. */
+function operatorView(c: OperatorCredential) {
+  return {
+    id: c.id,
+    name: c.name,
+    scopes: parseScopes(c.scopes),
+    created_at: c.created_at,
+    created_by: c.created_by,
+    last_used_at: c.last_used_at,
+    expires_at: c.expires_at,
+    revoked_at: c.revoked_at,
+    revoked_by: c.revoked_by,
+  };
+}
+
 async function adminRoutes(
   request: Request,
   env: ControlPlaneEnv,
@@ -1116,11 +1261,201 @@ async function adminRoutes(
   url: URL,
   ctx: ExecutionContext,
 ): Promise<Response> {
-  // Fails CLOSED when the secret is unset: no token configured means no admin surface, not an open one.
-  if (!(await isAdmin(bearerFrom(request), env.CONTROL_PLANE_ADMIN_TOKEN))) {
-    return err("unauthorized", 401);
+  // ---- WHO IS ASKING, AND WHAT MAY THEY DO (cp#219) -------------------------------------------
+  //
+  // AUTHENTICATE FIRST, AUTHORIZE SECOND, and the order is load-bearing: checking the scope table
+  // before the credential would let an unauthenticated caller learn which admin routes exist by
+  // reading 403 against 404.
+  //
+  // Fails CLOSED in every direction. No credential presented, no credential matching, an unset root
+  // secret with no named credential to fall back on: all 401. A revoked or expired credential is
+  // resolved as no credential at all, checked on the request rather than by a sweep, so a revocation
+  // takes effect on the very next call.
+  const nowIso = new Date(deps.now()).toISOString();
+  const principal = await resolveOperator(bearerFrom(request), env.CONTROL_PLANE_ADMIN_TOKEN, deps.store, nowIso);
+  if (!principal) return err("unauthorized", 401);
+
+  // Dormancy is what makes revocation operable: nobody dares revoke a credential they cannot tell is
+  // unused. Stamped OUTSIDE the request path and never awaited, because a failed stamp must never be
+  // able to turn into a failed authentication, and the failure is logged rather than swallowed.
+  const credentialId = principal.credential_id;
+  if (credentialId) {
+    ctx.waitUntil(
+      deps.store
+        .touchOperatorCredential(credentialId, nowIso)
+        .catch((e) => console.error("operator credential touch failed", { credentialId, error: String(e) })),
+    );
   }
-  const actor = "admin-token";
+
+  // THE ACTOR IS NOW A PERSON, not a credential class, whenever a named credential was used:
+  // `operator:joan` rather than the old universal `admin-token`. Every recordAdminAction call below
+  // is unchanged and inherits real attribution from this one line.
+  const actor = principal.actor;
+
+  const requirement = adminRequirement(request.method, path);
+  if (!requirement) {
+    // NO TABLE ENTRY MEANS NO ACCESS, for everyone including root. This is the fail-closed default
+    // that makes the table worth having: a handler added without a scope decision is unreachable
+    // rather than silently ungated.
+    //
+    // THE STATUS IS 404, NOT 403, on purpose. The overwhelmingly common cause is a path that is not
+    // a route at all (a typo, a malformed tenant id), and that answered 404 before this table
+    // existed; changing it to 403 would rewrite the meaning of every unknown admin path to "exists,
+    // you may not have it". The rarer cause -- a real handler with no entry -- is caught by the log
+    // line and by tests/operator-scopes.test.ts, which walks the handlers and fails if one is
+    // unreachable.
+    console.error("admin path has no scope requirement; refusing", { method: request.method, path });
+    return err("not_found", 404);
+  }
+  if (requirement === "root" && principal.kind !== "root") {
+    return err("root_credential_required", 403, {
+      message:
+        "operator credential lifecycle is reachable only with the shared root credential; a scoped credential " +
+        "that could mint another one would hold every scope in two requests",
+    });
+  }
+  if (requirement !== "root" && requirement !== "authenticated" && !hasScope(principal, requirement)) {
+    // The refusal names what was needed and what is held. Both are already known to the caller (it
+    // is their own credential), and an operator who cannot see which scope they lack re-reads the
+    // docs instead of asking for the right grant.
+    return err("insufficient_scope", 403, { required: requirement, held: [...principal.scopes] });
+  }
+
+
+  // ---- who am I (cp#219) -----------------------------------------------------------------------
+  //
+  // THE PROJECTION SEAM. The console renders its actions from THIS response, never from a list baked
+  // into the page: a scope added to the catalogue appears in the UI with no frontend change, and a
+  // credential is shown only the actions it can actually use. Same rule the studio panel follows for
+  // modules -- the frontend is a projection of what the backend declares, not a parallel copy of it.
+  if (request.method === "GET" && path === "/api/admin/whoami") {
+    return json(
+      {
+        actor,
+        kind: principal.kind,
+        // null for the shared root credential, which names nobody. The console says so out loud
+        // rather than displaying a blank where a person should be.
+        operator: principal.operator,
+        credential_id: principal.credential_id,
+        scopes: [...principal.scopes],
+        catalogue: OPERATOR_SCOPES.map((s) => ({ id: s.id, summary: s.summary })),
+      },
+      200,
+      { "cache-control": "no-store" },
+    );
+  }
+
+  // ---- operator credentials (cp#219) -----------------------------------------------------------
+  //
+  // ROOT-ONLY, enforced by the table above rather than by a check here. See the note on that entry:
+  // a scoped credential that could mint another one would hold every scope in two requests.
+  if (path === "/api/admin/operators") {
+    if (request.method === "GET") {
+      return json({ credentials: (await deps.store.listOperatorCredentials()).map(operatorView) }, 200, {
+        "cache-control": "no-store",
+      });
+    }
+
+    if (request.method === "POST") {
+      const body = (await readJson(request)) as
+        | { name?: unknown; scopes?: unknown; expires_in_days?: unknown }
+        | null;
+
+      if (!isValidOperatorName(body?.name)) {
+        return err("invalid_name", 400, {
+          message:
+            "name must be 1-32 characters of lowercase letters, digits, underscore or hyphen, starting with a letter " +
+            "or digit; it is an identity that lands in the audit trail, so it should name a person",
+        });
+      }
+      const scopes = canonicaliseScopes(body?.scopes);
+      if (!scopes.ok) return err("invalid_scopes", 400, { message: scopes.message });
+
+      // Optional expiry. NULL is the honest default for crew credentials, which die by decision
+      // rather than by calendar; an expiry nobody chose would just make a credential stop working
+      // during whatever incident it was minted for.
+      let expiresAt: string | null = null;
+      const days = body?.expires_in_days;
+      if (days !== undefined && days !== null) {
+        if (typeof days !== "number" || !Number.isSafeInteger(days) || days <= 0 || days > 3650) {
+          return err("invalid_expiry", 400, { message: "expires_in_days must be a whole number of days between 1 and 3650" });
+        }
+        expiresAt = new Date(deps.now() + days * 24 * 60 * 60 * 1000).toISOString();
+      }
+
+      // THE ONLY MOMENT THIS VALUE EXISTS. It is returned once and hashed on the way to storage, so
+      // "we cannot show it to you again" is true by construction rather than by policy.
+      const token = randomToken();
+      const id = newId("opc");
+      try {
+        await deps.store.createOperatorCredential({
+          id,
+          name: body.name,
+          token_sha256: await sha256HexOfString(token),
+          scopes: formatScopes(scopes.scopes),
+          created_by: actor,
+          expires_at: expiresAt,
+        });
+      } catch (e) {
+        // The unique live-name index is the guard. It is distinguished from a store fault rather
+        // than swallowed into one answer: reporting a D1 outage as "name in use" would send an
+        // operator hunting a credential that does not exist.
+        const message = e instanceof Error ? e.message : String(e);
+        console.error("operator credential mint failed", { name: String(body.name), error: message });
+        if (/unique|constraint/i.test(message)) {
+          return err("name_in_use", 409, {
+            message: `a live credential named ${String(body.name)} already exists; revoke it before minting another`,
+          });
+        }
+        return err("mint_failed", 503);
+      }
+
+      await deps.store.recordAdminAction(
+        actor,
+        "operator.mint",
+        id,
+        JSON.stringify({ name: body.name, scopes: scopes.scopes, expires_at: expiresAt }),
+      );
+
+      return json({ id, name: body.name, scopes: scopes.scopes, expires_at: expiresAt, token }, 201, {
+        // The one response in this Worker that carries a live credential. Never cached, never stored
+        // by an intermediary, and the console holds it in memory only for as long as it takes an
+        // operator to copy it.
+        "cache-control": "no-store",
+      });
+    }
+  }
+
+  const revokeOperator = /^\/api\/admin\/operators\/(opc_[a-f0-9]+)\/revoke$/.exec(path);
+  if (request.method === "POST" && revokeOperator) {
+    const revoked = await deps.store.revokeOperatorCredential(revokeOperator[1], actor, nowIso);
+    // AUDITED EVEN WHEN IT CHANGED NOTHING, the same rule the manual credit follows on a replay: a
+    // repeated revoke is either a confused operator or somebody probing which ids exist, and a trail
+    // that records only the effective call cannot show either.
+    await deps.store.recordAdminAction(actor, "operator.revoke", revokeOperator[1], JSON.stringify({ revoked }));
+    if (!revoked) {
+      return err("not_found", 404, { message: "no live credential with that id; it may already be revoked" });
+    }
+    return new Response(null, { status: 204 });
+  }
+
+  // ---- the audit trail, readable (cp#219) ------------------------------------------------------
+  //
+  // WHY THIS ROUTE EXISTS AT ALL. The ruling on operator access is that access is HELD and exercised
+  // only on a report, and that "we hold access we do not routinely use" is marketing unless it is
+  // checkable. admin_audit has been append-only with no reader since 0001, which makes it durable
+  // and not reviewable. This is the reviewable half.
+  //
+  // READING THE TRAIL IS NOT ITSELF AUDITED. A route that audited its own reads would fill the trail
+  // with rows about looking at the trail, and the signal being protected here is per-tenant reach.
+  if (request.method === "GET" && path === "/api/admin/audit") {
+    const rawLimit = Number(url.searchParams.get("limit") ?? "100");
+    const rows = await deps.store.listAdminAudit({
+      target: url.searchParams.get("target") ?? undefined,
+      limit: Number.isFinite(rawLimit) ? rawLimit : 100,
+    });
+    return json({ audit: rows }, 200, { "cache-control": "no-store" });
+  }
 
   if (request.method === "GET" && path === "/api/admin/tenants") {
     const tenants = await deps.store.listTenants({
@@ -1168,6 +1503,11 @@ async function adminRoutes(
     if (!tenantId || !windowStart || !windowEnd) {
       return err("invalid_query", 400, { need: ["tenant", "start", "end"] });
     }
+    // AUDITED, like every other read that answers for one tenant (cp#219). This one returns that
+    // tenant's LLM spend for a window, which is their usage, so leaving it out would make the
+    // disclosure claim ("reaching into a specific tenant leaves a record") quietly false. Recorded
+    // after the query is known to be well formed, so a malformed request is a 400 rather than a row.
+    await auditTenantRead(deps, actor, tenantId, "llm_spend", { start: windowStart, end: windowEnd });
     // The window is compared as a STRING against stored ISO timestamps, so a caller passing
     // anything else silently compares garbage and gets a confident zero. Refused instead. Both
     // bounds are normalised through Date so "2026-07-28" and a full timestamp behave identically.
@@ -1347,16 +1687,38 @@ async function adminRoutes(
     const amount = validateCreditAmount(body?.amount_micro_usd, ceiling);
     if (!amount.ok) return err("invalid_amount", 400, { message: amount.message });
 
-    // OPERATOR AND REASON ARE BOTH REQUIRED, and the operator field is ASSERTED, NOT AUTHENTICATED.
-    // This plane has ONE shared admin token, so the bearer proves "someone holds the operator
-    // credential" and can never prove WHICH human acted. Recording a claimed name as if it were a
-    // verified identity would put a false attribution in a money audit, which is worse than none, so
-    // the field is stored and labelled as a claim. Real per-operator identity needs the admin console
-    // (cp#89); until then this is the honest maximum.
-    const operator = typeof body?.operator === "string" ? body.operator.trim() : "";
+    // ATTRIBUTION, AND THE ONE PLACE IT CHANGED SHAPE (cp#219 closing cp#193's workaround).
+    //
+    // WHAT cp#193 SHIPPED AND WHY: the plane had ONE shared admin token, so the bearer proved
+    // "someone holds the operator credential" and could never prove WHICH human acted. The route
+    // therefore required an `operator` field, stored it, and LABELLED IT A CLAIM
+    // (`operator_claimed`), because recording a typed-in name as if it were verified would put false
+    // attribution into a money audit, which is worse than no attribution at all.
+    //
+    // WHAT HAPPENS NOW: a named credential authenticates the operator, so the identity comes from
+    // the credential and is recorded as `operator_authenticated`. The body field becomes optional
+    // for those callers, and a body naming someone ELSE is REFUSED rather than ignored -- silently
+    // dropping it would let a UI display a name that is not the one recorded, which is the same
+    // false-attribution failure wearing a different coat.
+    //
+    // The shared root credential keeps the old contract exactly: it still requires the field and
+    // still records it as a claim, because it still cannot prove anything about who is holding it.
+    const claimed = typeof body?.operator === "string" ? body.operator.trim() : "";
+    const authenticated = principal.operator;
+    if (authenticated && claimed && claimed !== authenticated) {
+      return err("operator_mismatch", 400, {
+        message:
+          `this credential authenticates as ${authenticated}; it cannot issue a credit attributed to ${claimed}`,
+      });
+    }
+    const operator = authenticated ?? claimed;
     const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
     if (!operator) return err("operator_required", 400, { message: "operator must name who is issuing this credit" });
     if (!reason) return err("reason_required", 400, { message: "reason must say why this credit is being issued" });
+
+    // The ledger note and the audit row use the SAME key, chosen once here, so a reader never has to
+    // cross-check which of the two is the verified one.
+    const attribution = authenticated ? { operator_authenticated: operator } : { operator_claimed: operator };
 
     // The idempotency anchor is the CALLER's reference. Without one, a double-submitted form is two
     // credits; a route that generated its own id here would make replay protection impossible.
@@ -1376,7 +1738,7 @@ async function adminRoutes(
           tenant_id: tenant.id,
           amount_micro_usd: amount.amount,
           external_ref: reference,
-          note: JSON.stringify({ operator_claimed: operator, reason }),
+          note: JSON.stringify({ ...attribution, reason }),
         },
         rowId: newId("led"),
         now,
@@ -1395,7 +1757,7 @@ async function adminRoutes(
       JSON.stringify({
         amount_micro_usd: amount.amount,
         reference,
-        operator_claimed: operator,
+        ...attribution,
         reason,
         applied,
         rail: MANUAL_RAIL.id,
@@ -1412,6 +1774,7 @@ async function adminRoutes(
     if (!deps.credits) return err("credits_unconfigured", 503);
     const tenant = await deps.store.getTenantById(adminCredits[1]);
     if (!tenant) return err("not_found", 404);
+    await auditTenantRead(deps, actor, tenant.id, "credits");
     let read;
     try {
       read = await readCreditActivity(deps.credits, tenant.id);
@@ -1472,6 +1835,7 @@ async function adminRoutes(
     if (!tenant) return err("not_found", 404);
 
     if (request.method === "GET") {
+      await auditTenantRead(deps, actor, tenant.id, "preservation_holds");
       // Every hold, not just the open ones: a released hold is the record of a duty that ENDED, and
       // an operator asking "why can this be torn down now" needs to see it.
       return json({ tenant_id: tenant.id, holds: await deps.store.listPreservationHolds(tenant.id) });
@@ -2510,6 +2874,7 @@ async function adminRoutes(
     if (!deps.provisioner) return err("provisioner_unconfigured", 503);
     const found = await loadSmokeRender(deps, smokeOne[1], smokeOne[2]);
     if (!found) return err("not_found", 404);
+    await auditTenantRead(deps, actor, found.tenant.id, "smoke_render", { smoke_id: found.smoke.id });
     const smokeDeps = {
       store: deps.store,
       studio: deps.provisioner.smokeClient,
@@ -2527,6 +2892,14 @@ async function adminRoutes(
     const found = await loadSmokeRender(deps, smokeArtifact[1], smokeArtifact[2]);
     if (!found) return err("not_found", 404);
     const { smoke, tenant } = found;
+    // THE ROW THAT MATTERS MOST ON THIS SURFACE. Every other admin read returns metadata about a
+    // tenant; this one returns bytes the tenant's own studio rendered. It is recorded BEFORE the
+    // fetch, so an operator who reaches for the content leaves a record whether or not the fetch
+    // then succeeds -- an audit that only records successful looks is an audit with a retry loophole.
+    await auditTenantRead(deps, actor, tenant.id, "smoke_render_artifact", {
+      smoke_id: smoke.id,
+      artifact_key: smoke.artifact_key,
+    });
     if (smoke.status !== "succeeded" || !smoke.artifact_key) {
       return err("no_artifact", 409, { status: smoke.status, message: "this smoke render produced no verified artifact" });
     }

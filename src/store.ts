@@ -423,6 +423,35 @@ export interface PreservationHold {
   release_reason: string | null;
 }
 
+/**
+ * A named operator credential (cp#219). The plaintext token exists only in the mint response; this
+ * row holds its SHA-256 hex, so nothing here can be replayed as a credential.
+ */
+export interface OperatorCredential {
+  id: string;
+  /** The authenticated operator identity. Lands in admin_audit as `operator:<name>`. */
+  name: string;
+  token_sha256: string;
+  /** Space-separated canonical scope ids. Parsed through operator-auth.ts, never read raw. */
+  scopes: string;
+  created_at: string;
+  created_by: string;
+  last_used_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+  revoked_by: string | null;
+}
+
+/** One admin_audit row, as read back. `id` is the autoincrement key and orders the trail. */
+export interface AdminAuditRow {
+  id: number;
+  actor: string;
+  action: string;
+  target: string | null;
+  detail: string | null;
+  created_at: string;
+}
+
 export interface ControlPlaneStore {
   // accounts + identities
   getAccountById(id: string): Promise<Account | null>;
@@ -800,6 +829,44 @@ export interface ControlPlaneStore {
   getSetting(key: string): Promise<string | null>;
   setSetting(key: string, value: string, updatedBy: string): Promise<void>;
   recordAdminAction(actor: string, action: string, target: string | null, detail: string | null): Promise<void>;
+  /**
+   * READ the admin trail (cp#219).
+   *
+   * admin_audit has been append-only with no reader since 0001, and the ruling on operator access
+   * asks for a record that is "durable and reviewable, so the claim is checkable". A trail nobody
+   * can read is durable and not reviewable, which satisfies the letter and defeats the point.
+   *
+   * Newest first, bounded by `limit`, optionally filtered to one target (a tenant id). No cursor:
+   * this is an incident-review surface with near-zero expected volume, and a pagination contract
+   * nobody exercises is a contract that rots.
+   */
+  listAdminAudit(opts: { target?: string; limit: number }): Promise<AdminAuditRow[]>;
+
+  // ---- named operator credentials (cp#219) ----
+  /**
+   * Mint. The CALLER hashes: this store never sees a token value, exactly like the invoke-key
+   * handoff and the login-token paths. Throws on a duplicate live name or a duplicate hash, both of
+   * which are enforced by the schema rather than by a check here.
+   */
+  createOperatorCredential(row: Omit<OperatorCredential, "created_at" | "last_used_at" | "revoked_at" | "revoked_by">): Promise<void>;
+  /**
+   * The auth path. Returns the row WHATEVER its state (revoked, expired) and lets the caller decide,
+   * because "revoked" and "never existed" are different facts and only the caller knows which of
+   * them it is safe to say out loud.
+   */
+  getOperatorCredentialByHash(tokenHash: string): Promise<OperatorCredential | null>;
+  /** Every credential, live and revoked, newest first. Never returns a token value; there is none. */
+  listOperatorCredentials(): Promise<OperatorCredential[]>;
+  /**
+   * Soft revoke. Returns whether THIS call is what revoked it, so a repeat is visibly a no-op rather
+   * than a second revocation with a second timestamp.
+   */
+  revokeOperatorCredential(id: string, revokedBy: string, now: string): Promise<boolean>;
+  /**
+   * Stamp last_used_at. Called OUTSIDE the request path (ctx.waitUntil) and never awaited by the
+   * gate: a failed stamp must never become a failed authentication.
+   */
+  touchOperatorCredential(id: string, now: string): Promise<void>;
 
   // ---- operator smoke renders (cp#45) ----
   /**

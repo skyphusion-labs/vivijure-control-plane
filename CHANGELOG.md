@@ -211,6 +211,75 @@ Verification: `npm run typecheck` clean, 1308 unit tests green, 8 live tests gre
 gateway, and **16 planted defects each watched turning the suite red** (half-open window assignment
 flipped to overlap, `OR IGNORE` to `OR REPLACE`, the watermark's `MAX()` to a plain overwrite,
 summation by `occurred_at` instead of `period_id`, the prism refusal removed, and so on).
+### feat(admin): scoped operator credentials, authenticated attribution, and a readable audit trail (cp#219)
+
+The shared admin bearer is no longer the only way in. `/api/admin/*` now resolves a PRINCIPAL: a
+named credential carrying an explicit scope list and an authenticated operator identity, or the
+shared root token, which survives as break-glass. Nothing about the existing token changed for
+existing callers; every route it reached before, it reaches now.
+
+**Full contract, written to be reproducible without the code: `docs/operator-access.md`.**
+
+- **Named credentials.** A random 256-bit token; the plane stores only its SHA-256 hex, so a dump of
+  `operator_credentials` yields nothing replayable, and the plaintext exists exactly once, in the
+  mint response. Optional expiry, enforced on presentation rather than by a sweep. Soft revocation
+  that takes effect on the very next request and kills exactly one credential, so one member's
+  credential can die without rotating everyone.
+- **Seven scopes, one per hazard class rather than one per route**: `tenants:read`, `tenants:write`,
+  `tenants:destroy` (irreversible, never folded into write), `studio:operate`, `credits:write`,
+  `platform:settings`, `keys:rotate`. An unknown scope at mint is REFUSED, never dropped: a
+  credential quietly minted without the scope its holder asked for surfaces later as a confusing 403
+  during whatever incident prompted it.
+- **Authorization is a TABLE consulted before dispatch, and the default is DENY.** A path with no
+  entry is refused to everyone including root. A per-handler check is correct exactly as long as
+  every future handler remembers to write one, and the failure mode of forgetting is an ungated admin
+  route that no test notices because it works; here, forgetting makes the route unreachable. A test
+  walks the router's own path patterns and fails if one is gated by nothing.
+- **Credential lifecycle is ROOT-ONLY**, enforced by that table. A scoped credential able to mint an
+  unscoped one would hold every scope in two requests. Same constraint Cloudflare puts on its own API
+  tokens, surfaced at design time rather than at mint time.
+- **cp#193's `operator_claimed` is closed.** An authenticated principal records
+  `operator_authenticated` in both the ledger note and the audit detail. A body naming somebody else
+  is REFUSED (`operator_mismatch`), not ignored: silently dropping it would let a UI display a name
+  that is not the one recorded, which is the same false-attribution failure in a different coat. The
+  root token keeps the old contract exactly, claim and all, because it still cannot prove who holds
+  it.
+- **Reads that reach into ONE tenant are now audited** (`tenant.read.*`), including the smoke-render
+  artifact route, which returns rendered tenant content and is recorded BEFORE the fetch so a failed
+  fetch is not a retry loophole. Fleet-level reads (the census, our own R2 bill, RunPod
+  reconciliation, the trail itself) are deliberately NOT audited: they read our inventory, not any
+  one tenant's material, and auditing them would bury the rows that matter.
+- **The trail is readable**: `GET /api/admin/audit`, newest first, filterable by tenant. It has been
+  append-only with no reader since migration 0001, which is durable and not reviewable, and the
+  ruling on operator access asks for both.
+- **`GET /api/admin/whoami`** serves the caller's identity, scopes, and the whole scope catalogue, so
+  the operator console renders from what the backend declares rather than from a list baked into the
+  page.
+
+**The merged privacy text is now tested, not assumed.** `PRIVACY-DELTA.md` Section 2.3 and AUP
+Section 5 promise that any access reaching into a specific tenant records who (authenticated by the
+credential), what, which tenant, and when. Every tenant-scoped route in `ADMIN_REQUIREMENTS` must be
+CLASSIFIED as audited or the suite fails, the four fields are asserted on a real row written through
+the real router, and the root credential is proven NOT exempt (it writes the same row, attributed to
+the credential rather than a person, exactly as the text discloses).
+
+**The fail-closed default proved itself TWICE during this sprint, on two different lanes.** cp#185's
+two new admin routes (`POST /api/admin/llm-meter/run`, `GET /api/admin/llm-spend`) landed on main
+while this branch was open, carried no requirement, and therefore went unreachable the moment the
+table arrived, with seven tests going red. They are now gated: the tick gets its own `meter:operate` scope (it mints no
+money and is not a switch; it moves the cursor a billing period is built from), and the per-tenant
+spend read is gated as a tenant read and audited as one, because leaving it out would make "reaching
+into a specific tenant leaves a record" quietly false. It happened again on the rebase onto cp#195:
+`POST /api/admin/meter-settle` landed ungated and went unreachable, and it is now `meter:operate`
+alongside the ingest tick. Deliberately NOT `credits:write`: that scope mints money from nothing on
+the manual rail, while settlement turns already-measured usage into the ledger rows it implies.
+Different acts, different blast radius, different people should be able to hold them.
+
+Migration `0016_operator_credentials.sql`. New: `src/operator-auth.ts`,
+`tests/operator-scopes.test.ts` (44 tests, every scope boundary watched refusing WITH a positive
+control beside it; the gate was sabotaged six ways and each sabotage was watched turning exactly the
+right tests red, including planting a fake tenant-scoped route to prove the classification check
+names it).
 
 ### feat(meter): LLM spend roll-up schema and decision core (cp#185)
 
