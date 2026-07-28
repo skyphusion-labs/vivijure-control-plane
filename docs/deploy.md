@@ -102,6 +102,13 @@ three things, all of which must be present or it does not run:
 | `TENANT_AI_GATEWAY_ID` | Actions variable | must be `vivijure-hosted`; **never `skyphusion-llm`** |
 | `AI_GATEWAY_READ_TOKEN` | worker secret, `wrangler secret put` | AI Gateway Read + Metadata Read, nothing else |
 
+All three are in place as of 2026-07-28, verified on the deployed worker: `AI_GATEWAY_READ_TOKEN`
+is a live `secret_text` binding, `CF_ACCOUNT_ID` is bound, and `TENANT_AI_GATEWAY_ID` reads
+`vivijure-hosted`. **The code that reads them ships on the next SemVer tag**, since this repo is
+tag-gated (merge to main is CI only). Until that tag, the deployed worker carries no cron trigger
+and the meter does not run; confirm with the schedules endpoint, which answers `[]` when the
+deployed bundle predates the trigger.
+
 **A missing piece is an honest OFF, not a degraded mode.** With any of the three absent the meter
 writes **no period rows at all**, and the windowed read then reports `complete: false` for every
 window ("no roll-up run is assigned to this window"). That is deliberate and it is the single most
@@ -248,7 +255,7 @@ So: **a worker secret is not considered set until this table names its owner and
 | `POSTERN_SEND_TOKEN` | Strummer | send identity recorded in `crew-secrets/operator/postern/vivijure-control-plane-send-identity.fragment.json` |
 | `CF_PROVISIONER_TOKEN` | Rollins (hosted sprint mint, 2026-07-17) | `~/.vivijure-provisioner-full.env` on the primary crew box (dischord, `chmod 600`); mirrored to repo Actions secret `CF_PROVISIONER_TOKEN` for live gates |
 | `STUDIO_TOKEN_KEK` | Rollins (recovered 2026-07-25); escrow: Mackaye | `~/.vivijure-studio-token-kek` on the primary crew box (dischord, `chmod 600`); **escrowed 2026-07-25** to crew-secrets tier `secrets-vivijure-kek` (mackaye + conrad-operator recipients only; recovery runbook `crew-secrets/docs/vivijure-kek-escrow-recovery.md`) |
-| `AI_GATEWAY_READ_TOKEN` | Strummer (minted 2026-07-27) | repo Actions secret `VIVIJURE_AIGW_READ_TOKEN`. **NOT YET INSTALLED ON THE WORKER** as of 2026-07-28: the meter ships inert until someone holding the value runs `wrangler secret put AI_GATEWAY_READ_TOKEN`. Inert is honest, not broken -- see below |
+| `AI_GATEWAY_READ_TOKEN` | Strummer (minted 2026-07-27); installed by Mackaye 2026-07-28 | repo Actions secret `VIVIJURE_AIGW_READ_TOKEN`, plus a mode-600 file on the primary crew box. **INSTALLED** and verified on the artifact rather than on wrangler's exit status: the Worker settings API reports `AI_GATEWAY_READ_TOKEN secret_text` as a live binding (re-confirmed independently by Rollins, 2026-07-28). The token's permission groups were verified with positive and negative controls at mint time by Strummer; that fact is INHERITED here, not re-proven, because the value cannot be read back |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
 | `APPLE_PRIVATE_KEY` | unset (SSO not offered) | n/a |

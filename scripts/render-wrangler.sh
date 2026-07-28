@@ -46,6 +46,11 @@ REQUIRED_VARS="CLOUDFLARE_ACCOUNT_ID CONTROL_PLANE_D1_ID TENANT_DISPATCH_NAMESPA
 #     either is missing, so empty is a coherent working state and not a half-configured one.
 #   R2_USAGE_ALERT_BYTES -- empty means no threshold, and the admin usage surface reports a
 #     `no_threshold` verdict. An operator who has not chosen a number has not asked to be alerted.
+#   TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD (cp#195) -- empty means no allowance has been chosen, and
+#     the settlement run reports every tenant UNBILLABLE rather than billing from the first
+#     micro-USD. An unset knob is the absence of a decision, not a decision of zero.
+#   TENANT_R2_STORAGE_QUOTA_MODE (cp#195) -- empty means "deny", the conservative posture and
+#     today's behaviour. Deliberately the OPPOSITE default from the BYTES knob, where empty is OFF.
 #   TENANT_R2_STORAGE_QUOTA_BYTES (cp#183) -- empty means no per-tenant storage ceiling, the same
 #     state a self-hosted studio has by default. It meets the bar for the same reason as the two
 #     above: an operator who has not chosen a byte count has not chosen a cap, and the plane binds
@@ -59,7 +64,7 @@ REQUIRED_VARS="CLOUDFLARE_ACCOUNT_ID CONTROL_PLANE_D1_ID TENANT_DISPATCH_NAMESPA
 #   MANUAL_CREDIT_CEILING_MICRO_USD (cp#193) -- empty means the documented default (USD 100) applies.
 #     It meets the bar because the fallback is a real, safe, documented value rather than "no limit":
 #     an unset ceiling still bounds a stray keystroke, which is the entire point of the knob.
-ALLOW_EMPTY="GOOGLE_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_ID APPLE_TEAM_ID APPLE_SERVICES_ID TENANT_AI_GATEWAY_ID R2_USAGE_ALERT_BYTES TENANT_R2_STORAGE_QUOTA_BYTES CREDITS_ENFORCING MANUAL_CREDIT_CEILING_MICRO_USD TENANT_SPEND_DAILY_CEILING STUDIO_TOKEN_KEK_ENCRYPT_SLOT SMOKE_RENDER_COOLDOWN_SECONDS SMOKE_RENDER_DAILY_CAP SMOKE_RENDER_INFLIGHT_SECONDS"
+ALLOW_EMPTY="GOOGLE_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_ID APPLE_TEAM_ID APPLE_SERVICES_ID TENANT_AI_GATEWAY_ID R2_USAGE_ALERT_BYTES TENANT_R2_STORAGE_QUOTA_BYTES CREDITS_ENFORCING MANUAL_CREDIT_CEILING_MICRO_USD TENANT_SPEND_DAILY_CEILING STUDIO_TOKEN_KEK_ENCRYPT_SLOT SMOKE_RENDER_COOLDOWN_SECONDS SMOKE_RENDER_DAILY_CAP SMOKE_RENDER_INFLIGHT_SECONDS TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD TENANT_R2_STORAGE_QUOTA_MODE"
 
 # Fail BEFORE rendering, so the error names the missing variable instead of surfacing later as a
 # malformed toml the reader has to reverse-engineer.
