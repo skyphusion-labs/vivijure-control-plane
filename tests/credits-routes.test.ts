@@ -235,4 +235,47 @@ describe("credit read routes", () => {
     expect(body.price_to_cost).toBeUndefined();
     expect(JSON.stringify(body)).not.toContain("cost");
   });
+
+  // ---- zero-ledger tenant (cp#192 review: mackaye verified live against the deployed
+  // rollins-e2e testbed on 2026-07-28 -- GET /api/admin/tenants/{id}/credits on a tenant with no
+  // ledger rows returned 200 with complete: true and price_to_cost: null. Pinning that here as a
+  // regression so it stays true without needing another live call to re-prove it.) ----
+
+  it("a freshly-created tenant with no ledger rows reads complete, not absent", async () => {
+    // complete means "this answer is missing nothing", not "there is data here". An empty ledger
+    // IS the whole ledger, so a zero-row read is as complete as a thousand-row one; collapsing
+    // "no rows yet" into "the read might be partial" would make every brand-new tenant look like a
+    // failed read.
+    const body = (await (await getTenant()).json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      settled_micro_usd: 0,
+      held_micro_usd: 0,
+      available_micro_usd: 0,
+      complete: true,
+      activity_truncated: false,
+    });
+    expect((body.activity as unknown[]).length).toBe(0);
+  });
+
+  it("CONTROL: the same tenant after a real purchase is still complete, so the flag is not just a zero-row default", async () => {
+    // Proves the assertion above is reading a real SUM over rows, not a special case that only
+    // fires when the ledger happens to be empty.
+    await topUp("t1", USD(10));
+    const body = (await (await getTenant()).json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ settled_micro_usd: USD(10), complete: true });
+  });
+
+  it("the admin view on a zero-ledger tenant reports price_to_cost as null, never a fabricated 0", async () => {
+    // A computed ratio of 0 asserts "we measured a price-to-cost ratio and it is zero", which is a
+    // different and false claim from "nothing has been priced yet". NULL is the honest answer, and
+    // this is the no-charges-at-all case (charges_missing_cost: 0), distinct from the existing
+    // "unmeasured cost on a real charge" test above (charges_missing_cost: 1).
+    const body = (await (await getAdmin()).json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      complete: true,
+      price_to_cost: null,
+      cost_known_micro_usd: 0,
+      charges_missing_cost: 0,
+    });
+  });
 });
