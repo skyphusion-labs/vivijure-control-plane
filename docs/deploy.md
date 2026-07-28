@@ -101,16 +101,30 @@ Repository **variables**:
 
 ### Which AI Gateway is which (cp#203)
 
-Four gateways exist on the account and they are NOT interchangeable. Pointing a consumer at the
+Seven gateways exist on the account and they are NOT interchangeable. Pointing a consumer at the
 wrong one is not a correctness bug, which is exactly why it survives: everything works, and the
 spend lands in another product cost picture.
 
-| Gateway | Auth | What may bill through it |
+This table is the WHOLE ACCOUNT, deliberately, not the vivijure subset. A table listing only the
+vivijure gateways would reproduce the very failure this section exists to prevent: the next reader
+looks up the gateway id actually in front of them, does not find it, and guesses. Read 2026-07-28
+with `result_info` checked (`count: 7, page: 1, total_count: 7`), so it is a complete census rather
+than a first page.
+
+| Gateway | Auth | Disposition |
 | --- | --- | --- |
 | `vivijure-hosted` | ON | TENANT traffic only. The per-tenant token is the access boundary and `cf-aig-metadata` carries the tenant id; this is the namespace the meter reads. Dev traffic here would forge tenant numbers. |
 | `vivijure-dev` | ON | Crew DEV boxes and local studios (`vivijure-local` on a GPU dev box, any hand-run panel). Its own per-function token, `vivijure-dev-aig-run`. |
-| `vivijure-demo` | OFF | Pre-existing demo surface. Do not add consumers to it; see the authentication note below. |
-| `skyphusion-llm` | ON | **prism, a different product.** Never vivijure, in any environment. |
+| `vivijure-demo` | OFF | Pre-existing demo surface. NO vivijure consumers, and do not add one; see the authentication note below. |
+| `skyphusion-llm` | ON | **prism, a different product.** Never vivijure, in any environment. This is the one a vivijure dev config was actually pointed at, which is what cp#203 was. |
+| `common-thread` | ON | Another product on this account. No vivijure consumers. |
+| `openwebui-friends` | ON | Another product on this account. No vivijure consumers. |
+| `default` | OFF | The account default gateway. No vivijure consumers. |
+
+**A gateway that is not in this table is not a vivijure gateway.** That rule outlives the census:
+anything created after 2026-07-28 carries no vivijure traffic until it is added here with a
+disposition. Vivijure points at exactly two ids, `vivijure-hosted` for tenants and `vivijure-dev`
+for crew dev work, and at nothing else.
 
 **Dev traffic is AUTHENTICATED, deliberately.** The cheap option was to reuse `vivijure-demo`
 (`authentication: false`) and skip the token. The standing rationale from cp#185 rules that out: an
