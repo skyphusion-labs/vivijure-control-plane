@@ -105,7 +105,7 @@ read `1.0.0`. Version files are never deleted.
 
 | Version | Date | Status | Change |
 |---|---|---|---|
-| `1.0.0` | (unreleased) | DRAFT | Initial hosted AUP. Not in force; awaiting counsel review and launch. **Amended in place 2026-07-17 (pre-serve, zero acceptance records): Conrad's ruling incorporated the hub's opening language.** Legitimate under the first-serve rule above; would NOT be legitimate after serving starts. |
+| `1.0.0` | (unreleased) | DRAFT | Initial hosted AUP. Not in force; awaiting counsel review and launch. **Amended in place 2026-07-17 (pre-serve, zero acceptance records): Conrad's ruling incorporated the hub's opening language.** Legitimate under the first-serve rule above; would NOT be legitimate after serving starts. **Amended in place again 2026-07-28 (pre-serve, still zero acceptance records): added the operator support-access recording bullet to Section 5, the cp#219 disclosure gate.** |
 
 ## Drift: this AUP vs the canonical constellation AUP
 
