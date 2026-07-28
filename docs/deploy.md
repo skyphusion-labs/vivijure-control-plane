@@ -147,6 +147,63 @@ can drift, and a reader built from a recorded sample is only as fresh as the sam
   positive integer REFUSES the provision, the studio-upgrade preflight and the converge route rather
   than being read as "off" -- see `docs/control-plane.md`.
 
+### Which AI Gateway is which (cp#203)
+
+Seven gateways exist on the account and they are NOT interchangeable. Pointing a consumer at the
+wrong one is not a correctness bug, which is exactly why it survives: everything works, and the
+spend lands in another product cost picture.
+
+This table is the WHOLE ACCOUNT, deliberately, not the vivijure subset. A table listing only the
+vivijure gateways would reproduce the very failure this section exists to prevent: the next reader
+looks up the gateway id actually in front of them, does not find it, and guesses. Read 2026-07-28
+with `result_info` checked (`count: 7, page: 1, total_count: 7`), so it is a complete census rather
+than a first page.
+
+| Gateway | Auth | Disposition |
+| --- | --- | --- |
+| `vivijure-hosted` | ON | TENANT traffic only. The per-tenant token is the access boundary and `cf-aig-metadata` carries the tenant id; this is the namespace the meter reads. Dev traffic here would forge tenant numbers. |
+| `vivijure-dev` | ON | Crew DEV boxes and local studios (`vivijure-local` on a GPU dev box, any hand-run panel). Its own per-function token, `vivijure-dev-aig-run`. |
+| `vivijure-demo` | OFF | Pre-existing demo surface. NO vivijure consumers, and do not add one; see the authentication note below. |
+| `skyphusion-llm` | ON | **prism, a different product.** Never vivijure, in any environment. This is the one a vivijure dev config was actually pointed at, which is what cp#203 was. |
+| `common-thread` | ON | Another product on this account. No vivijure consumers. |
+| `openwebui-friends` | ON | Another product on this account. No vivijure consumers. |
+| `default` | OFF | The account default gateway. No vivijure consumers. |
+
+**A gateway that is not in this table is not a vivijure gateway.** That rule outlives the census:
+anything created after 2026-07-28 carries no vivijure traffic until it is added here with a
+disposition. Vivijure points at exactly two ids, `vivijure-hosted` for tenants and `vivijure-dev`
+for crew dev work, and at nothing else.
+
+**Dev traffic is AUTHENTICATED, deliberately.** The cheap option was to reuse `vivijure-demo`
+(`authentication: false`) and skip the token. The standing rationale from cp#185 rules that out: an
+unauthenticated gateway has a public, guessable URL, and keyless Unified Billing works THROUGH it,
+so an unauthenticated gateway is an open proxy to our credit balance. That argument does not weaken
+because the caller is a dev box; the exposed surface is the gateway, not the caller. A dev gateway
+is also the one most likely to end up in a pasted snippet.
+
+**Per-function token, not a shared one.** `vivijure-dev-aig-run` (CF token id
+`74e596d3998335b93a3a4fa8fad63f3a`, permission group `AI Gateway Run`, minted by Strummer
+2026-07-28, home `~strummer/.vivijure-dev-aig.env` on the primary crew box, `chmod 600`). It reaches
+one capability on one account, so revoking it stops dev traffic and touches nothing else. It is NOT
+a Worker secret and is deliberately absent from the owners table above, which covers
+`wrangler secret put` bindings on this Worker.
+
+Scope limit worth stating rather than implying: `AI Gateway Run` is an ACCOUNT-scoped permission
+group, so this token is not confined to `vivijure-dev` at the API layer. The confinement is the URL
+the consumer is configured with. That is why the gateway id and the token are rotated together and
+recorded together.
+
+Verified live at mint time (2026-07-28), all three legs against `vivijure-dev`: valid token **200**
+with a real Anthropic response body, no `cf-aig-authorization` header **401** (`AiGatewayError`
+2009), bogus token **401**. The gateway log then showed exactly one request, `cost=0.000145`,
+`status=200`, a clean namespace with nothing else in it.
+
+Known consumers repointed in the same pass: `~strummer/local.env` and
+`~strummer/propagandhi-vivijure.env` on the crew box, and the LIVE `vivijure-local` stack on
+a GPU dev box (its own `.env` plus a `docker compose up -d`, since a fixed file over a running
+container that still holds the old value is the defect wearing a fix). All seven containers that
+carry `GATEWAY_ID` were read back at `vivijure-dev`.
+
 Worker **secrets** (`wrangler secret put`, never in Actions): `POSTERN_SEND_TOKEN`,
 `GOOGLE_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `APPLE_PRIVATE_KEY`,
 `CONTROL_PLANE_ADMIN_TOKEN`, `CF_PROVISIONER_TOKEN`, `STUDIO_TOKEN_KEK`, `AI_GATEWAY_READ_TOKEN`
