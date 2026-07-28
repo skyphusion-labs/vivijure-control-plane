@@ -6,34 +6,52 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
-### fix(changelog): move three post-tag entries out of v1.18.0, and guard the heading
+### feat(admin): the operator console, a page in front of /api/admin/* (cp#89)
 
-`CHANGELOG.md` asserted that **v1.18.0 shipped three things the tag does not contain**: cp#219
-(#228), cp#223 (#230) and the cp#195 settlement trigger (#236). Verified rather than inferred:
-`git merge-base --is-ancestor` reports each of the three commits NOT an ancestor of `v1.18.0`.
+There was no admin UI at all: `public/` was the tenant front door and nothing else, and every operator
+action was a bearer-token curl. This is the page, vanilla JS/HTML/CSS with no framework and no build
+step, at `/admin.html`.
 
-Root cause is the release process, not any of those PRs. #235 promoted `## Unreleased` to
-`## v1.18.0` without leaving a fresh empty `## Unreleased`, the tag was cut, and the next three
-merges had nowhere for their entries to land but under a released heading.
+- **The console is a PROJECTION, and not one scope id is written down in the frontend.**
+  `GET /api/admin/whoami` now serves the caller's scopes, the whole scope catalogue, AND the gate's
+  own authorization table (`ADMIN_REQUIREMENTS`), so the page decides whether to offer a button by
+  asking the SAME rows the gate enforces. A copy would drift the day a requirement changed
+  server-side, leaving the console offering an action that now refuses or hiding one that now works.
+  A scope added to `src/operator-auth.ts` appears in this UI, in the mint form and in the identity
+  panel, with zero frontend change.
+- **Browser credential custody: MEMORY ONLY.** The credential lives in a closure variable, is sent as
+  a bearer header, and dies with the tab. Never storage, never a cookie, never a URL, never the DOM
+  after submit. Reloading asks again, which is correct for a surface meant to be opened on a report.
+  A consequence worth stating: there is NO ambient credential, so there is no CSRF surface at all --
+  a cross-site request carries no cookie and cannot set an Authorization header, which makes every
+  state-changing route here unreachable from another origin by construction. An idle lock zeroes the
+  credential after 15 minutes, so the exposure window is "while an operator is working" rather than
+  "while a tab is open". Rejected alternatives and the residual risk are recorded at the top of
+  `public/admin.js`.
+- **The document is served with a strict CSP** (`default-src 'none'; script-src 'self'; connect-src
+  'self'; frame-ancestors 'none'`), plus `no-store`, `DENY`, `nosniff`, `no-referrer`. That bounds the
+  residual risk: an injected inline script does not execute and an injected fetch cannot reach a
+  third-party origin. A test asserts the page carries no inline script, style or handler, so the day
+  someone adds one it fails rather than the policy being widened to accommodate it.
+- **The audit trail is legible rather than raw**: rows an operator made against one tenant are marked
+  `read`, and rows made with the shared root credential are marked `unattributed`, because "an event
+  happened" and "a person did this" are different kinds of evidence and the whole point of cp#219 is
+  the difference between them. A row whose detail will not parse is SHOWN raw, never dropped.
 
-- The three sections move to a fresh `## Unreleased`. v1.18.0 keeps only what `git log v1.18.0`
-  contains.
-- **`scripts/changelog-released-immutable.py`** refuses it recurring. For every `## vX.Y.Z` heading
-  with a matching git tag, the section body must be byte-identical to the same section in
-  `CHANGELOG.md` AT THAT TAG. A property of the TREE rather than of a diff: no base ref, and it
-  catches an entry ADDED under a released heading, which no line-based "did you update the
-  changelog" check would notice.
-- **One declared exception**, because the strict rule would have forbidden the honest thing this
-  repo already did: a released section may be corrected in place when the original note was WRONG
-  about what shipped (v1.17.0 said two PRs when the tag carries four), marked with a line beginning
-  `**CORRECTED AFTER PUBLICATION`. Declared, never inferred, same shape as the env-census
-  exemptions. An unmarked edit is refused.
-- A CONTROL plants an entry under the latest released heading and requires a refusal that NAMES the
-  version, since the script also exits 1 for a missing `## Unreleased` and a control accepting any
-  failure would keep passing after the immutability check was gone. Watched to fail: with the
-  comparison removed, the control goes red.
-- The promotion rule is written into `docs/deploy.md` beside the release steps, so the next person
-  cutting a tag reads it where they are already looking.
+- **The console REFUSES to drive routine work with the break-glass credential**, offering credential
+  management and nothing else, and it does not load the panels it declines to show, so it cannot
+  write an access it refused to display. The merged privacy text says routine support access is made
+  with a named credential and that the shared credential is "not used for routine support"; the
+  console is the routine path, so this turns that sentence into a property of the tool rather than a
+  claim about our habits. The API stays open to the root credential deliberately: disarming
+  break-glass in the gate would remove it at the moment it exists for.
+
+Sections render only when the credential can use them, including the credentials section, which the
+backend makes root-only: a console that offered that button to a scoped credential would teach
+operators that refusals are noise.
+
+New: `public/admin.html`, `public/admin.js`, `public/admin-checks.js` (+ `.d.ts`), `public/admin.css`,
+`tests/admin-console.test.ts`.
 
 ### feat(admin): scoped operator credentials, authenticated attribution, and a readable audit trail (cp#219)
 
@@ -104,6 +122,35 @@ Migration `0016_operator_credentials.sql`. New: `src/operator-auth.ts`,
 control beside it; the gate was sabotaged six ways and each sabotage was watched turning exactly the
 right tests red, including planting a fake tenant-scoped route to prove the classification check
 names it).
+
+### fix(changelog): move three post-tag entries out of v1.18.0, and guard the heading
+
+`CHANGELOG.md` asserted that **v1.18.0 shipped three things the tag does not contain**: cp#219
+(#228), cp#223 (#230) and the cp#195 settlement trigger (#236). Verified rather than inferred:
+`git merge-base --is-ancestor` reports each of the three commits NOT an ancestor of `v1.18.0`.
+
+Root cause is the release process, not any of those PRs. #235 promoted `## Unreleased` to
+`## v1.18.0` without leaving a fresh empty `## Unreleased`, the tag was cut, and the next three
+merges had nowhere for their entries to land but under a released heading.
+
+- The three sections move to a fresh `## Unreleased`. v1.18.0 keeps only what `git log v1.18.0`
+  contains.
+- **`scripts/changelog-released-immutable.py`** refuses it recurring. For every `## vX.Y.Z` heading
+  with a matching git tag, the section body must be byte-identical to the same section in
+  `CHANGELOG.md` AT THAT TAG. A property of the TREE rather than of a diff: no base ref, and it
+  catches an entry ADDED under a released heading, which no line-based "did you update the
+  changelog" check would notice.
+- **One declared exception**, because the strict rule would have forbidden the honest thing this
+  repo already did: a released section may be corrected in place when the original note was WRONG
+  about what shipped (v1.17.0 said two PRs when the tag carries four), marked with a line beginning
+  `**CORRECTED AFTER PUBLICATION`. Declared, never inferred, same shape as the env-census
+  exemptions. An unmarked edit is refused.
+- A CONTROL plants an entry under the latest released heading and requires a refusal that NAMES the
+  version, since the script also exits 1 for a missing `## Unreleased` and a control accepting any
+  failure would keep passing after the immutability check was gone. Watched to fail: with the
+  comparison removed, the control goes red.
+- The promotion rule is written into `docs/deploy.md` beside the release steps, so the next person
+  cutting a tag reads it where they are already looking.
 
 ### fix(smoke-render): a deliberate studio refusal is 422, not 502 (cp#223)
 

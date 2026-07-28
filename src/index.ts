@@ -110,6 +110,55 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
 const err = (error: string, status: number, extra: Record<string, unknown> = {}): Response =>
   json({ error, ...extra }, status);
 
+/**
+ * THE OPERATOR CONSOLE DOCUMENT (cp#89), and why it gets headers no other page here gets.
+ *
+ * It is the one page in this Worker that holds a LIVE ADMIN CREDENTIAL in a browser. The console
+ * keeps that credential in memory only (never storage, never a cookie, never a URL), which means the
+ * residual risk is a script injected into this origin reading the variable while the page is open.
+ * These headers are what bound that risk:
+ *
+ *   default-src 'none'   nothing loads unless named below, so a new sink cannot be added by accident
+ *   script-src  'self'   an injected INLINE script does not execute, and no third-party code runs
+ *   connect-src 'self'   an injected fetch cannot reach an attacker's origin to post the credential
+ *   frame-ancestors      the console cannot be framed, so it cannot be clickjacked into acting
+ *   form-action 'none'   nothing can be POSTed anywhere by a planted form
+ *
+ * `no-store` because a page an intermediary caches is a page an operator may be handed later. It is
+ * about the DOCUMENT, not about the credential (which is never in the document), but the console has
+ * no reason to be cached at all.
+ *
+ * Applied to the DOCUMENT only. Adding a CSP to admin.js or admin.css would do nothing: a policy
+ * governs the page that loads a script, never the script's own response.
+ */
+const OPERATOR_CONSOLE_CSP = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
+
+export function isOperatorConsoleDocument(path: string): boolean {
+  return path === "/admin" || path === "/admin.html";
+}
+
+export function withOperatorConsoleHeaders(response: Response): Response {
+  // A NEW Response rather than a mutation: an asset response's headers are immutable, and reaching
+  // for a header we cannot set would fail silently in production while every test that built its own
+  // Response passed.
+  const headers = new Headers(response.headers);
+  headers.set("content-security-policy", OPERATOR_CONSOLE_CSP);
+  headers.set("x-frame-options", "DENY");
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("referrer-policy", "no-referrer");
+  headers.set("cache-control", "no-store");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 export default {
   async fetch(request: Request, env: ControlPlaneEnv, ctx: ExecutionContext): Promise<Response> {
     return await handle(request, env, ctx, productionDeps(env));
@@ -327,7 +376,8 @@ export async function handle(
     }
 
     // ---- the front-door UI (Joan) ----
-    return await env.ASSETS.fetch(request);
+    const asset = await env.ASSETS.fetch(request);
+    return isOperatorConsoleDocument(path) ? withOperatorConsoleHeaders(asset) : asset;
   } catch (e) {
     // Honest failure: log the real error, return a stable shape. Never leak internals to a client.
     console.error("control-plane unhandled error", { path, error: String(e) });
@@ -1339,6 +1389,19 @@ async function adminRoutes(
         credential_id: principal.credential_id,
         scopes: [...principal.scopes],
         catalogue: OPERATOR_SCOPES.map((s) => ({ id: s.id, summary: s.summary })),
+        // THE AUTHORIZATION TABLE ITSELF, served so the console can decide whether to offer a button
+        // by asking the SAME table the gate enforces, rather than by keeping its own copy of which
+        // route needs which scope. A copy is a thing that drifts; this cannot. It is also the only
+        // way a page can gate a button on a scope that did not exist when the page was written.
+        //
+        // Safe to serve: the caller is already an authenticated operator, and everything here is
+        // discoverable by making the requests anyway. It exposes the SHAPE of the surface, never a
+        // credential and never any tenant's data.
+        requirements: ADMIN_REQUIREMENTS.map((r) => ({
+          method: r.method,
+          pattern: r.pattern.source,
+          requires: r.requires,
+        })),
       },
       200,
       { "cache-control": "no-store" },
