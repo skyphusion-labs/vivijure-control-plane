@@ -6,6 +6,8 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.19.0 -- 2026-07-31
+
 ### feat(quota): bind `R2_STORAGE_QUOTA_MODE` onto tenant studios, and give it a disposition (cp#195)
 
 Step 2 of the storage-mode train. vivijure-core v1.4.0 reads `deny` (hard cap, the default) or
