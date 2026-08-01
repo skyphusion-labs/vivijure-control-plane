@@ -34,6 +34,46 @@ and failed. `main` was green by timing rather than by health, and this blocked e
   still PERMITTED, because a guard that refused everything would have passed all three negatives
   while making a legitimate in-place correction impossible.
 
+### feat(modules): bind the tenant studio D1 as `TELEMETRY_DB` on every recording module (cp#248)
+
+vivijure-cf#279 made six module workers write a durable row per RunPod job. Module release bundles
+carry no bindings -- this plane attaches them at Workers-for-Platforms upload -- so until now a
+HOSTED tenant recorded nothing. The five recording modules in `TENANT_MODULE_CATALOG` now carry
+`{ type: "d1", name: "TELEMETRY_DB", id: <tenant d1 uuid> }` beside their endpoint id.
+
+- **The tenant STUDIO database, not a second one.** `runpod_job_log` is created by vivijure-cf
+  migration `0014`, which rides the studio release into that database. A separate telemetry database
+  would be a table nothing migrates.
+- **Only the modules that record.** `plan-enhance` submits no RunPod job, so it gets nothing; a
+  database it never reads would be reach for no gain. Carried as `recordsRunpodJobs` DATA on the
+  catalog row, not a name check.
+- **Every re-upload restates it.** A WfP upload REPLACES a script binding set, so provision, resume,
+  module upgrade and RunPod reprovision all pass it or a live tenant would lose it silently.
+- **A tenant with no recorded database is REFUSED at `modules_upload`**, before the namespace is
+  touched, rather than getting modules that record nothing. Same posture as self-host, where the
+  module `wrangler.toml` carries a placeholder `database_id` and wrangler hard-fails on it.
+- **Not all six.** `finish-rife` records upstream and is published as a tenant bundle, and nothing in
+  this plane provisions it, so on the hosted door its jobs do not exist rather than go unrecorded.
+  Left as the product question it is; documented in the catalog and in `docs/control-plane.md`.
+
+### feat(admin): `GET /api/admin/tenants/:id/module-readiness` (cp#248)
+
+The binding is invisible from the outside: `telemetry.job_log` is deliberately NOT part of a module
+`ok` flag (telemetry must never gate a render), so a module recording nothing reports healthy
+forever, nothing waits on it, and no route reported it. A fact that gates nothing and is reported
+nowhere cannot be checked, which is the same shape as not having it.
+
+One `/ready` per catalog module, one pass, no retry, no spend, no GPU, no tenant credential.
+`tenants:read`, audited as a tenant read. `job_log` is `true` / `false` / `null`, where `null` means
+the worker reported no such field (an image predating the change) and is NOT a negative;
+`records_unproven` carries both the explicit no and the silent unknown, because they have the same
+consequence.
+
+**Ordering.** The binding is inert until a studio release carrying vivijure-cf#279 is published and
+a tenant is moved onto it: at an older pin the module bytes have no job log and no
+`telemetry.job_log`, so the field reads `null` fleet-wide and the rows are not written.
+
+
 ## v1.19.0 -- 2026-07-31
 
 ### feat(quota): bind `R2_STORAGE_QUOTA_MODE` onto tenant studios, and give it a disposition (cp#195)

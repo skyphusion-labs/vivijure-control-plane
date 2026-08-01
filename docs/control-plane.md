@@ -198,6 +198,36 @@ well-formed `{ ok:false }` envelope before it reads any RunPod credential (live-
 five modules with no key B bound). Key B lands on the studio AND every module script in
 `installInvokeKey`, in place (a secret PUT, no re-upload) -- the module can then render.
 
+**The job-log binding (cp#248).** Every module that submits a RunPod job also carries the tenant
+STUDIO database as `TELEMETRY_DB` (`{ type: "d1", name: "TELEMETRY_DB", id: <tenant d1 uuid> }`),
+attached at upload beside the endpoint id. The module writes one row per job (at submit, and again
+at the terminal state) into `runpod_job_log`, the table vivijure-cf migration `0014` creates in that
+same database. It is the tenant studio database and not a second one precisely because the migration
+rides the studio release; a separate telemetry database would be a table nothing migrates.
+
+Three things about it are load-bearing:
+
+- **RunPod cannot enumerate jobs.** A job id not written at submit is unreachable the moment the job
+  ends. There is no backfill, and the endpoint health counters cannot substitute: they bucket four
+  terminal statuses into two, and `completed + failed` excludes the `CANCELLED` the modules produce
+  deliberately.
+- **The binding NAME is read off the module source, never chosen here.** The write helper reads
+  `env.TELEMETRY_DB`; under any other name the write warns and no-ops, and the module still reports
+  `ok: true`.
+- **The write is best-effort and the module is not.** A module without the binding still renders.
+  That is why `telemetry.job_log` is deliberately NOT part of the module `ok` flag, and why nothing
+  waits on it -- see `GET /api/admin/tenants/:id/module-readiness` below, which exists because a
+  fact that gates nothing and is reported nowhere cannot be checked.
+
+An upload REPLACES a script binding set, so every path that re-uploads module scripts (provision,
+resume, module upgrade, RunPod reprovision) restates this binding; `uploadTenantModules` REFUSES on
+a tenant with no recorded database rather than uploading modules that would record nothing.
+
+**Not every recording module is here.** Six module workers record RunPod jobs upstream; five are in
+`TENANT_MODULE_CATALOG`. `finish-rife` is built and published as a tenant module bundle by the
+studio release and this plane never uploads it, so on the hosted door its jobs do not exist rather
+than go unrecorded. Whether hosted should carry it is a product question, open.
+
 **Bundles.** Module workers cannot be built at provision time (the control plane is a Worker), the
 same constraint the studio bundle has. They ship in the SAME release artifact under
 `studio-releases/<tag>/modules/<name>/` (one tag, one artifact: a tenant's studio and its modules
@@ -901,6 +931,36 @@ The `TENANT_MODULE_DISPATCH` dangling-binding hazard is checked, not assumed. Af
 
 Step 2 is the one that proves the binding is real: step 1 alone passes on a plane whose module
 dispatch is not wired at all.
+
+### `GET /api/admin/tenants/:id/module-readiness` (cp#248)
+
+One unauthenticated `GET /ready` per catalog module, one pass, no retry. Read-only: no GPU, no
+spend, no tenant credential, nothing mutated. Gated `tenants:read` and audited as a tenant read
+(`tenant.read.module_readiness`).
+
+It exists for the field that gates nothing. `telemetry.job_log` says whether the version the edge
+SERVES resolved `TELEMETRY_DB`, and it is deliberately outside the module `ok` flag, so a module
+recording nothing reports healthy indefinitely and no existing route ever mentions it. Before this
+route the only code that read a module `/ready` was the key-install probe, which waits on
+credentials and would have to be re-run to see anything.
+
+Per module it reports `status`, `ok`, `credentials`, `records_runpod_jobs`, and `job_log`, plus the
+tenant `modules_release` so a whole-fleet absence reads as the stale release pin it usually is.
+
+`job_log` has THREE values and collapsing them re-creates the defect:
+
+| value | meaning |
+| --- | --- |
+| `true` | the running worker resolved the binding |
+| `false` | the running worker answered that it did NOT |
+| `null` | the worker reported no such field (an image predating the upstream change), or nothing answered. NOT a no |
+
+`records_unproven` lists the modules that submit RunPod jobs and did not answer `true`. Both `false`
+and `null` are in it on purpose: "the binding is missing" and "this image is too old to say" are
+different problems with the same consequence, which is rows nobody will ever get.
+
+The answer covers the modules this plane PROVISIONS. `finish-rife` is not one of them, so a green
+reading here says nothing about it.
 
 ### `GET /api/platform/version`
 

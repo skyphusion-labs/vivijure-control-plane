@@ -560,6 +560,39 @@ describe("scoped operator credentials (cp#219)", () => {
       expect(rows.every((r) => r.actor === "operator:reader")).toBe(true);
     });
 
+    it("the module-readiness read is recorded, and reports which modules cannot be shown to record", async () => {
+      // cp#248. The route exists so somebody can SEE a field that gates nothing: telemetry.job_log
+      // is not part of a module ok flag, so a module that records nothing reports healthy forever.
+      const reader = await mint("reader", ["tenants:read"]);
+      const withProvisioner = {
+        ...deps,
+        provisioner: {
+          moduleReadiness: async () => [
+            { module: "keyframe", script: "ten-x-keyframe", status: 200, ok: true, credentials: null, job_log: true, records_runpod_jobs: true },
+            { module: "own-gpu", script: "ten-x-own-gpu", status: 200, ok: true, credentials: null, job_log: false, records_runpod_jobs: true },
+            { module: "finish-upscale", script: "ten-x-finish-upscale", status: 200, ok: true, credentials: null, job_log: null, records_runpod_jobs: true },
+            { module: "plan-enhance", script: "ten-x-plan-enhance", status: 404, ok: null, credentials: null, job_log: null, records_runpod_jobs: false },
+          ],
+        },
+      } as unknown as ControlPlaneDeps;
+
+      const res = await handle(
+        req(`/api/admin/tenants/${TEN}/module-readiness`, { headers: bearer(reader.token) }),
+        env(),
+        ctx,
+        withProvisioner,
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { records_unproven: string[]; modules: unknown[] };
+      // BOTH the explicit no and the silent unknown, and NOT the module that never records: a
+      // summary that omitted the null would report a stale module image as fine.
+      expect(body.records_unproven).toEqual(["own-gpu", "finish-upscale"]);
+      expect(body.modules).toHaveLength(4);
+
+      const rows = await store.listAdminAudit({ target: TEN, limit: 20 });
+      expect(rows.some((r) => r.action === "tenant.read.module_readiness" && r.actor === "operator:reader")).toBe(true);
+    });
+
     it("a per-tenant LLM spend read is recorded too, so the disclosure claim stays true", async () => {
       const reader = await mint("reader", ["tenants:read"]);
       const spendDeps = { ...deps, llmSpend: new LlmSpendD1(d1Over(db)) } as ControlPlaneDeps;
@@ -744,6 +777,7 @@ describe("every route that reaches into ONE tenant leaves a record (the merged p
   // gap cp#219 closed and writes were always audited; keeping them apart makes a regression legible.
   const AUDITED_READS = [
     "GET /api/admin/tenants/ten_x/credits",
+    "GET /api/admin/tenants/ten_x/module-readiness",
     "GET /api/admin/tenants/ten_x/preservation-holds",
     "GET /api/admin/tenants/ten_x/smoke-render/smk_x",
     "GET /api/admin/tenants/ten_x/smoke-render/smk_x/artifact",

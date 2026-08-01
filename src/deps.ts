@@ -99,8 +99,10 @@ import {
 import {
   TENANT_MODULE_CATALOG,
   awaitTenantModulesReady,
+  probeTenantModuleReadiness,
   tenantModuleScriptName,
   type ModuleReadiness,
+  type TenantModuleObservation,
 } from "./tenant-modules";
 
 /** The secret name the studio reads its stored invoke key (key B) from (src/env.ts). */
@@ -126,6 +128,16 @@ export interface ProvisionerWiring {
    * awaiting_invoke_key rather than being promoted on credentials nothing has proven.
    */
   installInvokeKey(tenant: Tenant, key: string): Promise<ModuleReadiness>;
+  /**
+   * Ask every module script this tenant has what it can do RIGHT NOW (cp#248): one unauthenticated
+   * GET /ready each, no retry, no spend, no GPU, no tenant credential.
+   *
+   * Exists because the one fact cf#279 added to /ready -- whether the worker can record a RunPod job
+   * -- gates nothing by design, so nothing ever waits for it and no existing route reports it. A
+   * field that gates nothing and is reported nowhere cannot be checked, which is the same shape as
+   * not having it. This is the looking.
+   */
+  moduleReadiness(tenant: Tenant): Promise<TenantModuleObservation[]>;
   /**
    * The tenant's PROGRAMMATIC studio token (cf#94). Lives here because this is where the CF client
    * and the dispatch namespace already are, and because the plane deliberately stores no part of
@@ -579,6 +591,9 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       // cf#114: the secrets PUT returning 200 does NOT mean the edge serves the key yet. Prove it on
       // the modules before the caller promotes the tenant, or fail honestly saying we could not.
       return await awaitTenantModulesReady(deps, tenant.id);
+    },
+    async moduleReadiness(tenant): Promise<TenantModuleObservation[]> {
+      return await probeTenantModuleReadiness(deps, tenant.id);
     },
     async teardown(tenant, opts) {
       return await teardownTenant(deps, tenant, opts);
