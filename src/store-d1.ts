@@ -5,6 +5,7 @@
 // migrations/0001_init.sql. The in-memory store in tests/ never substitutes for that.
 
 import type { HoldRow, LedgerRow } from "./credits";
+import type { RunPodMode } from "./runpod-pool";
 import type { LlmSpendStore, RollupPeriodWrite } from "./llm-spend-ingest";
 import type { SpendEvent } from "./llm-spend-rollup";
 import type { LlmSpendReadStore, LlmSpendWindow, RollupPeriodRow } from "./llm-spend-window";
@@ -451,6 +452,10 @@ export class D1Store implements ControlPlaneStore, CreditStore {
 
   async setTenantEndpoints(id: string, endpointsJson: string): Promise<void> {
     await this.db.prepare("UPDATE tenants SET endpoints_json = ?2 WHERE id = ?1").bind(id, endpointsJson).run();
+  }
+
+  async setTenantRunPodMode(id: string, mode: RunPodMode): Promise<void> {
+    await this.db.prepare("UPDATE tenants SET runpod_mode = ?2 WHERE id = ?1").bind(id, mode).run();
   }
 
   async setTenantScript(id: string, scriptName: string, release: string): Promise<void> {

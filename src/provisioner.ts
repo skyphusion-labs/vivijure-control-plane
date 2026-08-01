@@ -19,6 +19,7 @@ import { CfApiError, isScriptAbsent } from "./cf-api";
 import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
 import type { TemplateConvergence, TenantR2Creds } from "./runpod";
+import { readRunPodMode } from "./runpod-pool";
 import {
   JOB_LEASE_SECONDS,
   type ControlPlaneStore,
@@ -689,10 +690,18 @@ export async function runProvisionJob(
         // means the tenant degrades to per-shot clips WITH THE REASON STATED, which is exactly what
         // tenants get today and what self-host gets without the container.
         //
-        // The tier is SHARED (descendents + badbrains) and that is safe by CONSTRUCTION, not by
-        // policy: the container never receives a credential. The studio presigns per-object R2
-        // GET/PUT URLs with its OWN bucket-scoped credential and passes URLs, so a shared worker
-        // cannot enumerate a tenant's bucket, cannot outlive the URL, and holds nothing to leak.
+        // The tier is SHARED, selected by the `tier=finishing` swarm label rather than a fixed
+        // node list (measured 2026-08-01: descendents, badbrains, jello), and that is safe by
+        // CONSTRUCTION, not by policy: the container never receives a credential. The studio
+        // presigns per-object R2 GET/PUT URLs with its OWN bucket-scoped credential and passes
+        // URLs, so a shared worker cannot enumerate a tenant's bucket, cannot outlive the URL,
+        // and holds nothing to leak.
+        //
+        // THE NODE LIST IS AN OBSERVATION, NEVER A DEFINITION. jello was wiped, rebuilt and
+        // re-labelled on 2026-07-31 and the tier absorbed it with no per-tenant change anywhere,
+        // because placement is label-driven and the workers hold no credential to re-issue. That
+        // is the cp#270 shared-tier thesis already running in production, which is why this
+        // comment is the precedent the pooled RunPod design is built on.
         ...(deps.videoFinishServiceId
           ? [{ type: "vpc_service" as const, name: "VIDEO_FINISH_VPC", service_id: deps.videoFinishServiceId }]
           : []),
@@ -1785,8 +1794,27 @@ export async function teardownTenant(
     }
   }
 
-  // Their RunPod endpoints are THEIRS. We never touch the tenant's RunPod account beyond what they
-  // authorized; de-provision shows them a "delete these on RunPod" checklist instead.
+  // RUNPOD IS NEVER TOUCHED HERE, and since cp#270 that holds for two different reasons which are
+  // worth separating, because one of them used to be an accident:
+  //
+  //   DEDICATED: their endpoints are THEIRS, on their account. We never touch it beyond what they
+  //     authorized; de-provision shows them a "delete these on RunPod" checklist instead.
+  //   SHARED: the endpoints on the row are the PLANE's pool, shared with every other shared
+  //     tenant and with production. Deleting one because a tenant left would take the tier down.
+  //
+  // Today the safety rests on the plane holding no credential that COULD delete a RunPod endpoint,
+  // and no RunPod delete call exists anywhere in this function. That reason weakens the moment the
+  // plane holds a pool key, so the pooled case is stated rather than inherited: the log line below
+  // records that it was CONSIDERED, so a later reader adding a reap leg sees a decision rather
+  // than an omission.
+  if (readRunPodMode(tenant.runpod_mode) === "shared") {
+    deps.log("teardown.runpod_pool_not_owned", {
+      tenant: tenant.id,
+      endpoints: readTenantEndpoints(tenant).map((e) => e.id),
+      reaped: false,
+      reason: "shared pool, owned by the plane and in use by other tenants",
+    });
+  }
 
   // The row records what happened, including the clean case. "Teardown ran and reaped everything"
   // and "no teardown has ever run" are different facts and the data has to be able to tell them

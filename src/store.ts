@@ -6,6 +6,10 @@
 // logic tests. The rule that keeps this honest: a stubbed store proves a DECISION PATH, never the
 // shipped artifact. Anything that must be true of the SQL itself gets verified live, not here.
 
+// TYPE-ONLY, so this cannot create a runtime cycle: runpod-pool.ts imports a type back out of
+// provisioner.ts, which imports types out of here. All three edges are erased at compile.
+import type { RunPodMode } from "./runpod-pool";
+
 /**
  * The tenant LIFECYCLE. Note what is NOT in here: "suspended".
  *
@@ -115,6 +119,17 @@ export interface Tenant {
   r2_storage_quota_override: string | null;
   /** The ceiling in BYTES, as the string that gets bound. Meaningful only when mode is 'set'. */
   r2_storage_quota_bytes: string | null;
+  /**
+   * Which RunPod shape this tenant actually got (cp#270): 'dedicated' or 'shared'.
+   *
+   * RECORDED, never derived. `endpoints_json` used to mean exactly one thing, "the endpoints this
+   * tenant OWNS", and pooling gives it a second meaning, "the endpoints this tenant USES". Five
+   * readers treat it as ownership, so a reader that must not touch a pooled endpoint needs a fact
+   * to branch on rather than an inference from a JSON blob whose meaning now depends on state
+   * stored somewhere else. Typed as a bare string because that is what D1 returns; narrow it
+   * through readRunPodMode (src/runpod-pool.ts) rather than comparing the raw value.
+   */
+  runpod_mode: string;
 }
 
 /**
@@ -574,6 +589,14 @@ export interface ControlPlaneStore {
   setTenantBucket(id: string, bucket: string): Promise<void>;
   setTenantR2Token(id: string, tokenId: string): Promise<void>;
   setTenantEndpoints(id: string, endpointsJson: string): Promise<void>;
+  /**
+   * Record which RunPod shape this tenant got (cp#270).
+   *
+   * A SEPARATE call from setTenantEndpoints rather than a second argument to it, deliberately:
+   * the reprovision path rewrites endpoints_json for an existing tenant and must NOT be able to
+   * change its mode as a side effect of that write. Two facts, two writers.
+   */
+  setTenantRunPodMode(id: string, mode: RunPodMode): Promise<void>;
   setTenantScript(id: string, scriptName: string, release: string): Promise<void>;
   /**
    * Write (or CLEAR) the release whose studio bytes this tenant runs (cp#139).

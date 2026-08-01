@@ -43,6 +43,7 @@ import {
   type TenantEndpoint,
 } from "./provisioner";
 import type { TemplateConvergence } from "./runpod";
+import { readRunPodMode } from "./runpod-pool";
 import type { Tenant } from "./store";
 import { prefetchModuleBundles, TenantModuleError, type ModuleBundle } from "./tenant-modules";
 import { decryptStudioToken } from "./token-crypto";
@@ -173,6 +174,22 @@ export async function preflightRunPodReprovision(
   }
   if (!tenant.script_name) {
     return refuse("not_provisioned", 409, "this tenant has no studio script recorded; it needs a provision, not a repair");
+  }
+  // cp#270: a SHARED-tier tenant has no endpoints of its own to rebuild. Everything this route
+  // does to RunPod -- converge the tenant's templates onto the current pins, re-mint the R2
+  // credential into the template env, recreate the endpoints -- would be aimed at the PLANE's
+  // production pool, on the plane's own account, on behalf of one tenant. It would rewrite the
+  // template env every other shared tenant renders through.
+  //
+  // Refused rather than made mode-aware. A pooled tenant's render capacity is not repaired by
+  // rebuilding anything per-tenant; if the pool is broken the pool is fixed, once, for everyone.
+  if (readRunPodMode(tenant.runpod_mode) === "shared") {
+    return refuse(
+      "tenant_on_shared_pool",
+      409,
+      "this tenant rides the shared endpoint pool and owns no endpoints to rebuild; repairing the " +
+        "pool is an operator action on the pool itself, not a per-tenant reprovision",
+    );
   }
   if (!tenant.r2_bucket_name) {
     return refuse(

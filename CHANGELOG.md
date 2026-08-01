@@ -6,6 +6,41 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(store): record the RunPod MODE per tenant, and guard reconciliation against pooling (cp#270)
+
+Behaviourally a no-op. Nothing here can set a tenant to `shared`; the provisioning branch that can
+arrives separately. These guards land FIRST deliberately.
+
+`tenants.runpod_mode` (migration 0018, every existing row `dedicated`) records how a tenant reaches
+RunPod, instead of leaving it to be inferred from `endpoints_json`. That column meant exactly one
+thing, "the endpoints this tenant OWNS"; pooling gives it a second meaning, "the endpoints this
+tenant USES", and five readers treat it as ownership. Overloading it is what would make the hazards
+below invisible: every reader keeps compiling, keeps passing its tests, and is quietly wrong.
+
+The hazard, and the reason the order matters. `reconcile-runpod`'s `claimedEndpointIds` is a Map
+keyed by endpoint id, so N tenants naming one pooled endpoint collapse to ONE claimant,
+last-write-wins in census order. The orphan loop skips an endpoint only when that single surviving
+claimant is not torn down, so one DELETED shared tenant would emit a LIVE production endpoint as
+`orphan_endpoint` at confidence **"proven"**, worded "endpoint survives after tenant X was torn
+down". The function writes nothing, which is not mitigation: a proven-confidence finding is what a
+human acts on without re-deriving, and that is exactly how four endpoints were deleted by hand on
+this account on 2026-08-01.
+
+Also here: teardown states its reason for never touching RunPod rather than inheriting it from the
+plane holding no credential that could (that reason weakens the moment a pool key exists), and the
+reprovision route refuses a shared tenant instead of aiming a per-tenant endpoint rebuild at the
+plane's production pool.
+
+Every exclusion assertion is paired with a control that must still fire, in both directions. Both
+guards were proved by reintroducing the defect and watching the suite go red, which is how the
+per-tenant row skip was found to be untested by an earlier draft of the fixtures.
+
+Corrects one stale fact in passing: the finishing tier is `tier=finishing` label-selected across
+three nodes as of 2026-08-01 (descendents, badbrains, jello), not the two named in
+`provisioner.ts`. Matches the wording #275 landed in the two docs. That tier absorbing a wiped and
+rebuilt node with no per-tenant change is the cp#270 shared-tier thesis already running in
+production, so the comment says so: it is the precedent the pooled design is built on.
+
 ### fix(provisioner): a freshly provisioned tenant now RECORDS its module release (cp#248)
 
 `setTenantModulesRelease` was called only by the module-UPGRADE path, so `tenants.modules_release`
