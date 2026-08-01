@@ -1133,9 +1133,10 @@ provisioned with the binding, so assemble and mux work for them.
 
 ### The tier is SHARED, and the isolation is by construction, not by policy
 
-Tenants render against the same always-on finishing containers (descendents + badbrains). That is
-safe for a reason worth stating precisely, because "shared compute with per-tenant credentials"
-usually means a policy someone can misconfigure:
+Tenants render against the same always-on finishing containers, selected by the `tier=finishing`
+swarm label rather than a fixed node list (measured 2026-08-01: descendents, badbrains, jello).
+That is safe for a reason worth stating precisely, because "shared compute with per-tenant
+credentials" usually means a policy someone can misconfigure:
 
 > **The container never receives a credential.** The studio presigns per-object R2 GET/PUT URLs
 > (1800s) with its OWN bucket-scoped credential and passes URLs in the payload
