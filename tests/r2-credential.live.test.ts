@@ -1,8 +1,12 @@
 // LIVE verification of the per-tenant R2 credential lifecycle (#53). Opt-in, like
 // tests/conformance.live.test.ts:
 //
-//   set -a; . ~/.cf-provisioner-full.env; set +a
-//   CF_ACCOUNT_ID=<id> CF_PROVISIONER_FULL=1 npx vitest run tests/control-plane/r2-credential.live.test.ts
+//   CF_PROVISIONER_TOKEN=<token> CF_ACCOUNT_ID=<id> CF_PROVISIONER_FULL=1 \
+//     npx vitest run tests/r2-credential.live.test.ts
+//
+// This repo is PUBLIC, so the env contract is named here and the place the credential is kept is
+// not. Operators know where their own credentials live; a public file naming the path tells
+// everyone else.
 //
 // Needs the TOKEN-MANAGEMENT-capable provisioner token (the dashboard-minted one). The reduced
 // token cannot mint and is fine for every other live leg.

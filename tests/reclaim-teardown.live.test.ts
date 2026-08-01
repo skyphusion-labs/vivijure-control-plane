@@ -13,8 +13,12 @@
 //      deleting does not get to be the witness that it worked.
 //
 // RUN:
-//   set -a; . ~/.cf-provisioner.env; set +a
-//   CF_ACCOUNT_ID=<id> RECLAIM_REHEARSAL=1 npx vitest run tests/reclaim-teardown.live.test.ts
+//   CF_PROVISIONER_TOKEN=<token> CF_ACCOUNT_ID=<id> RECLAIM_REHEARSAL=1 \
+//     npx vitest run tests/reclaim-teardown.live.test.ts
+//
+// This repo is PUBLIC, so the env contract is named here and the place the credential is kept is
+// not. Operators know where their own credentials live; a public file naming the path tells
+// everyone else.
 //
 // SPEND: $0. A D1, an empty R2 bucket and one trivial user Worker, created and destroyed inside the
 // run. No RunPod, no GPU, no renders.

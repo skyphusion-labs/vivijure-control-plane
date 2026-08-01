@@ -5,10 +5,14 @@
 //
 //   node scripts/build-studio-release.ts --bundle <outdir>/index.js --assets public \
 //     --config wrangler.toml --tag <tag> --out /tmp/studio-release
-//   set -a; . ~/.cf-provisioner-full.env; . ~/.runpod-scratch.env; set +a
-//   CF_ACCOUNT_ID=<id> STUDIO_RELEASE_DIR=/tmp/studio-release PROVISION_E2E=1 \
+//   CF_PROVISIONER_TOKEN=<token> CF_ACCOUNT_ID=<id> RUNPOD_API_KEY=<key> \
+//     STUDIO_RELEASE_DIR=/tmp/studio-release PROVISION_E2E=1 \
 //     PROVISION_E2E_WORKERS_DEV_SUBDOMAIN=<account>.workers.dev \
 //     npx vitest run tests/provision-e2e.live.test.ts
+//
+// This repo is PUBLIC, so the env contract is named here and the place the credential is kept is
+// not. Operators know where their own credentials live; a public file naming the path tells
+// everyone else.
 //
 // NO STUDIO_TOKEN_KEK: this suite generates its own ephemeral 32-byte KEK per process. The live
 // worker KEK is the key to 7 real tenant token blobs in the control-plane D1 and is deliberately
