@@ -26,9 +26,26 @@ in-place correction that says so, on the reasoning that a release note is a clai
 false claim is worth correcting legibly. A rule forbidding all edits would have forbidden exactly
 that honesty.
 
-So drift is permitted only in a section carrying the marker below, on its own line. Same shape as
-the env-census exemptions: an explicit declaration a reviewer can see, never a guess from content.
-An edit WITHOUT the marker is refused, which is the case the incident produced.
+THE EXCEPTION DOES NOT LIVE IN THE CHANGELOG, and that is cp#245. It used to: a marker string,
+tested as a substring anywhere in the section body. A v1.19.0 entry that DOCUMENTED the mechanism,
+quoting the marker inside backticks, therefore waived immutability for its own section -- the guard
+found the drift and then permitted it, silently, because a waiver and a pass look identical
+downstream. Its own control caught it (a planted entry went unremarked), which is the only reason
+anybody knew. An escape hatch that lives in the content can always be tripped by content that merely
+TALKS about it, and re-anchoring the substring would only have narrowed the shape of prose that
+trips it.
+
+So the waiver moved OUT of the file being checked, into scripts/changelog-corrections.txt, and
+drift now needs BOTH:
+
+  1. the version listed in that file -- the waiver, reviewable as its own line in a diff, and
+     unreachable by anything a changelog entry can say;
+  2. a line in that section BEGINNING at column 0 with the marker below -- what tells a READER of
+     the changelog that the text moved after the tag.
+
+Listed but undeclared is refused: the record would be silently corrected and the reader never told.
+Declared but unlisted is refused: that is the cp#245 defect itself. Neither half waives anything on
+its own, and an edit with neither is the case the original incident produced.
 
 Exit 0 and print nothing when every released section is untouched; exit 1 and name each drift.
 """
@@ -40,8 +57,36 @@ import pathlib
 root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
 HEADING = re.compile(r"^## (v\d+\.\d+\.\d+)\b")
 
-# The declared escape hatch. On its own line, inside the section being corrected.
+# What tells a READER that a released section was corrected. Required at the START of a line
+# (column 0), never matched as a substring: an indented or backticked mention is prose ABOUT the
+# mechanism, not a declaration by it (cp#245). This alone waives nothing; see the file below.
 CORRECTION_MARKER = "**CORRECTED AFTER PUBLICATION"
+
+# The waiver itself, deliberately OUTSIDE the file being checked, so no changelog text can grant it.
+CORRECTIONS_FILE = "scripts/changelog-corrections.txt"
+
+
+def declared_corrections(root):
+    """Versions allowed to drift, read from CORRECTIONS_FILE. Returns (versions, file_present).
+
+    A MISSING file is an EMPTY allowlist rather than an error: that direction fails closed (every
+    drift is then refused), and the refusal names the file so the reason is not a mystery. The
+    opposite default would let deleting one file silently unlock every released section.
+    """
+    path = root / CORRECTIONS_FILE
+    if not path.exists():
+        return set(), False
+    versions = set()
+    for line in path.read_text().split("\n"):
+        line = line.split("#", 1)[0].strip()
+        if line:
+            versions.add(line.split()[0])
+    return versions, True
+
+
+def declares_correction(body):
+    """Does this section TELL A READER it was corrected? Anchored at column 0, never a substring."""
+    return any(line.startswith(CORRECTION_MARKER) for line in body.split("\n"))
 
 
 def sections(text):
@@ -82,6 +127,7 @@ def git(*args):
 text = (root / "CHANGELOG.md").read_text()
 head, head_dupes = sections(text)
 tags = set(git("tag", "--list", "v*").stdout.split())
+corrections, corrections_present = declared_corrections(root)
 problems = []
 checked = 0
 
@@ -102,10 +148,34 @@ for version, body in head.items():
         continue
     checked += 1
     if at_tag != body:
-        if CORRECTION_MARKER in body:
+        # BOTH halves, and the two failures are reported DIFFERENTLY on purpose: "you forgot the
+        # waiver" and "you forgot to tell the reader" send a person to different places, and one
+        # message covering both would send half of them to the wrong one.
+        declared = declares_correction(body)
+        allowed = version in corrections
+        if allowed and declared:
             print(
-                "changelog-immutable: " + version + " carries a declared post-publication "
-                "correction; drift permitted"
+                "changelog-immutable: " + version + " is an allowlisted post-publication "
+                "correction and says so; drift permitted"
+            )
+            continue
+        if allowed and not declared:
+            problems.append(
+                "the " + version + " section has CHANGED and " + CORRECTIONS_FILE + " allows it, "
+                "but the section carries no line BEGINNING with " + CORRECTION_MARKER + ". The "
+                "allowlist is for this script; the marker is for the person reading the changelog, "
+                "who would otherwise see corrected text presented as what shipped. Add the "
+                "declaration, at column 0, inside that section."
+            )
+            continue
+        if declared and not allowed:
+            problems.append(
+                "the " + version + " section has CHANGED and declares a correction, but "
+                + CORRECTIONS_FILE + " does not list it"
+                + ("" if corrections_present else " (that file is MISSING entirely)")
+                + ". The waiver deliberately does NOT live in the changelog: a section that merely "
+                "MENTIONED the marker used to disarm this check for itself (cp#245). Add the "
+                "version to that file in the same PR, where a reviewer sees it as its own line."
             )
             continue
         problems.append(
@@ -113,8 +183,9 @@ for version, body in head.items():
             "records what that artifact actually contains, so editing it makes the changelog assert "
             "something the tag does not have. If this entry belongs to work merged AFTER " + version
             + ", it goes under the `## Unreleased` heading. If the original note was WRONG about "
-            "what shipped, correct it in place AND mark the section with a line beginning "
-            + CORRECTION_MARKER + ", which is the declared exception."
+            "what shipped, correct it in place, mark the section with a line BEGINNING at column 0 "
+            "with " + CORRECTION_MARKER + ", AND list the version in " + CORRECTIONS_FILE + ". Both "
+            "are required; neither waives anything alone."
         )
 
 # NOTHING TO CHECK AND EVERYTHING CHECKS OUT MUST NOT BE THE SAME OUTPUT.

@@ -6,6 +6,34 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(ci): the changelog-immutability waiver moves OUT of the changelog (cp#245)
+
+`changelog-released-immutable.py` waived immutability for any released section whose body CONTAINED
+the correction marker, as a substring, anywhere. The v1.19.0 section contains an entry that
+documents the mechanism and quotes the marker inside backticks, so that section waived the check for
+itself: the guard found drift and then permitted it. Its own positive control is what noticed, which
+is the design working -- a check that plants a violation and expects a refusal sees it stop
+refusing, and a pure assertion never would.
+
+It was latent until the tag existed. The last CI run on `main` started 52 seconds BEFORE the
+`v1.19.0` tag was created, so it measured v1.18.0 and passed; every run after it measured v1.19.0
+and failed. `main` was green by timing rather than by health, and this blocked every PR.
+
+- **The waiver is now `scripts/changelog-corrections.txt`,** outside the file being checked.
+  Anchoring the substring would only have narrowed the shape of prose that trips it; nothing a
+  changelog entry can say puts a version in that file.
+- **Both halves required.** The allowlist row is the waiver; a line BEGINNING at column 0 with
+  `**CORRECTED AFTER PUBLICATION` is what tells a READER the text moved. Listed-but-undeclared is a
+  silent correction and is refused; declared-but-unlisted is the cp#245 defect and is refused. The
+  two refusals say different things, because they send a person to different places.
+- **A missing allowlist file is an empty allowlist,** so that direction fails closed and the refusal
+  names the file. The opposite default would let deleting one file unlock every released section.
+- **Four controls, each made to fail on purpose** before being trusted: prose that mentions the
+  marker is still checked; a declaration alone does not waive; an allowlisted section that does not
+  say it was corrected is refused; and, the positive control, an allowlisted+declared correction is
+  still PERMITTED, because a guard that refused everything would have passed all three negatives
+  while making a legitimate in-place correction impossible.
+
 ### feat(modules): bind the tenant studio D1 as `TELEMETRY_DB` on every recording module (cp#248)
 
 vivijure-cf#279 made six module workers write a durable row per RunPod job. Module release bundles
@@ -44,6 +72,7 @@ consequence.
 **Ordering.** The binding is inert until a studio release carrying vivijure-cf#279 is published and
 a tenant is moved onto it: at an older pin the module bytes have no job log and no
 `telemetry.job_log`, so the field reads `null` fleet-wide and the rows are not written.
+
 
 ## v1.19.0 -- 2026-07-31
 

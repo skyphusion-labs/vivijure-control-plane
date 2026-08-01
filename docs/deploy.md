@@ -49,11 +49,21 @@ compares the section body against the same section in `CHANGELOG.md` AT THAT TAG
 of the tree rather than of a diff, so it needs no base ref and it catches an ADDED entry, which no
 "did this PR touch the changelog" check ever would.
 
-**The one declared exception:** a released section MAY be corrected in place when the original note
-was WRONG about what shipped, which this repo has already done once and was right to (v1.17.0 said
-two PRs when the tag carries four). Mark the section with a line beginning
-`**CORRECTED AFTER PUBLICATION` and the guard permits the drift. An edit WITHOUT the marker is
-refused. Declared intent, never inferred, same shape as the env-census exemptions.
+**The one declared exception, and it takes TWO steps on purpose (cp#245):** a released section MAY
+be corrected in place when the original note was WRONG about what shipped, which this repo has
+already done once and was right to (v1.17.0 said two PRs when the tag carries four). To do it:
+
+1. add the version to `scripts/changelog-corrections.txt` -- the waiver, one reviewable line;
+2. mark the section with a line BEGINNING at column 0 with `**CORRECTED AFTER PUBLICATION` -- what
+   tells a reader of the changelog that the text moved after the tag.
+
+Either alone is refused, with different messages, because they are different mistakes: allowlisted
+but undeclared is a silent correction, and declared but unlisted is the defect this shape exists to
+end. **The waiver deliberately does not live in the changelog.** It used to, as a substring test,
+and a v1.19.0 entry that merely DOCUMENTED the mechanism (marker quoted inside backticks) waived
+immutability for its own section: the guard found the drift and then permitted it. An escape hatch
+held in the content can always be tripped by content that talks about it. Nothing a changelog entry
+can say puts a version in that file.
 
 ## Migrations: the doctrine
 
