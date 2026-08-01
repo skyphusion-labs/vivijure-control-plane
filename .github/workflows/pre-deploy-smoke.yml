@@ -1,0 +1,100 @@
+name: Pre-deploy smoke
+
+# Conrad's standing policy, 2026-08-01: a full smoke on a secure surface before EVERY prod
+# deployment, every time, no gate. "No gate" means no approval gate and no cost gate; it does not
+# mean no smoke. This workflow is that smoke (cp#255). Run it, read it, THEN cut the tag.
+#
+# WHY IT IS NOT A STEP IN deploy.yml, and this is a capability fact rather than a preference:
+# the smoke creates a dispatch namespace, and it has NOT been verified that the deploy token
+# (secrets.CLOUDFLARE_API_TOKEN) can create one. Putting an unverified permission on the deploy path
+# converts a smoke into an outage. Promoting this to a preflight step is a small change once someone
+# confirms that scope, and that confirmation deserves its own issue rather than a guess (cp#256).
+#
+# WHAT IT COSTS: nothing. No tenant, no GPU, no RunPod call, no invoke key. One throwaway dispatch
+# namespace, one throwaway D1, one ephemeral workers.dev dispatcher, all named `cpsmoke-<run>` and
+# all deleted, with teardown verified by LISTING the account rather than by trusting the deletes.
+#
+# RUNNER: ubuntu-latest, matching live-release-gate.yml. vivijure-control-plane is PUBLIC; this is
+# dispatch-only so a fork cannot reach it, but the repo's existing live gate sets the precedent and
+# splitting one repo across two runner planes for no reason is how a doctrine rots.
+#
+# SMOKE_REQUIRED=1 IS SET HERE AND NOWHERE ELSE. Without it the suite skips when a credential is
+# absent, which is right for `npm test` on a PR and fatal for a release gate: it would report the
+# same green whether it ran or not. With it, an absent credential is a FAILURE that names every var
+# it wanted. The changelog guard once passed by comparing zero released sections and printing ok;
+# that is the failure mode this line exists to make impossible.
+
+on:
+  workflow_dispatch:
+    inputs:
+      studio_release:
+        description: "Studio release tag to smoke. Leave empty to use the pinned STUDIO_RELEASE (the honest default: it is what a tenant would receive)."
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+# Never two smokes at once. They would each create their own prefixed namespace and could not
+# collide, but the leftover census at the start of a run reports the OTHER run's namespace as
+# debris, and a census that cries wolf is a census people stop reading.
+concurrency:
+  group: pre-deploy-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # Presence only. A value never reaches this log.
+      - name: Required credentials present
+        env:
+          CF_PROVISIONER_TOKEN: ${{ secrets.CF_PROVISIONER_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          PRE_DEPLOY_SMOKE_WORKERS_DEV_SUBDOMAIN: ${{ vars.PRE_DEPLOY_SMOKE_WORKERS_DEV_SUBDOMAIN }}
+        run: |
+          set -eu
+          test -n "${CF_PROVISIONER_TOKEN:+SET}" || { echo "::error::CF_PROVISIONER_TOKEN secret missing"; exit 1; }
+          test -n "${CF_ACCOUNT_ID:+SET}" || { echo "::error::CF_ACCOUNT_ID secret missing"; exit 1; }
+          test -n "${PRE_DEPLOY_SMOKE_WORKERS_DEV_SUBDOMAIN:+SET}" || { echo "::error::PRE_DEPLOY_SMOKE_WORKERS_DEV_SUBDOMAIN variable missing"; exit 1; }
+          echo "all required pre-deploy smoke credentials present"
+
+      - name: Pre-deploy smoke
+        env:
+          CF_PROVISIONER_TOKEN: ${{ secrets.CF_PROVISIONER_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          PRE_DEPLOY_SMOKE_WORKERS_DEV_SUBDOMAIN: ${{ vars.PRE_DEPLOY_SMOKE_WORKERS_DEV_SUBDOMAIN }}
+          # The pinned release by default. An override exists because smoking a release the plane is
+          # NOT pinned to is a legitimate question ("would the next pin pass?"), but it is never the
+          # default: the default has to be what a tenant would actually receive. The v1.20.0 scratch
+          # run uploaded v1.13.0 bundles while the plane was pinned at v1.12.0, and that is exactly
+          # how a smoke proves something nobody is about to ship.
+          STUDIO_RELEASE: ${{ inputs.studio_release || vars.STUDIO_RELEASE }}
+          PRE_DEPLOY_SMOKE: "1"
+          SMOKE_REQUIRED: "1"
+        run: npm run smoke:predeploy
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Pre-deploy smoke"
+            echo ""
+            echo "- studio release smoked: \`${{ inputs.studio_release || vars.STUDIO_RELEASE }}\`"
+            echo "- pinned STUDIO_RELEASE: \`${{ vars.STUDIO_RELEASE }}\`"
+            echo "- spend: none (no tenant, no GPU, no RunPod)"
+            echo ""
+            echo "Read the settle sequences in the step log. A run that flapped is visible as flapping."
+          } >> "$GITHUB_STEP_SUMMARY"
