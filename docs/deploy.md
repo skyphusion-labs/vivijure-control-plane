@@ -123,6 +123,51 @@ Repository **variables**:
   call in one analytics namespace, defeating the per-tenant attribution the token exists to provide.
   Empty = no gateway named, so `plan-enhance` runs on the free local Workers AI provider.
 
+- `SHARED_RUNPOD_ENDPOINTS` (cp#270) -- the SHARED RunPod endpoint pool, as JSON keyed by
+  `PROVISION_PLAN` key:
+  `{"backend":{"id":"...","name":"..."},"upscale":{...},"lipsync":{...},"audio-upscale":{...}}`.
+  Empty = this plane offers no shared tier and every tenant must bring its own RunPod key, which is
+  the behaviour before pooling existed. See the section below before setting it.
+
+#### The shared tier: `SHARED_RUNPOD_ENDPOINTS` + `SHARED_RUNPOD_INVOKE_KEY` (cp#270)
+
+Conrad ruled 2026-08-01 that the hosted SHARED tier never provisions dedicated per-tenant RunPod
+endpoints: shared tenants ride the endpoints that already exist. The reason is a hard ceiling --
+the RunPod worker quota is ACCOUNT-WIDE, `PROVISION_PLAN` needs 5 net-new workers per tenant, and
+teardown structurally cannot reap RunPod endpoints, so the dedicated shape caps the hosted business
+at about ten tenants that have EVER existed.
+
+| what | where | note |
+| --- | --- | --- |
+| `SHARED_RUNPOD_ENDPOINTS` | Actions variable, rendered into `wrangler.toml` | identifiers only; empty = no shared tier |
+| `SHARED_RUNPOD_INVOKE_KEY` | worker secret, `wrangler secret put` | Restricted, invoke-only, scoped to EXACTLY the pool endpoints |
+
+**BOTH OR NEITHER.** The wiring resolves a pool only when both are present; either alone logs
+`shared_pool.refused` and the plane offers no shared tier. That is deliberate: half a pool is not a
+degraded pool, it is a tenant that cannot render.
+
+**ALL-OR-NOTHING on the endpoints.** A value missing any plan key is refused rather than partially
+resolved. A tenant wired for three of four capabilities provisions green, passes verify, and dies at
+the first render on the fourth.
+
+**The `name` on each entry is required.** It is what lets `reconcile-runpod` recognise a pool member
+in an operator inventory snapshot and refuse to report a PRODUCTION endpoint as orphaned debris.
+
+**Key custody inverts for this tier, and it is worth knowing before you mint the key.** On the
+dedicated path key B belongs to the TENANT, is minted in their own RunPod console, and is proven
+Restricted and endpoint-scoped by `verifyInvokeKeyScope` at paste time. A pooled tenant has no
+RunPod account, so this key is OURS: it must be invoke-only (graphql set to None) and scoped to
+exactly the pool endpoints, and **revoking it affects every shared tenant at once**, not one. The
+same verification still runs against it, deliberately -- skipping it would remove the
+graphql-capable refusal from the one tier whose key is ours.
+
+**Which tenants get which shape** is decided by whether the provision request carried a RunPod key,
+not by a separate toggle: a key present means DEDICATED (the BYO power-user path, which is correct
+and unchanged), a key absent with a pool configured means SHARED. The resolved shape is recorded on
+`tenants.runpod_mode`, and teardown and reconciliation branch on that column rather than on the
+contents of `endpoints_json`.
+
+
 #### `AI_GATEWAY_READ_TOKEN` and the LLM meter (cp#185)
 
 The per-tenant Opus meter pages AI Gateway logs on a cron (`*/15 * * * *`, declared in

@@ -19,6 +19,8 @@ import { CfApiError, isScriptAbsent } from "./cf-api";
 import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
 import type { TemplateConvergence, TenantR2Creds } from "./runpod";
+import type { SharedRunPodPool } from "./runpod-pool";
+import { readRunPodMode } from "./runpod-pool";
 import {
   JOB_LEASE_SECONDS,
   type ControlPlaneStore,
@@ -173,6 +175,34 @@ export interface ProvisionDeps {
   tokenMinter: TokenMinter;
   /** The account S3 endpoint (https://<account>.r2.cloudflarestorage.com) the satellites use. */
   r2Endpoint: string;
+  /**
+   * The SHARED RunPod endpoint pool this plane offers, or null when it offers none (cp#270).
+   *
+   * Present means a tenant that brings NO RunPod key of its own can still be provisioned: it
+   * rides these endpoints and creates zero new ones. Null means this plane has no shared tier and
+   * every tenant must bring a key, which is exactly the behaviour before this existed.
+   *
+   * NULL IS THE HONEST DEFAULT and it is also the safe one. An unconfigured or malformed pool
+   * resolves to null (parseSharedPool refuses rather than partially resolving), so the failure
+   * mode of bad config is `runpod_key_required` -- a tenant who cannot provision -- never a
+   * tenant provisioned onto a pool that covers three of four capabilities.
+   */
+  sharedPool: SharedRunPodPool | null;
+  /**
+   * The pool's invoke key (key B for the shared tier), or null when no pool is configured.
+   *
+   * SEPARATE FIELD from sharedPool, deliberately: the pool is identifiers and is safe to log,
+   * report and store, and this is a secret that goes from env into a worker secret binding and
+   * nowhere else. Keeping them apart means an error message or a log line built from a pool
+   * cannot carry the credential by accident.
+   *
+   * CUSTODY NOTE, because this inverts the two-key design for one tier: on the dedicated path
+   * key B belongs to the TENANT, is minted in their console, and is proven endpoint-scoped by
+   * verifyInvokeKeyScope at paste time. A pooled tenant has no RunPod account, so the key is
+   * OURS. It must therefore be a per-function key, invoke-only and scoped to exactly the pool
+   * endpoints, and revoking it affects every shared tenant at once rather than one.
+   */
+  sharedPoolInvokeKey: string | null;
   /**
    * The client that uploads TENANT SCRIPTS, which is the call that attaches bindings (cf#118).
    *
@@ -592,18 +622,52 @@ export async function runProvisionJob(
     const s3Secret = await sha256Hex(token.value);
     await mark("r2_token");
 
-    // 5. RunPod (#54). The ONLY step that needs key A, which is why it is a parameter and why its
-    //    absence is an honest stop rather than a skip.
-    if (!runpodApiKey) {
+    // 5. RunPod. TWO SHAPES SINCE cp#270, and which one a tenant gets is decided HERE by a fact
+    //    the caller already carries rather than by a mode flag someone has to remember to set:
+    //
+    //      key A present -> DEDICATED. The tenant brought their own RunPod account, so they get
+    //                       their own endpoints on it and pay RunPod directly. Unchanged.
+    //      key A absent + a pool configured -> SHARED. The tenant rides the endpoints that
+    //                       already exist and creates ZERO new ones.
+    //      key A absent + no pool -> the original honest stop.
+    //
+    //    That mapping is not a convenience: it IS Conrad's 2026-08-01 ruling expressed in code.
+    //    The shared tier never provisions dedicated endpoints; the BYO power-user path keeps them
+    //    because the tenant brings the account. Deriving the mode from who brought a key means
+    //    there is no third state where the two can disagree.
+    let endpoints: TenantEndpoint[];
+    if (runpodApiKey) {
+      endpoints = await deps.runpod.createEndpoints(runpodApiKey, tenant.slug, {
+        endpoint: deps.r2Endpoint,
+        accessKeyId: token.id,
+        secretAccessKey: s3Secret,
+        bucket,
+      });
+      // ORDER IS LOAD-BEARING, and it is the opposite of the obvious one. The MODE is written
+      // BEFORE the endpoint list on both branches, so a crash between the two writes leaves a row
+      // whose mode is known and whose endpoints are absent. That state is inert: reconcile reads
+      // no endpoints and teardown finds none. The reverse order would leave a row carrying POOL
+      // endpoint ids under the default mode 'dedicated', which is the one combination that makes
+      // reconciliation attribute production endpoints to a tenant and call them its debris.
+      await deps.store.setTenantRunPodMode(tenant.id, "dedicated");
+      await deps.store.setTenantEndpoints(tenant.id, JSON.stringify(endpoints));
+    } else if (deps.sharedPool) {
+      // NOTHING IS CREATED HERE. No quota is consumed, no template is written, no key A exists,
+      // and the step is a pure resolution of config into the same shape the dedicated branch
+      // returns. Both downstream consumers (the studio endpointVar bindings and
+      // uploadTenantModules) read only `id` and `endpointVar`, so neither can tell the
+      // difference -- which is why this is a branch here and not a second provisioning path.
+      endpoints = deps.sharedPool.endpoints;
+      await deps.store.setTenantRunPodMode(tenant.id, "shared");
+      await deps.store.setTenantEndpoints(tenant.id, JSON.stringify(endpoints));
+      deps.log("provision.shared_pool", {
+        tenant: tenant.id,
+        endpoints: endpoints.map((e) => e.id),
+        created: 0,
+      });
+    } else {
       return { ok: false, step: "runpod_endpoints", message: "runpod_key_required" };
     }
-    const endpoints = await deps.runpod.createEndpoints(runpodApiKey, tenant.slug, {
-      endpoint: deps.r2Endpoint,
-      accessKeyId: token.id,
-      secretAccessKey: s3Secret,
-      bucket,
-    });
-    await deps.store.setTenantEndpoints(tenant.id, JSON.stringify(endpoints));
     await mark("runpod_endpoints");
 
     // 6. Upload the PUBLISHED studio release, unmodified. No hosted fork exists to drift.
@@ -1785,8 +1849,27 @@ export async function teardownTenant(
     }
   }
 
-  // Their RunPod endpoints are THEIRS. We never touch the tenant's RunPod account beyond what they
-  // authorized; de-provision shows them a "delete these on RunPod" checklist instead.
+  // RUNPOD IS NEVER TOUCHED HERE, and since cp#270 that holds for two different reasons which are
+  // worth separating, because one of them used to be an accident:
+  //
+  //   DEDICATED: their endpoints are THEIRS, on their account. We never touch it beyond what they
+  //     authorized; de-provision shows them a "delete these on RunPod" checklist instead.
+  //   SHARED: the endpoints on the row are the PLANE's pool, shared with every other shared
+  //     tenant and with production. Deleting one because a tenant left would take the tier down.
+  //
+  // Before pooling, the safety here rested on the plane holding no credential that COULD delete a
+  // RunPod endpoint. That is no longer true -- the plane now holds a pool invoke key -- so the
+  // reason has to be stated rather than inherited. It is invoke-only and cannot delete anything,
+  // and no RunPod delete call exists anywhere in this function; the log line below records that
+  // the pooled case was CONSIDERED, so a later reader adding a reap leg sees it was a decision.
+  if (readRunPodMode(tenant.runpod_mode) === "shared") {
+    deps.log("teardown.runpod_pool_not_owned", {
+      tenant: tenant.id,
+      endpoints: readTenantEndpoints(tenant).map((e) => e.id),
+      reaped: false,
+      reason: "shared pool, owned by the plane and in use by other tenants",
+    });
+  }
 
   // The row records what happened, including the clean case. "Teardown ran and reaped everything"
   // and "no teardown has ever run" are different facts and the data has to be able to tell them

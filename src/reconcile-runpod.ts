@@ -31,6 +31,8 @@
 // performed never reads here as a check that passed.
 
 import { PROVISION_PLAN, tenantEndpointName } from "./runpod";
+import { readRunPodMode } from "./runpod-pool";
+import type { SharedRunPodPool } from "./runpod-pool";
 import type { Tenant } from "./store";
 
 /**
@@ -187,15 +189,53 @@ function parseRecordedEndpoints(
  * network, no store. The same function the admin route serves and the live check drives, so there
  * is no second code path that only one of them takes.
  */
-export function reconcileRunPod(census: TenantCensus, inventory: RunPodInventory): ReconcileReport {
+export function reconcileRunPod(
+  census: TenantCensus,
+  inventory: RunPodInventory,
+  /**
+   * The SHARED pool this plane offers, when it offers one (cp#270). Optional so every existing
+   * caller is unchanged, and an omitted pool reconciles exactly as it did before pooling existed.
+   */
+  sharedPool?: SharedRunPodPool | null,
+): ReconcileReport {
   const endpointsById = new Map(inventory.endpoints.map((e) => [e.id, e]));
   const templatesByName = new Map(inventory.templates.map((t) => [t.name, t]));
+
+  // ---- THE POOL EXCLUSION (cp#270) -----------------------------------------------------------
+  //
+  // THE DEFECT THIS CLOSES, and it is the worst thing pooling can do to this file. A shared
+  // tenant's endpoints_json names the PLANE's production endpoints. Without this exclusion:
+  //
+  //   1. `claimedEndpointIds` is a Map keyed by endpoint id, so N shared tenants naming one pool
+  //      endpoint collapse to ONE claimant, last-write-wins in census order. Nine live tenants
+  //      using an endpoint are invisible behind whichever row happened to be read last.
+  //   2. The orphan loop skips an endpoint only when its single surviving claimant is NOT torn
+  //      down. So one DELETED shared tenant is enough to emit a live production endpoint as
+  //      `orphan_endpoint` at confidence "proven", worded "endpoint survives after tenant X was
+  //      torn down" -- while every other shared tenant is still rendering on it.
+  //
+  // This function writes nothing, so it cannot delete anything itself. That is not much comfort:
+  // a proven-confidence orphan finding is precisely what a human acts on by hand, which is how
+  // the hosted-phase1 endpoints were removed.
+  //
+  // WHY IT EXCLUDES BY ID *AND* NAME rather than by tenant mode alone: the mode tells us which
+  // ROWS to ignore, and that is done below, but the pool endpoints must also be recognised in the
+  // INVENTORY, where there is no tenant to consult. Both halves are needed -- skipping only the
+  // rows would still leave the pool unattributed-or-orphaned depending on its names.
+  const poolIds: ReadonlySet<string> = sharedPool?.ids ?? new Set<string>();
+  const poolNames: ReadonlySet<string> = sharedPool?.names ?? new Set<string>();
 
   // NAME attribution built from slugs we actually hold, never from a regex guess. A slug may
   // contain dashes, so parsing "vivijure-<slug>-<key>" back apart is ambiguous; matching against the
   // names the naming function PRODUCES for known slugs is not.
+  //
+  // SHARED tenants are omitted from this map (cp#270). The map answers "which tenant would OWN an
+  // endpoint of this name", and a pooled tenant owns none -- it would never have created
+  // `vivijure-<its-slug>-backend`, so claiming a resource of that name for it would be attributing
+  // someone else's endpoint to a tenant that could not have made it.
   const owningTenantByName = new Map<string, { tenant: Tenant; key: string }>();
   for (const tenant of census.tenants) {
+    if (readRunPodMode(tenant.runpod_mode) === "shared") continue;
     for (const spec of PROVISION_PLAN) {
       owningTenantByName.set(tenantEndpointName(tenant.slug, spec.key), { tenant, key: spec.key });
     }
@@ -219,7 +259,28 @@ export function reconcileRunPod(census: TenantCensus, inventory: RunPodInventory
       : { confidence: "unproven", unproven_reason: "tenant_census_incomplete" };
 
   for (const tenant of census.tenants) {
+    // A SHARED tenant records the pool, not property (cp#270). Every check in this loop asks an
+    // ownership question -- does RunPod still have the endpoint this tenant made, is its template
+    // still there -- and none of them is meaningful about a resource the tenant never created.
+    //
+    // It gets a verdict rather than being dropped from the report. A tenant that silently does not
+    // appear reads as a tenant nobody looked at, which is the absent-row-reads-as-fine shape this
+    // whole file is built against. `clean` is honest here and is not a free pass: the pool's own
+    // presence is still checked below, once, against the inventory.
     const parsed = parseRecordedEndpoints(tenant);
+    if (readRunPodMode(tenant.runpod_mode) === "shared") {
+      verdicts.push({
+        tenant_id: tenant.id,
+        slug: tenant.slug,
+        status: tenant.status,
+        endpoints_recorded: parsed.ok ? parsed.endpoints.length : 0,
+        endpoints_present: 0,
+        templates_present: 0,
+        findings: 0,
+        verdict: inventory.complete && census.complete ? "clean" : "unproven",
+      });
+      continue;
+    }
     if (!parsed.ok) {
       findings.push({
         kind: "record_unreadable",
@@ -332,6 +393,10 @@ export function reconcileRunPod(census: TenantCensus, inventory: RunPodInventory
 
   const unattributedEndpoints: RunPodResource[] = [];
   for (const endpoint of inventory.endpoints) {
+    // THE POOL IS THE PLANE'S, and it is in use by every shared tenant at once (cp#270). It is
+    // neither orphaned nor unattributed: it is attributed to US. Skipped before the claim lookup
+    // so no tenant row can ever be the thing that decides a production endpoint's fate.
+    if (poolIds.has(endpoint.id) || poolNames.has(endpoint.name)) continue;
     const claim = claimedEndpointIds.get(endpoint.id);
     if (claim && !isTornDown(claim.tenant)) continue;
 
@@ -364,6 +429,9 @@ export function reconcileRunPod(census: TenantCensus, inventory: RunPodInventory
 
   const unattributedTemplates: RunPodResource[] = [];
   for (const template of inventory.templates) {
+    // Same as the endpoint loop: an endpoint resolves its image THROUGH its template, so the
+    // pool's templates are as load-bearing as the pool's endpoints and are equally not debris.
+    if (poolNames.has(template.name)) continue;
     if (liveNames.has(template.name)) continue;
     const named = owningTenantByName.get(template.name);
     if (!named) {

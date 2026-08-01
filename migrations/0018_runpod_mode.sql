@@ -1,0 +1,24 @@
+-- Which RunPod shape this tenant actually got (cp#270).
+--
+-- WHY A COLUMN AND NOT A DERIVATION FROM endpoints_json. Before this, endpoints_json meant exactly
+-- one thing: "the endpoints this tenant OWNS". Pooling introduces a second meaning, "the endpoints
+-- this tenant USES", and five consumers read the column as ownership -- readTenantEndpoints,
+-- tenants.ts, reconcile-runpod.ts, tenant-runpod-reprovision.ts, invoke-key-handoff.ts. Overloading
+-- one column so that its meaning depends on facts stored elsewhere is what would make the reconcile
+-- and teardown hazards invisible: every one of those readers would keep compiling, keep passing its
+-- tests, and be quietly wrong for shared tenants.
+--
+-- So the mode is RECORDED as a fact at provision time rather than inferred at read time. A reader
+-- that must not treat a pooled endpoint as tenant property branches on THIS, not on the contents of
+-- a JSON blob.
+--
+-- 'dedicated' is the DEFAULT and covers every existing row, which is correct: every tenant that has
+-- ever provisioned created its own endpoints with its own key A. Backfilling anything else would be
+-- asserting a history that did not happen.
+--
+-- Two values, not three. There is no 'unknown': the column is NOT NULL with a default, so a row
+-- always states a mode, and a tenant provisioned before this migration genuinely was dedicated. A
+-- nullable third state would be a value every reader has to handle and no writer can ever produce.
+--
+-- Additive with a default -> rides the normal auto-apply, no manual gate.
+ALTER TABLE tenants ADD COLUMN runpod_mode TEXT NOT NULL DEFAULT 'dedicated';

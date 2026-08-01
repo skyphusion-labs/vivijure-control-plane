@@ -53,12 +53,20 @@ function recordedEndpoints(slug: string) {
   }));
 }
 
-function tenantRow(slug: string, status: TenantLifecycle, endpointsJson: string | null): Tenant {
+function tenantRow(
+  slug: string,
+  status: TenantLifecycle,
+  endpointsJson: string | null,
+  /** cp#270. DEFAULTS TO dedicated so every existing case is unchanged and still exercises the
+   *  ownership path; the pooled cases pass "shared" explicitly. */
+  runpodMode: string = "dedicated",
+): Tenant {
   return {
     id: `ten_${slug.replace(/[^a-z0-9]/g, "")}`,
     slug,
     account_id: "acct_1",
     status,
+    runpod_mode: runpodMode,
     script_name: `tenant-${slug}-studio`,
     d1_database_id: "db",
     r2_bucket_name: "bucket",

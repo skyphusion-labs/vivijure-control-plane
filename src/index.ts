@@ -69,6 +69,7 @@ import { parseInventoryBody, reconcileRunPod, TENANT_PAGE_LIMIT } from "./reconc
 import { buildR2UsageReport, parseThresholdBytes } from "./tenant-r2-usage";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
+import { readRunPodMode } from "./runpod-pool";
 import { ABUSE_REPORT_URL_VAR } from "./tenant-abuse-report";
 import type { StorageQuotaIntent } from "./tenant-storage-quota";
 import {
@@ -820,8 +821,18 @@ async function provision(
   // studio, so discovering a missing key or an unconfigured provisioner after the teardown would
   // leave them strictly worse off than before they asked: resources gone, nothing provisioned, and
   // the refusal they should have got for free up front. Order is load-bearing, not stylistic.
-  if (!body?.runpod_api_key) return err("runpod_key_required", 400);
+  // cp#270: a RunPod key is required ONLY when this plane cannot put the tenant on the shared
+  // pool. Order matters and is why the provisioner check moved ABOVE this one: whether a key is
+  // needed is a question about the PLANE's configuration, so it cannot be answered before we know
+  // the plane is configured at all.
+  //
+  // A key that IS supplied is still honoured on a plane with a pool: that is the BYO power-user
+  // path, it keeps dedicated endpoints because the tenant brings the account, and it is correct.
+  // Only the ABSENCE of a key changes meaning here.
   if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+  if (!body?.runpod_api_key && !deps.provisioner.offersSharedTier()) {
+    return err("runpod_key_required", 400);
+  }
   // A GRANTED RECLAIM CANNOT GO THROUGH THIS ROUTE, and that refusal is deliberate rather than a
   // gap. tenants.slug is UNIQUE, so createTenant on a reclaimable row is guaranteed to hit the
   // constraint; and the row can still carry a half-built D1, bucket, and R2 token that must be torn
@@ -898,7 +909,7 @@ async function provision(
     // THIS row: createTenant would hit the UNIQUE constraint, and a second row would orphan the
     // first. No getTenantForAccount check here: the reclaimed row IS this account tenant.
     const job = await deps.store.createProvisionJob(newId("job"), reclaimed.id, "provision");
-    ctx.waitUntil(deps.provisioner.start(job.id, reclaimed, body.runpod_api_key));
+    ctx.waitUntil(deps.provisioner.start(job.id, reclaimed, body?.runpod_api_key ?? null));
     return json({ tenant_id: reclaimed.id, job_id: job.id, reclaimed: true }, 202);
   }
 
@@ -914,7 +925,10 @@ async function provision(
   const job = await deps.store.createProvisionJob(newId("job"), tenant.id, "provision");
   // The runner records every outcome on the job row (honest failures, real step errors); waitUntil
   // keeps it going after this 202 returns. The key rides the call and dies with it.
-  ctx.waitUntil(deps.provisioner.start(job.id, tenant, body.runpod_api_key));
+  // `?? null` is the cp#270 shared path, not defensive typing: an absent key is now a MEANINGFUL
+  // argument (put this tenant on the shared pool), and the provisioner distinguishes it from a
+  // present one to choose the shape. The route already refused above if neither is possible.
+  ctx.waitUntil(deps.provisioner.start(job.id, tenant, body?.runpod_api_key ?? null));
   return json({ tenant_id: tenant.id, job_id: job.id }, 202);
 }
 
@@ -924,9 +938,42 @@ async function installInvokeKey(
   tenant: Tenant,
 ): Promise<Response> {
   const body = (await readJson(request)) as { runpod_invoke_key?: string } | null;
-  const key = String(body?.runpod_invoke_key ?? "");
-  if (!key) return err("invoke_key_required", 400);
-  return (await performInvokeKeyInstall(deps, tenant, key)).response;
+  const pasted = String(body?.runpod_invoke_key ?? "");
+
+  // cp#270: a SHARED tenant has no RunPod account and therefore no key to paste. The PLANE
+  // supplies its pool key and the install runs otherwise UNCHANGED -- same verification, same
+  // readiness probe, same promotion. That is not a shortcut: the pool key genuinely is a
+  // Restricted, invoke-only key scoped to exactly the endpoints on this tenant's row, so
+  // verifyInvokeKeyScope is a real positive control here rather than a formality it would be
+  // tempting to skip. Skipping it would remove the graphql-capable refusal from the one tier
+  // whose key is ours, which is the tier where a mistake is widest.
+  if (readRunPodMode(tenant.runpod_mode) === "shared") {
+    // REFUSED, not ignored. Silently discarding a pasted key would leave the customer believing
+    // their credential is in use, and a tenant who has one to paste is a tenant who has
+    // misunderstood which tier they are on -- worth saying so.
+    if (pasted) {
+      return err("invoke_key_not_accepted", 400, {
+        message:
+          "this studio runs on our shared render capacity, so there is no key for you to " +
+          "provide. Nothing was stored.",
+      });
+    }
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const poolKey = deps.provisioner.sharedPoolInvokeKey();
+    if (!poolKey) {
+      // The tenant is recorded as shared and this plane cannot produce the key that shape needs.
+      // Honest 503: it is a deploy-config fact, not anything the customer can act on.
+      return err("shared_pool_unconfigured", 503, {
+        message:
+          "this studio is set up to use our shared render capacity, which is not available on " +
+          "this deploy. Nothing was changed; please get in touch.",
+      });
+    }
+    return (await performInvokeKeyInstall(deps, tenant, poolKey)).response;
+  }
+
+  if (!pasted) return err("invoke_key_required", 400);
+  return (await performInvokeKeyInstall(deps, tenant, pasted)).response;
 }
 
 /**

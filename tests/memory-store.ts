@@ -288,6 +288,7 @@ export class MemoryStore implements ControlPlaneStore {
       teardown_at: null,
       api_token_rotated_at: null,
       teardown_failures: null,
+      runpod_mode: "dedicated",
     };
     this.tenants.set(id, t);
     return t;
@@ -355,6 +356,11 @@ export class MemoryStore implements ControlPlaneStore {
   async setTenantEndpoints(id: string, endpointsJson: string) {
     const t = this.tenants.get(id);
     if (t) t.endpoints_json = endpointsJson;
+  }
+
+  async setTenantRunPodMode(id: string, mode: string): Promise<void> {
+    const t = this.tenants.get(id);
+    if (t) t.runpod_mode = mode;
   }
   async setTenantScript(id: string, scriptName: string, release: string) {
     const t = this.tenants.get(id);

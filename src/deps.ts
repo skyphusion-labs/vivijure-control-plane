@@ -36,6 +36,8 @@ import {
   type TeardownOutcome,
 } from "./provisioner";
 import { convergeTenantTemplateImages, createTenantEndpoints } from "./runpod";
+import { parseSharedPool } from "./runpod-pool";
+import type { SharedRunPodPool } from "./runpod-pool";
 import type { ControlPlaneStore, CreditStore, Tenant } from "./store";
 import {
   preflightRunPodReprovision,
@@ -128,6 +130,33 @@ export interface ProvisionerWiring {
    * awaiting_invoke_key rather than being promoted on credentials nothing has proven.
    */
   installInvokeKey(tenant: Tenant, key: string): Promise<ModuleReadiness>;
+  /**
+   * Does this plane offer the SHARED tier (cp#270)?
+   *
+   * A BOOLEAN, not the pool. The only caller is the provision route, which needs to answer one
+   * question -- may a tenant provision without bringing a RunPod key -- and handing it the pool
+   * would let a route grow its own opinion about which endpoints a tenant gets. The provisioner
+   * owns that decision and this is the smallest fact the route needs to stop refusing.
+   *
+   * True ONLY when both halves resolved (endpoints AND invoke key). A half-configured pool
+   * answers false, so the route gives the same honest runpod_key_required a plane with no shared
+   * tier gives, rather than accepting a provision it cannot finish.
+   */
+  offersSharedTier(): boolean;
+  /**
+   * The shared pool's invoke key, or null when this plane offers no shared tier (cp#270).
+   *
+   * A SECRET crossing this interface, which is unusual here and is justified only by what it
+   * avoids: the alternative was a second install path for shared tenants, and the invoke-key
+   * install is the one place the custody verification lives. cp#169 already established that the
+   * verification must hold by IDENTITY rather than imitation -- one function, two callers. A
+   * third caller with its own copy would be the drift that rule exists to prevent, so the key
+   * travels to the existing function instead of the function being duplicated for the key.
+   *
+   * The ONLY legitimate use is to pass it to performInvokeKeyInstall. It must never be logged,
+   * returned in a response, or written to D1 -- the same rule every other credential here obeys.
+   */
+  sharedPoolInvokeKey(): string | null;
   /**
    * Ask every module script this tenant has what it can do RIGHT NOW (cp#248): one unauthenticated
    * GET /ready each, no retry, no spend, no GPU, no tenant credential.
@@ -402,10 +431,43 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
   const scriptUploadCf = env.CF_WORKER_UPLOAD_TOKEN
     ? new CfApi(CF_ACCOUNT_ID, env.CF_WORKER_UPLOAD_TOKEN)
     : cf;
+  // cp#270: resolve the shared pool ONCE, here, beside every other piece of provisioner config.
+  //
+  // A REFUSAL RESOLVES TO NULL, and the log line is the whole of the safety story: a malformed or
+  // partial SHARED_RUNPOD_ENDPOINTS must never become a partially-wired tenant, so it degrades to
+  // "this plane has no shared tier" and the provision route answers runpod_key_required. That is a
+  // tenant who cannot provision, which is loud, rather than a tenant provisioned onto three of
+  // four capabilities, which is silent. The refusal detail is LOGGED because a plane whose
+  // operator believes it offers a shared tier and does not would otherwise have nothing to read.
+  //
+  // BOTH HALVES OR NEITHER. The key without the endpoints has nothing to invoke; the endpoints
+  // without the key produce module workers whose /ready reports the credential unset and whose
+  // first render 401s. Neither half is a degraded pool.
+  const poolConfig = parseSharedPool(env.SHARED_RUNPOD_ENDPOINTS);
+  const poolInvokeKey = env.SHARED_RUNPOD_INVOKE_KEY?.trim() || null;
+  // Did anyone ASK for a shared tier? Read from the raw vars rather than from poolConfig.ok,
+  // because the case that most needs the log line is the one where the config is set and WRONG:
+  // keying the diagnostic off a successful parse would stay silent for exactly that operator.
+  const poolRequested = Boolean(env.SHARED_RUNPOD_ENDPOINTS?.trim()) || Boolean(poolInvokeKey);
+  let sharedPool: SharedRunPodPool | null = null;
+  if (poolRequested) {
+    if (!poolConfig.ok) {
+      console.error("shared_pool.refused", poolConfig.detail);
+    } else if (!poolInvokeKey) {
+      console.error("shared_pool.refused", "SHARED_RUNPOD_ENDPOINTS is set but SHARED_RUNPOD_INVOKE_KEY is not");
+    } else {
+      sharedPool = poolConfig.pool;
+    }
+  }
+
   const deps: ProvisionDeps = {
     store,
     cf,
     scriptUploadCf,
+    sharedPool,
+    // Null unless the pool is fully configured, so the key can never be bound onto a tenant whose
+    // endpoints did not resolve.
+    sharedPoolInvokeKey: sharedPool ? poolInvokeKey : null,
     // Trimmed, and empty-means-absent: a whitespace-only value is a config typo, and treating it as
     // a service id would attach a binding CF cannot resolve.
     videoFinishServiceId: env.VIDEO_FINISH_VPC_SERVICE_ID?.trim() || null,
@@ -573,6 +635,12 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     },
     async resume(jobId, tenant, stepsDone) {
       await continueProvisionJob(deps, jobId, tenant, stepsDone);
+    },
+    offersSharedTier(): boolean {
+      return sharedPool !== null;
+    },
+    sharedPoolInvokeKey(): string | null {
+      return deps.sharedPoolInvokeKey;
     },
     async installInvokeKey(tenant, key): Promise<ModuleReadiness> {
       if (!tenant.script_name) throw new Error("tenant has no studio worker to install the key on");
