@@ -743,6 +743,20 @@ export async function runProvisionJob(
     //    seeds installed_modules in the tenant D1. No install logic is duplicated here.
     await installTenantModules(deps, tenant.id, deps.tenantScriptName(tenant.slug), studioApiToken);
     await mark("modules_install");
+    // RECORD THE MODULE RELEASE. Provision used to leave `tenants.modules_release` NULL forever:
+    // setTenantModulesRelease was called only by the UPGRADE path, so a tenant that had never been
+    // upgraded asserted no module release at all, while its resident module scripts were plainly at
+    // deps.release. Two consequences, and the second is the one that matters:
+    //   - the tenant census cannot say what modules a freshly provisioned tenant runs;
+    //   - smoke-render.ts opens every smoke with `tenant.modules_release` and states the invariant
+    //     "the pixels came from the module bytes recorded in modules_release", so on a fresh tenant
+    //     that provenance was NULL -- a smoke that cannot name the bytes that produced its pixels.
+    // WHY HERE and not inside runModuleSteps, which both callers share: the upgrade owns its own
+    // NULL-then-set window on this column (it must assert non-uniformity while it re-uploads), and
+    // moving the write inside would make that deliberate sequence read as dead code. AFTER
+    // modules_install, not after modules_upload, so a provision that dies between the two does not
+    // claim a release for modules that were never installed.
+    await deps.store.setTenantModulesRelease(tenant.id, deps.release);
 
     // 7. Verify what we actually built, from the API's own view, rather than trusting our writes.
     //    Names only; these endpoints never return values.
@@ -937,6 +951,12 @@ export async function continueProvisionJob(
       { shouldRun: (step) => !complete(step), onDone: mark },
     );
 
+    // Same write as the non-resumed path, and it has to be restated here rather than left to the
+    // caller: a provision that yielded and resumed reaches completion through THIS function and
+    // never runs the tail of runProvisionJob. Missing it here would mean the column is populated
+    // only for tenants whose provision happened to fit in one invocation, which is exactly the kind
+    // of state that looks correct until the slow case shows up.
+    await deps.store.setTenantModulesRelease(tenant.id, deps.release);
     await deps.store.setTenantStatus(tenant.id, "awaiting_invoke_key");
     await deps.store.finishJob(jobId, "succeeded", null, null);
     deps.log("provision.resumed_to_completion", { tenant: tenant.id });

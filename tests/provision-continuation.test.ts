@@ -448,6 +448,67 @@ describe("the runpod_endpoints -> wfp_upload yield strand (cp#18)", () => {
   });
 });
 
+describe("cp#248e: provision RECORDS the module release", () => {
+  // WHY THIS EXISTS. setTenantModulesRelease was called only by the module-UPGRADE path, so a
+  // tenant that had never been upgraded carried modules_release = NULL forever while its resident
+  // module scripts were plainly at deps.release. Found on a real provisioned tenant
+  // (hosted-phase1, 2026-08-01): studio_release v1.13.0, modules_release NULL, and its modules
+  // demonstrably at v1.13.0 because all five recording ones answered telemetry.job_log = true.
+  //
+  // It is not cosmetic. smoke-render.ts opens every smoke with tenant.modules_release under the
+  // stated invariant "the pixels came from the module bytes recorded in modules_release", so on a
+  // freshly provisioned tenant a smoke could not name the bytes that produced its pixels.
+  //
+  // BOTH completion paths are asserted, because they are different functions: a provision that
+  // fits in one invocation finishes in runProvisionJob, and one that yields finishes in
+  // continueProvisionJob. A fix in only one populates the column exactly for the tenants whose
+  // provision happened to be fast, which reads correct until the slow case appears.
+
+  it("the single-invocation path records deps.release", async () => {
+    const store = new MemoryStore();
+    const t = await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+
+    // PRECONDITION, asserted rather than assumed: it starts NULL, so a pass cannot come from a
+    // fixture that was already carrying the value.
+    expect(store.tenants.get(t.id)!.modules_release).toBeNull();
+
+    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(0), 15_000);
+
+    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(store.tenants.get(t.id)!.modules_release).toBe("v1.0.0");
+  });
+
+  it("the RESUMED path records it too", async () => {
+    const store = new MemoryStore();
+    const t = await seedTenant(store, { throughStudio: true });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"];
+    await store.updateJobProgress(job.id, "wfp_upload", JSON.stringify(stepsDone));
+
+    expect(store.tenants.get(t.id)!.modules_release).toBeNull();
+
+    const res = await continueProvisionJob(deps(store), job.id, t, stepsDone, fakeClock(0), 15_000);
+
+    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(store.tenants.get(t.id)!.modules_release).toBe("v1.0.0");
+  });
+
+  it("a provision that YIELDS before modules_install claims NO release", async () => {
+    // The negative that gives the two positives their meaning. A release recorded for modules that
+    // were never installed would be a worse lie than NULL: it asserts uniformity nothing achieved.
+    const store = new MemoryStore();
+    const t = await seedTenant(store);
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+
+    // A clock that burns the whole budget on every reading forces a yield at the first boundary.
+    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(60_000), 15_000);
+
+    expect(res).toMatchObject({ ok: false, yielded: true });
+    expect(store.tenants.get(t.id)!.modules_release).toBeNull();
+  });
+});
+
 describe("readTenantEndpoints", () => {
   it("reads the stored objects, endpointVar and all", async () => {
     const store = new MemoryStore();
