@@ -118,6 +118,50 @@ async function cfRaw(method: string, path: string): Promise<{ status: number; bo
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * A reading that never reached the module. See callModule.
+ *
+ * DELIBERATELY NOT A VALUE. It is a third thing alongside true/false/null, it resets the stability
+ * streak, and it renders as `x` so a run with transport trouble is visible as transport trouble.
+ * Folding it into `null` would say "the module reports no telemetry field" about a request the
+ * module never saw, which is the same collapse this whole suite exists to refuse.
+ */
+const NO_ANSWER = "x" as const;
+type Reading = boolean | null | typeof NO_ANSWER;
+
+/**
+ * One GET through the ephemeral dispatch door, with a BOUNDED retry on TRANSPORT failure only.
+ *
+ * MEASURED 2026-08-01, and this is not defensive padding. A run died on the first module read with
+ * Cloudflare's generic 404 HTML page: the workers.dev route for the dispatcher was resolvable at the
+ * PoP that answered the harness readiness poll and not yet at the PoP that answered the next
+ * request. `deployHarnessDispatcher.call` throws on any non-200, so that transport race aborted the
+ * whole suite AND produced exit 1, which is the failure code the run was expecting for a completely
+ * different reason. A gate that returns the right exit status for the wrong reason is worse than no
+ * gate.
+ *
+ * THE RETRY CANNOT LAUNDER AN ANSWER. The harness worker wraps every module reply, including a 404
+ * from the module itself, in a 200 JSON envelope. A raw non-200 therefore means the request never
+ * reached the harness at all. This retries exactly that case and never a reply.
+ *
+ * NOTE FOR WHOEVER OWNS tests/e2e-harness-dispatcher.ts: the same exposure exists in
+ * provision-e2e.live.test.ts, which calls `.call()` directly. Not changed here, because that is a
+ * shared harness and widening its behaviour under another suite is not a drive-by.
+ */
+async function callModule(script: string, path: string): Promise<{ status: number; text: string } | null> {
+  let lastErr = "never attempted";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await state.harness!.call({ ns: "module", script, path, method: "GET" });
+    } catch (e) {
+      lastErr = String(e).slice(0, 160);
+      await sleep(5_000);
+    }
+  }
+  say(`   TRANSPORT: no answer from the dispatch door for ${script} after 3 attempts: ${lastErr}`);
+  return null;
+}
+
+/**
  * Read GET /ready on one module script until the answer STOPS CHANGING, and report the whole
  * sequence. See the file header and cp#254; this is the load-bearing part of the suite.
  *
@@ -130,38 +174,39 @@ async function settle(
   need = 3,
   gapMs = 10_000,
   deadlineMs = 240_000,
-): Promise<{ value: boolean | null; seq: (boolean | null)[]; ms: number; settled: boolean }> {
-  const seq: (boolean | null)[] = [];
+): Promise<{ value: boolean | null; seq: Reading[]; ms: number; settled: boolean }> {
+  const seq: Reading[] = [];
   const start = Date.now();
-  let last: boolean | null | undefined;
+  let last: Reading | undefined;
   let run = 0;
   while (Date.now() - start < deadlineMs) {
     // Cache-buster on the path: a settled answer has to come from the worker, not from anything
     // in between deciding it already knows.
-    const r = await state.harness!.call({
-      ns: "module",
-      script,
-      path: `/ready?cb=${Date.now()}`,
-      method: "GET",
-    });
-    let body: { telemetry?: { job_log?: unknown } } = {};
-    try {
-      body = JSON.parse(r.text) as typeof body;
-    } catch {
-      body = {};
+    const r = await callModule(script, `/ready?cb=${Date.now()}`);
+    let v: Reading;
+    if (r === null) {
+      v = NO_ANSWER;
+    } else {
+      let body: { telemetry?: { job_log?: unknown } } = {};
+      try {
+        body = JSON.parse(r.text) as typeof body;
+      } catch {
+        body = {};
+      }
+      v = typeof body.telemetry?.job_log === "boolean" ? body.telemetry.job_log : null;
     }
-    const v = typeof body.telemetry?.job_log === "boolean" ? body.telemetry.job_log : null;
     seq.push(v);
-    run = v === last ? run + 1 : 1;
+    // A non-answer resets the streak and can never BE the settled value.
+    run = v !== NO_ANSWER && v === last ? run + 1 : v === NO_ANSWER ? 0 : 1;
     last = v;
-    if (run >= need) return { value: v, seq, ms: Date.now() - start, settled: true };
+    if (v !== NO_ANSWER && run >= need) return { value: v, seq, ms: Date.now() - start, settled: true };
     await sleep(gapMs);
   }
-  return { value: last ?? null, seq, ms: Date.now() - start, settled: false };
+  return { value: null, seq, ms: Date.now() - start, settled: false };
 }
 
-function render(seq: (boolean | null)[]): string {
-  return seq.map((x) => (x === null ? "n" : x ? "T" : "F")).join("");
+function render(seq: Reading[]): string {
+  return seq.map((x) => (x === NO_ANSWER ? "x" : x === null ? "n" : x ? "T" : "F")).join("");
 }
 
 async function readyReport(phase: string): Promise<Map<string, { value: boolean | null; settled: boolean }>> {
@@ -194,7 +239,12 @@ function makeDeps(): TenantModuleDeps {
     aiGatewayId: null,
     moduleBundle: localModuleBundleSource(state.release!.dir),
     release: env!.studioRelease,
-    callTenantModule: async (script, path) => await state.harness!.call({ ns: "module", script, path, method: "GET" }),
+    // Transport-retried, and a door that still will not answer becomes status 0 rather than an
+    // exception. probeTenantModuleReadiness then records job_log null with a detail, which fails the
+    // assertion that reads it. A transport failure must never pass and must never look like an
+    // answer; those are two different requirements and this satisfies both.
+    callTenantModule: async (script, path) =>
+      (await callModule(script, path)) ?? { status: 0, text: "the ephemeral dispatch door did not answer" },
     // Nothing in this suite has a tenant studio. A stub that THROWS rather than one that returns a
     // plausible 200: an unexpected call to it is a wiring change nobody meant to make, and a
     // friendly stub would absorb it silently.
