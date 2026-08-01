@@ -753,10 +753,19 @@ export async function runProvisionJob(
         // means the tenant degrades to per-shot clips WITH THE REASON STATED, which is exactly what
         // tenants get today and what self-host gets without the container.
         //
-        // The tier is SHARED (descendents + badbrains) and that is safe by CONSTRUCTION, not by
-        // policy: the container never receives a credential. The studio presigns per-object R2
-        // GET/PUT URLs with its OWN bucket-scoped credential and passes URLs, so a shared worker
-        // cannot enumerate a tenant's bucket, cannot outlive the URL, and holds nothing to leak.
+        // The tier is SHARED, selected by the `tier=finishing` swarm label rather than a fixed
+        // node list (measured 2026-08-01: descendents, badbrains, jello), and that is safe by
+        // CONSTRUCTION, not by policy: the container never receives a credential. The studio
+        // presigns per-object R2 GET/PUT URLs with its OWN bucket-scoped credential and passes
+        // URLs, so a shared worker cannot enumerate a tenant's bucket, cannot outlive the URL,
+        // and holds nothing to leak.
+        //
+        // THE NODE LIST IS AN OBSERVATION, NEVER A DEFINITION, and naming nodes is what made this
+        // comment stale in the first place. jello was wiped, rebuilt and re-labelled on
+        // 2026-07-31, and the tier absorbed it with no per-tenant change anywhere, because
+        // placement is label-driven and the workers hold no credential to re-issue. That is the
+        // cp#270 shared-tier thesis already running in production, which is why this comment is
+        // the precedent the pooled RunPod design is built on.
         ...(deps.videoFinishServiceId
           ? [{ type: "vpc_service" as const, name: "VIDEO_FINISH_VPC", service_id: deps.videoFinishServiceId }]
           : []),
