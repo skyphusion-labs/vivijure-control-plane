@@ -106,6 +106,9 @@ beforeAll(async () => {
   deps = {
     store,
     cf,
+    // cp#270: the live e2e provisions a DEDICATED tenant with a real key A, unchanged.
+    sharedPool: null,
+    sharedPoolInvokeKey: null,
     // cp#164: the live harness provisions a real tenant studio, so it binds the same derived intake
     // URL a real deploy does. Pointed at the live front door, which is where the page is served.
     aiGatewayId: null,

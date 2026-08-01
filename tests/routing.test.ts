@@ -44,6 +44,7 @@ function tenant(over: Partial<Tenant> = {}): Tenant {
   teardown_at: null,
   api_token_rotated_at: null,
   teardown_failures: null,
+  runpod_mode: "dedicated",
     ...over,
   };
 }

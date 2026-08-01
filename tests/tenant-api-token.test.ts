@@ -27,6 +27,7 @@ function tenant(over: Partial<Tenant> = {}): Tenant {
     studio_token_enc: null, created_at: "", live_at: "", suspended_at: null, suspended_reason: null,
     deleted_at: null, reclaim_lease_until: null, reclaim_lease_token: null,
     api_token_rotated_at: null, teardown_at: null, teardown_failures: null,
+    runpod_mode: "dedicated",
     ...over,
   } as Tenant;
 }

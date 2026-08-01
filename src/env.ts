@@ -136,6 +136,45 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    */
   VIDEO_FINISH_VPC_SERVICE_ID?: string;
 
+  /**
+   * The SHARED RunPod endpoint pool for the hosted shared tier (cp#270), as JSON keyed by
+   * PROVISION_PLAN key:
+   *
+   *   {"backend":{"id":"...","name":"..."},"upscale":{...},"lipsync":{...},
+   *    "audio-upscale":{...}}
+   *
+   * A VAR, not a secret: endpoint ids and names are identifiers. The key that can invoke them is
+   * SHARED_RUNPOD_INVOKE_KEY below, deliberately a separate value so an error message or a log
+   * line built from the pool cannot carry a credential.
+   *
+   * Set it and a tenant that brings NO RunPod key of its own can be provisioned onto these
+   * endpoints, creating zero new ones. Unset and every tenant must bring a key, which is the
+   * behaviour before pooling existed. ALL-OR-NOTHING: a value missing any plan key is REFUSED
+   * rather than partially resolved, because a tenant with three of four capabilities wired
+   * provisions green and dies at the first render on the fourth.
+   *
+   * The `name` on each entry is required and is not decoration: it is what lets reconciliation
+   * recognise a pool endpoint in an operator's inventory snapshot and refuse to report a
+   * production endpoint as orphaned debris.
+   */
+  SHARED_RUNPOD_ENDPOINTS?: string;
+
+  /**
+   * The invoke key for the shared pool (cp#270). A SECRET, and a per-function one.
+   *
+   * This inverts the two-key custody design for exactly one tier, so the inversion is worth
+   * naming rather than leaving for a reader to infer. On the dedicated path key B belongs to the
+   * TENANT, is minted in their own console, and is proven Restricted and endpoint-scoped by
+   * verifyInvokeKeyScope before it is ever stored. A pooled tenant has no RunPod account, so this
+   * key is OURS: it must be invoke-only (no graphql) and scoped to exactly the pool endpoints,
+   * and revoking it affects EVERY shared tenant at once rather than one.
+   *
+   * Both this and SHARED_RUNPOD_ENDPOINTS must be present for the shared tier to be offered.
+   * Either alone offers nothing: half a pool is not a degraded pool, it is a tenant that cannot
+   * render, and the honest answer is the same runpod_key_required a plane with no pool gives.
+   */
+  SHARED_RUNPOD_INVOKE_KEY?: string;
+
   // ---- provisioner wiring (#53). ALL of these must be present for provisioning to be offered;
   // a partially configured provisioner refuses (503 provisioner_unconfigured) rather than parking
   // tenants on jobs nothing will ever run. ----
@@ -365,6 +404,11 @@ export const ENV_SECRETS = [
   "AI_GATEWAY_READ_TOKEN",
   "STUDIO_TOKEN_KEK",
   "STUDIO_TOKEN_KEK_NEXT",
+  // cp#270: the shared pool INVOKE key. A secret, so `wrangler secret put` rather than a var --
+  // and declaring it here is what stops the census asking a deploy list for a credential. Its
+  // sibling SHARED_RUNPOD_ENDPOINTS is a plain var and IS in the four lists, which is the split
+  // this pair exists to make: identifiers in the config, the credential out of band.
+  "SHARED_RUNPOD_INVOKE_KEY",
 ] as const satisfies readonly (keyof ControlPlaneEnv)[];
 
 export const ENV_BINDINGS = [

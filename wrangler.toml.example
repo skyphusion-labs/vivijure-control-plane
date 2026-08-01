@@ -207,6 +207,23 @@ APPLE_SERVICES_ID = "${APPLE_SERVICES_ID}"
 # That is a real working fallback, not a degrade -- pickProvider needs GATEWAY_ID and CF_AIG_TOKEN
 # both, and the provisioner binds NEITHER when either is missing (tenant-modules.ts).
 TENANT_AI_GATEWAY_ID = "${TENANT_AI_GATEWAY_ID}"
+
+# cp#270: the SHARED RunPod endpoint pool, as JSON keyed by PROVISION_PLAN key:
+#   {"backend":{"id":"...","name":"..."},"upscale":{...},"lipsync":{...},"audio-upscale":{...}}
+#
+# EMPTY MEANS THIS PLANE OFFERS NO SHARED TIER, and every tenant must bring its own RunPod key --
+# which is exactly the behaviour before pooling existed. Set it and a tenant that brings no key
+# rides these endpoints and creates ZERO new ones, which is what lifts the account-wide worker
+# quota ceiling off the tenant count.
+#
+# ALL-OR-NOTHING: a value missing any plan key is REFUSED at wiring time (logged as
+# shared_pool.refused) and the plane falls back to offering no shared tier. A partial pool would
+# provision a tenant that is green through verify and dies at the first render on the capability
+# it has no endpoint for.
+#
+# The invoke key that can RUN these endpoints is SHARED_RUNPOD_INVOKE_KEY, a worker secret
+# (`wrangler secret put`), never a var. Both halves must be present or the tier is not offered.
+SHARED_RUNPOD_ENDPOINTS = "${SHARED_RUNPOD_ENDPOINTS}"
 # cf#56: alert threshold in BYTES for total R2 across all tenant buckets, on the admin usage
 # surface. EMPTY IS MEANINGFUL: no threshold, and the surface reports usage with a `no_threshold`
 # verdict rather than inventing a line nobody chose. parseThresholdBytes refuses 0 deliberately --

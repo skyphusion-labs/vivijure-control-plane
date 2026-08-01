@@ -93,6 +93,10 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     store,
     cf,
     videoFinishServiceId: null,
+    // cp#270: the DEFAULT fixture is a plane with NO shared pool, so every pre-existing case
+    // still exercises the dedicated path exactly as it did. The pooled cases override both.
+    sharedPool: null,
+    sharedPoolInvokeKey: null,
     // cp#164: the default fixture is a plane that publishes an intake page, because that is what a
     // configured deploy is. Tests that care about the unconfigured case override it with null.
     abuseReportUrl: "https://studio.example.com/report-abuse",
@@ -218,6 +222,115 @@ beforeEach(() => {
   store = new MemoryStore();
   calls = [];
   logs = [];
+});
+
+// cp#270: the SHARED pool fixture. Ids and names only -- the invoke key is a separate dep, exactly
+// as it is in production, so a test that forgets one cannot accidentally get the other.
+const SHARED_POOL = {
+  endpoints: [
+    { key: "backend", label: "Render", id: "pool-1", name: "vivijure-prod-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
+    { key: "upscale", label: "Upscale", id: "pool-2", name: "vivijure-prod-upscale", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
+    { key: "lipsync", label: "Lip sync", id: "pool-3", name: "vivijure-prod-lipsync", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+    { key: "audio-upscale", label: "Audio upscale", id: "pool-4", name: "vivijure-prod-audio", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
+  ],
+  ids: new Set(["pool-1", "pool-2", "pool-3", "pool-4"]),
+  names: new Set(["vivijure-prod-backend", "vivijure-prod-upscale", "vivijure-prod-lipsync", "vivijure-prod-audio"]),
+};
+
+describe("runProvisionJob on the SHARED pool (cp#270)", () => {
+  it("creates ZERO endpoints and still reaches awaiting_invoke_key", async () => {
+    // The headline. The ten-tenant ceiling exists because every tenant consumed 5 account-wide
+    // workers, forever (teardown structurally cannot reap them). A shared tenant must consume none.
+    const t = await tenant();
+    const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+
+    const res = await runProvisionJob(d, job.id, t, null);
+
+    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(d.runpod.createEndpoints).toHaveBeenCalledTimes(0);
+    expect(calls.filter((c) => c.startsWith("runpod."))).toEqual([]);
+    expect(JSON.parse(store.jobs.get("job_1")!.steps_done)).toEqual([...PROVISION_STEPS]);
+  });
+
+  it("records the mode AND the pool endpoints on the row", async () => {
+    const t = await tenant();
+    const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    await runProvisionJob(d, job.id, t, null);
+
+    const row = store.tenants.get(t.id)!;
+    expect(row.runpod_mode).toBe("shared");
+    expect(JSON.parse(row.endpoints_json!)).toEqual(SHARED_POOL.endpoints);
+  });
+
+  it("writes the MODE BEFORE the endpoint list, so a crash between them is inert", async () => {
+    // ORDER IS THE SAFETY PROPERTY, and it is the opposite of the obvious one. A row carrying pool
+    // endpoint ids under the DEFAULT mode 'dedicated' is the single combination that makes
+    // reconciliation attribute production endpoints to a tenant and call them its debris. Mode
+    // first means a crash in the window leaves a row with a known mode and no endpoints, which
+    // every reader treats as nothing to do.
+    const t = await tenant();
+    const { store: recorder, journal } = recordingStore(store);
+    const d = deps({ store: recorder, sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    await runProvisionJob(d, job.id, t, null);
+
+    // The journal records `name(args...)`, so match on the call NAME rather than on equality: an
+    // args-sensitive matcher would silently stop finding the call the day an argument is added.
+    const mode = journal.findIndex((c) => c.startsWith("setTenantRunPodMode("));
+    const endpoints = journal.findIndex((c) => c.startsWith("setTenantEndpoints("));
+    // Both must be FOUND, asserted separately. Two -1s compare as equal-not-less-than and would make
+    // the ordering assertion below fail for the right reason by accident, which is not a proof.
+    expect(mode).toBeGreaterThanOrEqual(0);
+    expect(endpoints).toBeGreaterThanOrEqual(0);
+    expect(mode).toBeLessThan(endpoints);
+  });
+
+  it("binds the POOL endpoint ids into the studio, so the studio dispatches to them", async () => {
+    // The consumer test. uploadTenantModules and the studio upload read only `id` and
+    // `endpointVar`, which is exactly why one branch can feed both -- prove it rather than assume.
+    const t = await tenant();
+    const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    await runProvisionJob(d, job.id, t, null);
+
+    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      bindings: { name: string; text?: string }[];
+    };
+    expect(upload.bindings.find((b) => b.name === "RUNPOD_ENDPOINT_ID")?.text).toBe("pool-1");
+    expect(upload.bindings.find((b) => b.name === "MUSETALK_RUNPOD_ENDPOINT_ID")?.text).toBe("pool-3");
+  });
+
+  it("POSITIVE CONTROL: a key A on a plane WITH a pool still builds DEDICATED endpoints", async () => {
+    // The BYO power-user path, which keeps dedicated endpoints because the tenant brings the
+    // account. Conrad's ruling governs the SHARED tier only, and "no dedicated endpoints" must
+    // never become "no dedicated endpoints ever". A pool configured on the plane must not hijack a
+    // tenant who supplied their own key.
+    const t = await tenant();
+    const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    await runProvisionJob(d, job.id, t, "rpa_keyA");
+
+    expect(d.runpod.createEndpoints).toHaveBeenCalledTimes(1);
+    expect(store.tenants.get(t.id)?.runpod_mode).toBe("dedicated");
+    expect(JSON.parse(store.tenants.get(t.id)!.endpoints_json!)).toEqual(ENDPOINTS);
+  });
+
+  it("CONTROL: no key and NO pool is still the original honest stop, creating nothing", async () => {
+    // The check that can come back negative. If this ever passes, the pooled branch has become the
+    // default and a plane with no shared tier is silently provisioning tenants onto nothing.
+    const t = await tenant();
+    const d = deps({ sharedPool: null, sharedPoolInvokeKey: null });
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+
+    const res = await runProvisionJob(d, job.id, t, null);
+
+    expect(res).toEqual({ ok: false, step: "runpod_endpoints", message: "runpod_key_required" });
+    expect(d.runpod.createEndpoints).toHaveBeenCalledTimes(0);
+    expect(store.tenants.get(t.id)?.runpod_mode).toBe("dedicated");
+    expect(store.tenants.get(t.id)?.endpoints_json).toBeNull();
+  });
 });
 
 describe("runProvisionJob", () => {

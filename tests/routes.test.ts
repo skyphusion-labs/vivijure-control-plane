@@ -177,6 +177,11 @@ let wiring: {
   reprovisionRunPod: ReturnType<typeof vi.fn>;
   preflightStudioUpgrade: ReturnType<typeof vi.fn>;
   upgradeStudio: ReturnType<typeof vi.fn>;
+  // cp#270. Declared on the TYPE, not only assigned in the literal, for the reason the comment
+  // at the assignment already gives about the other pair: a member that exists only in a test
+  // body is invisible to the compiler at every other call site.
+  offersSharedTier: ReturnType<typeof vi.fn>;
+  sharedPoolInvokeKey: ReturnType<typeof vi.fn>;
 };
 
 const env = (over: Partial<ControlPlaneEnv> = {}): ControlPlaneEnv =>
@@ -279,6 +284,12 @@ beforeEach(() => {
     setStorageQuota: vi.fn(async () => ({ ok: true, result: CLEAN_STORAGE_QUOTA })),
     // cp#136 criterion 3: default is a clean detach; the refusal and short-readback cases override.
     detachStudioBinding: vi.fn(async () => ({ ok: true, result: CLEAN_DETACH })),
+    // cp#270: the DEFAULT plane offers NO shared tier, which keeps every pre-existing route case
+    // meaning exactly what it meant before pooling -- notably "a provision with no RunPod key is
+    // refused 400". The pooled cases override both of these, and a test that forgets to is
+    // asserting the dedicated behaviour, which is the safe direction to default in.
+    offersSharedTier: vi.fn(() => false),
+    sharedPoolInvokeKey: vi.fn(() => null),
   };
   deps = {
     store,

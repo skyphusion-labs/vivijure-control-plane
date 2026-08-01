@@ -6,6 +6,53 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(provisioner): pooled SHARED tier that creates zero net-new RunPod endpoints (cp#270)
+
+Conrad ruled 2026-08-01 that the hosted SHARED tier never provisions dedicated per-tenant RunPod
+endpoints. The capability did not exist, so the ruling could not be satisfied by configuration.
+A shared-tier tenant now rides the endpoints that already exist and creates none.
+
+The ceiling this lifts: the RunPod worker quota is ACCOUNT-WIDE, `PROVISION_PLAN` needs 5 net-new
+workers per tenant, and teardown structurally cannot reap RunPod endpoints, so the dedicated shape
+capped the hosted business at roughly ten tenants that had EVER existed. Provisioning one test
+tenant took the account from 47/50 to 50/50.
+
+Which shape a tenant gets is derived from a fact the caller already carries rather than from a new
+toggle: a RunPod key present means DEDICATED (the BYO power-user path, correct and unchanged), a key
+absent with a pool configured means SHARED. The resolved shape is RECORDED on `tenants.runpod_mode`
+(migration 0018) rather than inferred from `endpoints_json`, whose meaning would otherwise change
+from "endpoints this tenant OWNS" to "endpoints this tenant USES" under five readers that all treat
+it as ownership.
+
+Most of the change is guards, because the dangerous failure mode is that nothing breaks:
+
+- the mode is written BEFORE the endpoint list, so a crash between the two leaves an inert row
+  rather than pool endpoint ids under the default mode `dedicated` -- the single combination that
+  makes reconciliation attribute production endpoints to a tenant and call them its debris;
+- `reconcile-runpod` excludes the pool and shared rows. Without it, `claimedEndpointIds` (keyed by
+  endpoint id) collapses N shared tenants to ONE claimant, so a single DELETED shared tenant emits a
+  live production endpoint as `orphan_endpoint` at confidence "proven";
+- the reprovision route refuses a shared tenant instead of aiming a per-tenant rebuild at the
+  plane's production pool;
+- a partial or malformed pool is REFUSED, never partially resolved, and the plane falls back to
+  offering no shared tier.
+
+Key B custody inverts for this tier (the key is ours, not the tenant's), and the install path is
+deliberately not duplicated: the pool key travels to the existing `performInvokeKeyInstall`, so the
+graphql-capable refusal still runs against it. Revoking it affects every shared tenant at once.
+
+Both reconcile guards were proved by reintroducing the defect and watching the suite go red, which
+is how the per-tenant row skip was found to be untested by the original fixtures.
+
+NOT proven: that a shared tenant renders. That needs a live provision against the real pool. The R2
+half (moving job-I/O R2 config out of the RunPod template and into the per-job payload) is a
+separate change in `vivijure-backend`, and the pooled template must carry no job-I/O R2 credential
+at all -- with a fallback, a job whose payload field is missing writes into the shared bucket and
+succeeds. Per-tenant fairness on a shared queue is filed as cp#273, not built.
+
+With both `SHARED_RUNPOD_ENDPOINTS` and `SHARED_RUNPOD_INVOKE_KEY` unset, this deploy behaves
+exactly as it does today for every existing tenant.
+
 ### fix(provisioner): a freshly provisioned tenant now RECORDS its module release (cp#248)
 
 `setTenantModulesRelease` was called only by the module-UPGRADE path, so `tenants.modules_release`
