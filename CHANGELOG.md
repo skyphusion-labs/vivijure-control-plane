@@ -6,6 +6,8 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.20.0 -- 2026-08-01
+
 ### fix(ci): the changelog-immutability waiver moves OUT of the changelog (cp#245)
 
 `changelog-released-immutable.py` waived immutability for any released section whose body CONTAINED
