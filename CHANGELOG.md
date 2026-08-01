@@ -6,6 +6,33 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(provisioner): a freshly provisioned tenant now RECORDS its module release (cp#248)
+
+`setTenantModulesRelease` was called only by the module-UPGRADE path, so `tenants.modules_release`
+stayed NULL forever on any tenant that had never been upgraded, while its resident module scripts
+were plainly at the pinned release. Found on a real provisioned tenant (`hosted-phase1`,
+2026-08-01): `studio_release v1.13.0`, `modules_release NULL`, and its modules demonstrably at
+v1.13.0 because all five recording ones answered `telemetry.job_log = true`. Confirmed at the raw
+column rather than the admin projection, which renders the two differently.
+
+Not cosmetic. `smoke-render.ts` opens every smoke render with `tenant.modules_release` under the
+stated invariant "the pixels came from the module bytes recorded in `modules_release`", so on a
+freshly provisioned tenant a smoke could not name the bytes that produced its pixels -- the exact
+provenance gap the cf#278 phase-1 evidence depends on.
+
+The write lands after `modules_install` (not after `modules_upload`), so a provision that dies
+between the two claims no release for modules that were never installed, and it is restated in
+`continueProvisionJob` because a provision that yielded and resumed reaches completion through that
+function and never runs the tail of `runProvisionJob`. It is deliberately NOT folded into the shared
+`runModuleSteps`: the upgrade path owns its own NULL-then-set window on this column and moving the
+write inside would make that deliberate sequence read as dead code.
+
+Three tests, and the two positives were made to FAIL first with the fix reverted. The third (a
+provision that yields before `modules_install` claims no release) passes with or without the fix and
+is therefore not discriminating on its own -- it exists to prove the fix does not over-apply, and it
+is labelled as such rather than counted as evidence the fix works.
+
+
 ## v1.20.0 -- 2026-08-01
 
 ### fix(ci): the changelog-immutability waiver moves OUT of the changelog (cp#245)
