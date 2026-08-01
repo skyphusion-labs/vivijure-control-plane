@@ -6,6 +6,24 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### docs(provisioner): the finishing tier is label-selected, and it is three nodes now (cp#270)
+
+Comment only, no behaviour change. `provisioner.ts` said the video-finish tier is
+"(descendents + badbrains)". Conrad added jello; verified against the live swarm rather than taken
+on trust (`tier=finishing` on three nodes, all five vivijure-media services replicated 3/3 max 1
+per node, `vivijure-media_video-finish` constrained to `node.labels.tier == finishing` with a
+task on jello since its 2026-07-31 rebuild).
+
+Wording matches what #275 landed in `docs/cost-basis.md` and `docs/control-plane.md`, so one grep
+now finds all three, and the node list is written as a measured-on-date observation rather than a
+definition. Naming nodes is what made the comment stale in the first place; placement is
+label-driven and picks up whatever carries the label.
+
+Worth more than the correction, and now stated in the comment: that tier absorbed a wiped, rebuilt
+and re-labelled node with **no per-tenant change anywhere**, because the workers hold no credential
+to re-issue and are selected by label. That is the cp#270 shared-tier thesis already running in
+production, and this comment is the precedent the pooled RunPod design is built on.
+
 ### feat(provisioner): pooled SHARED tier that creates zero net-new RunPod endpoints (cp#270)
 
 Conrad ruled 2026-08-01 that the hosted SHARED tier never provisions dedicated per-tenant RunPod
