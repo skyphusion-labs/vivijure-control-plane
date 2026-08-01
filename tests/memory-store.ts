@@ -455,6 +455,33 @@ export class MemoryStore implements ControlPlaneStore {
     t.teardown_failures = JSON.stringify(failures);
   }
 
+  /**
+   * cp#270. Mirrors the D1 upsert semantics that matter to a caller: keyed on job_id, and a later
+   * harvest FILLS nulls without ever blanking a value an earlier one saved. Getting that wrong in
+   * the fake would let a test pass against semantics production does not have.
+   */
+  jobIndex = new Map<string, Record<string, unknown>>();
+
+  async indexRunpodJobs(
+    tenantId: string,
+    tenantSlug: string,
+    rows: { job_id: string; module: string | null; outcome: string | null; submitted_at: number | null; terminal_at: number | null }[],
+  ): Promise<number> {
+    for (const r of rows) {
+      const prev = this.jobIndex.get(r.job_id);
+      this.jobIndex.set(r.job_id, {
+        job_id: r.job_id,
+        tenant_id: tenantId,
+        tenant_slug: tenantSlug,
+        module: r.module ?? prev?.module ?? null,
+        outcome: r.outcome ?? prev?.outcome ?? null,
+        submitted_at: r.submitted_at ?? prev?.submitted_at ?? null,
+        terminal_at: r.terminal_at ?? prev?.terminal_at ?? null,
+      });
+    }
+    return rows.length;
+  }
+
   // ---- preservation holds (cp#118) -------------------------------------------------------------
   //
   // MIRRORS D1Store SEMANTICS, and is NOT evidence about the shipped SQL -- the interlock query

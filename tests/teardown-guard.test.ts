@@ -49,6 +49,15 @@ function recordingDeps(store: D1Store, log: CallLog): { deps: ProvisionDeps; log
   const deps = {
     store,
     cf: {
+      // cp#270: teardown HARVESTS the tenant job log before it reaps the D1. These fakes
+      // answer the sqlite_master existence probe with nothing, i.e. a tenant with no
+      // `runpod_job_log` table -- a COMPLETE harvest of nothing, which is the correct default
+      // here because these suites tear down half-built and never-provisioned tenants, exactly
+      // the population whose migrations never ran. The harvest-failure case has its own test
+      // in runpod-job-index.test.ts rather than being smuggled in as a fixture default.
+      async queryD1() {
+        return [];
+      },
       async deleteD1(id: string) {
         log.deleteD1.push(id);
       },

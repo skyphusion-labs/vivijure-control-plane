@@ -6,6 +6,7 @@
 
 import type { HoldRow, LedgerRow } from "./credits";
 import type { RunPodMode } from "./runpod-pool";
+import type { HarvestedJob } from "./runpod-job-index";
 import type { LlmSpendStore, RollupPeriodWrite } from "./llm-spend-ingest";
 import type { SpendEvent } from "./llm-spend-rollup";
 import type { LlmSpendReadStore, LlmSpendWindow, RollupPeriodRow } from "./llm-spend-window";
@@ -948,6 +949,34 @@ export class D1Store implements ControlPlaneStore, CreditStore {
 
   async setApiTokenRotatedAt(id: string): Promise<void> {
     await this.db.prepare("UPDATE tenants SET api_token_rotated_at = datetime('now') WHERE id = ?1").bind(id).run();
+  }
+
+  async indexRunpodJobs(tenantId: string, tenantSlug: string, rows: HarvestedJob[]): Promise<number> {
+    if (rows.length === 0) return 0;
+    // COALESCE on every nullable column, in this direction: `excluded` first so a fresh value
+    // wins, falling back to what is already stored so a later harvest that sees LESS cannot
+    // erase what an earlier one saved. An index whose whole purpose is to outlive its source
+    // must not be able to lose data to a re-run.
+    const sql =
+      "INSERT INTO runpod_job_index " +
+      "(job_id, tenant_id, tenant_slug, module, outcome, submitted_at, terminal_at, harvested_at) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now')) " +
+      "ON CONFLICT(job_id) DO UPDATE SET " +
+      "module = COALESCE(excluded.module, runpod_job_index.module), " +
+      "outcome = COALESCE(excluded.outcome, runpod_job_index.outcome), " +
+      "submitted_at = COALESCE(excluded.submitted_at, runpod_job_index.submitted_at), " +
+      "terminal_at = COALESCE(excluded.terminal_at, runpod_job_index.terminal_at), " +
+      "harvested_at = datetime('now')";
+    // batch() so one harvest is one round trip rather than N. Statements are prepared per row
+    // because D1 has no multi-row bind; the SQL string is constant, so only the bindings vary.
+    await this.db.batch(
+      rows.map((r) =>
+        this.db
+          .prepare(sql)
+          .bind(r.job_id, tenantId, tenantSlug, r.module, r.outcome, r.submitted_at, r.terminal_at),
+      ),
+    );
+    return rows.length;
   }
 
   async recordTeardown(id: string, failures: { resource: string; error: string }[]): Promise<void> {

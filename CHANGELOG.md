@@ -6,6 +6,42 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(teardown): harvest the RunPod job to tenant index before reaping a tenant D1 (cp#270, for cp#225)
+
+On the dedicated shape the endpoint NAME carried attribution for free (`vivijure-<slug>-<key>`).
+Pooling removes that: a pooled endpoint's jobs are a mixture, and the only remaining map from a
+RunPod job id back to a tenant is a fan-out scan of every tenant database. That degrades cp#225,
+the report-driven CSAM enforcement path, where reaching the specific job IS the procedure.
+
+HARVESTED, NOT PUSHED. The obvious shape is for the submitting module worker to write the mapping
+at submit. Rejected: the facility is used a handful of times a year, so a synchronous hot-path
+write on every render pays a continuous cost for an occasional need, and it has to arrive either
+as a new authenticated ingress on the render path (silent lost attribution when it fails) or as a
+D1 binding to control-plane storage on every tenant module worker. The control plane already holds
+every `d1_database_id` because it created them, so it READS. Nothing on the render path, no new
+binding on any tenant worker, nothing to fail silently mid-render.
+
+THE ORDERED TEARDOWN STEP is what makes it correct rather than merely cheap. A tenant database
+dies at teardown, which is exactly when the index becomes the only surviving record, so a periodic
+sweep alone would permanently lose every job between the last sweep and the deletion. The harvest
+is a mandatory step ordered AHEAD of the D1 delete, and **a harvest that cannot be proven complete
+blocks the delete and fails the teardown**. That is the uncomfortable direction on purpose: an
+un-run teardown is recoverable by running it again, a deleted mapping is not.
+
+Three harvest states are kept distinguishable, because collapsing any two is how an index ends up
+silently short of a source that no longer exists: complete-with-rows; complete-with-no-table (a
+provision that died before its migrations ran, which must stay reapable); and incomplete (the row
+ceiling was hit, so the read is refused rather than truncated). Table existence is asked of
+`sqlite_master` BY DATA, never inferred from a vendor error string.
+
+Content is unchanged from the ids-and-labels telemetry posture: job id, module name, an outcome
+from a closed set, two timestamps, plus the tenant id and the slug as it was at harvest time. The
+RunPod endpoint id is deliberately not copied (migration 0014 omits it, and on a pooled endpoint it
+is the same value for every tenant, so it attributes nothing).
+
+Coverage is NOT retrospective: tenants already deleted are unrecoverable and nothing here pretends
+otherwise.
+
 ### docs(provisioner): the finishing tier is label-selected, and it is three nodes now (cp#270)
 
 Comment only, no behaviour change. `provisioner.ts` said the video-finish tier is

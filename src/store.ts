@@ -9,6 +9,7 @@
 // TYPE-ONLY, so this cannot create a runtime cycle: runpod-pool.ts imports a type back out of
 // provisioner.ts, which imports types out of here. All three edges are erased at compile.
 import type { RunPodMode } from "./runpod-pool";
+import type { HarvestedJob } from "./runpod-job-index";
 
 /**
  * The tenant LIFECYCLE. Note what is NOT in here: "suspended".
@@ -647,6 +648,24 @@ export interface ControlPlaneStore {
 
   /** Record that a teardown ran and what it failed to reap ('[]' when it reaped everything). */
   recordTeardown(id: string, failures: { resource: string; error: string }[]): Promise<void>;
+  /**
+   * Write harvested RunPod job rows into the control-plane index (cp#270, migration 0019).
+   *
+   * UPSERT BY job_id, and the conflict rule is the interesting half: a later harvest of the SAME
+   * job may carry a terminal outcome the earlier one did not, so a re-harvest must be able to
+   * complete a row. It must NOT be able to blank one -- a tenant database that lost its log
+   * would otherwise erase what we already saved, which is the one thing an index that outlives
+   * its source must never do. Implementations therefore fill NULLs and never overwrite a
+   * non-NULL with a NULL.
+   *
+   * Returns the number of rows WRITTEN, so a caller can assert a positive-evidence floor rather
+   * than reading a silent no-op as a successful harvest.
+   */
+  indexRunpodJobs(
+    tenantId: string,
+    tenantSlug: string,
+    rows: HarvestedJob[],
+  ): Promise<number>;
 
   // ---- preservation holds (cp#118) -------------------------------------------------------------
   //

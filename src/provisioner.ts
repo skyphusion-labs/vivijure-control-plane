@@ -21,6 +21,7 @@ import { randomToken } from "./crypto";
 import type { TemplateConvergence, TenantR2Creds } from "./runpod";
 import type { SharedRunPodPool } from "./runpod-pool";
 import { readRunPodMode } from "./runpod-pool";
+import { harvestTenantJobLog, HARVEST_ROW_CAP } from "./runpod-job-index";
 import {
   JOB_LEASE_SECONDS,
   type ControlPlaneStore,
@@ -1837,7 +1838,57 @@ export async function teardownTenant(
   }
 
   if (opts.deleteData) {
+    // ---- HARVEST BEFORE REAP (cp#270, for cp#225) --------------------------------------------
+    //
+    // ORDERED AHEAD OF THE D1 DELETE, and that order is the entire point. The RunPod job -> tenant
+    // index is built by a periodic sweep that READS each tenant database, which leaves one hole:
+    // every job submitted between the last sweep and this deletion. Harvesting here closes it, and
+    // turns a race into a guarantee -- after this line the source is gone forever, so this is the
+    // last moment the mapping can be recovered at all.
+    //
+    // A FAILED HARVEST FAILS THE TEARDOWN. It joins `failures`, so the row does not reach the
+    // provably-reaped state and a re-run will try again. That is deliberate and it is the
+    // uncomfortable direction: it means a tenant database we cannot read blocks a teardown. The
+    // alternative is deleting the only copy of the attribution that cp#225's report-driven
+    // investigation depends on, in order to finish a cleanup that can safely be retried. An
+    // un-run teardown is recoverable; a deleted mapping is not.
+    //
+    // NOT A FAILURE, and the distinction is why the harvest asks sqlite_master rather than reading
+    // an error string: a tenant with NO `runpod_job_log` table has nothing to harvest and is a
+    // complete harvest of nothing. That is the normal state for a provision that died before its
+    // migrations ran, which is exactly the population rollbackFailedProvision tears down -- so
+    // treating an absent table as an error would make every failed provision unreapable.
     if (tenant.d1_database_id && !guarded("d1")) {
+      try {
+        const harvest = await harvestTenantJobLog(deps.cf, tenant.d1_database_id);
+        if (!harvest.complete) {
+          // A partial read is refused rather than indexed. Indexing the first N and continuing
+          // would delete the source while claiming coverage we do not have, which is worse than
+          // stopping: the index would look authoritative and be silently short.
+          throw new Error(
+            `job log exceeded the ${HARVEST_ROW_CAP}-row harvest ceiling, so the index would be ` +
+              "silently short of the log we are about to delete; paging is needed before this " +
+              "tenant can be torn down",
+          );
+        }
+        const written = await deps.store.indexRunpodJobs(tenant.id, tenant.slug, harvest.rows);
+        deps.log("teardown.job_index_harvested", {
+          tenant: tenant.id,
+          rows: harvest.rows.length,
+          written,
+          table_absent: harvest.tableAbsent,
+        });
+      } catch (e) {
+        failures.push({ resource: "job_index_harvest", error: String(e) });
+        deps.log("teardown.job_index_harvest_failed", { tenant: tenant.id, error: String(e) });
+      }
+    }
+    // The D1 delete is CONDITIONAL on the harvest above having succeeded. Checking `failures`
+    // rather than threading a boolean is deliberate: it means any future leg that records a
+    // harvest failure also stops the delete, instead of a new failure mode quietly bypassing the
+    // one interlock that protects the mapping.
+    const harvestFailed = failures.some((f) => f.resource === "job_index_harvest");
+    if (tenant.d1_database_id && !guarded("d1") && !harvestFailed) {
       await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!), "d1");
     }
     // EMPTY-THEN-DELETE (cf#72), wired here by this issue caller work.
