@@ -217,6 +217,32 @@ jobs:
             --release "$STUDIO_RELEASE" \
             --mirror-bucket "$STUDIO_RELEASES_BUCKET"
 
+      # SATELLITE IMAGE PINS, ON THE DEPLOY PATH (cp#260 bucket 1).
+      #
+      # The pins in src/satellite-pins.ts point OUT of this repo, so no unit test can prove the tags
+      # exist. This is the same argument deploy.yml already accepts for re-running typecheck and the
+      # suite on a tag: a tag can point at ANY commit, including one that never saw a PR, and
+      # "CI passed on main" is an assumption rather than a check.
+      #
+      # MEASURED before this step was added, because the obvious negative test is a false lead:
+      #   tag "9.9.9-probe"  -> vitest FAILS, but on a FORMAT assertion (/^\d+\.\d+\.\d+$/),
+      #                          not on existence. Stopping here concludes "the suite covers it".
+      #   tag "1.0.99"       -> typecheck GREEN, all 1467 tests GREEN, config guards GREEN,
+      #                          and check:pins RED with "does not resolve (HTTP 404)".
+      # A well-formed pin at a tag nobody pushed is invisible to every other gate on this path. A
+      # tenant provisioned on one gets an endpoint that cannot pull.
+      #
+      # Credential-free (anonymous GHCR), which is why the same command runs in ci.yml on every PR,
+      # including from forks. This copy is the one that decides.
+      #
+      # EXIT 2 IS NOT A PASS, and that is deliberate in the script rather than an accident here: it
+      # means the check could not be PERFORMED (network, auth, shape). So a GHCR outage fails this
+      # deploy. That is the correct trade in a tag-gated estate -- an unreadable check is an
+      # unverified pin -- but it is a real cost and should be recognised as this step, not chased as
+      # a mystery.
+      - name: Satellite image pins resolve at GHCR
+        run: npm run check:pins
+
       # Show what a deploy WOULD do. On a clean release this prints the no-op line; anything else
       # is the cue that this tag carries schema change. Read-only: list, never apply.
       - name: Report pending migrations
