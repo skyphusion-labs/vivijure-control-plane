@@ -735,7 +735,7 @@ export async function runProvisionJob(
       }
       aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
     }
-    await uploadTenantModules(deps, tenant.id, tenant.slug, endpoints, undefined, aigTokenValue);
+    await uploadTenantModules(deps, tenant.id, tenant.slug, endpoints, db.uuid, undefined, aigTokenValue);
     await mark("modules_upload");
 
     // 8. Install each module through the studio's OWN conformance-gated route (cf#99): the studio
@@ -922,7 +922,15 @@ export async function continueProvisionJob(
 
     await runModuleSteps(
       deps,
-      { tenantId: tenant.id, slug: tenant.slug, script, endpoints, studioApiToken, release: deps.release },
+      {
+        tenantId: tenant.id,
+        slug: tenant.slug,
+        script,
+        endpoints,
+        studioApiToken,
+        release: deps.release,
+        telemetryD1Id: tenant.d1_database_id,
+      },
       // Resume semantics: skip what the progress record says is already done. The UPGRADE caller
       // passes the opposite (always run), which is the entire behavioural difference between the
       // two and the reason this is a parameter rather than a hardcoded rule.
@@ -1017,6 +1025,13 @@ export interface ModuleStepsArgs {
   endpoints: TenantEndpoint[];
   studioApiToken: string;
   release: string;
+  /**
+   * The tenant studio D1 uuid, bound onto the recording modules as TELEMETRY_DB (cp#248). Typed
+   * nullable because the tenant RECORD is (a half-built tenant may have no database yet), and
+   * uploadTenantModules refuses on a missing one -- one refusal in one place, rather than each
+   * caller inventing its own message.
+   */
+  telemetryD1Id: string | null;
   /** Bundles already fetched by the caller (the upgrade path fetches all of them up front). */
   prefetched?: Map<string, ModuleBundle>;
 }
@@ -1045,7 +1060,7 @@ export async function runModuleSteps(
       }
       aigTokenValue = (await at.tokenMinter.mintAigToken(tenantAigTokenName(args.slug))).value;
     }
-    await uploadTenantModules(at, tenantId, args.slug, endpoints, args.prefetched, aigTokenValue);
+    await uploadTenantModules(at, tenantId, args.slug, endpoints, args.telemetryD1Id, args.prefetched, aigTokenValue);
     await hooks.onDone("modules_upload");
   }
   if (hooks.shouldRun("modules_install")) {
@@ -1290,6 +1305,10 @@ export async function upgradeTenantModules(
         studioApiToken: context.studioApiToken,
         release: context.release,
         prefetched: context.bundles,
+        // From the RECORD. A module upgrade re-uploads the module scripts, and an upload REPLACES
+        // the binding set, so TELEMETRY_DB has to be restated here or an upgrade would silently
+        // strip it back off a tenant that already had it (cp#248).
+        telemetryD1Id: tenant.d1_database_id,
       },
       // An upgrade re-runs every module step against a tenant that already completed them, which is
       // exactly what resume must never do.

@@ -1225,6 +1225,9 @@ export const ADMIN_REQUIREMENTS: ReadonlyArray<{ method: string; pattern: RegExp
 
   { method: "GET", pattern: new RegExp(`^/api/admin/tenants/${TEN}/credits$`), requires: "tenants:read" },
   { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/credits/manual$`), requires: "credits:write" },
+  // cp#248: a READ of what the tenant own module workers report about themselves. No spend, no GPU,
+  // no tenant credential, nothing mutated -- so it is gated as the read it is, and audited as one.
+  { method: "GET", pattern: new RegExp(`^/api/admin/tenants/${TEN}/module-readiness$`), requires: "tenants:read" },
   { method: "GET", pattern: new RegExp(`^/api/admin/tenants/${TEN}/preservation-holds$`), requires: "tenants:read" },
   { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/preservation-holds$`), requires: "tenants:write" },
   {
@@ -1879,6 +1882,42 @@ async function adminRoutes(
       await deps.store.recordAdminAction(actor, "tenant.resume", tenant.id, null);
     }
     return new Response(null, { status: 204 });
+  }
+
+  // ---- cp#248: what can this tenant modules actually DO right now ------------------------------
+  //
+  // Every module reports on GET /ready whether it can read its RunPod credentials AND (since
+  // vivijure-cf#279) whether it can RECORD a RunPod job. That last field is deliberately NOT part of
+  // the module ok flag, because telemetry must never gate a render -- which means nothing waits on
+  // it, no existing route reports it, and until this route existed no operator could see it without
+  // running a key install. A fact that is reported nowhere is not checkable, and an unrecorded
+  // RunPod job is unrecoverable the moment it ends: RunPod cannot enumerate jobs, so there is no
+  // backfill and no second chance to look.
+  //
+  // ONE PASS, NO RETRY. This is a question, not a promotion gate; the key-install probe is the one
+  // that waits, and it waits on credentials rather than on telemetry. Blurring the two would let a
+  // module that answered late read exactly like one that answered.
+  const moduleReadiness = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/module-readiness$/.exec(path);
+  if (request.method === "GET" && moduleReadiness) {
+    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+    const tenant = await deps.store.getTenantById(moduleReadiness[1]);
+    if (!tenant) return err("not_found", 404);
+    await auditTenantRead(deps, actor, tenant.id, "module_readiness");
+    const modules = await deps.provisioner.moduleReadiness(tenant);
+    return json({
+      tenant_id: tenant.id,
+      // WHICH BYTES answered. A job_log field that is absent everywhere is a stale release pin far
+      // more often than it is a missing binding, and the two look identical without this.
+      modules_release: tenant.modules_release,
+      modules,
+      // The one summary worth precomputing, named for what it MEANS rather than for a verdict it
+      // does not have: these modules submit RunPod jobs and did NOT answer that they can record one.
+      // false and null are both in here on purpose -- "the binding is missing" and "this image is
+      // too old to say" are different problems with the same consequence (rows nobody will get).
+      records_unproven: modules
+        .filter((m) => m.records_runpod_jobs && m.job_log !== true)
+        .map((m) => m.module),
+    });
   }
 
   // ---- preservation holds: the interlock on the irreversible lever (cp#118) --------------------

@@ -104,6 +104,9 @@ async function seedLiveTenant(store: MemoryStore, over: Partial<Tenant> = {}): P
   await store.createAccount("acct_1", "a@b.com");
   const t = await store.createTenant("ten_1", "hero", "acct_1", "provisioning");
   await store.setTenantEndpoints(t.id, JSON.stringify(ENDPOINTS));
+  // A real live tenant has a studio database, and since cp#248 the module upload binds it as
+  // TELEMETRY_DB, so a fixture without one is not a live tenant.
+  await store.setTenantD1(t.id, "d1-uuid-hero");
   await store.setTenantStudioToken(t.id, await encryptStudioToken(RING, "the-studio-token"));
   await store.setTenantScript(t.id, "tenant-hero-studio", OLD_RELEASE);
   await store.setTenantModulesRelease(t.id, OLD_RELEASE);

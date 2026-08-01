@@ -9,6 +9,8 @@ import { describe, it, expect, vi } from "vitest";
 import { uploadTenantModules, TENANT_MODULE_CATALOG, type TenantModuleDeps } from "../src/tenant-modules";
 import type { WorkerBinding } from "../src/cf-api";
 
+// The tenant studio D1 uuid the recording modules get as TELEMETRY_DB (cp#248).
+const TENANT_D1 = "d1-uuid-acme";
 const ENDPOINTS = [
   { key: "backend", label: "Backend", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
   { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
@@ -69,7 +71,7 @@ describe("plan-enhance is in the catalog and is NOT endpoint-backed", () => {
 describe("uploadTenantModules -- the AI Gateway trio", () => {
   it("binds AI + GATEWAY_ID + CF_AIG_TOKEN on plan-enhance when both are configured", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG_SECRET_VALUE");
     const pe = forModule(uploads, "plan-enhance");
     // EXACT set, deliberately: an unexpected extra binding must fail here rather than be
     // waved through by a toContain. TENANT_ID/TENANT_SLUG are the cp#185 attribution vars.
@@ -82,15 +84,17 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
 
   it("gives plan-enhance NO RUNPOD_ENDPOINT_ID (it is not endpoint-backed)", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG_SECRET_VALUE");
     expect(names(forModule(uploads, "plan-enhance"))).not.toContain("RUNPOD_ENDPOINT_ID");
   });
 
   it("does NOT leak the trio onto endpoint-backed modules", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG_SECRET_VALUE");
     for (const m of ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale"]) {
-      expect(names(forModule(uploads, m)), m).toEqual(["RUNPOD_ENDPOINT_ID"]);
+      // TELEMETRY_DB is expected here (cp#248): these five modules submit RunPod jobs and record
+      // them. The exact-set shape is the point -- the AI Gateway trio must still not appear.
+      expect(names(forModule(uploads, m)), m).toEqual(["RUNPOD_ENDPOINT_ID", "TELEMETRY_DB"]);
     }
   });
 
@@ -98,7 +102,7 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
   // present, so a half-bound module is a silent permanent fallback, not a partial feature.
   it("binds NEITHER when the token is missing, and says so in the log", async () => {
     const { d, uploads, logs } = deps();
-    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, null);
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, TENANT_D1, undefined, null);
     const pe = forModule(uploads, "plan-enhance");
     // AI still bound (the local fallback needs it); TENANT_ID/TENANT_SLUG still bound because
     // attribution is deliberately NOT gated on the token (cp#185). The trio itself is absent.
@@ -110,7 +114,7 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
 
   it("binds NEITHER when the plane names no gateway, and still uploads a working module", async () => {
     const { d, uploads, logs } = deps({ aiGatewayId: null } as Partial<TenantModuleDeps>);
-    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG_SECRET_VALUE");
     const pe = forModule(uploads, "plan-enhance");
     expect(names(pe)).toEqual(["AI", "TENANT_ID", "TENANT_SLUG"]);
     expect(names(pe)).not.toContain("GATEWAY_ID");
@@ -122,7 +126,7 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
   it("still refuses loudly when an ENDPOINT-BACKED module has no endpoint", async () => {
     const { d } = deps();
     await expect(
-      uploadTenantModules(d, "ten_1", "acme-films", [ENDPOINTS[0]], undefined, "AIG_SECRET_VALUE"),
+      uploadTenantModules(d, "ten_1", "acme-films", [ENDPOINTS[0]], TENANT_D1, undefined, "AIG_SECRET_VALUE"),
     ).rejects.toThrow(/needs the upscale endpoint/);
   });
 
@@ -135,7 +139,7 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
         persisted.push(event, JSON.stringify(fields));
       }),
     } as Partial<TenantModuleDeps>);
-    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG_SECRET_VALUE");
 
     // CONTROL: the recorder really does capture what it is given.
     persisted.push("CONTROL_CANARY");
@@ -158,7 +162,7 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
 describe("uploadTenantModules -- per-tenant attribution vars (cp#185)", () => {
   it("binds TENANT_ID and TENANT_SLUG on the gateway-backed module", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG_SECRET_VALUE");
     const pe = forModule(uploads, "plan-enhance");
     expect(byName(pe, "TENANT_ID")).toMatchObject({ type: "plain_text", text: "ten_1" });
     expect(byName(pe, "TENANT_SLUG")).toMatchObject({ type: "plain_text", text: "acme-films" });
@@ -168,7 +172,7 @@ describe("uploadTenantModules -- per-tenant attribution vars (cp#185)", () => {
   // make it unreadable in the dashboard for no benefit while implying a custody requirement.
   it("binds them as plain_text, never as secrets", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG_SECRET_VALUE");
     const pe = forModule(uploads, "plan-enhance");
     for (const n of ["TENANT_ID", "TENANT_SLUG"]) {
       expect(byName(pe, n)!.type, n).toBe("plain_text");
@@ -182,7 +186,7 @@ describe("uploadTenantModules -- per-tenant attribution vars (cp#185)", () => {
   // when the gateway IS configured.
   it("binds them even when NO gateway token was minted", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, null);
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, TENANT_D1, undefined, null);
     const pe = forModule(uploads, "plan-enhance");
     expect(byName(pe, "TENANT_ID")).toBeDefined();
     expect(byName(pe, "TENANT_SLUG")).toBeDefined();
@@ -195,7 +199,7 @@ describe("uploadTenantModules -- per-tenant attribution vars (cp#185)", () => {
   // tenant id onto it would be noise that implies a meter that does not exist for it.
   it("does NOT bind them on modules that are not gateway-backed", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, undefined, "AIG_SECRET_VALUE");
+    await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG_SECRET_VALUE");
     const kf = forModule(uploads, "keyframe");
     // POSITIVE CONTROL: keyframe really was uploaded and really does carry its own binding, so the
     // absences below are real absences and not an empty upload record.

@@ -333,6 +333,10 @@ export async function reprovisionTenantRunPod(
         studioApiToken: context.studioApiToken,
         release: context.modulesRelease,
         prefetched: context.bundles,
+        // Restated from the record for the same reason the endpoint ids are: this re-uploads the
+        // module scripts, and an upload REPLACES the binding set, so a binding not passed here is a
+        // binding dropped (cp#248).
+        telemetryD1Id: tenant.d1_database_id,
       },
       { shouldRun: () => true, onDone: async (done) => void moduleScripts.push(done) },
     );

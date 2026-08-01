@@ -127,6 +127,9 @@ async function seedTenant(store: MemoryStore, opts: { throughStudio?: boolean } 
   const t = await store.createTenant("ten_1", "hero", "acct_1", "provisioning");
   if (opts.throughStudio) {
     await store.setTenantEndpoints(t.id, JSON.stringify(ENDPOINTS));
+    // Reaching the studio upload means the D1 was created and recorded several steps earlier; the
+    // module upload binds it as TELEMETRY_DB (cp#248).
+    await store.setTenantD1(t.id, "d1-uuid-hero");
     await store.setTenantStudioToken(t.id, await encryptStudioToken(RING, "the-studio-token"));
     await store.setTenantScript(t.id, "tenant-hero-studio", "v1.0.0");
   }

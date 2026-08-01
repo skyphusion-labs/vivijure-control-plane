@@ -72,6 +72,21 @@ export interface TenantModuleSpec {
    * bare-skeleton doctrine.
    */
   needsAiGateway?: boolean;
+  /**
+   * This module submits RunPod jobs and records each one in `runpod_job_log`, so it needs the tenant
+   * studio D1 bound as TELEMETRY_DB (vivijure-cf#279, routed here as cp#248). Data, not a name
+   * check, for the same reason needsAiGateway is: the provision flow stays free of module-specific
+   * branching.
+   *
+   * Set ONLY on the modules that record. A module that submits no RunPod job has nothing to write,
+   * and handing it the tenant database it never reads would widen its reach for no gain.
+   *
+   * The binding NAME is read off the module source, never chosen here: the write helper reads
+   * env.TELEMETRY_DB, so a binding under any other name IS an absent binding -- the write warns and
+   * no-ops, and the module still answers ok:true on /ready, because the job log is deliberately not
+   * part of ok. A typo here is silent everywhere except the telemetry field itself.
+   */
+  recordsRunpodJobs?: boolean;
 }
 
 /**
@@ -79,13 +94,20 @@ export interface TenantModuleSpec {
  * endpoint; upscale / lipsync / audio-upscale each get their own). Every module here reads exactly
  * RUNPOD_ENDPOINT_ID + RUNPOD_API_KEY (verified against each module's Env), which is why the binding
  * set below is uniform. Extending the hosted tier is a row here plus the matching endpoint in runpod.ts.
+ *
+ * WHAT THIS LIST IS NOT (cp#248, written down because it is invisible from the vivijure-cf side).
+ * SIX module workers record RunPod jobs upstream; FIVE of them are in this catalog. `finish-rife` is
+ * built and PUBLISHED as a tenant module bundle by the studio release, and nothing in this plane
+ * provisions it to a tenant -- so on the hosted door its jobs are not unrecorded, they do not
+ * exist. Whether hosted should carry it is a product question and deliberately not settled here;
+ * this note exists so the next reader does not count five modules and report a missing binding.
  */
 export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
-  { module: "keyframe", endpointKey: "backend" },
-  { module: "own-gpu", endpointKey: "backend" },
-  { module: "finish-upscale", endpointKey: "upscale" },
-  { module: "finish-lipsync", endpointKey: "lipsync" },
-  { module: "speech-upscale", endpointKey: "audio-upscale" },
+  { module: "keyframe", endpointKey: "backend", recordsRunpodJobs: true },
+  { module: "own-gpu", endpointKey: "backend", recordsRunpodJobs: true },
+  { module: "finish-upscale", endpointKey: "upscale", recordsRunpodJobs: true },
+  { module: "finish-lipsync", endpointKey: "lipsync", recordsRunpodJobs: true },
+  { module: "speech-upscale", endpointKey: "audio-upscale", recordsRunpodJobs: true },
   // cf#56: the Opus director pass. NOT endpoint-backed -- it reaches Anthropic through OUR AI
   // Gateway on unified billing, so the cost is ours and the per-tenant CF_AIG_TOKEN is what makes
   // that cost attributable and revocable one tenant at a time. Spend stays bounded today by the
@@ -208,6 +230,21 @@ export async function uploadTenantModules(
    */
   tenantSlug: string,
   endpoints: TenantEndpoint[],
+  /**
+   * The tenant STUDIO D1 uuid, bound as TELEMETRY_DB on every module that records RunPod jobs
+   * (cp#248).
+   *
+   * WHICH DATABASE, settled against the shipped migration rather than inferred: `runpod_job_log` is
+   * vivijure-cf migration 0014, which rides the STUDIO release and is applied to the tenant studio
+   * database at provision. So the job log lives in the same database the studio itself gets as DB.
+   * A separate telemetry database would be a table nothing migrates.
+   *
+   * REQUIRED, and an absent id fails the step loudly rather than uploading a module that would
+   * record nothing. That mirrors the self-host posture exactly: each module wrangler.toml carries a
+   * placeholder database_id and wrangler hard-fails on it, so neither door can ship a module that
+   * silently drops every row.
+   */
+  telemetryD1Id: string | null,
   /** Pre-fetched bundles (prefetchModuleBundles). When absent each bundle is fetched inline, which
    *  is the original provision behaviour and is left exactly as it was. */
   prefetched?: Map<string, ModuleBundle>,
@@ -218,6 +255,16 @@ export async function uploadTenantModules(
    */
   aigTokenValue?: string | null,
 ): Promise<string[]> {
+  // FIRST, before the namespace is touched or a byte is uploaded: a refusal here has changed
+  // nothing. A tenant record with no D1 id is a broken tenant, not a tenant that should quietly get
+  // modules which cannot record (cp#248).
+  if (!telemetryD1Id) {
+    throw new TenantModuleError(
+      "modules_upload",
+      "no tenant D1 id for the TELEMETRY_DB binding; refusing to upload module workers that would " +
+        "record no RunPod job rows (cp#248). Repair tenants.d1_database_id or re-provision",
+    );
+  }
   await deps.cf.createDispatchNamespace(deps.moduleNamespace);
   const scriptNames: string[] = [];
   for (const spec of TENANT_MODULE_CATALOG) {
@@ -248,6 +295,19 @@ export async function uploadTenantModules(
       // provisioner binds its endpoint-id vars. The module reads env.RUNPOD_ENDPOINT_ID (string-typed
       // via secretValue), so a plain_text binding drops straight in.
       bindings.push({ type: "plain_text", name: "RUNPOD_ENDPOINT_ID", text: endpoint.id });
+    }
+    if (spec.recordsRunpodJobs) {
+      // cp#248 / vivijure-cf#279. RunPod cannot enumerate jobs, so a job id this worker does not
+      // write down at submit is unreachable the moment the job ends -- there is no backfill, and the
+      // endpoint health counters cannot substitute (they bucket four terminal statuses into two and
+      // exclude the CANCELLED these modules produce deliberately).
+      //
+      // Attached to EVERY module in the catalog that records, for every tenant, at upload. There is
+      // no per-tenant subset here: this loop uploads the whole catalog, and installation (which a
+      // tenant CAN change from their own studio) happens later and separately. A module a tenant
+      // never installs is never dispatched, so it records nothing because it runs nothing -- not
+      // because it lacks the binding.
+      bindings.push({ type: "d1", name: "TELEMETRY_DB", id: telemetryD1Id });
     }
     if (spec.needsAiGateway) {
       // env.AI is what the module actually calls, BOTH ways: .gateway(GATEWAY_ID).getUrl("anthropic")
@@ -542,6 +602,15 @@ interface ModuleReadyBody {
   ok?: boolean;
   module?: string;
   credentials?: { runpod_api_key?: boolean; runpod_endpoint_id?: boolean };
+  /**
+   * vivijure-cf#279: can the version the edge SERVES record a RunPod job at all. Deliberately NOT
+   * part of the module ok flag (telemetry must never gate a render), which is exactly why nothing
+   * waits on it and it has to be LOOKED at -- see probeTenantModuleReadiness.
+   *
+   * Optional because a module image published before cf#279 does not report it. An absent field is
+   * unknown, never false.
+   */
+  telemetry?: { job_log?: boolean };
 }
 
 /**
@@ -594,6 +663,96 @@ export function classifyReadyResponse(status: number, text: string, expectedModu
   if (creds.runpod_api_key && creds.runpod_endpoint_id) return "ready";
   if (creds.runpod_endpoint_id && !creds.runpod_api_key) return "not_visible_yet";
   return "misconfigured";
+}
+
+/**
+ * ONE module observation from a SINGLE unauthenticated GET /ready: what the running worker says
+ * about itself, verbatim and unjudged.
+ *
+ * Separate from classifyReadyResponse on purpose. That function decides whether to WAIT or FAIL a
+ * key install, and telemetry must never be an input to it: a module without a job log still renders,
+ * and making readiness depend on telemetry would convert a reporting gap into an outage. This shape
+ * is the other half -- the thing an operator LOOKS at, which is the only way a field that gates
+ * nothing ever gets seen (cp#248).
+ */
+export interface TenantModuleObservation {
+  module: string;
+  /** The tenant-prefixed script actually probed. Named so a wrong-script read is diagnosable. */
+  script: string;
+  status: number;
+  /** The module own ok flag, or null when nothing parseable answered as this module. */
+  ok: boolean | null;
+  credentials: { runpod_api_key: boolean; runpod_endpoint_id: boolean } | null;
+  /**
+   * Whether the RUNNING worker resolved TELEMETRY_DB (vivijure-cf#279).
+   *
+   * THREE VALUES, and collapsing them re-creates the defect this exists to end. true and false are
+   * the worker own answer. null is "this worker reported no such field", which is a module image
+   * predating cf#279, or a module that did not answer at all -- NOT a no. Reporting an absent field
+   * as false would say the binding is missing when what is missing is the report.
+   */
+  job_log: boolean | null;
+  /** Whether this module records RunPod jobs at all. A module that submits no job is EXPECTED to
+   *  report no job_log and must not read as a gap. */
+  records_runpod_jobs: boolean;
+  /** Bounded response head, present when nothing usable was parsed. The 404 disjunction (stale
+   *  image / absent script / control plane cannot dispatch) is diagnosable only from what came back. */
+  detail?: string;
+}
+
+/**
+ * Probe every catalog module for one tenant, once, and report what each said.
+ *
+ * READ-ONLY and free: /ready costs no GPU, spends nothing, and needs no tenant credential. No retry
+ * and no deadline -- this is an operator asking a question, not a gate deciding a promotion, and a
+ * retry loop here would blur "answered slowly" into "answered".
+ */
+export async function probeTenantModuleReadiness(
+  deps: TenantModuleDeps,
+  tenantId: string,
+): Promise<TenantModuleObservation[]> {
+  return await Promise.all(
+    TENANT_MODULE_CATALOG.map(async (spec) => {
+      const script = tenantModuleScriptName(tenantId, spec.module);
+      const res = await deps.callTenantModule(script, "/ready");
+      const base = {
+        module: spec.module,
+        script,
+        status: res.status,
+        records_runpod_jobs: Boolean(spec.recordsRunpodJobs),
+      };
+      let body: ModuleReadyBody | null = null;
+      if (res.status === 200) {
+        try {
+          body = JSON.parse(res.text) as ModuleReadyBody;
+        } catch {
+          body = null;
+        }
+      }
+      // The SAME echo check the key-install probe makes, and for the same reason: script names are
+      // tenant-prefixed and derived, so an answer from a neighbouring script would otherwise be read
+      // as this module answering. A mismatch is not evidence about this module at all.
+      if (!body || body.module !== spec.module) {
+        return {
+          ...base,
+          ok: null,
+          credentials: null,
+          job_log: null,
+          detail: res.text.slice(0, 200) || "(empty)",
+        };
+      }
+      const creds = body.credentials;
+      return {
+        ...base,
+        ok: typeof body.ok === "boolean" ? body.ok : null,
+        credentials:
+          creds && typeof creds.runpod_api_key === "boolean" && typeof creds.runpod_endpoint_id === "boolean"
+            ? { runpod_api_key: creds.runpod_api_key, runpod_endpoint_id: creds.runpod_endpoint_id }
+            : null,
+        job_log: typeof body.telemetry?.job_log === "boolean" ? body.telemetry.job_log : null,
+      };
+    }),
+  );
 }
 
 /**
