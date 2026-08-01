@@ -32,12 +32,34 @@
 // Without the negative, a green proves only that something answered true, which a hardcoded `true`
 // in a module bundle would also produce.
 //
-// READS SETTLE, EVERY READ IS PRINTED. Non-negotiable, and cp#254 is why. A /ready read taken soon
-// after a version REPLACES another can be answered by an isolate still serving the previous
-// version: finish-upscale was observed reading false, true, then false again inside two minutes.
-// A single shot is a coin toss that reports as a measurement. `settle()` polls until the answer
-// stops changing and prints the whole sequence, so a run that flapped is visible as flapping rather
-// than hidden behind a final green. A read that NEVER settles is a FAILURE, never a value.
+// READS CONVERGE, EVERY READ IS PRINTED, AND THE TWO LEGS USE DIFFERENT CRITERIA. cp#254 is why a
+// read taken soon after a version REPLACES another can be answered by an isolate still serving the
+// previous version, so a single shot is a coin toss that reports as a measurement.
+//
+// THE FIRST VERSION OF THIS FILE GOT THE SECOND HALF WRONG, and it was caught in use rather than in
+// review. Both legs polled until `need` consecutive identical readings. That proves STABILITY, and
+// A STALE ISOLATE IS PERFECTLY STABLE. Measured on the negative control, one night, three runs:
+//
+//     run 1  reads TFTFFF  -> false   run 2  reads FTFFF  -> false   run 3  reads TTT -> TRUE
+//
+// Runs 1 and 2 reached the truth by LUCK OF THE INTERLEAVING: the flapping kept resetting the
+// streak until the new version won. Run 3 drew a stale isolate that answered consistently for the
+// whole window, and the gate reported the regression it exists to catch as the expected answer.
+//
+// So the legs are asymmetric now, because the paths are:
+//
+//   POSITIVE leg, a FIRST upload onto script names that never existed. Nothing stale can answer, so
+//   any settled reading is honest and `settle()` is the right instrument.
+//
+//   NEGATIVE leg, a REPLACE. `false` can only come from the NEW version, since the version being
+//   replaced HAD the binding. `true` is ambiguous between a stale isolate and a broken module and
+//   no amount of repetition resolves it. So the wait is for `false` specifically: reached (pass) or
+//   deadline-without-it (fail, UNCONVERGED), and `true` never terminates it.
+//
+// Both criteria are pure functions in settle-criterion.ts, unit-tested against those three real
+// sequences in settle-criterion.test.ts. The loops here call exactly those functions, so the tested
+// logic is the shipped logic rather than a copy of it. An unconverged read is a FAILURE, never a
+// value.
 //
 // SPEND AND BLAST RADIUS. No tenant, no GPU, no RunPod call, no invoke key. A throwaway dispatch
 // namespace, a throwaway D1, and one ephemeral dispatcher worker, all named `cpsmoke-<run>` and all
@@ -65,6 +87,13 @@ import type { TenantEndpoint } from "../src/provisioner";
 import { deployHarnessDispatcher, type HarnessDispatcher } from "./e2e-harness-dispatcher";
 import { localModuleBundleSource } from "./module-bundle-local";
 import { fetchStudioRelease, type FetchedStudioRelease } from "./studio-release-fetch";
+import {
+  NO_ANSWER,
+  reached,
+  render,
+  settledValue,
+  type Reading,
+} from "./settle-criterion";
 import {
   SMOKE_PREFIX,
   missingSmokeEnv,
@@ -125,8 +154,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * Folding it into `null` would say "the module reports no telemetry field" about a request the
  * module never saw, which is the same collapse this whole suite exists to refuse.
  */
-const NO_ANSWER = "x" as const;
-type Reading = boolean | null | typeof NO_ANSWER;
+
 
 /**
  * One GET through the ephemeral dispatch door, with a BOUNDED retry on TRANSPORT failure only.
@@ -177,8 +205,6 @@ async function settle(
 ): Promise<{ value: boolean | null; seq: Reading[]; ms: number; settled: boolean }> {
   const seq: Reading[] = [];
   const start = Date.now();
-  let last: Reading | undefined;
-  let run = 0;
   while (Date.now() - start < deadlineMs) {
     // Cache-buster on the path: a settled answer has to come from the worker, not from anything
     // in between deciding it already knows.
@@ -196,17 +222,80 @@ async function settle(
       v = typeof body.telemetry?.job_log === "boolean" ? body.telemetry.job_log : null;
     }
     seq.push(v);
-    // A non-answer resets the streak and can never BE the settled value.
-    run = v !== NO_ANSWER && v === last ? run + 1 : v === NO_ANSWER ? 0 : 1;
-    last = v;
-    if (v !== NO_ANSWER && run >= need) return { value: v, seq, ms: Date.now() - start, settled: true };
+    // Decided by the SHARED criterion, not by a copy of it. settledValue is unit-tested against the
+    // three real measured sequences in settle-criterion.test.ts, including the run it gets wrong.
+    const verdict = settledValue(seq, need);
+    if (verdict.settled) return { value: verdict.value, seq, ms: Date.now() - start, settled: true };
     await sleep(gapMs);
   }
   return { value: null, seq, ms: Date.now() - start, settled: false };
 }
 
-function render(seq: Reading[]): string {
-  return seq.map((x) => (x === NO_ANSWER ? "x" : x === null ? "n" : x ? "T" : "F")).join("");
+/**
+ * Poll until the reading REACHES a specific value and holds it, or fail as UNCONVERGED.
+ *
+ * THIS EXISTS BECAUSE settle() IS THE WRONG INSTRUMENT ON THE REPLACE PATH, and that was found the
+ * hard way: settle() proves STABILITY, and a stale isolate is perfectly stable.
+ *
+ * Measured on the negative control, same suite, same release, same account, three runs in one
+ * night. The whole argument is in these three sequences, which is why they live here rather than
+ * in a chat log:
+ *
+ *     run 1   keyframe  job_log=false   (settled 50s, reads: TFTFFF)
+ *     run 2   keyframe  job_log=false   (settled 40s, reads: FTFFF)
+ *     run 3   keyframe  job_log=true    (settled 20s, reads: TTT)     <- accepted a LIE
+ *
+ * Runs 1 and 2 reached the truth BY LUCK OF THE INTERLEAVING: the flapping kept resetting the
+ * consecutive-reads streak until the new version won. Run 3 drew a stale isolate that answered
+ * consistently for the whole window, and a consistent liar is exactly what a settle loop is built
+ * to trust. One run in three, a gate that exists to catch a regression would have reported the
+ * regression as the expected answer.
+ *
+ * THE ASYMMETRY IS THE FIX. On a REPLACE the two values are not equally trustworthy:
+ *
+ *   - `false` can only come from the NEW version. The version being replaced HAD the binding and
+ *     could never say false. So a false reading is proof the new bytes are being served.
+ *   - `true` is ambiguous: a stale old isolate, or a genuinely broken new one. No amount of stable
+ *     reading distinguishes them, so no amount of stable reading may be accepted as an answer.
+ *
+ * Hence: the only outcomes are REACHED (pass) and NOT REACHED BY THE DEADLINE (fail, unconverged).
+ * The unwanted value never terminates the loop, however many times it repeats.
+ *
+ * Stability is still required AFTER the wanted value appears, because a single sighting mid-flap is
+ * not convergence: run 1 read false at position 2 and then true again at position 3.
+ *
+ * NO_ANSWER (a transport failure) resets the streak exactly as it does in settle(), and can never
+ * satisfy the wait.
+ */
+async function awaitReading(
+  script: string,
+  want: boolean,
+  need = 3,
+  gapMs = 10_000,
+  deadlineMs = 300_000,
+): Promise<{ reached: boolean; seq: Reading[]; ms: number }> {
+  const seq: Reading[] = [];
+  const start = Date.now();
+  while (Date.now() - start < deadlineMs) {
+    const r = await callModule(script, `/ready?cb=${Date.now()}`);
+    let v: Reading;
+    if (r === null) {
+      v = NO_ANSWER;
+    } else {
+      let body: { telemetry?: { job_log?: unknown } } = {};
+      try {
+        body = JSON.parse(r.text) as typeof body;
+      } catch {
+        body = {};
+      }
+      v = typeof body.telemetry?.job_log === "boolean" ? body.telemetry.job_log : null;
+    }
+    seq.push(v);
+    // Same shared criterion, same reason.
+    if (reached(seq, want, need)) return { reached: true, seq, ms: Date.now() - start };
+    await sleep(gapMs);
+  }
+  return { reached: false, seq, ms: Date.now() - start };
 }
 
 async function readyReport(phase: string): Promise<Map<string, { value: boolean | null; settled: boolean }>> {
@@ -458,7 +547,7 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
     expect(unproven, "modules the admin route cannot prove will record").toEqual([]);
   }, 300_000);
 
-  it("NEGATIVE CONTROL: the same module re-uploaded WITHOUT the database settles to false", async () => {
+  it("NEGATIVE CONTROL: the same module re-uploaded WITHOUT the database REACHES false", async () => {
     // THE POINT: without this, a green above proves only that something answered true, which a
     // hardcoded true in a module bundle would also produce. This removes exactly one binding from
     // exactly one script and requires the running worker to notice.
@@ -490,14 +579,30 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
     const bindings = await cf.getScriptBindings(NAMESPACE, script);
     expect(bindings.map((b) => `${b.type}:${b.name}`)).not.toContain("d1:TELEMETRY_DB");
 
-    const s = await settle(script);
+    // WAIT FOR false, never accept a settled true. See awaitReading for the three measured
+    // sequences that forced this and for why stability was the wrong property.
+    //
+    // The old code called settle() here and took whatever stabilised. On one run in three that was
+    // a stale isolate answering `true` consistently for the whole window, and the gate reported the
+    // regression it exists to catch as the expected answer.
+    const s = await awaitReading(script, false);
     say("");
     say(`=== NEGATIVE CONTROL [${NEGATIVE_MODULE}, no database] ===`);
     say(
-      `   ${NEGATIVE_MODULE.padEnd(16)} job_log=${String(s.value)}  ` +
-        `(${s.settled ? "stable" : "NEVER SETTLED"} after ${Math.round(s.ms / 1000)}s, reads: ${render(s.seq)})`,
+      `   ${NEGATIVE_MODULE.padEnd(16)} ` +
+        `${s.reached ? "REACHED false" : "NEVER REACHED false"} after ${Math.round(s.ms / 1000)}s, ` +
+        `reads: ${render(s.seq)}`,
     );
-    expect(s.settled, "the negative control never settled; it proves nothing").toBe(true);
-    expect(s.value, "a module with no TELEMETRY_DB must report job_log=false").toBe(false);
+    // ONE assertion, not two. "reached false" is the entire claim: the running worker, with no
+    // TELEMETRY_DB attached, reported that it cannot record. Not reaching it is UNCONVERGED, which
+    // is a failure and is deliberately not reported as "the module said true" -- we do not know
+    // what the module says, we know the measurement did not converge.
+    expect(
+      s.reached,
+      `the negative control never observed job_log=false in ${Math.round(s.ms / 1000)}s ` +
+        `(reads: ${render(s.seq)}). UNCONVERGED: a stale isolate serving the previous version and a ` +
+        `genuinely broken module are indistinguishable from here, so this is not evidence the module ` +
+        `is wrong, and it is certainly not evidence it is right. Do not re-run for a green.`,
+    ).toBe(true);
   }, 1_800_000);
 });
