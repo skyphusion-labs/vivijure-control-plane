@@ -20,6 +20,7 @@ import type { Tenant } from "../src/store";
 import { sha256Hex } from "../src/crypto";
 import { decryptStudioToken, kekRing } from "../src/token-crypto";
 import { MemoryStore, recordingStore } from "./memory-store";
+import { HARVEST_ROW_CAP } from "../src/runpod-job-index";
 import { expectProvisionFailure } from "./provision-assert";
 
 /** The ONE account S3 endpoint these tests allow, and the origin the scripted fetch matches on. */
@@ -330,6 +331,105 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     expect(d.runpod.createEndpoints).toHaveBeenCalledTimes(0);
     expect(store.tenants.get(t.id)?.runpod_mode).toBe("dedicated");
     expect(store.tenants.get(t.id)?.endpoints_json).toBeNull();
+  });
+});
+
+// cp#270 / cp#225: the harvest interlock. A tenant database is the ONLY source of the job -> tenant
+// mapping, and teardown deletes it, so the harvest is ordered ahead of the delete and a harvest that
+// cannot be proven complete must stop the delete. Both directions are tested: the block, and the
+// control that shows it is not simply always blocking.
+const D1_TABLE_PRESENT = [{ results: [{ name: "runpod_job_log" }] }];
+const d1Rows = (rows: Record<string, unknown>[]) => [{ results: rows }];
+
+/** A fake tenant D1 whose sqlite_master probe says the table is there, and whose SELECT is scripted. */
+function jobLogCf(select: () => unknown) {
+  return fakeCf({
+    queryD1: vi.fn(async (_db: string, sql: string) => {
+      calls.push("queryD1");
+      if (sql.includes("sqlite_master")) return D1_TABLE_PRESENT;
+      return select();
+    }),
+  });
+}
+
+describe("teardown harvests the job index before reaping the D1 (cp#270)", () => {
+  it("indexes the tenant job rows, and only then deletes the database", async () => {
+    const t = await tenant();
+    const cf = jobLogCf(() =>
+      d1Rows([
+        { job_id: "job-a", module: "keyframe", outcome: "completed", submitted_at: 1, terminal_at: 2 },
+        { job_id: "job-b", module: "own-gpu", outcome: "failed", submitted_at: 3, terminal_at: 4 },
+      ]),
+    );
+    await store.setTenantD1(t.id, "db-1");
+    const fresh = store.tenants.get(t.id)!;
+    const res = await teardownTenant(deps({ cf }), fresh, { deleteData: true });
+
+    expect(res.ok, JSON.stringify(res.failures)).toBe(true);
+    expect([...store.jobIndex.keys()].sort()).toEqual(["job-a", "job-b"]);
+    expect(store.jobIndex.get("job-a")).toMatchObject({ tenant_id: t.id, tenant_slug: "hero", module: "keyframe" });
+    // ORDER: the harvest read has to happen before the database goes away.
+    expect(calls.indexOf("queryD1")).toBeLessThan(calls.indexOf("deleteD1"));
+  });
+
+  it("BLOCKS THE D1 DELETE when the harvest fails, and records it as a failure", async () => {
+    // The interlock. The alternative is deleting the only copy of the attribution cp#225 depends on
+    // in order to finish a cleanup that could simply be retried.
+    const t = await tenant();
+    const cf = jobLogCf(() => {
+      throw new Error("D1_ERROR: database is locked");
+    });
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+
+    expect(res.ok).toBe(false);
+    expect(res.failures.map((f) => f.resource)).toContain("job_index_harvest");
+    expect(calls).not.toContain("deleteD1");
+    // The row must still claim the database, or a re-run has nothing to retry against.
+    expect(store.tenants.get(t.id)?.d1_database_id).toBe("db-1");
+  });
+
+  it("CONTROL: a tenant with NO job-log table tears down CLEAN and the delete proceeds", async () => {
+    // Without this control the test above passes for an implementation that blocks every teardown.
+    // This is also the real population rollbackFailedProvision reaps: a provision that died before
+    // its migrations ran has no such table, and it must stay reapable.
+    const t = await tenant();
+    const cf = fakeCf({ queryD1: vi.fn(async () => (calls.push("queryD1"), [{ results: [] }])) });
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+
+    expect(res.ok, JSON.stringify(res.failures)).toBe(true);
+    expect(calls).toContain("deleteD1");
+    expect(store.jobIndex.size).toBe(0);
+  });
+
+  it("refuses rather than truncating when the log exceeds the harvest ceiling", async () => {
+    // A partial index that looks authoritative is worse than a blocked teardown: the source is
+    // deleted and nothing ever says the index is short.
+    const t = await tenant();
+    const rows = Array.from({ length: HARVEST_ROW_CAP + 1 }, (_, i) => ({
+      job_id: `j${i}`, module: "keyframe", outcome: "completed", submitted_at: i, terminal_at: i,
+    }));
+    const cf = jobLogCf(() => d1Rows(rows));
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+
+    expect(res.ok).toBe(false);
+    const failure = res.failures.find((f) => f.resource === "job_index_harvest");
+    expect(failure?.error).toContain(String(HARVEST_ROW_CAP));
+    expect(calls).not.toContain("deleteD1");
+    expect(store.jobIndex.size).toBe(0);
+  });
+
+  it("does not harvest at all when deleteData is false, because nothing is being destroyed", async () => {
+    const t = await tenant();
+    const cf = jobLogCf(() => d1Rows([{ job_id: "job-a" }]));
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: false });
+
+    expect(res.ok, JSON.stringify(res.failures)).toBe(true);
+    expect(calls).not.toContain("queryD1");
+    expect(calls).not.toContain("deleteD1");
   });
 });
 
