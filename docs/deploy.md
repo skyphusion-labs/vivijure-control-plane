@@ -548,6 +548,91 @@ Typecheck will not catch any of these; only a real deploy will.
   `*.<CONTROL_PLANE_HOST>`; see `wrangler.toml.example`, which records that ACM was **not** entitled
   on the zone as of 2026-07-17
 
+## Pre-deploy smoke: run it before every tag
+
+Conrad's standing policy, 2026-08-01: **a full smoke on a secure surface before every prod
+deployment, every time, no gate.** "No gate" means no approval gate and no cost gate. It does not
+mean no smoke. This is that smoke (cp#255). Run it, read it, then cut the tag.
+
+```
+gh workflow run "Pre-deploy smoke" -R skyphusion-labs/vivijure-control-plane
+```
+
+Locally, the same suite:
+
+```
+CF_PROVISIONER_TOKEN=<token> CF_ACCOUNT_ID=<id> STUDIO_RELEASE=<pinned tag> \
+  PRE_DEPLOY_SMOKE_WORKERS_DEV_SUBDOMAIN=<account>.workers.dev \
+  PRE_DEPLOY_SMOKE=1 SMOKE_REQUIRED=1 npm run smoke:predeploy
+```
+
+### What it asserts
+
+That a tenant module upload performed by **this tree's code** results in `TELEMETRY_DB` actually
+RESOLVED in the **running** worker, as reported by the version the edge serves. Not that the API
+accepted a binding; that the worker can see it. `tests/module-telemetry-binding.test.ts` already
+proves the uploader ASKS for the binding, and it cannot prove the platform honoured the ask: the
+first cp#248 upload died on `binding TELEMETRY_DB of type d1 failed to generate` with a request
+that was, by every unit test in this repo, perfectly correct.
+
+Three legs, and the last two are why a green means anything:
+
+| leg | what it does | required result |
+| --- | --- | --- |
+| CONTROL | `uploadTenantModules` with a null database id | REFUSES, writes nothing |
+| POSITIVE | the catalog uploaded by this tree | every recording module reports `job_log` true |
+| NEGATIVE | one module re-uploaded WITHOUT the database | that module reports `job_log` false |
+
+Without the negative, a green proves only that something answered true, which a hardcoded `true`
+in a module bundle would also produce.
+
+### Three values, three verdicts
+
+`telemetry.job_log` has three states and they do not collapse:
+
+- `true` -- the binding resolved in the running worker. The only PASS.
+- `false` -- it did not resolve on a module that CAN report. A real defect in the plane.
+- `null` -- the module image reports no telemetry field at all, because it predates
+  vivijure-cf#279. **This is not a no and not a pass.** It means the gate cannot measure the
+  property on this pin, and the run goes red with a message naming the pinned release.
+
+That last case is live today, not hypothetical: on 2026-08-01 the pinned `STUDIO_RELEASE` was
+v1.12.0, whose seven module bundles contain zero occurrences of `job_log`, while v1.13.0's five
+recording modules contain two each.
+
+### Reads settle, and every read is printed
+
+A `/ready` read taken soon after a version REPLACES another can be answered by an isolate still
+serving the previous version (cp#254). The suite polls until the answer stops changing and prints
+the whole sequence (`TTT`, `FFF`, `nnn`), so a run that flapped is visible as flapping rather than
+hidden behind a final green. **A read that never settles is a failure, never a value.**
+
+### What it costs, and what it can reach
+
+No tenant, no GPU, no RunPod call, no invoke key. One throwaway dispatch namespace, one throwaway
+D1, and one ephemeral dispatch door, all named `cpsmoke-<run>` and all deleted, with teardown
+verified by LISTING the account rather than by trusting the delete calls. The dispatch door's two
+namespace bindings both point at the run's own throwaway namespace, so it cannot reach a production
+tenant script even if its per-run bearer leaked.
+
+A run killed halfway leaves `cpsmoke-` debris. The next run REPORTS it loudly and does not delete
+it: another session's namespace may belong to a run still in flight. Reap by hand once you know no
+smoke is running.
+
+### Why it is not a step in deploy.yml
+
+A capability fact, not a preference. The smoke creates a dispatch namespace, and it has not been
+verified that the deploy token can create one. **Putting an unverified permission on the deploy path
+converts a smoke into an outage.** Promoting it to a preflight step is a small change once someone
+confirms that scope.
+
+### SMOKE_REQUIRED
+
+The suite is part of `npm test` and skips when credentials are absent, which is correct on a PR. The
+release gate sets `SMOKE_REQUIRED=1`, which turns a credential-less run into a FAILURE naming every
+absent var. Without that, the gate would report the same green whether it ran or not, which is how
+the changelog guard once passed by comparing zero released sections and printing ok.
+
 ## Dry run
 
 `workflow_dispatch` with `dry_run: true` (the default) renders the config and reports pending
