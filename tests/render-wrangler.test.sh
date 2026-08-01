@@ -284,15 +284,19 @@ else
   fail=$((fail + 1))
 fi
 
-# CONTROL: plant an entry under a RELEASED heading and require a refusal that NAMES the version.
-# Bare non-zero is not enough -- this script exits 1 for a missing Unreleased heading too, so a
-# control accepting any failure would keep printing ok after the immutability check was removed.
-cl_tmp="$(mktemp -d)"
-git -C "$here" worktree list >/dev/null 2>&1
-cp -r "$here/.git" "$cl_tmp/.git" 2>/dev/null || true
-cp "$here/CHANGELOG.md" "$cl_tmp/CHANGELOG.md"
-latest_tag="$(git -C "$here" tag --list "v*" --sort=-v:refname | head -1)"
-python3 - "$cl_tmp/CHANGELOG.md" "$latest_tag" <<"PY"
+# A working copy of everything the guard reads: the tags, the changelog, AND the correction
+# allowlist. Copying the allowlist is load-bearing (cp#245): with it absent the guard refuses every
+# drift, so a control that forgot it would pass for a reason it was not testing.
+mk_cl_copy() {
+  cp -r "$here/.git" "$1/.git" 2>/dev/null || true
+  cp "$here/CHANGELOG.md" "$1/CHANGELOG.md"
+  mkdir -p "$1/scripts"
+  cp "$here/scripts/changelog-corrections.txt" "$1/scripts/changelog-corrections.txt"
+}
+
+# Plant an extra entry inside the section of $2 in the changelog at $1.
+plant_entry() {
+  python3 - "$1" "$2" <<"PY"
 import sys
 path, tag = sys.argv[1], sys.argv[2]
 lines = open(path).read().split("\n")
@@ -300,6 +304,20 @@ i = next(n for n, l in enumerate(lines) if l.startswith("## " + tag))
 lines.insert(i + 2, "### feat(planted): an entry that landed under a released heading\n")
 open(path, "w").write("\n".join(lines))
 PY
+}
+
+latest_tag="$(git -C "$here" tag --list "v*" --sort=-v:refname | head -1)"
+# The first version in the allowlist: the one section that IS allowed to drift. Read from the file
+# rather than hardcoded, so these controls follow the allowlist instead of drifting from it.
+allowed_tag="$(grep -vE "^[[:space:]]*(#|$)" "$here/scripts/changelog-corrections.txt" | head -1 | awk "{print \$1}")"
+
+# CONTROL: plant an entry under a RELEASED heading and require a refusal that NAMES the version.
+# Bare non-zero is not enough -- this script exits 1 for a missing Unreleased heading too, so a
+# control accepting any failure would keep printing ok after the immutability check was removed.
+cl_tmp="$(mktemp -d)"
+git -C "$here" worktree list >/dev/null 2>&1
+mk_cl_copy "$cl_tmp"
+plant_entry "$cl_tmp/CHANGELOG.md" "$latest_tag"
 cl_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$cl_tmp" 2>&1)" && cl_rc=0 || cl_rc=1
 if [ "$cl_rc" -ne 0 ] && printf "%s" "$cl_out" | grep -q "the ${latest_tag} section has CHANGED"; then
   echo "  ok   CONTROL: an entry planted under a released heading is refused, by name"
@@ -309,6 +327,95 @@ else
   fail=$((fail + 1))
 fi
 rm -rf "$cl_tmp"
+
+# CONTROL (cp#245, THE REGRESSION): a section that MENTIONS the marker in prose must still be
+# checked. This is the defect exactly: the waiver was a substring test, a v1.19.0 entry DOCUMENTED
+# the mechanism with the marker quoted inside backticks, and that section waived immutability for
+# itself. The guard found the planted drift and then permitted it, silently, for six days.
+mention_tmp="$(mktemp -d)"
+mk_cl_copy "$mention_tmp"
+python3 - "$mention_tmp/CHANGELOG.md" "$latest_tag" <<"PY"
+import sys
+path, tag = sys.argv[1], sys.argv[2]
+lines = open(path).read().split("\n")
+i = next(n for n, l in enumerate(lines) if l.startswith("## " + tag))
+# Prose ABOUT the hatch: indented and backticked, exactly the shape that broke it.
+lines.insert(i + 2, "  `**CORRECTED AFTER PUBLICATION`. Declared, never inferred.\n")
+open(path, "w").write("\n".join(lines))
+PY
+plant_entry "$mention_tmp/CHANGELOG.md" "$latest_tag"
+men_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$mention_tmp" 2>&1)" && men_rc=0 || men_rc=1
+if [ "$men_rc" -ne 0 ] && printf "%s" "$men_out" | grep -q "the ${latest_tag} section has CHANGED"; then
+  echo "  ok   CONTROL: a section that MENTIONS the marker in prose is still checked"
+  pass=$((pass + 1))
+else
+  echo "  FAILED CONTROL: prose mentioning the marker disarmed the check again (cp#245)"
+  fail=$((fail + 1))
+fi
+rm -rf "$mention_tmp"
+
+# CONTROL: CONTENT CANNOT WAIVE. Even a correctly-formed declaration, at column 0, in the section
+# being corrected, waives nothing on its own -- the version has to be in the allowlist, which is a
+# file no changelog entry can reach. Without this control the fix would be one anchored substring
+# away from the same class of defect.
+undeclared_tmp="$(mktemp -d)"
+mk_cl_copy "$undeclared_tmp"
+python3 - "$undeclared_tmp/CHANGELOG.md" "$latest_tag" <<"PY"
+import sys
+path, tag = sys.argv[1], sys.argv[2]
+lines = open(path).read().split("\n")
+i = next(n for n, l in enumerate(lines) if l.startswith("## " + tag))
+lines.insert(i + 2, "**CORRECTED AFTER PUBLICATION (planted).** A declaration with no allowlist row.\n")
+open(path, "w").write("\n".join(lines))
+PY
+und_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$undeclared_tmp" 2>&1)" && und_rc=0 || und_rc=1
+if [ "$und_rc" -ne 0 ] && printf "%s" "$und_out" | grep -q "does not list it"; then
+  echo "  ok   CONTROL: a declaration alone does not waive; the allowlist is required"
+  pass=$((pass + 1))
+else
+  echo "  FAILED CONTROL: changelog content waived immutability by itself"
+  fail=$((fail + 1))
+fi
+rm -rf "$undeclared_tmp"
+
+# POSITIVE CONTROL: the hatch still OPENS. Every control above is a refusal, and a guard that simply
+# refused everything would pass all of them while making a legitimate in-place correction
+# impossible. The allowlisted section already declares its correction, so planting drift there must
+# be PERMITTED.
+hatch_tmp="$(mktemp -d)"
+mk_cl_copy "$hatch_tmp"
+plant_entry "$hatch_tmp/CHANGELOG.md" "$allowed_tag"
+hatch_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$hatch_tmp" 2>&1)" && hatch_rc=0 || hatch_rc=1
+if [ "$hatch_rc" -eq 0 ] && printf "%s" "$hatch_out" | grep -q "${allowed_tag} is an allowlisted post-publication correction"; then
+  echo "  ok   POSITIVE CONTROL: an allowlisted, declared correction is still permitted"
+  pass=$((pass + 1))
+else
+  echo "  FAILED CONTROL: the hatch no longer opens, so a legitimate correction is now impossible"
+  fail=$((fail + 1))
+fi
+rm -rf "$hatch_tmp"
+
+# CONTROL: the other half. Allowlisted but with the reader-facing declaration REMOVED must refuse:
+# the allowlist is for this script, the marker is for the person reading the changelog, and a
+# correction nobody is told about is the record lying by omission.
+silent_tmp="$(mktemp -d)"
+mk_cl_copy "$silent_tmp"
+python3 - "$silent_tmp/CHANGELOG.md" <<"PY"
+import sys
+path = sys.argv[1]
+lines = open(path).read().split("\n")
+open(path, "w").write("\n".join(l for l in lines if not l.startswith("**CORRECTED AFTER PUBLICATION")))
+PY
+plant_entry "$silent_tmp/CHANGELOG.md" "$allowed_tag"
+sil_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$silent_tmp" 2>&1)" && sil_rc=0 || sil_rc=1
+if [ "$sil_rc" -ne 0 ] && printf "%s" "$sil_out" | grep -q "carries no line BEGINNING"; then
+  echo "  ok   CONTROL: an allowlisted section that does not SAY it was corrected is refused"
+  pass=$((pass + 1))
+else
+  echo "  FAILED CONTROL: a silent correction passed on the allowlist alone"
+  fail=$((fail + 1))
+fi
+rm -rf "$silent_tmp"
 
 # CONTROL: "nothing to check" must not read as "everything checks out". The guard printed ok having
 # compared ZERO sections in CI, because a bare actions/checkout is shallow and carries no tags, so
