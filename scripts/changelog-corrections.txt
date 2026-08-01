@@ -1,0 +1,21 @@
+# Released changelog sections whose text may DRIFT from their tag, because the original release
+# note was WRONG about what shipped and was corrected in place.
+#
+# WHY THIS FILE EXISTS AND THE CHANGELOG DOES NOT DECIDE (cp#245). The waiver used to be a marker
+# string inside the section itself, tested as a substring. A v1.19.0 entry that DOCUMENTED the
+# mechanism, quoting the marker inside backticks, therefore disarmed immutability for its own
+# section: the guard detected the drift and then waived it, silently, because a waiver and a pass
+# look identical downstream. Any escape hatch that lives in the content can be tripped by content
+# that merely talks about it. This one cannot: nothing a changelog entry can say puts a version in
+# here.
+#
+# BOTH HALVES ARE REQUIRED, and each catches what the other cannot:
+#   - the version listed HERE, which is the waiver, reviewable as its own line in a diff;
+#   - a line in that section BEGINNING (column 0) with `**CORRECTED AFTER PUBLICATION`, which is
+#     what tells a READER of the changelog that the text moved after the tag.
+# Listed but undeclared is refused (the record would lie by omission). Declared but unlisted is
+# refused (that is the cp#245 defect). Neither alone waives anything.
+#
+# FORMAT: one version per line, `vX.Y.Z` first, free text after it, `#` starts a comment.
+
+v1.17.0  2026-07-27  said it contained two PRs when the tag carries four; corrected in place
