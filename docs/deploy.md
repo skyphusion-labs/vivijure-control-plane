@@ -201,30 +201,20 @@ can drift, and a reader built from a recorded sample is only as fresh as the sam
 
 ### Which AI Gateway is which (cp#203)
 
-Seven gateways exist on the account and they are NOT interchangeable. Pointing a consumer at the
-wrong one is not a correctness bug, which is exactly why it survives: everything works, and the
-spend lands in another product cost picture.
+Pointing a consumer at the wrong AI Gateway is not a correctness bug, which is exactly why it is
+easy to miss: everything works, and the spend lands in another cost picture.
 
-This table is the WHOLE ACCOUNT, deliberately, not the vivijure subset. A table listing only the
-vivijure gateways would reproduce the very failure this section exists to prevent: the next reader
-looks up the gateway id actually in front of them, does not find it, and guesses. Read 2026-07-28
-with `result_info` checked (`count: 7, page: 1, total_count: 7`), so it is a complete census rather
-than a first page.
+This plane points at exactly two gateway ids and at nothing else:
 
 | Gateway | Auth | Disposition |
 | --- | --- | --- |
 | `vivijure-hosted` | ON | TENANT traffic only. The per-tenant token is the access boundary and `cf-aig-metadata` carries the tenant id; this is the namespace the meter reads. Dev traffic here would forge tenant numbers. |
-| `vivijure-dev` | ON | Crew DEV boxes and local studios (`vivijure-local` on a GPU dev box, any hand-run panel). Its own per-function token, `vivijure-dev-aig-run`. |
-| `vivijure-demo` | OFF | Pre-existing demo surface. NO vivijure consumers, and do not add one; see the authentication note below. |
-| `skyphusion-llm` | ON | **prism, a different product.** Never vivijure, in any environment. This is the one a vivijure dev config was actually pointed at, which is what cp#203 was. |
-| `common-thread` | ON | Another product on this account. No vivijure consumers. |
-| `openwebui-friends` | ON | Another product on this account. No vivijure consumers. |
-| `default` | OFF | The account default gateway. No vivijure consumers. |
+| `vivijure-dev` | ON | Crew DEV boxes and local studios. Its own per-function token, `vivijure-dev-aig-run`. |
 
-**A gateway that is not in this table is not a vivijure gateway.** That rule outlives the census:
-anything created after 2026-07-28 carries no vivijure traffic until it is added here with a
-disposition. Vivijure points at exactly two ids, `vivijure-hosted` for tenants and `vivijure-dev`
-for crew dev work, and at nothing else.
+**A gateway that is not in this table is not a vivijure gateway.** The account carries other
+gateways for other products; the full census (every gateway that exists, whether or not vivijure
+uses it) is tracked internally, and this plane never widens past the two rows above without that
+census being updated first.
 
 **Dev traffic is AUTHENTICATED, deliberately.** The cheap option was to reuse `vivijure-demo`
 (`authentication: false`) and skip the token. The standing rationale from cp#185 rules that out: an
@@ -233,28 +223,16 @@ so an unauthenticated gateway is an open proxy to our credit balance. That argum
 because the caller is a dev box; the exposed surface is the gateway, not the caller. A dev gateway
 is also the one most likely to end up in a pasted snippet.
 
-**Per-function token, not a shared one.** `vivijure-dev-aig-run` (CF token id
-`74e596d3998335b93a3a4fa8fad63f3a`, permission group `AI Gateway Run`, minted by Strummer
-2026-07-28, home `~strummer/.vivijure-dev-aig.env` on the primary crew box, `chmod 600`). It reaches
-one capability on one account, so revoking it stops dev traffic and touches nothing else. It is NOT
-a Worker secret and is deliberately absent from the owners table above, which covers
-`wrangler secret put` bindings on this Worker.
+**Per-function token, not a shared one.** `vivijure-dev-aig-run` carries a single permission
+group (`AI Gateway Run`) and reaches one capability on one account, so revoking it stops dev traffic
+and touches nothing else. It is NOT a Worker secret and is deliberately absent from the owners table
+above, which covers `wrangler secret put` bindings on this Worker. Token id, mint custody, and home
+are tracked internally.
 
 Scope limit worth stating rather than implying: `AI Gateway Run` is an ACCOUNT-scoped permission
 group, so this token is not confined to `vivijure-dev` at the API layer. The confinement is the URL
 the consumer is configured with. That is why the gateway id and the token are rotated together and
 recorded together.
-
-Verified live at mint time (2026-07-28), all three legs against `vivijure-dev`: valid token **200**
-with a real Anthropic response body, no `cf-aig-authorization` header **401** (`AiGatewayError`
-2009), bogus token **401**. The gateway log then showed exactly one request, `cost=0.000145`,
-`status=200`, a clean namespace with nothing else in it.
-
-Known consumers repointed in the same pass: `~strummer/local.env` and
-`~strummer/propagandhi-vivijure.env` on the crew box, and the LIVE `vivijure-local` stack on
-a GPU dev box (its own `.env` plus a `docker compose up -d`, since a fixed file over a running
-container that still holds the old value is the defect wearing a fix). All seven containers that
-carry `GATEWAY_ID` were read back at `vivijure-dev`.
 
 Worker **secrets** (`wrangler secret put`, never in Actions): `POSTERN_SEND_TOKEN`,
 `GOOGLE_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `APPLE_PRIVATE_KEY`,
@@ -282,17 +260,21 @@ unowned credential cannot be rotated, audited, or handed over.
 So: **a worker secret is not considered set until this table names its owner and its home.** If you
 `wrangler secret put` something, you add the row in the same change.
 
-| Secret | Owner | Home |
-| --- | --- | --- |
-| `CONTROL_PLANE_ADMIN_TOKEN` | Mackaye | `~/.vivijure-cp-admin.token` on the primary crew box (`chmod 600`) |
-| `POSTERN_SEND_TOKEN` | Strummer | send identity recorded in `crew-secrets/operator/postern/vivijure-control-plane-send-identity.fragment.json` |
-| `CF_PROVISIONER_TOKEN` | Rollins (hosted sprint mint, 2026-07-17) | `~/.vivijure-provisioner-full.env` on the primary crew box (dischord, `chmod 600`); mirrored to repo Actions secret `CF_PROVISIONER_TOKEN` for live gates |
-| `STUDIO_TOKEN_KEK` | Rollins (recovered 2026-07-25); escrow: Mackaye | `~/.vivijure-studio-token-kek` on the primary crew box (dischord, `chmod 600`); **escrowed 2026-07-25** to crew-secrets tier `secrets-vivijure-kek` (mackaye + conrad-operator recipients only; recovery runbook `crew-secrets/docs/vivijure-kek-escrow-recovery.md`) |
-| `AI_GATEWAY_READ_TOKEN` | Strummer (minted 2026-07-27); installed by Mackaye 2026-07-28 | repo Actions secret `VIVIJURE_AIGW_READ_TOKEN`, plus a mode-600 file on the primary crew box. **INSTALLED** and verified on the artifact rather than on wrangler's exit status: the Worker settings API reports `AI_GATEWAY_READ_TOKEN secret_text` as a live binding (re-confirmed independently by Rollins, 2026-07-28). The token's permission groups were verified with positive and negative controls at mint time by Strummer; that fact is INHERITED here, not re-proven, because the value cannot be read back |
-| `GOOGLE_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
-| `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) | n/a |
-| `APPLE_PRIVATE_KEY` | unset (SSO not offered) | n/a |
-| `STUDIO_TOKEN_KEK_NEXT` | whoever runs the rotation; escrow: Mackaye | **Only exists while a rotation window is open** (cp#95). Generated on an operator box, escrowed to crew-secrets tier `secrets-vivijure-kek` BEFORE it is installed, removed from the worker when the window closes |
+| Secret | Status |
+| --- | --- |
+| `CONTROL_PLANE_ADMIN_TOKEN` | set |
+| `POSTERN_SEND_TOKEN` | set |
+| `CF_PROVISIONER_TOKEN` | set |
+| `STUDIO_TOKEN_KEK` | set, escrowed |
+| `AI_GATEWAY_READ_TOKEN` | set (cp#185) |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | unset (SSO not offered) |
+| `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) |
+| `APPLE_PRIVATE_KEY` | unset (SSO not offered) |
+| `STUDIO_TOKEN_KEK_NEXT` | only exists while a rotation window is open (cp#95) |
+
+Owner and home for each row above are tracked internally, on this hosted deployment; that is
+operator custody bookkeeping, not deploy-path truth a self-hoster needs. A self-hoster's own
+operator is self-evidently the owner of every secret in their own account.
 
 ### Rotating `STUDIO_TOKEN_KEK` (cp#95)
 
@@ -325,11 +307,11 @@ does not open under the write slot), so there is no cursor to go stale and a sec
    head -c 32 /dev/urandom | base64 > ~/.vivijure-studio-token-kek-next
    ```
 
-2. **Escrow it BEFORE installing it**, to crew-secrets tier `secrets-vivijure-kek` (mackaye +
-   conrad-operator recipients only -- this key decrypts live customer credentials, so the every-member
-   `shared` tier was rejected by ruling). Runbook:
-   `crew-secrets/docs/vivijure-kek-escrow-recovery.md`, section "Rotation: escrow the NEW key first".
-   A rotation that produces a key with one copy has recreated the original defect.
+2. **Escrow it BEFORE installing it**, by whatever mechanism you use to hold a second copy of a
+   value this sensitive (this key decrypts live customer credentials, so restrict the escrow to
+   the smallest set of people who can recover it). A rotation that produces a key with one copy has
+   recreated the original defect. Hosted-plane operators: the internal escrow tier and recovery
+   runbook are recorded in fleet-chezmoi.
 
 3. **Install it as the second binding.** Reads now try both keys, so nothing has changed for any
    tenant and the step is reversible by deleting the binding.
@@ -373,87 +355,6 @@ does not open under the write slot), so there is no cursor to go stale and a sec
 never touches those: re-encrypting a row we could not read would destroy the only ciphertext, and the
 value may still be recoverable from an escrowed key nobody has tried. Investigate the row before you
 drop a key; dropping one with an unreadable row outstanding is how a tenant loses its token for good.
-
-### Minted, not yet bound
-
-Cloudflare API tokens that exist and are owned but are **not** worker secrets yet. They are listed
-here rather than in the table above so that table keeps its invariant: every row there is a live
-`secret_text` binding on the worker. A token graduates into the table above when a consumer actually
-reads it, and not before -- a mint is not a roll.
-
-| Token | Owner | Home | Purpose / consumer |
-| --- | --- | --- | --- |
-| `vivijure-cp-worker-upload` (CF token id `d28c773133d51c56fdebc26ed95a10df`) | Mackaye (minted 2026-07-25, cf#224 Lane U) | `~/.vivijure-cp-worker-upload.env` (conrad) and `~rollins/.cf-worker-upload-v2.env` (rollins), both on the primary crew box (dischord, `chmod 600`), var `CF_WORKER_UPLOAD_TOKEN` | tenant-script uploads incl. Workers VPC binding attach; **no token-mint scope by design** (CF forbids a sub-token from minting token-mint scope; split-function ruling on cf#224). Consumer: the control plane, wiring pending (Rollins, Lane U) |
-
-Scope is exactly four permission groups on the account: Workers Scripts Write, Connectivity Directory
-Admin, Connectivity Directory Bind, Connectivity Directory Read. The split exists because
-`CF_PROVISIONER_TOKEN` carries `Account API Tokens Write` (it mints per-tenant bucket-scoped R2 S3
-credentials, cf#53), and Cloudflare refuses to let one API token mint another that carries that group.
-So the VPC-capable half was cut as its own narrower token instead of widening the provisioner. The
-provisioner was not modified.
-
-`STUDIO_TOKEN_KEK` was `UNCLAIMED` until 2026-07-25 (set on the live worker during the #93 deploy
-with no durable home file); the recovery below closed that, and the crew-secrets escrow closed the
-single-copy gap the same day. The paragraphs that follow are the record of how.
-
-**Recovery search, exhausted 2026-07-25 (#4):** absent from the setting member's home and
-`~/.secrets`, from every `crew-secrets` tier manifest and doc, from both repos' Actions secrets, from
-`fleet-chezmoi`, and from shell history (crew shells are non-interactive, so none is written). The
-binding IS live on the worker (`secret_text`), but Cloudflare worker secrets are write-only -- the
-API returns names and types only -- so the value cannot come back off the platform. Treat it as
-**unrecoverable**, not merely unlocated.
-
-### RECOVERED 2026-07-25, and how
-
-Filesystem recovery was genuinely exhausted (nothing on any box, no Actions secret, no crew-secrets
-tier, no shell history) and the Cloudflare API cannot return a worker secret. But the RUNNING worker
-still reads `env.STUDIO_TOKEN_KEK` on every request, and that is a recovery surface the API is not.
-
-The value was recovered through a `wrangler dev --remote` session for this script name, which
-**inherits the deployed script's secret bindings** while creating **no version and no deployment**.
-That property is why this route was chosen over the two alternatives, both of which were rejected on
-the same principle: a temporary export route merged to `main` would sit in a PUBLIC repo's history
-forever, and a `wrangler versions upload` would sit in the script's version history, which has no
-delete operation in either the CLI or the API. A closing window attached to a non-closing artifact is
-not a closing window.
-
-Custody of the recovery itself:
-
-- The handler **never returned the KEK in plaintext.** It RSA-OAEP encrypted it to a public key
-  generated on the operator box seconds earlier, so the plaintext never crossed the network and a
-  captured response is inert without a private half that never left the box.
-- Gated on `CONTROL_PLANE_ADMIN_TOKEN` (constant-time compare) plus a single-use per-run nonce.
-- The response was decrypted straight into the `chmod 600` file home. The value was never rendered
-  to a terminal, a log, or a transcript at any point.
-- Ephemeral keypair, nonce and ciphertext were shredded afterwards.
-
-**Verified by use, not by assertion:** the recovered key decrypts **7 of 7** live tenants'
-`studio_token_enc` to well-formed 64-hex studio tokens. An escrow holding the wrong value is worse
-than no escrow, so this check is the point, not a formality. Outside verification after the sitting:
-deployed version id unchanged, version count unchanged, plane still serving.
-
-### It has a HOME, and now an ESCROW (both closed 2026-07-25)
-
-`~/.vivijure-studio-token-kek` on one box is a **single copy**. That closes the "nobody can say where
-this lives" gap and it does NOT, alone, close the "only one copy exists" gap. That second gap CLOSED
-2026-07-25: the key is escrowed in crew-secrets tier `secrets-vivijure-kek` (age ciphertext, mackaye +
-conrad-operator recipients only, blob verified sha256-equal to the file home before commit; recovery
-procedure in `crew-secrets/docs/vivijure-kek-escrow-recovery.md`). The row is CLOSED.
-
-Consequences, stated plainly because this one is not like the others in this table:
-
-- It is **not** cheap to re-key. Unlike the admin gate, this key decrypts `tenants.studio_token_enc`
-  for every tenant that has one (7 at time of writing). A new KEK orphans that ciphertext and breaks
-  dispatcher-injected auth for those tenants. Re-keying requires an explicit migration that re-mints
-  and re-encrypts each tenant's studio token, and it is a ruled decision, not a maintenance chore.
-- It had **no escrow**, which was the actual defect: the only copy of a key protecting live customer
-  credentials existed in one write-only location. Recovery (above) gave it a readable home; the age
-  tier (`secrets-vivijure-kek`, landed 2026-07-25) gave it the second copy.
-- The live **provision e2e does not need it** and never did. That suite round-trips a KEK entirely
-  in-process over a `MemoryStore` tenant it creates itself, so it generates an ephemeral key
-  (`tests/provision-e2e-env.ts`). Admitting the production KEK there would widen its custody into CI
-  to buy nothing. The belief that #4 was blocked on recovering this value was the premise error that
-  parked that issue.
 
 Re-keying an ADMIN TOKEN (not the KEK) is cheap and non-destructive: the admin gate fails closed, no tenant traffic
 touches it, and the check is two curls (bearer -> 200, bare -> 401). Re-key on unknown provenance;
