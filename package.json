@@ -12,6 +12,7 @@
     "guard:resolve": "node scripts/resolve-guard.mjs",
     "check:pins": "node scripts/check-satellite-pins.mjs",
     "check:pins:prod": "node scripts/check-satellite-pins.mjs --prod",
+    "guards:config": "bash tests/render-wrangler.test.sh",
     "test": "vitest run",
     "test:live:scratch": "vitest run tests/runpod.live.test.ts tests/cf-api.live.test.ts",
     "smoke:predeploy": "vitest run tests/pre-deploy-smoke.live.test.ts",

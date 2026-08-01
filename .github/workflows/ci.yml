@@ -67,8 +67,14 @@ jobs:
       # The deploy config render is shell, so vitest never sees it. Its fail-closed guards are
       # what stand between a missing Actions secret and a deploy pointed at the wrong database,
       # so they are gated here, negative-tested, on every PR.
+      #
+      # ONE DEFINITION, TWO CALLERS (cp#246). This used to be `bash tests/render-wrangler.test.sh`
+      # here and NOWHERE ELSE, so a v* tag deployed with this job red: the deploy path could not
+      # fail for the class of defect these guards exist to catch. deploy.yml preflight now calls the
+      # same npm script. Change the command in package.json, not in a workflow, or the two callers
+      # drift into two guards wearing one name.
       - name: Config render guards
-        run: bash tests/render-wrangler.test.sh
+        run: npm run guards:config
 
       # The changelog job guards a PR; THIS guards the changelog job. It used to compare two-dot
       # against a moving base and pass a PR whose entry was somebody else. The fixture reproduces
