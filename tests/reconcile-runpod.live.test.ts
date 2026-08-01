@@ -1,7 +1,11 @@
 // LIVE reconciliation check (cp#137): BOTH sides read from the real world, no stubs anywhere.
 //
-//   set -a; . ~/.cf-vivijure-hosted.env; . ~/your-runpod.env; set +a
-//   CF_ACCOUNT_ID=<id> RECONCILE_LIVE=1 npx vitest run tests/reconcile-runpod.live.test.ts
+//   RUNPOD_API_KEY=<key> CF_PROVISIONER_TOKEN=<token> CF_ACCOUNT_ID=<id> RECONCILE_LIVE=1 \
+//     npx vitest run tests/reconcile-runpod.live.test.ts
+//
+// This repo is PUBLIC, so the env contract is named here and the place the credential is kept is
+// not. Operators know where their own credentials live; a public file naming the path tells
+// everyone else.
 //
 // WHY IT EXISTS. reconcile-runpod.test.ts drives the detector from fixtures, so it proves the
 // decision path and nothing about the shipped artifact: fixtures encode MY assumptions about what

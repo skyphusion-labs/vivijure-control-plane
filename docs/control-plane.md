@@ -1997,9 +1997,13 @@ truncation guards, and the positive control that a consistent tenant reports cle
 live tenants table through the shipping clients, read-only, zero GPU spend:
 
 ```
-set -a; . ~/.cf-provisioner-full.env; . ~/your-runpod.env; set +a
-CF_ACCOUNT_ID=<id> RECONCILE_LIVE=1 npx vitest run tests/reconcile-runpod.live.test.ts
+RUNPOD_API_KEY=<key> CF_PROVISIONER_TOKEN=<token> CF_ACCOUNT_ID=<id> RECONCILE_LIVE=1 \
+  npx vitest run tests/reconcile-runpod.live.test.ts
 ```
+
+This repo is public, so the env contract is named here and the place the credential is kept is
+not. Operators know where their own credentials live; a public file naming the path tells
+everyone else.
 
 It asserts shape and internal consistency, never `clean`: the live account carries known drift, and
 a test demanding clean would be a test demanding the bug be fixed before the detector can be trusted.

@@ -2,8 +2,11 @@
 // tests/conformance.live.test.ts: it runs only when CF_PROVISIONER_TOKEN + CF_ACCOUNT_ID are set,
 // so it stays out of CI and out of anyone's way.
 //
-//   set -a; . ~/.cf-provisioner.env; set +a
-//   CF_ACCOUNT_ID=<id> npx vitest run tests/control-plane/cf-api.live.test.ts
+//   CF_PROVISIONER_TOKEN=<token> CF_ACCOUNT_ID=<id> npx vitest run tests/cf-api.live.test.ts
+//
+// This repo is PUBLIC, so the env contract is named here and the place the credential is kept is
+// not. Operators know where their own credentials live; a public file naming the path tells
+// everyone else.
 //
 // WHY IT EXISTS: provisioner.test.ts fakes Cloudflare, so it proves the step machine and NOTHING
 // about whether these API calls are shaped right. A fake CF cheerfully agrees with my own

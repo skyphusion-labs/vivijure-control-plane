@@ -7,8 +7,12 @@
 // exists for -- now SUCCEEDS.
 //
 // RUN:
-//   set -a; . ~/.cf-provisioner-full.env; set +a
-//   CF_ACCOUNT_ID=<id> R2_EMPTY_LIVE=1 npx vitest run tests/r2-empty.live.test.ts
+//   CF_PROVISIONER_TOKEN=<token> CF_ACCOUNT_ID=<id> R2_EMPTY_LIVE=1 \
+//     npx vitest run tests/r2-empty.live.test.ts
+//
+// This repo is PUBLIC, so the env contract is named here and the place the credential is kept is
+// not. Operators know where their own credentials live; a public file naming the path tells
+// everyone else.
 //
 // SPEND: $0. One bucket, a handful of tiny objects, one credential, all destroyed in the run.
 

@@ -1,7 +1,10 @@
 // LIVE verification of the RunPod port (#54) against the SCRATCH account. Opt-in:
 //
-//   set -a; . ~/.runpod-scratch.env; set +a
-//   RUNPOD_LIVE=1 npx vitest run tests/control-plane/runpod.live.test.ts
+//   RUNPOD_API_KEY=<key> RUNPOD_LIVE=1 npx vitest run tests/runpod.live.test.ts
+//
+// This repo is PUBLIC, so the env contract is named here and the place the credential is kept is
+// not. Operators know where their own credentials live; a public file naming the path tells
+// everyone else.
 //
 // WHY: runpod.test.ts fakes RunPod, so it proves the plan and the quota PARSER and nothing about
 // whether RunPod actually says what I think it says. The quota sentence in particular is the ONLY

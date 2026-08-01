@@ -2,9 +2,12 @@
 //
 //   node scripts/build-studio-release.ts --bundle <outdir>/index.js --assets public \
 //     --config wrangler.toml --tag <tag> --out /tmp/studio-release
-//   set -a; . ~/.cf-provisioner-full.env; set +a
-//   CF_ACCOUNT_ID=<id> STUDIO_RELEASE_DIR=/tmp/studio-release \
-//     npx vitest run tests/control-plane/wfp-upload.live.test.ts
+//   CF_PROVISIONER_TOKEN=<token> CF_ACCOUNT_ID=<id> STUDIO_RELEASE_DIR=/tmp/studio-release \
+//     npx vitest run tests/wfp-upload.live.test.ts
+//
+// This repo is PUBLIC, so the env contract is named here and the place the credential is kept is
+// not. Operators know where their own credentials live; a public file naming the path tells
+// everyone else.
 //
 // HONEST LABEL, and it is the point of this comment: this verifies the upload against the
 // REPRODUCIBLE BUILD OF MAIN, not against a published tag. No v* tag exists yet (tagging deploys the
