@@ -120,6 +120,24 @@ pf_checkouts = [s for s in steps_of(preflight) if str(s.get("uses", "")).startsw
 check("preflight checks out full history and tags, which the guard suite needs",
       bool(pf_checkouts) and all(str((s.get("with") or {}).get("fetch-depth")) == "0" for s in pf_checkouts),
       "checkout with: " + str([s.get("with") for s in pf_checkouts]))
+
+# cp#260 bucket 1, second and last member: satellite image pins.
+#
+# The pins point OUT of this repo, so no unit test can prove the tags exist, and a tag can point at
+# any commit. MEASURED, and the obvious negative test is a FALSE LEAD worth recording: a pin at
+# "9.9.9-probe" fails vitest, but on a FORMAT assertion rather than on existence, so stopping there
+# concludes the suite already covers this. A pin at "1.0.99" -- well-formed, never pushed -- passes
+# typecheck, all 1467 tests and the config guards, and is caught ONLY by check:pins.
+check("preflight resolves satellite image pins", "check:pins" in preflight_text,
+      "preflight run text: " + preflight_text[:300])
+check("ci resolves satellite image pins too", "check:pins" in ci_text)
+
+# The REGISTRY mode, not the production one. `check:pins:prod` needs a prod RunPod key that this
+# workflow does not hold and should not; wiring it here would fail every deploy on a missing
+# credential, and a gate that always refuses is a gate somebody disables.
+check("the deploy path uses the credential-free REGISTRY mode, not --prod",
+      "check:pins:prod" not in preflight_text and "--prod" not in preflight_text,
+      "preflight must not require a production RunPod key")
 print("")
 print("  " + str(checks - len(failures)) + " passed, " + str(len(failures)) + " failed")
 sys.exit(1 if failures else 0)
