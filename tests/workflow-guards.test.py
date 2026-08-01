@@ -85,6 +85,41 @@ check("preflight reports pending migrations (read-only)", "migrations list" in p
 check("preflight renders the config, so a dry run validates the secrets",
       "render-wrangler.sh" in preflight_text)
 
+
+# ------------------------------------------------------------------------------------------------
+# cp#246. THE GUARD SUITE HAS TO BE ON THE DEPLOY PATH, AND ONE DEFINITION HAS TO SERVE BOTH CALLERS.
+#
+# Observed on the v1.19.0 tag: `Deploy control plane` succeeded while `CI` failed on the same tag,
+# because `Config render guards` lived only in ci.yml. The deploy could not fail for the class of
+# defect those guards catch. On that occasion the red was a control correctly firing on a guard
+# weakness and the deploy was genuinely safe. Next time the same silence covers a real one.
+#
+# These are SHAPE assertions, like everything else in this file. That a red guard actually blocks
+# the deploy is proven by dispatching deploy.yml with the suite deliberately broken and watching
+# `release` skip; a structural test cannot prove that and does not claim to.
+check("preflight runs the config guard suite", "guards:config" in preflight_text,
+      "preflight run text: " + preflight_text[:300])
+
+# The same definition, not a copy. A second literal `bash tests/render-wrangler.test.sh` in a
+# workflow is how two callers become two guards wearing one name.
+ci_wf = yaml.safe_load(open(".github/workflows/ci.yml"))
+ci_job = ci_wf.get("jobs", {}).get("ci", {})
+ci_text = "\n".join(run_text(s) for s in steps_of(ci_job))
+check("ci runs the SAME config guard suite by npm script", "guards:config" in ci_text)
+check("no workflow calls the guard script directly, bypassing the one definition",
+      "render-wrangler.test.sh" not in ci_text and "render-wrangler.test.sh" not in preflight_text,
+      "a direct call re-splits the definition")
+
+# MEASURED 2026-08-01, and this is the assertion that keeps the step honest rather than merely
+# present: the guard suite copies .git and resolves released CHANGELOG sections by matching
+# `## vX.Y.Z` against git TAGS. On a shallow, tagless checkout it reports 6 failures out of 53.
+# A preflight that checked out shallow would fail every deploy for a reason that has nothing to do
+# with the config, which is worse than not running the guard at all: a red nobody believes is a red
+# nobody reads.
+pf_checkouts = [s for s in steps_of(preflight) if str(s.get("uses", "")).startswith("actions/checkout")]
+check("preflight checks out full history and tags, which the guard suite needs",
+      bool(pf_checkouts) and all(str((s.get("with") or {}).get("fetch-depth")) == "0" for s in pf_checkouts),
+      "checkout with: " + str([s.get("with") for s in pf_checkouts]))
 print("")
 print("  " + str(checks - len(failures)) + " passed, " + str(len(failures)) + " failed")
 sys.exit(1 if failures else 0)

@@ -56,7 +56,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # fetch-depth: 0 is LOAD-BEARING here for the same reason it is in ci.yml, and it became
+      # load-bearing when the config guard suite moved onto this path (cp#246).
+      # scripts/changelog-released-immutable.py resolves released sections by matching `## vX.Y.Z`
+      # against git TAGS, and a bare checkout is shallow with none. MEASURED: the suite reports
+      # 6 failures out of 53 on a shallow tagless clone. A preflight that failed that way would be
+      # red for a reason that has nothing to do with the config, which teaches whoever is on the tag
+      # to ignore a red.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:
@@ -91,6 +100,26 @@ jobs:
             exit 1
           fi
           echo "tag ${GITHUB_REF_NAME} matches declared version ${pkg}."
+
+      # THE CONFIG GUARD SUITE, ON THE DEPLOY PATH (cp#246).
+      #
+      # This lived only in ci.yml, so the v1.19.0 tag deployed successfully while CI failed on the
+      # same commit. The product gates here are real (typecheck, tests, tag-matches-version, render,
+      # pinned-release-satisfiable, and release asserting the commit is on main), so a tag never
+      # deployed unchecked. What it could not do was fail for a CONFIG or LEDGER defect, which is
+      # exactly the class this suite catches and the only class carrying its own controls. A control
+      # that exists and is never consulted is worse than no control: it reads as coverage.
+      #
+      # ONE DEFINITION, TWO CALLERS. Both this and ci.yml call `npm run guards:config`; the command
+      # lives in package.json so the two cannot drift into two guards wearing one name. Run in the
+      # deploy's OWN job rather than gating on ci.yml's conclusion for the same SHA, because a deploy
+      # that trusts a sibling workflow's verdict is trusting something it cannot see, and
+      # workflow-level conclusions disagree with per-SHA check-runs.
+      #
+      # BEFORE the render step deliberately: these guards are negative tests OF that render, so a
+      # render that is about to be wrong should be refused rather than performed and then judged.
+      - name: Config render guards
+        run: npm run guards:config
 
       # Render here too, even though the release job renders again: a dry run must prove the
       # Actions secrets and variables are correctly populated, and the render guards are where
