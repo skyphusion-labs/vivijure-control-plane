@@ -101,6 +101,47 @@ describe("terminal facts: NULL is not zero", () => {
     expect(facts!.executionMs).not.toBe(0);
   });
 
+  // A BROKEN MEASUREMENT IS NOT A MEASUREMENT OF ZERO. `num()` gates on Number.isFinite, so NaN and
+  // both Infinities land on null alongside a genuinely absent field.
+  //
+  // THE FAILURE MODE THIS EXISTS TO CATCH IS A SIMPLIFICATION, NOT A TYPO: someone later rewrites
+  // `num()` as `typeof v === "number" ? v : null`, which reads as equivalent and is not -- NaN is a
+  // number. A NaN duration would then flow into the ledger, and NaN compares false against every
+  // threshold, so it fails no validation on the way. Proved by injecting exactly that rewrite and
+  // watching these assertions go red before this line was committed.
+  it("sends NaN to NULL, never to 0 -- a broken measurement is not a job that took no time", () => {
+    const facts = terminalFactsFromStatus("job-nan", {
+      status: "COMPLETED",
+      executionTime: Number.NaN,
+      delayTime: Number.NaN,
+    });
+    expect(facts!.executionMs).toBeNull();
+    expect(facts!.delayMs).toBeNull();
+    expect(facts!.executionMs).not.toBe(0);
+    // Guards against a "fix" using a truthiness check, which would also swallow a genuine 0.
+    expect(Number.isNaN(facts!.executionMs as unknown as number)).toBe(false);
+  });
+
+  it("sends Infinity and -Infinity to NULL for the same reason", () => {
+    const pos = terminalFactsFromStatus("job-inf", {
+      status: "COMPLETED",
+      executionTime: Number.POSITIVE_INFINITY,
+      delayTime: Number.NEGATIVE_INFINITY,
+    });
+    expect(pos!.executionMs).toBeNull();
+    expect(pos!.delayMs).toBeNull();
+  });
+
+  it("sends a non-numeric type to NULL rather than coercing it", () => {
+    const facts = terminalFactsFromStatus("job-str", {
+      status: "COMPLETED",
+      executionTime: "81",
+      delayTime: null,
+    });
+    expect(facts!.executionMs).toBeNull();
+    expect(facts!.delayMs).toBeNull();
+  });
+
   it("keeps a real zero distinguishable from absence", () => {
     const facts = terminalFactsFromStatus("job-2", { status: "COMPLETED", executionTime: 0, delayTime: 0 });
     expect(facts!.executionMs).toBe(0);
