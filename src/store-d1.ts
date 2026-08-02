@@ -959,9 +959,14 @@ export class D1Store implements ControlPlaneStore, CreditStore {
     // must not be able to lose data to a re-run.
     const sql =
       "INSERT INTO runpod_job_index " +
-      "(job_id, tenant_id, tenant_slug, module, outcome, submitted_at, terminal_at, harvested_at) " +
-      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now')) " +
+      "(job_id, tenant_id, tenant_slug, module, outcome, submitted_at, terminal_at, harvested_at, source) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'), 'harvest') " +
       "ON CONFLICT(job_id) DO UPDATE SET " +
+      // source is a fact about ORIGIN, so unlike every other column here the EXISTING value wins.
+      // A row the proxy opened at submit was seen by the proxy; a later harvest touching the same
+      // job must not relabel it 'harvest'. Note the COALESCE direction is deliberately the OPPOSITE
+      // of the others below, which prefer `excluded` so a fresher value refines an older one.
+      "source = COALESCE(runpod_job_index.source, excluded.source), " +
       "module = COALESCE(excluded.module, runpod_job_index.module), " +
       "outcome = COALESCE(excluded.outcome, runpod_job_index.outcome), " +
       "submitted_at = COALESCE(excluded.submitted_at, runpod_job_index.submitted_at), " +

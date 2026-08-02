@@ -33,8 +33,25 @@ ALTER TABLE runpod_job_index ADD COLUMN endpoint_id TEXT;
 
 -- Where the row came from. Not decoration: a harvested row and a pushed row have different
 -- freshness and different coverage, and a reader that cannot tell them apart will treat an absent
--- push as an absent JOB. 'proxy' | 'harvest'.
+-- push as an absent JOB.
+--
+-- THE VOCABULARY IS TOTAL: 'proxy' | 'harvest', and NEVER NULL. That is not free, and getting it
+-- wrong would have been this column's own defect turned on itself -- a value with three states
+-- documented as having two, where two readers filtering `source = 'harvest'` and `source != 'proxy'`
+-- disagree while both look correct. On a billing path that surfaces as an unexplained variance weeks
+-- later. It takes BOTH of the following, and the backfill alone is not enough:
+--
+--   (a) the backfill below, which closes the rows that already exist. It is not a guess: every row
+--       predating this migration was harvested BY CONSTRUCTION, because the proxy did not exist.
+--   (b) store-d1.ts indexRunpodJobs writing 'harvest' EXPLICITLY. Without it the harvester keeps
+--       inserting NULL forever, so the vocabulary would go back to three-valued on the very next
+--       harvest and the backfill would have fixed history for about a minute.
+--
+-- Deliberately NO column DEFAULT. A default of 'harvest' would silently relabel a proxy row whose
+-- writer forgot to set it, which is worse than the NULL it replaces: a wrong answer instead of an
+-- absent one.
 ALTER TABLE runpod_job_index ADD COLUMN source TEXT;
+UPDATE runpod_job_index SET source = 'harvest' WHERE source IS NULL;
 
 -- RunPod's own execution and queue split, taken from the authoritative GET /status we issue (never
 -- from the inbound webhook body -- see runpod-proxy.ts on why the callback is a trigger, not
