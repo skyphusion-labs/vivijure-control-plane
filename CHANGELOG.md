@@ -6,6 +6,73 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(runpod-proxy): submit interception, job-id -> tenant push, meter at submit and terminal (cp#288)
+
+The plane-side RunPod proxy foundation. On the shared tier no tenant-namespace script may hold a
+RunPod credential, and RunPod's per-endpoint control has no operation axis, so no scoping can ever
+permit `run` while refusing `purge-queue`. Proxying deletes that question instead of bounding it.
+The second reason is now the larger one: the plane sees every submission, so the (job id -> tenant)
+map is produced AT SOURCE rather than reconstructed by a fan-out scan of every tenant database.
+
+METER AT SUBMIT AND TERMINAL, NEVER ON POLL, AND ENFORCED STRUCTURALLY. The poll half is a separate
+module that imports nothing from the metering half and holds no store, so a poll has no handle to
+write through. The guard was proved by INJECTING the real defect (a store import plus a store field)
+and watching both separation assertions go red while the import-extractor control stayed green, then
+reverting. A guard nobody has seen fail is not a guard. Quantitatively: the orchestrator is
+client-driven at an 8s cadence and the finish phase polls once per pending shot per tick, so a job is
+polled `ceil(job_seconds / 8)` times; D1 processes queries sequentially, so metering on poll makes the
+plane's database a fleet-wide serialization point at `shots x ticks` writes per render against ~2 per
+job.
+
+MEASURED AGAINST LIVE RunPod 2026-08-02, and three results contradict the vendor documentation:
+
+- **The terminal webhook carries NO authentication of any kind** -- the entire header set is
+  `user-agent: Go-http-client/2.0` plus Cloudflare's own `cf-*`. So the callback is an UNTRUSTED
+  TRIGGER and never evidence: an opaque 256-bit per-job token is verified before any write, and the
+  authoritative terminal state comes from a `GET /status/{id}` WE initiate. Without that, a forged
+  `{"id":..,"status":"COMPLETED"}` bills a tenant (cp#290).
+- **Retry timing is not the documented "2 more times with a 10-second delay"** -- observed
+  `+0 / +5.009s / +15.007s`, so the count is right and the delays are not. Recorded as a named
+  constant carrying its own provenance, and labelled one measurement of one job so it cannot harden
+  into a contract.
+- **The payload shape varies by terminal state** -- a CANCELLED job reports no `executionTime` and no
+  `delayTime` at all. Absent therefore stores as NULL, never 0, in one choke point so no caller can
+  reintroduce it: a zero reads as a real measurement of a job that took no time and would under-count
+  the ledger silently. NaN lands on NULL for the same reason.
+
+The three retry deliveries carried BYTE-IDENTICAL bodies, so the first-write-wins idempotency guard
+is load-bearing under ordinary conditions (a merely slow receiver), not only against an attacker.
+
+ALLOW-LIST IS EIGHT PUBLIC ENDPOINTS, NOT SIX. Conrad ruled the cloud-i2v modules in scope for the
+hosted door. Measured at `vivijure-cf@b295309`, statement-level, against a denominator of 26 modules
+carrying a `src/index.ts`: 14 reference `api.runpod.ai/v2/`, of which 8 hard-code a public slug and 6
+read `RUNPOD_ENDPOINT_ID`. `narration-gen` builds its URL by concatenation, so a line-level matcher
+returns 7 and misses it. A test asserts the count so a dropped entry fails loudly rather than shipping
+a cost door with two doors missing.
+
+MIGRATION `0020` adds `endpoint_id`, deliberately reversing `0019`'s exclusion and saying why: `0019`
+omitted it because on a pooled endpoint it attributes nothing, which is true of the four GPU endpoints
+and FALSE of the cost door, where eight distinct model slugs at different prices make the endpoint the
+only thing that says what a job cost.
+
+`0019`'s HARVESTED-NOT-PUSHED ruling is NOT overturned. The harvester stays as the backstop for
+pre-proxy jobs, dedicated-mode tenants and anything that bypassed the proxy, and the ordered
+harvest-before-reap teardown step is untouched -- a push only knows about jobs the plane saw. The
+premise change is argued on cp#274 and pointed at from cp#280.
+
+The `policy.executionTimeout` clamp ships as a SEAM WITH NO VALUE. The number comes from phase-1
+measurement (observed max +30%, per endpoint, execution time only); implementing it from RunPod's
+documented 600000ms default would kill tenant jobs the way that default already killed ours.
+
+Reconciliation must query BOTH billing scopes; noted in code, not built. A reconciler on the
+serverless scope alone omits the entire cost door and READS AS BALANCED, because a missing scope
+returns no rows rather than an error.
+
+SCOPE, stated so nobody reads more into it: this is primitives plus a documented contract, NOT a
+guarded path. Route wiring and the reconciler sweep are not here, so **cp#290's rulings are not
+ENFORCED until the handler lands**. And `COMPLETED` was never observed in the probe (all three probe
+jobs terminated FAILED or CANCELLED), so ledger coverage is measured and BILLING coverage is not --
+confirming the COMPLETED payload on the first real job the proxy handles is an explicit step.
 ### feat(teardown): harvest the RunPod job to tenant index before reaping a tenant D1 (cp#270, for cp#225)
 
 On the dedicated shape the endpoint NAME carried attribution for free (`vivijure-<slug>-<key>`).
