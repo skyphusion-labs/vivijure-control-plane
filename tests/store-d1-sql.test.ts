@@ -279,6 +279,73 @@ describe("store-d1 statements execute against real SQLite", () => {
  * carry the fix are S'L properties: the status predicate that refuses a terminal job, and the column
  * the UPDATE deliberately leaves alone.
  */
+describe("runpod_job_index.source is a TOTAL vocabulary: 'proxy' | 'harvest', never NULL (cp#288)", () => {
+  let db: DatabaseSync;
+  let store: D1Store;
+
+  beforeEach(() => {
+    db = freshDb();
+    store = new D1Store(d1Over(db));
+  });
+
+  const sourcesOf = (): (string | null)[] =>
+    db.prepare("SELECT source FROM runpod_job_index ORDER BY job_id").all().map((r: any) => r.source);
+
+  it("the harvester writes 'harvest' explicitly, so the backfill is not undone on the next run", async () => {
+    await store.indexRunpodJobs("ten_a", "slug-a", [
+      { job_id: "j1", module: "keyframe", outcome: "completed", submitted_at: 1, terminal_at: 2 },
+    ]);
+    expect(sourcesOf()).toEqual(["harvest"]);
+  });
+
+  // THE ONE THAT MATTERS. The migration backfills history; this is what stops the column going
+  // three-valued again the moment the harvester runs. Asserted as "no NULL anywhere" rather than
+  // "row j1 says harvest", because the property is about the COLUMN, not about one row.
+  it("no row is left NULL after a harvest", async () => {
+    await store.indexRunpodJobs("ten_a", "slug-a", [
+      { job_id: "j1", module: "keyframe", outcome: "submitted", submitted_at: 1, terminal_at: null },
+      { job_id: "j2", module: "own-gpu", outcome: "failed", submitted_at: 3, terminal_at: 4 },
+    ]);
+    expect(sourcesOf()).not.toContain(null);
+    expect(sourcesOf()).toHaveLength(2);
+  });
+
+  // source is a fact about ORIGIN, so the EXISTING value wins -- the opposite direction from every
+  // other column in this upsert, which prefers `excluded` so a fresher value refines an older one.
+  // A row the proxy opened at submit must not be relabelled by a later harvest of the same job.
+  it("a later harvest does NOT relabel a row the proxy already claimed", async () => {
+    db.prepare(
+      "INSERT INTO runpod_job_index (job_id, tenant_id, tenant_slug, harvested_at, source) " +
+        "VALUES (?, ?, ?, datetime('now'), 'proxy')",
+    ).run("j1", "ten_a", "slug-a");
+    await store.indexRunpodJobs("ten_a", "slug-a", [
+      { job_id: "j1", module: "keyframe", outcome: "completed", submitted_at: 1, terminal_at: 2 },
+    ]);
+    expect(sourcesOf()).toEqual(["proxy"]);
+    // CONTROL: the harvest really did land, so the assertion above is about precedence and not
+    // about the write having silently done nothing.
+    const row: any = db.prepare("SELECT module, outcome FROM runpod_job_index WHERE job_id = ?").get("j1");
+    expect(row.module).toBe("keyframe");
+    expect(row.outcome).toBe("completed");
+  });
+
+  // The migration's backfill statement, exercised against a row in the state it exists to close.
+  it("the backfill closes a legacy NULL row and leaves a proxy row alone", () => {
+    db.prepare(
+      "INSERT INTO runpod_job_index (job_id, tenant_id, tenant_slug, harvested_at, source) " +
+        "VALUES ('legacy', 't', 's', datetime('now'), NULL)",
+    ).run();
+    db.prepare(
+      "INSERT INTO runpod_job_index (job_id, tenant_id, tenant_slug, harvested_at, source) " +
+        "VALUES ('pushed', 't', 's', datetime('now'), 'proxy')",
+    ).run();
+    // CONTROL FIRST: the NULL state is genuinely reachable, so the fix below is not vacuous.
+    expect(sourcesOf()).toContain(null);
+    db.prepare("UPDATE runpod_job_index SET source = 'harvest' WHERE source IS NULL").run();
+    expect(sourcesOf()).toEqual(["harvest", "proxy"]);
+  });
+});
+
 describe("releaseJobLease, the yield hand-back (cp#158)", () => {
   let db: DatabaseSync;
   let store: D1Store;
