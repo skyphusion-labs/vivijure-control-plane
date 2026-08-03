@@ -65,6 +65,16 @@ someone tidying with everything still green, and the proxy pair would then be bo
 tenant. Added as one row in the existing table-driven preflight cases, and proved by mutation:
 deleting the refusal turns that row red, naming itself.
 
+### fix(control-plane): advance the backend satellite pin to match production (cp#297)
+
+Production's `vivijure-backend` RunPod endpoint (`t9wcvlxh8rc5la`) had moved to image `1.0.13`
+while `src/satellite-pins.ts` still pinned `1.0.11`; a tenant provisioned in that window would have
+been created against a version production no longer runs. Re-measured against RunPod's
+`list-endpoints` (5 of 5 endpoints returned, not truncated): only `backend` had drifted, `upscale`,
+`lipsync` and `audio-upscale` still match their pins exactly. `backend.tag` moves to `1.0.13` and
+its `mirrors.readAt` mirror to the date it was actually re-measured; the other three pins, including
+their `readAt` stamps, are untouched -- they were re-verified against production, not re-derived.
+
 ### feat(provision): point a tenant module at the plane-side RunPod proxy (cp#288, cf#394)
 
 The proxy was fully built, merged and completely unreachable. `PROXY_UPSTREAM_PREFIX` had no caller
