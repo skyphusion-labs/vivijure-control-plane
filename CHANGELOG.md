@@ -6,6 +6,45 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.22.0 -- 2026-08-03
+
+### chore(release): v1.22.0 -- what this tag actually deploys
+
+**This is not a routine cut. Production today cannot provision a tenant at all**, and that is what
+this tag fixes. Everything below has been on `main` and NONE of it has been live: the repo is
+tag-gated, so a merge runs CI and nothing else.
+
+- **THE LAUNCH BLOCKER (#323).** At any `STUDIO_RELEASE` >= vivijure-cf v1.14.0, `installInvokeKey`
+  threw and the route answered 503 `modules_not_ready`, so **no tenant could complete an invoke-key
+  install in any mode** -- shared, dedicated or BYO. Module readiness probed the whole catalog while
+  `plan-enhance`, which reaches no RunPod, answers an AI-gateway-shaped `/ready` that classifies
+  `misconfigured` (non-retryable). It armed the moment the pin left v1.13.0, measurably the last cf
+  tag without the arming commit, and stayed invisible because the only live tenant sits at
+  `modules_release=v1.6.0` and never re-runs the path. **Until this tag, production still has it.**
+- **The module-side RunPod key is retired on proxied tenants: 16 copies per tenant becomes 1.**
+  Conrad's ruling of 2026-08-03 is that the hosted tier holds no RunPod key it could extract. The
+  fifteen module scripts now carry only the plane proxy token, which is inert against RunPod.
+- **`shared` IMPLIES `proxied` by construction.** The shared pool requires three parts or none --
+  endpoints, invoke key, proxy config -- so a plane that cannot mint proxy tokens refuses the tier
+  outright rather than provisioning a tenant it cannot serve within the ruling.
+- **The removal-site predicate is kept as well, and it is load-bearing rather than belt-and-braces
+  by assertion:** with the tier gate in place, weakening it to the mode alone still turns 8 tests
+  red. The gate holds at provision time; a tenant row stays `shared` for life, so the predicate is
+  what covers a plane whose proxy config is removed later.
+
+- **The `reachesRunpod` population rule is now stated in the code**, at the predicate's own
+  definition (Conrad's direction). Not a list of its three uses -- the point is that each was FIRST
+  attempted with a proxy for it, and each of those failed differently: `if (endpoint)` would have
+  failed SILENTLY with the direct key on a shared tenant, `runpod_mode` alone fails LOUD with every
+  render dead, and the whole catalog failed AT PROVISION and was green in test. Written once, with
+  the two other sites pointing at it rather than restating it.
+
+**Still open after this tag, deliberately:** the tenant STUDIO keeps its single copy of the key
+(cp#321). It genuinely submits RunPod work -- cast LoRA training -- and `vivijure-core` has no proxy
+branch, so removing it before core learns the proxy would break that path rather than close the
+hole. Conrad's ruling is **not** fully satisfied until that core -> cf -> plane chain lands.
+
+
 ### feat(provision): a plane that cannot mint proxy tokens no longer offers the shared tier
 
 Conrad ruled 2026-08-03 that the hosted tier holds no RunPod key it could extract. A shared tenant
