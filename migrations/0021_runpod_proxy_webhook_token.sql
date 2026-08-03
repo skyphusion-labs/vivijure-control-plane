@@ -14,8 +14,26 @@
 -- 2026-08-02, the entire header set is `user-agent: Go-http-client/2.0` plus Cloudflare's own cf-*.
 -- An unauthenticated public URL that moves a billing ledger is the whole risk in one sentence, so
 -- the token is verified before ANY write. It is PER JOB rather than global or per tenant: a single
--- leaked token exposes exactly one job, and that job's row closes on first terminal write
--- (`WHERE terminal_at IS NULL`), which is also what expires the token without an expiry column.
+-- leaked token exposes exactly one job.
+--
+-- WHAT "EXPIRES" IT, STATED AS THE CODE ACTUALLY BEHAVES. An earlier version of this comment said
+-- the first terminal write expires the token. It does not, and the distinction was found in review
+-- (cp#293) by reading the route rather than this comment. TWO SEPARATE GUARANTEES, and only the
+-- narrower one comes from the SQL:
+--
+--   the LEDGER cannot be corrupted   -- `WHERE terminal_at IS NULL` on the close, so first terminal
+--                                       write wins and every repeat is a no-op. This is a property
+--                                       of the statement and holds regardless of any caller.
+--   the TOKEN buys nothing after     -- NOT from this schema. The row is still findable by its token
+--   the row closes                      hash by design (a duplicate delivery must be answerable), so
+--                                       the route is what has to stop: it short-circuits on a
+--                                       non-null terminal_at and answers 200 before issuing any
+--                                       upstream request. See handleProxyWebhook.
+--
+-- The gap between them was real: without that short-circuit a leaked token bought unlimited
+-- authenticated GET /status calls on our own RunPod credential. Nothing in this file would have
+-- told you, which is the point -- a security comment that promises more than the code delivers is
+-- worse than no comment, because the next reader trusts it instead of checking.
 --
 -- SECOND DEFENCE, and the one that survives a leak: even a token that verifies buys only the right
 -- to say "look at this job now". The terminal facts come from a GET /status we issue against RunPod

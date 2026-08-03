@@ -267,6 +267,42 @@ export async function handleProxyWebhook(deps: RunpodProxyDeps, token: string): 
       headers: { "content-type": "application/json" },
     });
   }
+  // ALREADY CLOSED: answer and stop, BEFORE spending anything upstream.
+  //
+  // The ledger never needed this -- closeRunpodProxyJob is guarded by `terminal_at IS NULL`, so a
+  // duplicate could not corrupt a closed row either way. What this bounds is OUTBOUND WORK.
+  //
+  // AND THAT SQL GUARD IS NOT NOW REDUNDANT, so do not remove it as superseded by this check. This
+  // is read-then-act and has a race window: two callbacks arriving together both read a null
+  // terminal_at and both proceed. The statement is what actually serialises them, and one of the two
+  // still lands `changes === 0`. This bounds cost; the SQL bounds correctness. Without
+  // it the route ran the authoritative GET /status on every repeat delivery and then discarded the
+  // result at `changes === 0`, so a leaked per-job token bought unlimited authenticated requests on
+  // OUR RunPod credential, indefinitely, for that job. That is precisely the residual the per-job
+  // token exists to bound, and migration 0021 claimed it was already bounded. Caught in review on
+  // cp#293 by reading the code rather than the comment.
+  //
+  // 200, NOT a refusal: a duplicate is NORMAL. RunPod delivered one job's terminal three times with
+  // byte-identical bodies when the receiver merely looked slow (measured), and 200 is what stops the
+  // retries. Filtering the lookup to open rows instead would 404 a legitimate duplicate and keep
+  // RunPod retrying, which is worse.
+  //
+  // NOTE FOR ANYONE ADDING REFINEMENT LATER: this forecloses "a callback with better facts refines a
+  // row the reconciler closed as unknown". That behaviour does not exist today -- the close guard
+  // already refused it, so the old code merely paid for the read and threw the answer away. If it is
+  // ever wanted, it needs its own explicit condition (close WHERE outcome = 'unknown'), not the
+  // deletion of this short-circuit.
+  if (ref.terminal_at !== null) {
+    console.log(
+      "runpod_proxy.terminal_duplicate",
+      JSON.stringify({ job: ref.job_id, reason: "row already closed; no upstream read" }),
+    );
+    return new Response(JSON.stringify({ ok: true, closed: false }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   if (!ref.endpoint_id) {
     console.error("runpod_proxy.webhook_no_endpoint", JSON.stringify({ job: ref.job_id }));
     return planeUnavailable("row-incomplete", "job row carries no endpoint id");

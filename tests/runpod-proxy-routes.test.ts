@@ -435,6 +435,25 @@ describe("the webhook callback is an untrusted TRIGGER, never evidence", () => {
     expect(store.jobIndex.get("job-1")).toMatchObject({ outcome: "completed", execution_ms: 50 });
   });
 
+  it("a duplicate delivery makes NO upstream call: a leaked token buys nothing after the row closes", async () => {
+    const token = await submitAndToken();
+    upstreamReply = () =>
+      new Response(JSON.stringify({ id: "job-1", status: "COMPLETED", executionTime: 50 }), { status: 200 });
+
+    await handle(callback(token, {}), env(), ctx, deps);
+    // CONTROL: the FIRST delivery must reach RunPod, or the assertion below passes on a proxy that
+    // never calls upstream at all -- which is the shape this whole file exists to refuse.
+    expect(upstreamCalls()).toHaveLength(1);
+
+    upstream = [];
+    await handle(callback(token, {}), env(), ctx, deps);
+    await handle(callback(token, {}), env(), ctx, deps);
+    // The ledger was always safe (first-write-wins). What is bounded HERE is outbound work: without
+    // this, a leaked per-job token buys unlimited authenticated GET /status calls on OUR RunPod
+    // credential, indefinitely, which is exactly the residual the per-job design exists to bound.
+    expect(upstreamCalls()).toHaveLength(0);
+  });
+
   it("stores ABSENT execution time as NULL, never 0 -- and a genuine 0 stays distinguishable", async () => {
     const cancelled = await submitAndToken("pool-backend", "job-cancelled");
     // MEASURED 2026-08-02: a CANCELLED terminal carries no executionTime and no delayTime at all.
