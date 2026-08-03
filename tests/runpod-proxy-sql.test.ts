@@ -140,3 +140,87 @@ describe("the proxy's index statements execute against real SQLite", () => {
     expect(row(db)).toMatchObject({ source: "proxy" });
   });
 });
+
+// ------------------------------------------------------------------------------------------------
+// The SWEEP's queries (cp#290). Same reason as everything above: MemoryStore mirrors the predicate
+// by hand, and a hand-mirrored predicate is my assumption about the SQL rather than the SQL.
+// ------------------------------------------------------------------------------------------------
+
+describe("the sweep's work-queue statements execute against real SQLite", () => {
+  let db: DatabaseSync;
+  let store: D1Store;
+
+  beforeEach(async () => {
+    db = freshDb();
+    store = new D1Store(d1Over(db));
+    await store.createAccount("acct_1", "a@b.com");
+    await store.createTenant("ten_1", "rehearsal", "acct_1", "live");
+  });
+
+  const open = (jobId: string, submittedAt: number, endpoint: string | null = "pool-backend") =>
+    store.openRunpodProxyJob({
+      job_id: jobId,
+      tenant_id: "ten_1",
+      tenant_slug: "rehearsal",
+      module: "keyframe",
+      endpoint_id: endpoint as string,
+      submitted_at: submittedAt,
+      webhook_token_sha256: jobId.padEnd(64, "0"),
+    });
+
+  it("returns open proxy rows older than the ceiling, oldest first", async () => {
+    await open("job-old", 1000);
+    await open("job-new", 5000);
+    await open("job-young", 9000);
+    const rows = await store.listOpenRunpodProxyJobs(8000, 10);
+    expect(rows.map((r) => r.job_id)).toEqual(["job-old", "job-new"]);
+    expect(rows[0]).toMatchObject({ tenant_id: "ten_1", endpoint_id: "pool-backend", submitted_at: 1000 });
+  });
+
+  it("EXCLUDES a closed row, which is what makes this a work queue rather than a log", async () => {
+    await open("job-1", 1000);
+    await open("job-2", 1000);
+    await store.closeRunpodProxyJob({
+      job_id: "job-1", outcome: "completed", status_raw: "COMPLETED",
+      execution_ms: 5, delay_ms: 1, terminal_at: 2000,
+    });
+    expect((await store.listOpenRunpodProxyJobs(8000, 10)).map((r) => r.job_id)).toEqual(["job-2"]);
+  });
+
+  it("EXCLUDES a harvested row: the sweep cannot ask about a job it did not submit", async () => {
+    await store.indexRunpodJobs("ten_1", "rehearsal", [
+      { job_id: "job-harvested", module: "own-gpu", outcome: "submitted", submitted_at: 1000, terminal_at: null },
+    ]);
+    await open("job-proxy", 1000);
+    // CONTROL: the proxy row IS returned, so the exclusion above is the source filter rather than
+    // a query that returns nothing.
+    expect((await store.listOpenRunpodProxyJobs(8000, 10)).map((r) => r.job_id)).toEqual(["job-proxy"]);
+    expect(await store.countOpenRunpodProxyJobs(8000)).toBe(1);
+  });
+
+  it("the COUNT uses the same predicate as the LIST, so the cap is the only difference", async () => {
+    for (let i = 0; i < 5; i++) await open(`job-${i}`, 1000 + i);
+    expect(await store.countOpenRunpodProxyJobs(8000)).toBe(5);
+    expect((await store.listOpenRunpodProxyJobs(8000, 2)).length).toBe(2);
+    // If these two ever diverge, a truncated run reports as complete coverage, which is the exact
+    // failure the pair exists to make visible.
+    expect(await store.countOpenRunpodProxyJobs(8000)).toBeGreaterThan(
+      (await store.listOpenRunpodProxyJobs(8000, 2)).length,
+    );
+  });
+
+  it("writes `unknown` as a real terminal, distinguishable from a measured outcome", async () => {
+    await open("job-lost", 1000);
+    expect(
+      await store.closeRunpodProxyJob({
+        job_id: "job-lost", outcome: "unknown", status_raw: "",
+        execution_ms: null, delay_ms: null, terminal_at: 9999,
+      }),
+    ).toBe(1);
+    expect(row(db, "job-lost")).toMatchObject({
+      outcome: "unknown", status_raw: "", execution_ms: null, delay_ms: null, terminal_at: 9999,
+    });
+    // And it is closed, so the sweep does not re-examine it every tick forever.
+    expect(await store.countOpenRunpodProxyJobs(99999)).toBe(0);
+  });
+});

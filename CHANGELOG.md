@@ -6,6 +6,42 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(runpod-sweep): the reconciler backstop, and the cron moves to every 5 minutes (cp#290)
+
+Every failure path in the proxy ended "the reconciler picks it up" while
+`RECONCILER_ADOPT_AFTER_MS` was a declared constant with no consumer, so each was PERMANENT rather
+than transient: the raced callback, a failed index write at submit, and a callback that never
+arrived -- including the unmeasured case that RunPod may not fire the webhook on COMPLETED at all.
+All three probe jobs terminated FAILED or CANCELLED, so firing-on-success is inferred; if it does
+not, every successful job stayed open forever and nothing would have noticed.
+
+ONLY TWO WAYS A ROW EVER CLOSES: we read a terminal status ourselves, or TWO independent conditions
+agree it can never be answered (RunPod 404s AND the row is past retention). Everything else -- 401,
+429, 5xx, an unreadable body, a thrown request, a 404 inside the horizon -- leaves the row OPEN and
+counts as an error. An open row says "nobody knows" out loud; a fabricated close asserts something
+nobody observed. `unknown` is a new terminal that is never billable, structurally, since `isBillable`
+answers on `completed` alone.
+
+THE CRON MOVES TO 5 MINUTES, and the config's own prose used to argue against it. That reasoning was
+correct when the meter was the only consumer and its cost was bookkeeping rows (288/day against 96).
+The sweep made the interval a CORRECTNESS parameter: a row is resolvable only in [t+5min, t+30min],
+so at 15 minutes a worst-case row gets ONE non-retryable attempt and at 5 minutes it gets four. One
+attempt is not a backstop for a mechanism that has already failed once. Both consumers' reasoning is
+now in the config rather than a number contradicting the paragraph above it.
+
+Retention is sourced rather than folklore: RunPod's own docs give 30 minutes for `/run` in two
+places. It is still never used as a gate on ASKING, only as the second corroborating condition
+before writing `unknown`, so a wrong figure leaves rows open rather than fabricating terminals.
+
+The scheduled tick now isolates its halves. It was one bare `await`; a throw in either would have
+silently skipped the rest, and the symptom is an absence, which is what a healthy idle plane looks
+like.
+
+NOT NAMED `reconcile-*`: `reconcile-runpod.ts` is the endpoint inventory reconciler over a TENANT's
+account, and its "a poller needs a credential we refuse to hold" is correct there and poison one
+file over. The distinction is written into both files.
+
+
 ### feat(runpod-proxy): wire the ingress -- submit, poll and callback routes (cp#290)
 
 cp#291 landed the primitives and said plainly that they had no caller, so every ruling on cp#290

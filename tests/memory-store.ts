@@ -32,6 +32,7 @@ import type {
   ProxyJobOpen,
   ProxyJobRef,
   ProxyJobClose,
+  OpenProxyJob,
 } from "../src/store";
 import { classifySlugClaim, leaseIsLive, JOB_LEASE_SECONDS, TIER_A_STATUSES } from "../src/store";
 
@@ -538,6 +539,40 @@ export class MemoryStore implements ControlPlaneStore {
       closed_at: new Date().toISOString(),
     });
     return 1;
+  }
+
+  /**
+   * cp#290 sweep. MIRRORS THE SHIPPED PREDICATE, including the two exclusions that matter: only
+   * source='proxy' rows with an endpoint_id are eligible, because a harvested row cannot be asked
+   * about. A fake that returned every open row would let the sweep tests pass against a population
+   * production never examines.
+   */
+  private openProxyRows(before: number): Record<string, unknown>[] {
+    return [...this.jobIndex.values()]
+      .filter(
+        (r) =>
+          r.terminal_at == null &&
+          r.source === "proxy" &&
+          r.endpoint_id != null &&
+          r.submitted_at != null &&
+          Number(r.submitted_at) < before,
+      )
+      .sort((a, b) => Number(a.submitted_at) - Number(b.submitted_at));
+  }
+
+  async listOpenRunpodProxyJobs(before: number, limit: number): Promise<OpenProxyJob[]> {
+    return this.openProxyRows(before)
+      .slice(0, limit)
+      .map((r) => ({
+        job_id: String(r.job_id),
+        tenant_id: String(r.tenant_id),
+        endpoint_id: String(r.endpoint_id),
+        submitted_at: r.submitted_at == null ? null : Number(r.submitted_at),
+      }));
+  }
+
+  async countOpenRunpodProxyJobs(before: number): Promise<number> {
+    return this.openProxyRows(before).length;
   }
 
   // ---- preservation holds (cp#118) -------------------------------------------------------------

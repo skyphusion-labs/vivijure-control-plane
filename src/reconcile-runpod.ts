@@ -6,6 +6,14 @@
 // A status column says "provisioning completed once", never "renders today", and nothing was
 // checking the difference.
 //
+// NOT THE SAME THING AS src/runpod-job-sweep.ts, and the distinction is worth a line HERE rather
+// than only over there, because this file is the one someone finds first. This module reconciles
+// ENDPOINTS against an operator's inventory snapshot. That one reconciles JOB ROWS against RunPod
+// directly, on a cron. The "rules out a background poller" sentence below is about a TENANT's
+// account, where key A is never stored and key B is transient -- it does NOT cover the job sweep,
+// which asks about OUR pool endpoints with OUR pool key, held by the plane because the proxy holds
+// it. Same vendor, different custody, opposite conclusion.
+//
 // WHY THE INVENTORY IS AN ARGUMENT AND NOT A FETCH. The plane deliberately holds no credential that
 // can read the RunPod account of a tenant: key A (graphql read/write) is used once at provision and
 // never stored, key B is invoke-only and transient here. So this module cannot poll RunPod and must
