@@ -6,6 +6,38 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(provision): each resume guard checks what it needs, and every refusal names its own cause (cp#301)
+
+`continueProvisionJob`'s preamble was four guards in sequence, and only the first was independently
+correct. Guards on `endpoints_json`, `studio_token_enc` and `studio_release`, plus a fifth that was
+never written as a guard at all (the `telemetryD1Id` field, whose refusal lives one module away in
+`uploadTenantModules`), were correct ONLY because the boundary had already refused everything that
+could reach them in a partial state. Nothing in the code said so, so relaxing the boundary would have
+silently invalidated four checks nobody edited, each then refusing with a message naming the wrong
+cause.
+
+The preamble now states each precondition where it is consumed, and the pre-upload region has FOUR
+named refusals instead of one: no recorded mode (a job predating migration `0022`), dedicated (key A
+is unrecoverable, message unchanged and permanent), shared (the capability is not built yet), and an
+unrecognised mode. None of them is a fall-through; a refusal reached by falling off the end of a
+chain is one a later edit removes by accident. The mode is read from the JOB row, deliberately NOT
+through `readRunPodMode`, which narrows anything unrecognised to `dedicated` and would erase the NULL
+that migration `0022` exists to preserve.
+
+Two integrity checks now run before any decision: job progress must be a contiguous prefix of
+`PROVISION_STEPS` (`inferStep` maps `done.length` to a step BY INDEX, so a hole yields a plausible
+wrong step name rather than an error), and the progress record must agree with the tenant row about
+the database.
+
+Past the boundary, an absent value is data corruption rather than an unfinished phase, and the
+messages now say which. They previously read "re-provision to continue", which sent a reader looking
+for a step that had not run.
+
+NO STATE BECOMES RESUMABLE. This changes the reason a resume is refused, never the answer, and the
+suite asserts that in both directions across every entry state. Admitting the pre-upload region
+requires re-minting the bucket credential and re-running the studio upload in full, which is a
+separate change.
+
 ### feat(provision): record the RunPod mode and the release pin on the job row (cp#301)
 
 A provision that yields before `wfp_upload` is resumed by a POLL, which holds neither the RunPod key

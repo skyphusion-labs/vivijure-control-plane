@@ -990,20 +990,134 @@ export async function continueProvisionJob(
 
   const stopHeartbeat = startLeaseHeartbeat(deps, jobId);
   try {
-    // The resumability boundary, checked rather than assumed.
-    if (!complete("wfp_upload")) {
+    // ---- INTEGRITY, BEFORE ANY DECISION (cp#301) ------------------------------------------------
+    //
+    // Every guard below reasons about `done`, so `done` has to be a shape they can reason about.
+    // Both of these were previously guaranteed as a SIDE EFFECT of the boundary refusing everything
+    // short of wfp_upload; neither was ever stated, and neither would survive that refusal moving.
+    //
+    // PROGRESS MUST BE A PREFIX. `done` is built by FILTERING (a set test), not by slicing, and
+    // inferStep maps done.length to a step BY INDEX -- so a record with a hole produces a plausible
+    // WRONG step name rather than an error, and every `complete(x)` below silently means "x is in
+    // the set" rather than "the job got that far". A hole is not reachable by any code path here
+    // (mark() only ever appends), which is exactly why it is worth asserting: the states that
+    // cannot happen are the ones nothing else is watching.
+    //
+    // NOT REFUSED, deliberately: an UNRECOGNISED step name in stepsDone. PROVISION_STEPS.filter
+    // drops it silently, and that is the correct behaviour during a deploy that adds a step, where
+    // a row written by the newer code is read by the older. Refusing would strand those rows.
+    const contiguous = PROVISION_STEPS.slice(0, done.length);
+    if (done.length !== contiguous.length || done.some((step, i) => step !== contiguous[i])) {
       throw new ProvisionFailure(
         inferStep(done),
-        "provisioning was interrupted before the studio was uploaded, and the RunPod key needed to " +
-          "finish it is never stored; start provisioning again to continue",
+        `job progress is not contiguous (${JSON.stringify(done)}), so no step order can be inferred ` +
+          "from it; this row cannot be resumed",
       );
     }
+    // GUARD 5, PROMOTED. This was never written as a guard: it was a `telemetryD1Id` field handed to
+    // runModuleSteps, whose refusal lives one module away in uploadTenantModules. It is coupled to
+    // the boundary exactly like the visible guards below and was invisible to anyone reading this
+    // preamble. Stated here, where the disagreement it detects is a fact about THIS row.
+    if (complete("d1_create") !== (tenant.d1_database_id !== null)) {
+      throw new ProvisionFailure(
+        "d1_create",
+        "the job progress record and the tenant row disagree about the database " +
+          `(progress says d1_create ${complete("d1_create") ? "completed" : "did not run"}, the row ` +
+          `${tenant.d1_database_id ? "has" : "has no"} database id); this row cannot be resumed`,
+      );
+    }
+
+    // ---- THE MODE, FROM THE JOB ROW (cp#301, migration 0022) -------------------------------------
+    //
+    // Read HERE rather than taken from the caller: this function is the one that decides on it, and
+    // a caller-supplied mode is a second place for it to be wrong. tenants.runpod_mode cannot answer
+    // for the pre-upload region at all -- it is written inside the runpod_endpoints step and is
+    // NOT NULL DEFAULT 'dedicated', so before that step every row reads 'dedicated' whether or not
+    // it is one.
+    const job = await deps.store.getJob(jobId);
+    if (!job) {
+      throw new ProvisionFailure(inferStep(done), `job ${jobId} no longer exists; this row cannot be resumed`);
+    }
+    // NOT readRunPodMode(). That helper narrows anything unrecognised to 'dedicated', which is the
+    // safe direction for teardown and reconcile (do less) and the WRONG one here: it would turn the
+    // NULL that means "this job predates the recording" into a confident 'dedicated' and erase the
+    // distinction migration 0022 exists to preserve.
+    const recordedMode = job.runpod_mode;
+
+    // ---- THE PRE-UPLOAD REGION: FOUR NAMED REFUSALS, NO FALL-THROUGH -----------------------------
+    //
+    // Every branch below REFUSES. That is not a placeholder: admitting any of these states requires
+    // re-minting the bucket credential and re-running wfp_upload in full, which is a separate change
+    // (cp#301 item 3). Admitting them here would reach wfp_upload with no way to reconstruct
+    // s3Secret and upload a tenant studio bound to an empty or stale R2 secret -- a studio that
+    // provisions GREEN and cannot read or write its own bucket, which is the exact outcome this
+    // whole issue exists to prevent.
+    //
+    // WHAT CHANGES HERE IS THE REASON, NOT THE ANSWER. Every one of these states is refused today
+    // too, by a single message that names key A regardless of whether this tenant ever had one.
+    // Each refusal now states its own cause, and each is an EXPLICIT test rather than the end of a
+    // chain: a refusal reached by falling off the bottom of a condition is one a later edit removes
+    // by accident.
+    if (!complete("wfp_upload")) {
+      if (recordedMode === null) {
+        throw new ProvisionFailure(
+          inferStep(done),
+          "this provision was started before the plane recorded which RunPod shape it was for, so " +
+            "there is no way to tell whether it can be finished without the original key; start " +
+            "provisioning again to continue",
+        );
+      }
+      if (recordedMode === "dedicated") {
+        // UNCHANGED, and it must stay unchanged: for a tenant that brought its own RunPod account
+        // this message is exactly true, and this refusal is permanent by custody. Key A lives in the
+        // request that carried it and nowhere else.
+        throw new ProvisionFailure(
+          inferStep(done),
+          "provisioning was interrupted before the studio was uploaded, and the RunPod key needed to " +
+            "finish it is never stored; start provisioning again to continue",
+        );
+      }
+      if (recordedMode === "shared") {
+        // The one refusal that is a MISSING CAPABILITY rather than a custody rule. Named as such so
+        // it is not mistaken for the permanent one above, and so item 3 has an unambiguous target.
+        throw new ProvisionFailure(
+          inferStep(done),
+          "this studio runs on the shared pool and needs no key of its own, but finishing an " +
+            "interrupted provision from this point is not supported yet; start provisioning again " +
+            "to continue",
+        );
+      }
+      // An unrecognised value is its own case, NOT a fall-through into the shared branch. The column
+      // is written by one call site with a typed value, so reaching this means something else wrote
+      // it, and guessing which shape it meant is how a BYO tenant ends up on the shared pool.
+      throw new ProvisionFailure(
+        inferStep(done),
+        `this provision records an unrecognised RunPod shape (${JSON.stringify(recordedMode)}), so ` +
+          "it cannot be resumed; start provisioning again to continue",
+      );
+    }
+
+    // ---- PAST THE BOUNDARY: EACH GUARD NAMES WHAT IT CONSUMES ------------------------------------
+    //
+    // Reaching here means wfp_upload completed AND progress is contiguous, so runpod_endpoints and
+    // everything before it completed too. That makes each absence below a WRITE THAT DID NOT LAND or
+    // a value that no longer parses -- data corruption -- rather than a phase that has not happened.
+    // The old messages said "re-provision to continue", which reads as the latter and sent a reader
+    // looking for an unfinished step.
     const endpoints = readTenantEndpoints(tenant);
     if (!endpoints.length) {
-      throw new ProvisionFailure("runpod_endpoints", "no endpoints recorded for this tenant; re-provision to continue");
+      throw new ProvisionFailure(
+        "runpod_endpoints",
+        "the endpoints recorded for this tenant cannot be read, although the provision got past the " +
+          "step that writes them; re-provision to continue",
+      );
     }
     if (!tenant.studio_token_enc) {
-      throw new ProvisionFailure("wfp_upload", "no studio token recorded for this tenant; re-provision to continue");
+      throw new ProvisionFailure(
+        "wfp_upload",
+        "no studio token is recorded for this tenant, although the provision got past the step that " +
+          "writes it, so its studio cannot be reached; re-provision to continue",
+      );
     }
     const studioApiToken = await decryptStudioToken(deps.kek, tenant.studio_token_enc);
     const script = deps.tenantScriptName(tenant.slug);
@@ -1028,11 +1142,19 @@ export async function continueProvisionJob(
     //
     // REFUSES rather than falling back. A fallback to deps.release is exactly the wrong shape here:
     // it would turn "I cannot tell which release this tenant is on" into a confident wrong answer,
-    // which is the mismatch this block exists to prevent. Unreachable today (guard 1 above proves
-    // wfp_upload completed, and setTenantScript writes script_name and studio_release together in
-    // that step), so it is a structural assertion rather than an expected path -- and it must STAY
-    // a refusal if cp#301's re-mint work later makes the pre-wfp_upload region resumable, where the
-    // pin will have to come from the job row instead.
+    // which is the mismatch this block exists to prevent.
+    //
+    // WHAT IT NEEDS, stated rather than positional (cp#301 item 2): the release THE STUDIO ON THIS
+    // TENANT WAS UPLOADED FROM, because the modules it is about to install must pair with those
+    // exact bytes. Past the boundary that fact is tenants.studio_release, written by setTenantScript
+    // alongside script_name inside wfp_upload. So this is unreachable for two independent reasons
+    // now -- the pre-upload region refuses above, and the contiguity check proves the step that
+    // writes it ran -- which makes it a structural assertion rather than an expected path.
+    //
+    // THE PRE-UPLOAD REGION WILL NEED A DIFFERENT SOURCE, and it now exists: provision_jobs
+    // .to_release, recorded at job creation (migration 0022). When item 3 admits that region, the
+    // release comes from the JOB row there and from the TENANT row here. Two regions, two sources,
+    // neither falling back to deps.release.
     const pinnedRelease = tenant.studio_release;
     if (!pinnedRelease) {
       throw new ProvisionFailure(
