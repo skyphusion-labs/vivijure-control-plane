@@ -285,7 +285,15 @@ describe("submit: body rewrite and the attribution write", () => {
     const hook = String(upstreamBody().webhook);
     expect(hook).not.toContain("attacker.example");
     // Derived from the plane's own origin, with a 64-hex per-job token as the LAST path segment.
-    expect(hook).toMatch(new RegExp(`^${ORIGIN}/api/runpod/webhook/[0-9a-f]{64}$`));
+    //
+    // SPLIT rather than one interpolated RegExp, and CodeQL was right to flag the first version
+    // (js/incomplete-hostname-regexp, high): interpolating a host into a pattern leaves its dots
+    // unescaped, so `studio.example.com` also matches `studioXexampleYcom`. Harmless in an
+    // assertion and a real defect in the check it would be copied into. The prefix is an exact
+    // string compare, so no host ever reaches a regex, and only the token shape is a pattern.
+    const prefix = `${ORIGIN}/api/runpod/webhook/`;
+    expect(hook.startsWith(prefix)).toBe(true);
+    expect(hook.slice(prefix.length)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("mints a DIFFERENT token per job: one leaked callback URL exposes exactly one job", async () => {
