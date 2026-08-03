@@ -175,7 +175,12 @@ for v in sorted(env_fields - out_of_band_fields - binding_fields):
             "ENV_BINDINGS. Code can read it, the deploy will never set it, and nothing else here "
             "would say so. Declare it as a var in all four lists, or classify it in env.ts." % v
         )
-    elif not re.fullmatch(r"\"\$\{[A-Z0-9_]+\}\"", declared_vars[v].strip()):
+    # Either quoting style counts as a placeholder. TOML has two string forms and the choice is
+    # forced by the VALUE: SHARED_RUNPOD_ENDPOINTS carries JSON, whose own double quotes terminate a
+    # basic string, so it must be a LITERAL string (single quotes). Matching only the double-quoted
+    # form would flag a correctly-quoted placeholder as frozen config (cp#285). The backreference is
+    # deliberate: it accepts \'${X}\' and "${X}" and rejects a mismatched \'${X}" .
+    elif not re.fullmatch(r"([\"'])\$\{[A-Z0-9_]+\}\1", declared_vars[v].strip()):
         # The VALUE is deliberately not echoed. It is one line away in a tracked file, so printing
         # it buys nothing, and it is the only path by which this script could ever put a value on
         # stdout at all. Naming the var is the whole message.

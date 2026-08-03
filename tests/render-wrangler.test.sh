@@ -125,6 +125,37 @@ set_full_env; export GOOGLE_OAUTH_CLIENT_ID="g-client" GITHUB_OAUTH_CLIENT_ID="g
 check "populated SSO ids are allowed" pass
 
 # ---------------------------------------------------------------------------
+# SHARED_RUNPOD_ENDPOINTS carries JSON, and JSON carries quotes (cp#285).
+#
+# WHY THIS BLOCK DID NOT EXIST AND SHOULD HAVE: the base environment above never sets this var. It
+# is ALLOW_EMPTY, so it rendered as an empty string, which parses fine. The suite already had a
+# tomllib parser in assert_toml and was ALREADY parsing the rendered file -- the instrument was
+# fully capable and was simply never pointed at the hazardous value. So the gap was not a missing
+# tool, it was a missing FIXTURE, which is the harder kind to notice: every check was green and the
+# only thing absent was an input nobody had written.
+#
+# The defect it missed: the template rendered this into a BASIC string, so the value's own double
+# quotes terminated it and the document did not parse. The render step still exited 0, and the
+# failure surfaced three steps downstream as a message about a missing R2 object.
+POOL_JSON='{"backend":{"id":"aaa111","name":"vivijure-backend"},"upscale":{"id":"bbb222","name":"vivijure-video-upscale"},"lipsync":{"id":"ccc333","name":"vivijure-musetalk"},"audio-upscale":{"id":"ddd444","name":"vivijure-audio-upscale"}}'
+
+set_full_env; export SHARED_RUNPOD_ENDPOINTS="$POOL_JSON"
+check "a JSON pool value renders (this exact case was RED before cp#285)" pass
+
+# THE NEW GUARD, WATCHED FAILING. A TOML literal string cannot contain a single quote at all, so
+# this is the residual the quoting fix cannot express -- and it is precisely why the post-render
+# PARSE assertion exists rather than trusting the quote choice. Refused at the point of production,
+# named, instead of three steps downstream wearing another step's name.
+set_full_env; export SHARED_RUNPOD_ENDPOINTS="{\"backend\":{\"id\":\"a'\''b\",\"name\":\"x\"}}"
+check "a value carrying a single quote is REFUSED by the parse guard" fail
+
+# ALLOW-SIDE CONTROL for the guard: it must not have started refusing the shipped default. Empty is
+# the intended value for a plane that offers no shared tier, and a guard that refuses everything
+# would pass every refusal case above while breaking every real deploy.
+set_full_env; export SHARED_RUNPOD_ENDPOINTS=""
+check "an empty pool value still renders (no shared tier is a valid config)" pass
+
+# ---------------------------------------------------------------------------
 # STRUCTURAL guard: the rendered config must actually BIND what we think it binds.
 #
 # Every check above asks "did the render succeed?". None of them ask "is the result the config we
@@ -157,6 +188,18 @@ assert_toml "assets is a TOP-LEVEL key, not nested under a table" "'assets' in d
 assert_toml "the ASSETS binding is named" "d.get('assets',{}).get('binding')" "ASSETS"
 assert_toml "run_worker_first survives the render" "d.get('assets',{}).get('run_worker_first')" "True"
 assert_toml "no stray assets key under [observability]" "'assets' in d.get('observability',{})" "False"
+
+# cp#285: rendering is not enough, the pool JSON has to SURVIVE the round trip. A quoting choice
+# that silently mangled it would render green and hand the Worker a string parseSharedPool refuses
+# at runtime -- the same silent-inert class, one layer further along. Placed here rather than with
+# the other pool cases because assert_toml is defined in this section.
+set_full_env; export SHARED_RUNPOD_ENDPOINTS="$POOL_JSON"
+"$render" "$tmp/out.toml" >"$tmp/log" 2>&1
+assert_toml "the pool JSON round-trips through TOML byte-for-byte" \
+  "__import__('json').loads(d['vars']['SHARED_RUNPOD_ENDPOINTS'])['backend']['id']" "aaa111"
+unset SHARED_RUNPOD_ENDPOINTS
+set_full_env
+"$render" "$tmp/out.toml" >"$tmp/log" 2>&1
 
 # NEGATIVE CONTROL. The four assertions above would ALSO pass if assert_toml were broken, or if
 # every key happened to exist for unrelated reasons. Re-run them against a config deliberately

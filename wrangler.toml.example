@@ -223,7 +223,13 @@ TENANT_AI_GATEWAY_ID = "${TENANT_AI_GATEWAY_ID}"
 #
 # The invoke key that can RUN these endpoints is SHARED_RUNPOD_INVOKE_KEY, a worker secret
 # (`wrangler secret put`), never a var. Both halves must be present or the tier is not offered.
-SHARED_RUNPOD_ENDPOINTS = "${SHARED_RUNPOD_ENDPOINTS}"
+# TOML LITERAL STRING (single quotes), and it is not a style choice. This value is JSON, so its
+# own double quotes would terminate a basic string and the document would not parse -- which is
+# exactly what happened the first time anyone set it (cp#285). A literal string does no escape
+# processing, so the JSON survives byte for byte. Note the residual: TOML literal strings cannot
+# contain a single quote at all, so a value carrying one still renders invalid -- that case is
+# caught by the post-render parse assertion in scripts/render-wrangler.sh rather than here.
+SHARED_RUNPOD_ENDPOINTS = '${SHARED_RUNPOD_ENDPOINTS}'
 # cf#56: alert threshold in BYTES for total R2 across all tenant buckets, on the admin usage
 # surface. EMPTY IS MEANINGFUL: no threshold, and the surface reports usage with a `no_threshold`
 # verdict rather than inventing a line nobody chose. parseThresholdBytes refuses 0 deliberately --

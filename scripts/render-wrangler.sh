@@ -139,4 +139,38 @@ shopt -u nocasematch
 # Not fixed, deliberately: distinguishing the two needs URL-shape parsing per forge, which is more
 # machinery and more ways to be wrong than the case it would rescue.
 
+# THE DOCUMENT MUST PARSE. Last check deliberately, because it is the only one that judges the
+# ARTIFACT rather than a field inside it.
+#
+# WHY IT EXISTS (cp#285, and the diagnosis cost far more than the bug). Every check above validates
+# a specific VALUE. None asked whether the file is valid TOML. So a substituted value carrying a
+# quote rendered a broken document, this script exited 0, and the failure surfaced THREE STEPS
+# LATER under a step named "Pinned release is satisfiable by this plane", reading
+# "MIRROR CANNOT VERIFY -- reading studio-releases/<tag>/manifest.json failed". That looks like a
+# missing R2 object. The bundle was complete; the config was broken.
+#
+# The general form, worth keeping: a validator that does not parse its own output does not merely
+# miss a defect, it RELOCATES every failure of that class into whichever unrelated step first
+# touches the artifact, where it arrives wearing that step name and full confidence.
+#
+# tomllib is Python STDLIB from 3.11. Probed as a MODULE rather than inferred from the interpreter
+# existing, because `command -v python3` proves nothing about its libraries. No new dependency.
+# wrangler parses this same document later with a different implementation; this does not replace
+# that, it makes the failure arrive HERE, named, at the point of production.
+if ! python3 -c "import tomllib" 2>/dev/null; then
+  echo "::error::python3 has no tomllib (needs 3.11+); cannot verify the rendered TOML parses" >&2
+  exit 1
+fi
+if ! parse_err="$(python3 -c 'import sys, tomllib
+try:
+    tomllib.load(open(sys.argv[1], "rb"))
+except Exception as e:
+    sys.exit(str(e))' "$out" 2>&1)"; then
+  echo "::error::the rendered $out is NOT valid TOML -- this is a CONFIG defect, not a defect in whatever step reports it next" >&2
+  echo "  parser said: $parse_err" >&2
+  echo "  most likely a substituted value contains a character its surrounding quoting cannot hold:" >&2
+  echo "  a double quote inside a basic string, or a single quote inside a literal string." >&2
+  exit 1
+fi
+
 echo "$out rendered and validated."
