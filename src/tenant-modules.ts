@@ -199,16 +199,36 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
 /**
  * Does this module reach RunPod at all, by EITHER route (cp#284)?
  *
- * THE PREDICATE THE PROXY PAIR ACTUALLY NEEDS, and it used to be `endpointKey` by accident. That
- * conflated "has an endpoint of ours" with "talks to RunPod", which was true while every
- * RunPod-reaching module was endpoint-backed and became false the moment the cost door arrived.
- * Keying the proxy on the wrong property would have left all eight on the DIRECT RunPod key on a
- * shared tenant -- a consumer holding a RunPod credential on our account, which CLAUDE.md forbids
- * outright ("a consumer reaches RunPod through our product or not at all").
+ * THE CANONICAL POPULATION PREDICATE. If the question is "which modules have something to do with
+ * RunPod", this is the answer. It has now been the right answer to THREE distinct questions -- and
+ * every one of them was FIRST attempted with a proxy for it, and every one of those proxies was
+ * wrong in a DIFFERENT direction. That is why this is written down rather than rediscovered.
  *
- * `plan-enhance` is still the negative case and still the only one: it reaches Anthropic through the
- * AI Gateway and submits no RunPod job, so the discipline the pair-binding comment describes is
- * unchanged and still has a real subject.
+ *   1. WHICH MODULES GET THE PROXY PAIR BOUND (cp#284/cp#317). First tried as `if (endpoint)`. The
+ *      eight cost-door modules reach RunPod at a PUBLIC vendor slug with no endpoint of ours, so
+ *      they would have been uploaded to a shared tenant with no pair, taken the unbound branch, and
+ *      reached RunPod on the direct RUNPOD_API_KEY -- a consumer holding a credential on our
+ *      account, which CLAUDE.md forbids outright. FAILED SILENTLY: the renders would have worked.
+ *
+ *   2. WHICH MODULES KEEP THE RUNPOD KEY (cp#290). First tried as `runpod_mode === "shared"` alone.
+ *      The mode can disagree with the bind decision -- a shared tenant on a plane that resolves no
+ *      proxy gets no pair -- and retiring on the mode then invents a state the code has never had:
+ *      NEITHER pair NOR key. FAILS LOUD, and every render on that tenant dies.
+ *
+ *   3. WHICH MODULES ARE PROBED FOR READINESS (cp#323). First tried as the whole catalog.
+ *      `plan-enhance` reaches no RunPod and answers an AI-gateway-shaped /ready, which classifies
+ *      `misconfigured` -- non-retryable, so it throws. NO TENANT COULD COMPLETE AN INVOKE-KEY
+ *      INSTALL, in any mode. FAILED AT PROVISION, and was green in test because the fixture fed it
+ *      a body production cannot produce.
+ *
+ * THE RULE: do NOT derive a new population from `endpointKey`, from `runpod_mode`, or from the
+ * catalog. Those are the three that have already been tried, and they failed silently, fatally and
+ * at provision respectively. Use this predicate, or explain at the call site why the question is
+ * genuinely a different one.
+ *
+ * `plan-enhance` is the negative case and still the only one: it reaches Anthropic through the AI
+ * Gateway and submits no RunPod job. It is what gives every use of this predicate a real subject
+ * rather than a population that happens to be everything.
  */
 export const reachesRunpod = (spec: TenantModuleSpec): boolean =>
   Boolean(spec.endpointKey) || Boolean(spec.publicEndpoint);
@@ -519,13 +539,11 @@ export async function uploadTenantModules(
       // handing it a plane credential widens its reach for no gain (the TELEMETRY_DB discipline
       // above). `plan-enhance` is still the only such module and still the negative control.
       //
-      // KEYED ON reachesRunpod, NOT ON endpointKey (cp#284). This block sat inside `if (endpoint)`,
-      // which was correct only while every RunPod-reaching module was endpoint-backed. The eight
-      // cost-door modules submit to PUBLIC vendor slugs with no endpoint of ours, so under the old
-      // predicate they would have been uploaded to a SHARED tenant with no proxy pair, taken the
-      // unbound branch of modules/_shared/runpod-route.ts, and reached RunPod on the direct
-      // RUNPOD_API_KEY. That is a consumer holding a RunPod credential on our account, which
-      // CLAUDE.md forbids outright. The predicate, not the population, was the defect.
+      // KEYED ON reachesRunpod, NOT ON endpointKey (cp#284) -- this block used to sit inside
+      // `if (endpoint)`. Why that was wrong, and why no fresh population should be derived here, is
+      // stated ONCE at the definition of reachesRunpod. The detail local to THIS site: the modules
+      // it would have missed take the unbound branch of vivijure-cf
+      // modules/_shared/runpod-route.ts, which reaches RunPod on the direct RUNPOD_API_KEY.
       //
       // THE ORDERING WAS LOAD-BEARING AND IS NOW SATISFIED (cf#394). This comment used to say the
       // key was still installed on every module script and that vivijure-cf modules "FALL BACK" to
@@ -1156,10 +1174,10 @@ export async function awaitTenantModulesReady(
   // on the critical path of every tenant going live, and it is invisible to both repos' suites
   // because each half is correct on its own. Only the cross-repo pair is wrong (cf#403).
   //
-  // KEYED ON reachesRunpod, WHICH IS THE THIRD TIME THIS PREDICATE HAS BEEN THE ANSWER: the proxy
-  // pair binding (cp#284), the invoke-key retirement (cp#290), and now this. They are all asking
-  // the same question -- does this module talk to RunPod -- and every one of them was previously
-  // keyed on something that merely correlated with it. If a fourth arrives, key it here too.
+  // KEYED ON reachesRunpod. Why that predicate and not a fresh one derived from the catalog is
+  // stated ONCE, at the definition of reachesRunpod -- three uses, three wrong first attempts, and
+  // the rule for a fourth. Pointer rather than a second copy: this file already carries the lesson
+  // that a hand-maintained duplicate of one fact drifts by construction.
   let pending = catalog.filter(reachesRunpod).map((spec) => spec.module);
   const notProbed = catalog.filter((spec) => !reachesRunpod(spec)).map((s) => s.module);
   // POSITIVE-EVIDENCE FLOOR. An empty population would make this function return a clean readiness
