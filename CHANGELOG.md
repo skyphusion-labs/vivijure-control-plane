@@ -6,6 +6,50 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(provision): thread the release into the module upload, and delete the field that let it drift (cp#315, cp#301)
+
+`runProvisionJob` was the only `uploadTenantModules` call site that did not thread the release. On
+the shared-tier pre-upload resume that cp#301 item 3 opened, the studio came from the job's recorded
+`to_release` while the MODULES were fetched at `deps.release` -- the plane-wide `STUDIO_RELEASE`,
+read fresh at the moment of driving. A resume taken after an operator advances the pin therefore
+gave a tenant a studio from release A and modules from release B, and recorded the new pin in
+`tenants.modules_release`. It returned `ok: true`.
+
+That is exactly the pair `module-bundle-r2.ts` states can never happen: *"Modules ship WITH the
+studio release they were built and conformance-proven against (one tag, one artifact), so a tenant's
+studio and its modules can never be a mismatched pair."*
+
+**Driven, not reasoned about.** With `job.to_release=v1.0.0` and `deps.release=v2.0.0`, the studio
+was fetched at `v1.0.0` and all seven module bundles at `v2.0.0`, with `modules_release` recorded as
+`v2.0.0`. The negative control -- the identical fixture with the pin NOT moved -- fetched everything
+at `v1.0.0`, so the divergence came from `deps.release` and nowhere else. Both values are
+NON-DEFAULT on purpose: cp#301's own suite could not see this because its fixture set the plane pin
+and the tenant release to the same string, and on a default the threaded and unthreaded reads are
+byte-identical.
+
+**The fix deletes `release` from `TenantModuleDeps` rather than only adding an argument, and that is
+the load-bearing half.** Every other call site already threaded the release correctly -- the upgrade
+path, `prefetchModuleBundles`, reprovision -- so "remember to pass it" was already the condition that
+produced this bug, and adding one more caller obligation would leave that condition in place. With no
+`release` on the deps object there is nothing to forget: omitting it does not compile. This is the
+reasoning `tenant-modules.ts` already gives for `tenantSlug` and `runpodMode` being required rather
+than optional, applied to the field that was actually drifting.
+
+**The compiler then found the rest, which is the property paying for itself immediately.** Deleting
+the field surfaced the upgrade call site plus two `{ ...deps, release }` spreads (in `provisioner.ts`
+and `tenant-runpod-reprovision.ts`) that existed ONLY to satisfy the deleted field:
+`prefetchModuleBundles` has always taken the release as an argument and always used the argument, so
+those spreads were a second source of truth that agreed with the first by luck. They are gone, and 33
+test call sites now state the release explicitly.
+
+**Not live today, and the sequencing matters.** The path is shared-tier only and the shared pool is
+unwired (`SHARED_RUNPOD_ENDPOINTS` is absent from the repo variables), so no shared provision can be
+in flight and this cannot currently bite. It becomes live the moment cp#285 Option A wires the pool,
+which is why it is fixed before that rather than after.
+
+Two legitimate readers of the plane pin remain and are unchanged: `provisioner.ts` resolving the
+release for a FRESH provision, and `deps.currentRelease()` reporting the pin a new job records.
+
 ### feat(provision): catalogue `finish-rife`, closing the upstream recording set (cp#284, cf#394)
 
 Six module workers record RunPod jobs upstream and five were provisioned. `finish-rife` was built

@@ -911,7 +911,7 @@ export async function runProvisionJob(
       }
       aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
     }
-    await uploadTenantModules(deps, tenant.id, tenant.slug, endpoints, dbUuid, runpodMode, undefined, aigTokenValue);
+    await uploadTenantModules(deps, release, tenant.id, tenant.slug, endpoints, dbUuid, runpodMode, undefined, aigTokenValue);
     await mark("modules_upload");
 
     // 8. Install each module through the studio's OWN conformance-gated route (cf#99): the studio
@@ -932,7 +932,7 @@ export async function runProvisionJob(
     // moving the write inside would make that deliberate sequence read as dead code. AFTER
     // modules_install, not after modules_upload, so a provision that dies between the two does not
     // claim a release for modules that were never installed.
-    await deps.store.setTenantModulesRelease(tenant.id, deps.release);
+    await deps.store.setTenantModulesRelease(tenant.id, release);
 
     // 7. Verify what we actually built, from the API's own view, rather than trusting our writes.
     //    Names only; these endpoints never return values.
@@ -1483,6 +1483,7 @@ export async function runModuleSteps(
     }
     await uploadTenantModules(
       at,
+      args.release,
       tenantId,
       args.slug,
       endpoints,
@@ -1633,7 +1634,7 @@ export async function preflightModuleUpgrade(
 
   let bundles: Map<string, ModuleBundle>;
   try {
-    bundles = await prefetchModuleBundles({ ...deps, release }, release);
+    bundles = await prefetchModuleBundles(deps, release);
   } catch (e) {
     return refuse("module_bundle_unavailable", 422, e instanceof TenantModuleError ? e.message : String(e));
   }

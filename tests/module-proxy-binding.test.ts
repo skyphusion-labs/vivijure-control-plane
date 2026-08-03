@@ -66,7 +66,6 @@ function deps(over: Partial<TenantModuleDeps> = {}): { d: TenantModuleDeps; uplo
         compatibilityDate: "2026-06-01",
       })),
     },
-    release: "v1.0.0",
     callTenantModule: vi.fn(async () => ({ status: 200, text: "{}" })),
     callTenantStudio: vi.fn(async () => ({ status: 201, text: "{}" })),
     log: vi.fn((...a: unknown[]) => void logs.push(a)),
@@ -92,7 +91,7 @@ const NOT_ENDPOINT_BACKED = TENANT_MODULE_CATALOG.filter((s) => !s.endpointKey).
 describe("CONTROL: the binding finder can return both answers", () => {
   it("finds a binding that is definitely there, and misses one that is definitely not", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     const keyframe = forModule(uploads, "keyframe");
     // POSITIVE: a binding the pre-existing code has always pushed.
     expect(named(keyframe, "RUNPOD_ENDPOINT_ID")).toBeDefined();
@@ -107,7 +106,7 @@ describe("CONTROL: the binding finder can return both answers", () => {
 describe("uploadTenantModules binds the RunPod proxy pair", () => {
   it("binds base + token on every endpoint-backed module", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     expect(ENDPOINT_BACKED.length).toBeGreaterThan(0); // denominator, so an empty catalog cannot pass
     for (const m of ENDPOINT_BACKED) {
       const u = forModule(uploads, m);
@@ -126,7 +125,7 @@ describe("uploadTenantModules binds the RunPod proxy pair", () => {
     // The shape that would otherwise ship silently: a well-formed token minted for the wrong tenant,
     // or under the wrong key. Both bind fine, both look fine, and both 401 at the first submit.
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     const token = text(named(forModule(uploads, "keyframe"), MODULE_PROXY_TOKEN_BINDING));
     expect(await verifyTenantProxyToken(SIGNING_KEY, token)).toBe(TENANT);
     // Control on the verifier itself: it must be capable of returning null here, or the line above
@@ -137,8 +136,8 @@ describe("uploadTenantModules binds the RunPod proxy pair", () => {
   it("gives two tenants two different tokens", async () => {
     const a = deps();
     const b = deps();
-    await uploadTenantModules(a.d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
-    await uploadTenantModules(b.d, OTHER_TENANT, "beta-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(a.d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(b.d, "v1.0.0", OTHER_TENANT, "beta-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     const ta = text(named(forModule(a.uploads, "keyframe"), MODULE_PROXY_TOKEN_BINDING));
     const tb = text(named(forModule(b.uploads, "keyframe"), MODULE_PROXY_TOKEN_BINDING));
     expect(ta).not.toEqual(tb);
@@ -148,8 +147,8 @@ describe("uploadTenantModules binds the RunPod proxy pair", () => {
   it("re-deriving is idempotent -- a re-provision does not issue a second live credential", async () => {
     const first = deps();
     const second = deps();
-    await uploadTenantModules(first.d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
-    await uploadTenantModules(second.d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(first.d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(second.d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     expect(text(named(forModule(first.uploads, "keyframe"), MODULE_PROXY_TOKEN_BINDING))).toEqual(
       text(named(forModule(second.uploads, "keyframe"), MODULE_PROXY_TOKEN_BINDING)),
     );
@@ -159,7 +158,7 @@ describe("uploadTenantModules binds the RunPod proxy pair", () => {
     // plan-enhance reaches Anthropic through the AI Gateway and submits no RunPod job, so a proxy
     // credential there is reach it never uses. Same discipline as TELEMETRY_DB.
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     expect(NOT_ENDPOINT_BACKED.length).toBeGreaterThan(0);
     for (const m of NOT_ENDPOINT_BACKED) {
       const u = forModule(uploads, m);
@@ -174,7 +173,7 @@ describe("uploadTenantModules binds the RunPod proxy pair", () => {
 describe("an unconfigured plane binds NEITHER half", () => {
   it("uploads modules with no proxy binding at all, and says so", async () => {
     const { d, uploads, logs } = deps({ runpodProxy: null } as Partial<TenantModuleDeps>);
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     for (const m of ENDPOINT_BACKED) {
       const u = forModule(uploads, m);
       expect(named(u, MODULE_PROXY_BASE_BINDING), m).toBeUndefined();
@@ -193,7 +192,7 @@ describe("an unconfigured plane binds NEITHER half", () => {
     // mintTenantProxyToken returns null on an id carrying the token separator. The pair must go
     // together: binding the base here would point the module at the proxy with nothing to present.
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten.dotted", "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", "ten.dotted", "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     const u = forModule(uploads, "keyframe");
     expect(named(u, MODULE_PROXY_BASE_BINDING)).toBeUndefined();
     expect(named(u, MODULE_PROXY_TOKEN_BINDING)).toBeUndefined();
@@ -212,7 +211,7 @@ describe("an unconfigured plane binds NEITHER half", () => {
 describe("the pair is bound for SHARED tenants only", () => {
   it("binds NEITHER half on a dedicated tenant", async () => {
     const { d, uploads, logs } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "dedicated", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "dedicated", undefined, "AIG");
     for (const m of ENDPOINT_BACKED) {
       const u = forModule(uploads, m);
       expect(named(u, MODULE_PROXY_BASE_BINDING), m).toBeUndefined();
@@ -233,7 +232,7 @@ describe("the pair is bound for SHARED tenants only", () => {
     // Without this the test above passes on a build where the pair is never bound at all, which is
     // the state the whole PR exists to leave behind.
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     for (const m of ENDPOINT_BACKED) {
       expect(named(forModule(uploads, m), MODULE_PROXY_BASE_BINDING), m).toBeDefined();
       expect(named(forModule(uploads, m), MODULE_PROXY_TOKEN_BINDING), m).toBeDefined();
@@ -244,7 +243,7 @@ describe("the pair is bound for SHARED tenants only", () => {
     // A token minted and dropped is a live credential nobody asked for. Asserted through the log
     // line rather than by spying the mint, because the log is what an operator would read.
     const { d, logs } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "dedicated", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "dedicated", undefined, "AIG");
     const unbound = logs.filter((l) => l[0] === "module.runpod_proxy_unbound");
     expect((unbound[0][1] as { token: string }).token).toBe("unset");
   });
@@ -324,7 +323,7 @@ describe("RUNPOD_API_KEY is still installed alongside the proxy pair (cf#394 ord
     // A worker upload REPLACES its bindings, so the key has always arrived afterwards by PUT. Said
     // out loud here because the obvious wrong fix for the test above is to bind the key at upload.
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     for (const u of uploads) expect(named(u, "RUNPOD_API_KEY"), u.scriptName).toBeUndefined();
   });
 });
@@ -345,7 +344,7 @@ describe("the bound base round-trips through the plane's own matcher", () => {
 
   const boundBase = async (): Promise<string> => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     return text(named(forModule(uploads, "keyframe"), MODULE_PROXY_BASE_BINDING))!;
   };
 
