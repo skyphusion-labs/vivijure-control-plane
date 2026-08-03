@@ -54,8 +54,8 @@ export interface SatellitePin {
 export const SATELLITE_PINS: Record<SatelliteKey, SatellitePin> = {
   backend: {
     repo: "vivijure-backend",
-    tag: "1.0.11",
-    mirrors: { endpointId: "t9wcvlxh8rc5la", readAt: "2026-07-25" },
+    tag: "1.0.13",
+    mirrors: { endpointId: "t9wcvlxh8rc5la", readAt: "2026-08-03" },
   },
   upscale: {
     repo: "vivijure-upscale",
