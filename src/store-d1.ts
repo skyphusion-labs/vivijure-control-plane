@@ -34,6 +34,7 @@ import type {
   ProxyJobOpen,
   ProxyJobRef,
   ProxyJobClose,
+  OpenProxyJob,
 } from "./store";
 import { classifySlugClaim, TIER_A_STATUSES,
   type TenantResourceKind,
@@ -1066,6 +1067,45 @@ export class D1Store implements ControlPlaneStore, CreditStore {
       .bind(row.job_id, row.outcome, row.status_raw, row.execution_ms, row.delay_ms, row.terminal_at)
       .run();
     return res.meta?.changes ?? 0;
+  }
+
+  // The partial index `idx_runpod_job_index_open` (migration 0020) exists for exactly this scan:
+  // it is ON (submitted_at) WHERE terminal_at IS NULL, so the sweep reads the open set rather than
+  // filtering the whole table. Both statements below are shaped to hit it.
+
+  async listOpenRunpodProxyJobs(before: number, limit: number): Promise<OpenProxyJob[]> {
+    const res = await this.db
+      .prepare(
+        "SELECT job_id, tenant_id, endpoint_id, submitted_at FROM runpod_job_index " +
+          "WHERE terminal_at IS NULL AND source = 'proxy' AND endpoint_id IS NOT NULL " +
+          "AND submitted_at IS NOT NULL AND submitted_at < ?1 " +
+          // OLDEST FIRST, so a cap truncates the youngest rather than the closest to the retention
+          // horizon. Under a backlog the old rows are the ones about to become unanswerable.
+          "ORDER BY submitted_at ASC LIMIT ?2",
+      )
+      .bind(before, limit)
+      .all<{ job_id: string; tenant_id: string; endpoint_id: string; submitted_at: number | null }>();
+    return (res.results ?? []).map((r) => ({
+      job_id: String(r.job_id),
+      tenant_id: String(r.tenant_id),
+      endpoint_id: String(r.endpoint_id),
+      submitted_at: r.submitted_at === null ? null : Number(r.submitted_at),
+    }));
+  }
+
+  async countOpenRunpodProxyJobs(before: number): Promise<number> {
+    // The SAME predicate as the list, minus the cap. The difference between the two is the number
+    // the sweep could not reach this run, and printing it is what stops a capped run reading as
+    // complete coverage.
+    const row = await this.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM runpod_job_index " +
+          "WHERE terminal_at IS NULL AND source = 'proxy' AND endpoint_id IS NOT NULL " +
+          "AND submitted_at IS NOT NULL AND submitted_at < ?1",
+      )
+      .bind(before)
+      .first<{ n: number }>();
+    return Number(row?.n ?? 0);
   }
 
   async recordTeardown(id: string, failures: { resource: string; error: string }[]): Promise<void> {

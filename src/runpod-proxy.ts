@@ -80,7 +80,24 @@ export const TERMINAL_STATUSES: readonly string[] = ["COMPLETED", "FAILED", "CAN
 
 /** Our own closed outcome vocabulary, mirroring the module-side one so the two halves of the index
  *  agree. Only `completed` is billable under Conrad's deduct-on-success rule. */
-export type JobOutcome = "submitted" | "completed" | "failed" | "cancelled" | "timed-out";
+export type JobOutcome =
+  | "submitted"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "timed-out"
+  /**
+   * WE WILL NEVER KNOW. Written only by the sweep, only when RunPod no longer has the job AND the
+   * row is past the retention horizon -- never inferred, never a default, and never billable
+   * (isBillable answers on `completed` alone, so this is safe by construction rather than by care).
+   *
+   * It exists because the alternative is worse in both directions. A row left `submitted` forever
+   * reads as an in-flight job and quietly inflates what looks like work in progress; a row closed
+   * as `failed` asserts something nobody observed. `unknown` is the only honest terminal, and it is
+   * deliberately ugly to read in a report, because a rising count of these is a real signal about
+   * the push path rather than a tidy default.
+   */
+  | "unknown";
 
 export function outcomeForStatus(status: string): JobOutcome | undefined {
   switch (status) {
@@ -121,6 +138,23 @@ export const OBSERVED_WEBHOOK_DELIVERY_WINDOW_MS = 20_000;
 /** How long a row may sit open before the reconciler adopts it. Deliberately well past the observed
  *  delivery window so a slow-but-working push is never raced by a sweep. */
 export const RECONCILER_ADOPT_AFTER_MS = 5 * 60_000;
+
+/**
+ * How long RunPod keeps an async result, after which a job id is unanswerable forever.
+ *
+ * BANDED HONESTLY, because the sweep's correctness must not depend on this number being right.
+ * It is NOT a measurement and it is NOT from a vendor doc I have read: it traces to our own comment
+ * at vivijure-cf@main `modules/_shared/runpod-job-log.ts:82` ("RunPod keeps async results for ~30
+ * minutes and has no job-history API"), which is prose we wrote. Treat it as a WORKING FIGURE.
+ *
+ * SO THE SWEEP DOES NOT GATE ON IT. It asks RunPod about every eligible row regardless of age;
+ * this value is only ever used as a SECOND, CORROBORATING condition before writing `unknown`, and
+ * a row that fails either condition is left OPEN. If the real horizon is shorter we simply learn
+ * nothing from a lost job (already true); if it is longer we leave rows open a while longer, which
+ * says "nobody knows" out loud. Neither direction can produce a fabricated terminal, which is the
+ * property that matters when the input is a number nobody measured.
+ */
+export const OBSERVED_RESULT_RETENTION_MS = 30 * 60_000;
 
 // ------------------------------------------------------------------------------------------------
 // WEBHOOK AUTHENTICITY. The callback is an UNTRUSTED TRIGGER, never evidence.

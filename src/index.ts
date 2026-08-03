@@ -74,6 +74,7 @@ import { isAllowedEndpoint, type RunpodProxyDeps } from "./runpod-proxy";
 import { matchProxyRoute, PROXY_WEBHOOK_PREFIX } from "./runpod-proxy-route-match";
 import { handleProxySubmit, handleProxyWebhook } from "./runpod-proxy-routes";
 import { handleProxyPoll } from "./runpod-proxy-poll-routes";
+import { runRunpodJobSweep } from "./runpod-job-sweep";
 import { ABUSE_REPORT_URL_VAR } from "./tenant-abuse-report";
 import type { StorageQuotaIntent } from "./tenant-storage-quota";
 import {
@@ -182,9 +183,43 @@ export default {
    * unfinished period, which reads as incomplete rather than as a clean observation.
    */
   async scheduled(_event: ScheduledController, env: ControlPlaneEnv, _ctx: ExecutionContext): Promise<void> {
-    await runLlmMeterTick(env, productionDeps(env));
+    await runScheduledTick(env, productionDeps(env));
   },
 };
+
+/**
+ * EVERYTHING THE CRON DRIVES, with each half ISOLATED from the other (cp#290).
+ *
+ * This existed as a single bare `await runLlmMeterTick(...)`. Adding a second consumer to that shape
+ * would have coupled them: a throw in either silently skips the rest of the tick, and the symptom is
+ * an absence -- no sweep log, no period row -- which is exactly what an idle plane looks like. Same
+ * reasoning the meter already applies to its own refusals, one level up.
+ *
+ * SEQUENTIAL, not concurrent: both halves write to the same D1, which processes queries
+ * sequentially anyway, so running them together buys nothing and makes the failure interleaving
+ * harder to read in a log.
+ *
+ * Exported so a test drives the SAME body the cron drives, rather than a re-derivation of it.
+ */
+export async function runScheduledTick(env: ControlPlaneEnv, deps: ControlPlaneDeps): Promise<void> {
+  try {
+    await runLlmMeterTick(env, deps);
+  } catch (e) {
+    // runLlmMeterTick catches internally today. This is here for the day it does not, because the
+    // coupling it would create is invisible: the sweep below would simply never run.
+    console.error("scheduled.llm_meter_threw", String(e));
+  }
+  try {
+    await runRunpodJobSweep({
+      fetchImpl: deps.fetch,
+      runpodApiKey: async () => env.SHARED_RUNPOD_INVOKE_KEY ?? "",
+      store: deps.store,
+      now: deps.now,
+    });
+  } catch (e) {
+    console.error("scheduled.runpod_sweep_threw", String(e));
+  }
+}
 
 /**
  * One metered tick. Exported so a test drives the SAME body the cron drives.

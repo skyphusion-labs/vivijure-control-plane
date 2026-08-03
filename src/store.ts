@@ -500,6 +500,15 @@ export interface ProxyJobRef {
   terminal_at: number | null;
 }
 
+/** One open row the sweep may ask RunPod about. */
+export interface OpenProxyJob {
+  job_id: string;
+  tenant_id: string;
+  /** NOT NULL by the query's own WHERE clause: a row without one cannot be asked about at all. */
+  endpoint_id: string;
+  submitted_at: number | null;
+}
+
 /** Terminal facts, taken from a status read WE initiated. Never from the inbound webhook body. */
 export interface ProxyJobClose {
   job_id: string;
@@ -750,6 +759,23 @@ export interface ControlPlaneStore {
    * duplicate rather than reading a silent no-op as success.
    */
   closeRunpodProxyJob(row: ProxyJobClose): Promise<number>;
+
+  /**
+   * The reconciler's work queue: rows the proxy opened and no terminal write has closed (cp#290).
+   *
+   * SCOPED TO source='proxy' AND endpoint_id IS NOT NULL, and the exclusion is REPORTED rather than
+   * silent. A harvested row can also sit open, and the sweep must not touch it: we did not submit
+   * it through the proxy, so the endpoint it needs to ask about may not be recorded. A sweep that
+   * silently skipped those would report a clean run over a population it never examined.
+   *
+   * `before` is a submitted_at ceiling, so a row younger than the adopt delay is never swept -- a
+   * working push must not be raced by the backstop that exists for when the push fails.
+   */
+  listOpenRunpodProxyJobs(before: number, limit: number): Promise<OpenProxyJob[]>;
+
+  /** How many open proxy rows the sweep is NOT eligible to examine, for the same reason a sweep
+   *  reports its denominator: a cap or an exclusion nobody prints reads as full coverage. */
+  countOpenRunpodProxyJobs(before: number): Promise<number>;
 
   // ---- preservation holds (cp#118) -------------------------------------------------------------
   //
