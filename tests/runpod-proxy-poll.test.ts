@@ -117,3 +117,68 @@ describe("plane refusal is distinguishable from a RunPod blip", () => {
     expect(await resp.json()).toEqual({ status: "IN_PROGRESS" });
   });
 });
+
+// ------------------------------------------------------------------------------------------------
+// cp#290: THE WIRING IS WHERE THIS PROPERTY WOULD HAVE BEEN LOST, so the check follows it there.
+//
+// The original assertions above look one hop: does runpod-proxy-poll.ts import a store. That was
+// the right check for a module with no callers. It is not sufficient for a ROUTE, because a route
+// reaches the store through anything it imports -- and while writing the poll route I nearly took a
+// shared helper from the metering half, which would have restored a path to the store while every
+// one-hop assertion above stayed green.
+//
+// So the walk is TRANSITIVE, and it has a positive control: run the same walker from the metering
+// half and it MUST find the store. Without that, a walker that silently resolved nothing would pass
+// every assertion below while testing nothing at all.
+// ------------------------------------------------------------------------------------------------
+
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+
+const SRC = new URL("../src/", import.meta.url).pathname;
+
+/** Every first-party module reachable from `entry`, following relative imports only. Vendor
+ *  packages cannot hold a D1 binding and are not the hazard. */
+function reachable(entry: string): Set<string> {
+  const seen = new Set<string>();
+  const queue = [entry];
+  while (queue.length) {
+    const file = queue.pop()!;
+    if (seen.has(file) || !existsSync(file)) continue;
+    seen.add(file);
+    for (const spec of importsOf(read(new URL(`file://${file}`)))) {
+      if (!spec.startsWith(".")) continue;
+      const target = resolve(dirname(file), spec.replace(/\.js$/, "")) + ".ts";
+      queue.push(target);
+    }
+  }
+  return seen;
+}
+
+const names = (files: Set<string>): string[] => [...files].map((f) => f.slice(SRC.length));
+
+describe("the poll ROUTE cannot reach a store either, transitively", () => {
+  // POSITIVE CONTROL FIRST. The metering half genuinely depends on ./store, so a walker that
+  // resolved nothing would fail HERE rather than passing the real assertions vacuously.
+  it("control: the walker really does traverse (the metering half reaches store.ts)", () => {
+    const graph = names(reachable(`${SRC}runpod-proxy-routes.ts`));
+    expect(graph.length).toBeGreaterThan(3);
+    expect(graph).toContain("store.ts");
+  });
+
+  it("nothing reachable from the poll ROUTE is a store", () => {
+    for (const file of names(reachable(`${SRC}runpod-proxy-poll-routes.ts`))) {
+      expect(file).not.toMatch(/store/i);
+    }
+  });
+
+  it("nothing reachable from the poll MODULE is a store", () => {
+    for (const file of names(reachable(`${SRC}runpod-proxy-poll.ts`))) {
+      expect(file).not.toMatch(/store/i);
+    }
+  });
+
+  it("the poll route does not reach the metering half by ANY path", () => {
+    expect(names(reachable(`${SRC}runpod-proxy-poll-routes.ts`))).not.toContain("runpod-proxy.ts");
+  });
+});

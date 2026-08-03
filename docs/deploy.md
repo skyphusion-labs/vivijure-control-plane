@@ -146,6 +146,29 @@ at about ten tenants that have EVER existed.
 `shared_pool.refused` and the plane offers no shared tier. That is deliberate: half a pool is not a
 degraded pool, it is a tenant that cannot render.
 
+#### The proxy credential: `RUNPOD_PROXY_SIGNING_KEY` (cp#290)
+
+| what | where | note |
+| --- | --- | --- |
+| `RUNPOD_PROXY_SIGNING_KEY` | worker secret, `wrangler secret put` | any high-entropy string; signs the per-tenant proxy token |
+
+**It is NOT the RunPod key and the two are not interchangeable.** `SHARED_RUNPOD_INVOKE_KEY` is what
+the plane presents UPSTREAM to RunPod. This is what tenant module workers present DOWNSTREAM to the
+plane. Setting one to the other's value would put a RunPod-capable credential back inside a tenant
+namespace, which is the exact thing the proxy exists to prevent.
+
+**Absent means the proxy refuses every call**, with `x-vivijure-plane-refusal: unauthorized`. No
+token can be minted and none can verify, so a misconfigured plane serves nobody rather than
+everybody. If shared-tier submits are 401ing on a plane you believe is configured, check this
+secret first.
+
+**Rotating it invalidates every tenant's token at once**, deliberately: a stateless token cannot be
+revoked row by row. Per-tenant refusal lives on the SUBMIT path instead, which reads the tenant row
+and refuses anything not live, unsuspended and `runpod_mode = 'shared'` -- and submit is the only
+path that spends. A refused tenant retains poll and cancel on jobs already in flight, which is
+correct: cancel is the spend-leak guard, and removing it would leave a suspended tenant's running
+jobs billing us.
+
 **ALL-OR-NOTHING on the endpoints.** A value missing any plan key is refused rather than partially
 resolved. A tenant wired for three of four capabilities provisions green, passes verify, and dies at
 the first render on the fourth.

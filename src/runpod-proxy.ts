@@ -153,14 +153,12 @@ function cryptoRandom(n: number): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(n));
 }
 
-/** Constant-time compare, so a token cannot be recovered a byte at a time from response timing. */
-export function tokensMatch(a: string, b: string): boolean {
-  if (typeof a !== "string" || typeof b !== "string") return false;
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
+/** Constant-time compare, so a token cannot be recovered a byte at a time from response timing.
+ *
+ *  RE-EXPORTED, not implemented here (cp#290). The implementation moved DOWN to ./constant-time so
+ *  the poll half -- which must import nothing that can reach a store -- can authenticate its caller
+ *  without an import path back into this file. Callers and tests of `tokensMatch` are unchanged. */
+export { timingSafeEqual as tokensMatch } from "./constant-time";
 
 export interface SubmitTarget {
   /** A pool endpoint id, or a public model slug from the allow-list. */
@@ -281,6 +279,14 @@ export interface RunpodProxyDeps {
   store: ControlPlaneStore;
   /** Absolute base of the plane's own callback route, e.g. https://plane.example/api/runpod/webhook */
   callbackBase: string;
+  /** Signs and verifies the per-tenant proxy credential (runpod-proxy-auth.ts). UNDEFINED on a
+   *  plane with no key installed, which fails every submit CLOSED rather than open. */
+  signingKey: string | undefined;
+  /** The tenant-facing pool endpoint ids, resolved from SHARED_RUNPOD_ENDPOINTS. DATA, not a
+   *  compile-time list: they differ per deploy, unlike the public model slugs. */
+  poolEndpointIds: readonly string[];
+  /** Injectable clock, so a submit's recorded time is deterministic under test. */
+  now(): number;
 }
 
 /** The callback URL for one job. The token is the LAST path segment so a proxy or log that truncates

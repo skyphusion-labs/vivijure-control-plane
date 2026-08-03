@@ -69,7 +69,11 @@ import { parseInventoryBody, reconcileRunPod, TENANT_PAGE_LIMIT } from "./reconc
 import { buildR2UsageReport, parseThresholdBytes } from "./tenant-r2-usage";
 import { routeTenantRequest } from "./routing";
 import { verifyInvokeKeyScope } from "./runpod-invoke-key";
-import { readRunPodMode } from "./runpod-pool";
+import { parseSharedPool, readRunPodMode } from "./runpod-pool";
+import { isAllowedEndpoint, type RunpodProxyDeps } from "./runpod-proxy";
+import { matchProxyRoute, PROXY_WEBHOOK_PREFIX } from "./runpod-proxy-route-match";
+import { handleProxySubmit, handleProxyWebhook } from "./runpod-proxy-routes";
+import { handleProxyPoll } from "./runpod-proxy-poll-routes";
 import { ABUSE_REPORT_URL_VAR } from "./tenant-abuse-report";
 import type { StorageQuotaIntent } from "./tenant-storage-quota";
 import {
@@ -337,6 +341,19 @@ export async function handle(
       return err("not_found", 404);
     }
 
+    // ---- cp#290: the plane-side RunPod proxy (bearer, not session) ----
+    //
+    // ABOVE THE SESSION GATE and mounted before it, because the caller is a tenant MODULE WORKER,
+    // not a browser: it holds a per-tenant proxy token and no cookie. Falling through to the gate
+    // below would answer every submit with 401 unauthorized, which is indistinguishable from a bad
+    // token and would have been a genuinely miserable thing to debug.
+    //
+    // It returns its own 404 for an unmatched path under the prefix rather than falling through, so
+    // `purge-queue` -- the verb no RunPod key scoping can refuse, and the reason this issue exists
+    // -- is refused HERE rather than reaching anything else.
+    const proxyRoute = matchProxyRoute(request.method, path);
+    if (proxyRoute) return await runpodProxyRoutes(request, env, deps, proxyRoute);
+
     // ---- admin (bearer, not session) ----
     if (path.startsWith("/api/admin/")) return await adminRoutes(request, env, deps, path, url, ctx);
 
@@ -540,6 +557,67 @@ async function readCreditActivity(
     holds,
     truncated: ledger.length >= CREDIT_ACTIVITY_LIMIT || holds.length >= CREDIT_ACTIVITY_LIMIT,
   };
+}
+
+/**
+ * The RunPod proxy's four verbs plus its callback (cp#288, cp#290).
+ *
+ * THE DEPENDENCY SPLIT IS THE SECURITY PROPERTY, and it is enforced here at the call sites rather
+ * than described anywhere. The submit and webhook legs are handed the full proxy deps INCLUDING the
+ * store; the poll leg is handed a `RunpodPollDeps` object literal with no store field at all, which
+ * TypeScript's excess-property check makes a compile error to add. So a poll cannot meter, and the
+ * wiring cannot quietly hand it the ability to.
+ */
+async function runpodProxyRoutes(
+  request: Request,
+  env: ControlPlaneEnv,
+  deps: ControlPlaneDeps,
+  route: Exclude<ReturnType<typeof matchProxyRoute>, null>,
+): Promise<Response> {
+  // The pool endpoint ids arrive as DATA. An unparseable or absent pool yields NONE, so a plane
+  // with no shared tier configured refuses every pool submit rather than forwarding to an endpoint
+  // it cannot price. The eight PUBLIC model slugs are compile-time and unaffected: they are the
+  // same for every deploy.
+  const poolConfig = parseSharedPool(env.SHARED_RUNPOD_ENDPOINTS);
+  const poolEndpointIds = poolConfig.ok ? [...poolConfig.pool.ids] : [];
+  const runpodApiKey = async (): Promise<string> => env.SHARED_RUNPOD_INVOKE_KEY ?? "";
+
+  if (route.kind === "poll") {
+    return await handleProxyPoll(
+      // NO STORE. Deliberately an inline literal so tsc rejects one being added.
+      { fetchImpl: deps.fetch, runpodApiKey },
+      {
+        signingKey: env.RUNPOD_PROXY_SIGNING_KEY,
+        // ONE allow-list predicate, injected. The poll half must not import the metering half, and
+        // a second copy of "allowed" on a money path is how two answers drift.
+        isAllowed: (endpointId: string) => isAllowedEndpoint(endpointId, poolEndpointIds),
+      },
+      request,
+      route.op,
+      route.endpointId,
+      route.jobId,
+    );
+  }
+
+  const proxyDeps: RunpodProxyDeps = {
+    fetchImpl: deps.fetch,
+    runpodApiKey,
+    store: deps.store,
+    // DERIVED from the one host fact, never separately configured: a callback base that can
+    // disagree with the plane's own origin is a callback nothing ever delivers.
+    callbackBase: `${publicOrigin(env)}${PROXY_WEBHOOK_PREFIX}`,
+    signingKey: env.RUNPOD_PROXY_SIGNING_KEY,
+    poolEndpointIds,
+    now: deps.now,
+  };
+
+  if (route.kind === "submit") return await handleProxySubmit(proxyDeps, request, route.endpointId);
+  // Note what is NOT passed: the Request. The callback is a trigger, not evidence, and a handler
+  // that never receives a body cannot read one.
+  if (route.kind === "webhook") return await handleProxyWebhook(proxyDeps, route.token);
+
+  // Under the prefix, not a verb we serve. Refused here, never passed upstream.
+  return err("not_found", 404);
 }
 
 async function tenantRoutes(

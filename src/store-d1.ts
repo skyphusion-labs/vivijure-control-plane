@@ -31,6 +31,9 @@ import type {
   Tenant,
   TenantLifecycle,
   CreditStore,
+  ProxyJobOpen,
+  ProxyJobRef,
+  ProxyJobClose,
 } from "./store";
 import { classifySlugClaim, TIER_A_STATUSES,
   type TenantResourceKind,
@@ -982,6 +985,87 @@ export class D1Store implements ControlPlaneStore, CreditStore {
       ),
     );
     return rows.length;
+  }
+
+  // ---- the PROXY push path (cp#290) ------------------------------------------------------------
+
+  async openRunpodProxyJob(row: ProxyJobOpen): Promise<void> {
+    // `harvested_at` is NOT NULL and predates this path; on a pushed row it means "when we wrote
+    // it", which is also when we saw the job. Named here because the column NAME implies a harvest
+    // and a reader deserves to be told it does not mean one.
+    //
+    // ON CONFLICT is defensive rather than expected -- a job id we just minted upstream cannot
+    // already be here. It is written so a conflict can never BLANK a closed row: outcome and
+    // terminal_at are deliberately absent from the update list, so the terminal facts of an
+    // existing row survive a colliding open untouched.
+    await this.db
+      .prepare(
+        "INSERT INTO runpod_job_index " +
+          "(job_id, tenant_id, tenant_slug, module, outcome, submitted_at, terminal_at, harvested_at, " +
+          " source, endpoint_id, webhook_token_sha256) " +
+          "VALUES (?1, ?2, ?3, ?4, 'submitted', ?5, NULL, datetime('now'), 'proxy', ?6, ?7) " +
+          "ON CONFLICT(job_id) DO UPDATE SET " +
+          "tenant_id = excluded.tenant_id, " +
+          "tenant_slug = excluded.tenant_slug, " +
+          "module = COALESCE(excluded.module, runpod_job_index.module), " +
+          "endpoint_id = COALESCE(excluded.endpoint_id, runpod_job_index.endpoint_id), " +
+          // ORIGIN, and the proxy is authoritative for a job it submitted itself: unlike the
+          // harvest path (which must never relabel a proxy row), this row IS the proxy's.
+          "source = 'proxy', " +
+          "webhook_token_sha256 = excluded.webhook_token_sha256, " +
+          "submitted_at = COALESCE(runpod_job_index.submitted_at, excluded.submitted_at), " +
+          "harvested_at = datetime('now')",
+      )
+      .bind(
+        row.job_id,
+        row.tenant_id,
+        row.tenant_slug,
+        row.module,
+        row.submitted_at,
+        row.endpoint_id,
+        row.webhook_token_sha256,
+      )
+      .run();
+  }
+
+  async findRunpodProxyJobByWebhookToken(tokenSha256: string): Promise<ProxyJobRef | null> {
+    // Lookup BY HASH: the presented token is hashed and matched against the stored digest, so the
+    // raw credential exists nowhere in this database. An unknown token yields null and the caller
+    // learns nothing else -- which is the entire vocabulary an unverified caller may extract.
+    const row = await this.db
+      .prepare(
+        "SELECT job_id, tenant_id, endpoint_id, terminal_at FROM runpod_job_index " +
+          "WHERE webhook_token_sha256 = ?1",
+      )
+      .bind(tokenSha256)
+      .first<{ job_id: string; tenant_id: string; endpoint_id: string | null; terminal_at: number | null }>();
+    if (!row) return null;
+    return {
+      job_id: String(row.job_id),
+      tenant_id: String(row.tenant_id),
+      endpoint_id: row.endpoint_id === null ? null : String(row.endpoint_id),
+      terminal_at: row.terminal_at === null ? null : Number(row.terminal_at),
+    };
+  }
+
+  async closeRunpodProxyJob(row: ProxyJobClose): Promise<number> {
+    // FIRST TERMINAL WRITE WINS. `terminal_at IS NULL` is what makes a webhook retry, a reconciler
+    // sweep and a forged duplicate all safe to point at the same row -- and RunPod really does
+    // deliver the same terminal three times when a receiver merely looks slow (measured).
+    //
+    // meta.changes is the only honest signal: a 0-row UPDATE is a SUCCESSFUL statement. Returning
+    // it lets the caller distinguish a first close from a duplicate instead of reading a silent
+    // no-op as success.
+    const res = await this.db
+      .prepare(
+        "UPDATE runpod_job_index SET " +
+          "outcome = ?2, status_raw = ?3, execution_ms = ?4, delay_ms = ?5, " +
+          "terminal_at = ?6, closed_at = datetime('now') " +
+          "WHERE job_id = ?1 AND terminal_at IS NULL",
+      )
+      .bind(row.job_id, row.outcome, row.status_raw, row.execution_ms, row.delay_ms, row.terminal_at)
+      .run();
+    return res.meta?.changes ?? 0;
   }
 
   async recordTeardown(id: string, failures: { resource: string; error: string }[]): Promise<void> {
