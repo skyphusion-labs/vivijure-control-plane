@@ -114,6 +114,10 @@ const NAMESPACE = RUN_PREFIX;
 // Real tenant ids are `ten_<hex>`, so a smoke script name can never collide with a tenant's.
 const TENANT_ID = RUN_PREFIX;
 const MODULE_SCRIPT_PREFIX = tenantModuleScriptPrefix(TENANT_ID);
+// cp#284: this smoke runs in the OPERATOR account and there is no tenant, so it names the
+// operator bucket explicitly rather than passing null -- null would exercise the refusal path
+// instead of the upload path it exists to prove.
+const SMOKE_BUCKET = "vivijure";
 const HARNESS_NAME = `${RUN_PREFIX}-dispatcher`;
 const D1_PROBE_SCRIPT = `${RUN_PREFIX}-d1probe`;
 // The module the negative control re-uploads without a database. Any recording module would do.
@@ -490,7 +494,7 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
     // The shipped guard from cp#248, exercised against the real API surface rather than a stub. It
     // runs FIRST because a refusal has changed nothing, so a failure here costs no cleanup.
     await expect(
-      uploadTenantModules(makeDeps(), env!.studioRelease, TENANT_ID, "cpsmoke", endpoints, null, "dedicated"),
+      uploadTenantModules(makeDeps(), env!.studioRelease, TENANT_ID, "cpsmoke", endpoints, null, SMOKE_BUCKET, "dedicated"),
     ).rejects.toBeInstanceOf(TenantModuleError);
 
     // And it really did write nothing: the namespace holds no module scripts yet.
@@ -499,7 +503,7 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
   }, 120_000);
 
   it("POSITIVE: modules uploaded by THIS TREE report TELEMETRY_DB resolved in the running worker", async () => {
-    const uploaded = await uploadTenantModules(makeDeps(), env!.studioRelease, TENANT_ID, "cpsmoke", endpoints, state.d1!, "dedicated");
+    const uploaded = await uploadTenantModules(makeDeps(), env!.studioRelease, TENANT_ID, "cpsmoke", endpoints, state.d1!, SMOKE_BUCKET, "dedicated");
     state.uploaded.push(...uploaded);
     expect(uploaded.length).toBe(TENANT_MODULE_CATALOG.length);
 

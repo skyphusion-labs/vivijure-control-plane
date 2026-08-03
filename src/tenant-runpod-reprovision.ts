@@ -350,6 +350,12 @@ export async function reprovisionTenantRunPod(
         studioApiToken: context.studioApiToken,
         release: context.modulesRelease,
         prefetched: context.bundles,
+        // Restated from the ROW for the same reason TELEMETRY_DB is: an upload REPLACES the
+        // binding set, so a bucket not passed here is R2_RENDERS silently stripped off a
+        // tenant that had it -- which does not break the module, it redirects its writes to
+        // the operator bucket (cp#284).
+        tenantBucketName: tenant.r2_bucket_name,
+
         // Restated from the record for the same reason the endpoint ids are: this re-uploads the
         // module scripts, and an upload REPLACES the binding set, so a binding not passed here is a
         // binding dropped (cp#248).

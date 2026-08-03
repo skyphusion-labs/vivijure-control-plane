@@ -6,6 +6,55 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(provision): the GPUless cost door for hosted tenants, with their renders in their own bucket (cp#284, cp#270, cf#394)
+
+A hosted tenant had no cost door at all: the eight cloud i2v/audio modules were published as tenant
+bundles by every release this plane pins and uploaded by nothing. Conrad ruled them in scope on
+2026-08-02 ("I want the cloud-i2v modules on the hosted door, it's literally one of the selling
+points"). This adds the eight catalog rows AND the `r2_bucket` binding that makes them safe, in one
+change, because either alone is worse than neither.
+
+**Rows without the binding would send tenant renders into the OPERATOR bucket.** Each of these
+modules declares `bucket_name = "vivijure"` in its self-host `wrangler.toml`, so a module uploaded
+without `R2_RENDERS` does not fail -- it writes a paying tenant's finished renders into ours and
+reports success. That is why this is one PR and not two.
+
+**Every catalog fact was measured from the module sources, with controls, not inferred:**
+
+| fact | how it was established |
+|---|---|
+| no `endpointKey` | none of the eight declares `RUNPOD_ENDPOINT_ID` in its `Env`; all submit to public vendor slugs |
+| `recordsRunpodJobs: true` | each imports `runpod-job-log` and reads `TELEMETRY_DB` exactly as `keyframe` (a known recorder) does, while `plan-enhance` (a known non-recorder) does neither |
+| `writesTenantRenders: true` | across the fifteen catalog modules the `R2_RENDERS` split is exact and has zero overlap with `endpointKey`: the eight declare it, the other seven declare it nowhere |
+| `publicEndpoint` slug | read off each module and asserted against `PUBLIC_ENDPOINT_ALLOWLIST`, the list the plane proxy will actually admit |
+
+**THE DEFECT THIS FOUND, and it is the reason the change is larger than eight rows.** The cp#288
+RunPod proxy pair was bound inside `if (endpoint)`. That was correct only while every RunPod-reaching
+module was endpoint-backed, and the cost door breaks the assumption: these eight reach RunPod at a
+PUBLIC slug with no endpoint of ours. Under the old predicate all eight would have been uploaded to a
+SHARED tenant with **no proxy pair**, taken the unbound branch of `modules/_shared/runpod-route.ts`,
+and reached RunPod on the direct `RUNPOD_API_KEY` -- a consumer holding a RunPod credential on our
+account, which CLAUDE.md forbids outright. The predicate, not the population, was the defect, so the
+binding now keys on `reachesRunpod(spec)`. `plan-enhance` is still the only non-RunPod module and
+still the negative control, so the discipline that comment describes is unchanged and still has a
+real subject.
+
+**Why the binding and not the cp#270 envelope.** cp#270 chose bounded residency to stop a standing
+CREDENTIAL going stale (cf#83). An `r2_bucket` binding is a CAPABILITY: no secret at rest, nothing to
+roll, so that reasoning does not reach this case. Measured rather than asserted: there is one bucket
+per tenant, created by `createR2Bucket` with no lifecycle, CORS or policy configuration, and
+`provisioner.ts` already binds that same bucket on the tenant STUDIO as `R2_RENDERS`. This grants the
+module scripts the reach the studio already holds, over the same object, so there is no per-binding
+permission surface on which a module could differ from the studio.
+
+**It also REMOVES a collision.** `clipKey()` is `renders/<project>/clips/<shot>_<vendor>.mp4`, which
+carries no tenant component. In a single operator bucket two tenants sharing a project and shot id
+would silently overwrite each other; per-tenant buckets make that unrepresentable.
+
+`uploadTenantModules` REFUSES when a writer's tenant has no bucket recorded, rather than uploading a
+writer with nowhere safe to write. The parameter is required and nullable, the same shape
+`telemetryD1Id` uses and the same compile-time property cp#315 established for `release`.
+
 ### fix(provision): thread the release into the module upload, and delete the field that let it drift (cp#315, cp#301)
 
 `runProvisionJob` was the only `uploadTenantModules` call site that did not thread the release. On

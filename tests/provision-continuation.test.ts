@@ -142,6 +142,9 @@ async function seedTenant(store: MemoryStore, opts: { throughStudio?: boolean } 
     // Reaching the studio upload means the D1 was created and recorded several steps earlier; the
     // module upload binds it as TELEMETRY_DB (cp#248).
     await store.setTenantD1(t.id, "d1-uuid-hero");
+    // cp#284: a tenant past the r2_bucket step HAS a bucket, and the module upload now binds it
+    // as R2_RENDERS. A fixture without one is not a state the production path can produce.
+    await store.setTenantBucket(t.id, "vivijure-tenant-hero");
     await store.setTenantStudioToken(t.id, await encryptStudioToken(RING, "the-studio-token"));
     await store.setTenantScript(t.id, "tenant-hero-studio", "v1.0.0");
   }
@@ -451,6 +454,7 @@ describe("continueProvisionJob", () => {
       toRelease: "v1.0.0",
     });
     await store.setTenantD1(t0.id, "d1-uuid-hero");
+    await store.setTenantBucket(t0.id, "vivijure-tenant-hero");
     await store.setTenantEndpoints(t0.id, JSON.stringify(ENDPOINTS));
     await store.setTenantStudioToken(t0.id, await encryptStudioToken(RING, "the-studio-token"));
     const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints"];
