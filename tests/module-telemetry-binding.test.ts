@@ -22,6 +22,9 @@ import type { WorkerBinding } from "../src/cf-api";
 
 const TENANT = "ten_1";
 const TENANT_D1 = "d1-uuid-acme";
+// cp#284: the TENANT bucket. A distinctive value, not "vivijure", so a binding that
+// silently carried the OPERATOR bucket would be visible rather than plausible.
+const TENANT_BUCKET = "vivijure-tenant-acme-films";
 const ENDPOINTS = [
   { key: "backend", label: "Backend", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
   { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
@@ -78,8 +81,15 @@ describe("the catalog says WHICH modules record", () => {
     // cp#284 moved this from five to six: finish-rife was the sixth upstream recorder and was
     // published as a tenant bundle by every release this plane pins while being uploaded by
     // nothing. This test is what fired when the row landed.
+    // cp#284 moved this from six to FOURTEEN: the eight cost-door modules each import
+    // runpod-job-log and read TELEMETRY_DB exactly as keyframe does. Established BY EFFECT
+    // against two controls (keyframe records, plan-enhance does not), never from the row.
     expect(RECORDING.sort()).toEqual(
-      ["finish-lipsync", "finish-rife", "finish-upscale", "keyframe", "own-gpu", "speech-upscale"],
+      [
+        "alibaba-wan", "alibaba-wan-lora", "finish-lipsync", "finish-rife", "finish-upscale",
+        "google-veo", "keyframe", "kling", "minimax-hailuo", "narration-gen", "own-gpu",
+        "seedance", "speech-upscale", "vidu-q3",
+      ],
     );
     expect(NOT_RECORDING).toEqual(["plan-enhance"]);
   });
@@ -102,7 +112,7 @@ describe("the catalog says WHICH modules record", () => {
 describe("uploadTenantModules attaches TELEMETRY_DB", () => {
   it("binds the TENANT studio D1, by uuid, on every recording module", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "dedicated", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "dedicated", undefined, "AIG");
     for (const m of RECORDING) {
       // The NAME is what the module helper reads (env.TELEMETRY_DB). A binding under any other name
       // is an absent binding: the write warns, no-ops, and the module still reports healthy.
@@ -112,7 +122,7 @@ describe("uploadTenantModules attaches TELEMETRY_DB", () => {
 
   it("does NOT bind it on a module that submits no RunPod job", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, "dedicated", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "dedicated", undefined, "AIG");
     for (const m of NOT_RECORDING) expect(telemetry(forModule(uploads, m)), m).toBeUndefined();
   });
 
@@ -121,7 +131,7 @@ describe("uploadTenantModules attaches TELEMETRY_DB", () => {
     // different uuid here would be a table nothing migrates, and every write would fail at runtime
     // while every upload still looked correct.
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, "d1-studio-uuid", "dedicated", undefined, "AIG");
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, "d1-studio-uuid", TENANT_BUCKET, "dedicated", undefined, "AIG");
     const ids = new Set(RECORDING.map((m) => (telemetry(forModule(uploads, m)) as { id: string }).id));
     expect([...ids]).toEqual(["d1-studio-uuid"]);
   });
@@ -130,7 +140,7 @@ describe("uploadTenantModules attaches TELEMETRY_DB", () => {
     // The negative half. Without this, a tenant record with no database silently gets five modules
     // that record nothing, which is precisely the state cp#248 exists to make impossible.
     const { d, uploads, namespaceCreates } = deps();
-    await expect(uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, null, "dedicated", undefined, "AIG")).rejects.toThrow(
+    await expect(uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, null, TENANT_BUCKET, "dedicated", undefined, "AIG")).rejects.toThrow(
       TenantModuleError,
     );
     expect(uploads).toEqual([]);
@@ -139,7 +149,7 @@ describe("uploadTenantModules attaches TELEMETRY_DB", () => {
 
   it("names the step so the job row attributes the refusal correctly", async () => {
     const { d } = deps();
-    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, "", "dedicated", undefined, "AIG").then(
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, "", TENANT_BUCKET, "dedicated", undefined, "AIG").then(
       () => expect.fail("an empty D1 id must refuse, not upload"),
       (e: TenantModuleError) => {
         expect(e.step).toBe("modules_upload");

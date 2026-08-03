@@ -911,7 +911,9 @@ export async function runProvisionJob(
       }
       aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
     }
-    await uploadTenantModules(deps, release, tenant.id, tenant.slug, endpoints, dbUuid, runpodMode, undefined, aigTokenValue);
+    await uploadTenantModules(
+      deps, release, tenant.id, tenant.slug, endpoints, dbUuid, bucket, runpodMode, undefined, aigTokenValue,
+    );
     await mark("modules_upload");
 
     // 8. Install each module through the studio's OWN conformance-gated route (cf#99): the studio
@@ -1328,6 +1330,11 @@ export async function continueProvisionJob(
         endpoints,
         studioApiToken,
         release: pinnedRelease,
+        // Restated from the ROW for the same reason TELEMETRY_DB is: an upload REPLACES the
+        // binding set, so a bucket not passed here is R2_RENDERS silently stripped off a
+        // tenant that had it -- which does not break the module, it redirects its writes to
+        // the operator bucket (cp#284).
+        tenantBucketName: tenant.r2_bucket_name,
         telemetryD1Id: tenant.d1_database_id,
         // From the ROW: the endpoints step completed in an earlier invocation, so it is written.
         runpodMode: readRunPodMode(tenant.runpod_mode),
@@ -1443,6 +1450,14 @@ export interface ModuleStepsArgs {
    */
   telemetryD1Id: string | null;
   /**
+   * The tenant's own R2 bucket, bound as R2_RENDERS on the modules that write renders (cp#284).
+   *
+   * Nullable for the same reason telemetryD1Id is -- the tenant RECORD is -- and uploadTenantModules
+   * owns the single refusal. Every caller of this seam runs against a tenant whose r2_bucket step
+   * completed, so `tenant.r2_bucket_name` is the authoritative source at all three call sites.
+   */
+  tenantBucketName: string | null;
+  /**
    * The tenant's RunPod shape, which decides whether the proxy pair is bound (cp#288). Every caller
    * of this seam runs against a tenant whose endpoints step already completed, so the ROW is
    * authoritative and `readRunPodMode(tenant.runpod_mode)` is the right source at all three call
@@ -1488,6 +1503,7 @@ export async function runModuleSteps(
       args.slug,
       endpoints,
       args.telemetryD1Id,
+      args.tenantBucketName,
       args.runpodMode,
       args.prefetched,
       aigTokenValue,
@@ -1743,6 +1759,12 @@ export async function upgradeTenantModules(
         studioApiToken: context.studioApiToken,
         release: context.release,
         prefetched: context.bundles,
+        // Restated from the ROW for the same reason TELEMETRY_DB is: an upload REPLACES the
+        // binding set, so a bucket not passed here is R2_RENDERS silently stripped off a
+        // tenant that had it -- which does not break the module, it redirects its writes to
+        // the operator bucket (cp#284).
+        tenantBucketName: tenant.r2_bucket_name,
+
         // From the RECORD. A module upgrade re-uploads the module scripts, and an upload REPLACES
         // the binding set, so TELEMETRY_DB has to be restated here or an upgrade would silently
         // strip it back off a tenant that already had it (cp#248).

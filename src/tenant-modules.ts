@@ -93,6 +93,40 @@ export interface TenantModuleSpec {
    * part of ok. A typo here is silent everywhere except the telemetry field itself.
    */
   recordsRunpodJobs?: boolean;
+  /**
+   * The RunPod PUBLIC model slug this module submits to, for a module that reaches RunPod WITHOUT
+   * one of our own endpoints (cp#284 / cf#394 wave 1).
+   *
+   * WHY THIS EXISTS RATHER THAN A BOOLEAN. The eight cost-door modules submit to vendor-hosted
+   * public slugs (`kling-v2-1-i2v-pro`, `wan-2-6-i2v`, ...) instead of a tenant endpoint, so they
+   * reach RunPod with `endpointKey` absent. Carrying the SLUG rather than a flag lets a test assert
+   * this catalog against `PUBLIC_ENDPOINT_ALLOWLIST` in runpod-proxy.ts, which is the list the plane
+   * proxy will actually admit -- a bare boolean would be two facts that agree only by memory.
+   *
+   * IT IS NOT BOUND ONTO THE WORKER. The module hard-codes its own slug; this is the plane's
+   * record of which slug that is. Binding it would create a second source of truth for a value the
+   * module already owns.
+   */
+  publicEndpoint?: string;
+  /**
+   * This module writes finished render bytes into the TENANT's R2 bucket, so it needs an
+   * `r2_bucket` binding named R2_RENDERS (cp#284 / cf#394 wave 1).
+   *
+   * MEASURED FROM THE MODULE SOURCES, not assumed: across the fifteen catalog modules the split is
+   * exact and has no overlap with `endpointKey`. The eight cost-door modules declare `R2_RENDERS`
+   * in their Env and do one `env.R2_RENDERS.put` in the Worker; the other seven declare it nowhere,
+   * because their far end writes and the studio imports the result.
+   *
+   * WITHOUT THIS BINDING THE ROW IS WORSE THAN ABSENT. A tenant module uploaded with no R2_RENDERS
+   * does not fail: the self-host wrangler.toml names the OPERATOR bucket, so the tenant's renders
+   * would land in ours. That is why the rows and this binding are one change and uploadTenantModules
+   * REFUSES rather than uploading a writer with no tenant bucket to write to.
+   *
+   * A CAPABILITY, NOT A CREDENTIAL. An r2_bucket binding puts no secret in the tenant namespace and
+   * has nothing to roll, which is why the cp#270 bounded-residency argument (built to stop a
+   * standing CREDENTIAL going stale, cf#83) does not reach this case.
+   */
+  writesTenantRenders?: boolean;
 }
 
 /**
@@ -134,7 +168,46 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   // bundle (vivijure-cf PR for cf#56). moduleBundle.fetch throws on a release that predates it, and
   // that failure is loud at modules_upload rather than silent, but it would fail every provision.
   { module: "plan-enhance", needsAiGateway: true },
+  // ---- cp#284 / cf#394 WAVE 1: the GPUless cost door -------------------------------------------
+  //
+  // Conrad ruled these IN SCOPE for the hosted tier on 2026-08-02 ("I want the cloud-i2v modules on
+  // the hosted door, it's literally one of the selling points"). A hosted tenant had no cost door at
+  // all: these eight were published by every release the plane pins and uploaded by nothing.
+  //
+  // NO endpointKey, BY MEASUREMENT rather than by omission: none of the eight declares
+  // RUNPOD_ENDPOINT_ID in its Env. They submit to the vendor-hosted public slug carried below.
+  //
+  // recordsRunpodJobs on all eight, established BY EFFECT against two controls: each imports
+  // runpod-job-log and reads TELEMETRY_DB exactly as `keyframe` (a known recorder) does, while
+  // `plan-enhance` (a known non-recorder) does neither. Migration 0020 is the reason it matters --
+  // it added `endpoint_id` specifically because these eight submit to eight DISTINCT slugs at
+  // different prices, so the endpoint is the only thing that says what a job COST.
+  { module: "alibaba-wan", publicEndpoint: "wan-2-6-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
+  { module: "alibaba-wan-lora", publicEndpoint: "wan-2-2-t2v-720-lora", recordsRunpodJobs: true, writesTenantRenders: true },
+  { module: "google-veo", publicEndpoint: "google-veo3-1-fast-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
+  { module: "kling", publicEndpoint: "kling-v2-1-i2v-pro", recordsRunpodJobs: true, writesTenantRenders: true },
+  { module: "minimax-hailuo", publicEndpoint: "minimax-hailuo-2-3-fast", recordsRunpodJobs: true, writesTenantRenders: true },
+  { module: "narration-gen", publicEndpoint: "minimax-speech-02-hd", recordsRunpodJobs: true, writesTenantRenders: true },
+  { module: "seedance", publicEndpoint: "seedance-v1-5-pro-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
+  { module: "vidu-q3", publicEndpoint: "vidu-q3-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
 ];
+
+/**
+ * Does this module reach RunPod at all, by EITHER route (cp#284)?
+ *
+ * THE PREDICATE THE PROXY PAIR ACTUALLY NEEDS, and it used to be `endpointKey` by accident. That
+ * conflated "has an endpoint of ours" with "talks to RunPod", which was true while every
+ * RunPod-reaching module was endpoint-backed and became false the moment the cost door arrived.
+ * Keying the proxy on the wrong property would have left all eight on the DIRECT RunPod key on a
+ * shared tenant -- a consumer holding a RunPod credential on our account, which CLAUDE.md forbids
+ * outright ("a consumer reaches RunPod through our product or not at all").
+ *
+ * `plan-enhance` is still the negative case and still the only one: it reaches Anthropic through the
+ * AI Gateway and submits no RunPod job, so the discipline the pair-binding comment describes is
+ * unchanged and still has a real subject.
+ */
+export const reachesRunpod = (spec: TenantModuleSpec): boolean =>
+  Boolean(spec.endpointKey) || Boolean(spec.publicEndpoint);
 
 /**
  * The per-tenant script-name prefix in the shared modules namespace. Derived from the TENANT ID (not
@@ -293,6 +366,17 @@ export async function uploadTenantModules(
    */
   telemetryD1Id: string | null,
   /**
+   * The tenant's own R2 bucket name, bound as R2_RENDERS on every module that writes renders
+   * (cp#284 / cf#394 wave 1).
+   *
+   * REQUIRED and nullable, exactly like telemetryD1Id above and for the same reason: the tenant
+   * RECORD is nullable (a half-built tenant may have no bucket yet), so the caller must state what
+   * it has and ONE refusal lives here rather than each caller inventing its own message. Required
+   * rather than optional means a caller cannot omit it and silently upload a writer bound to
+   * nothing -- the same compile-time property cp#315 established for `release`.
+   */
+  tenantBucketName: string | null,
+  /**
    * Which RunPod shape this tenant is on, and therefore whether the proxy pair is bound at all
    * (cp#288).
    *
@@ -366,11 +450,21 @@ export async function uploadTenantModules(
       // provisioner binds its endpoint-id vars. The module reads env.RUNPOD_ENDPOINT_ID (string-typed
       // via secretValue), so a plain_text binding drops straight in.
       bindings.push({ type: "plain_text", name: "RUNPOD_ENDPOINT_ID", text: endpoint.id });
-
+    }
+    if (reachesRunpod(spec)) {
       // cp#288: the pair that lets this module reach RunPod THROUGH the plane instead of holding a
-      // RunPod-capable credential in the tenant namespace. Bound only on endpoint-backed modules --
-      // a module that submits no RunPod job has nothing to send through a proxy, and handing it a
-      // plane credential widens its reach for no gain (the TELEMETRY_DB discipline above).
+      // RunPod-capable credential in the tenant namespace. Bound on every module that REACHES
+      // RunPod -- a module that submits no RunPod job has nothing to send through a proxy, and
+      // handing it a plane credential widens its reach for no gain (the TELEMETRY_DB discipline
+      // above). `plan-enhance` is still the only such module and still the negative control.
+      //
+      // KEYED ON reachesRunpod, NOT ON endpointKey (cp#284). This block sat inside `if (endpoint)`,
+      // which was correct only while every RunPod-reaching module was endpoint-backed. The eight
+      // cost-door modules submit to PUBLIC vendor slugs with no endpoint of ours, so under the old
+      // predicate they would have been uploaded to a SHARED tenant with no proxy pair, taken the
+      // unbound branch of modules/_shared/runpod-route.ts, and reached RunPod on the direct
+      // RUNPOD_API_KEY. That is a consumer holding a RunPod credential on our account, which
+      // CLAUDE.md forbids outright. The predicate, not the population, was the defect.
       //
       // ADDITIVE ON PURPOSE, AND THE ORDERING IS LOAD-BEARING (cf#394). RUNPOD_API_KEY is still
       // installed on every module script by installInvokeKey (deps.ts) and nothing here touches
@@ -415,6 +509,34 @@ export async function uploadTenantModules(
           token: proxyToken ? "set" : "unset",
         });
       }
+    }
+    if (spec.writesTenantRenders) {
+      // cp#284 / cf#394 wave 1: THE TENANT's bucket, not the operator's.
+      //
+      // WHY A REFUSAL AND NOT A SKIP. A module uploaded without this binding does not fail. Its
+      // self-host wrangler.toml declares `bucket_name = "vivijure"` -- the OPERATOR bucket -- so an
+      // unbound upload is not a module that cannot write, it is a module that writes a paying
+      // tenant's renders into our own bucket and reports success. Silent, wrong, and discoverable
+      // only by someone auditing bucket contents. So a writer with no tenant bucket is a hard stop.
+      //
+      // SAME BUCKET THE STUDIO ALREADY HAS. provisioner.ts binds this exact bucket on the tenant
+      // studio as R2_RENDERS (and as R2), so this grants the module scripts the reach the studio
+      // already holds, over the same object. Measured, not assumed: there is one bucket per tenant,
+      // created by createR2Bucket with no lifecycle, CORS or policy configuration, so there is no
+      // per-binding permission surface on which a module could differ from the studio.
+      //
+      // AND IT REMOVES A COLLISION RATHER THAN ADDING ONE. clipKey() is
+      // `renders/<project>/clips/<shot>_<vendor>.mp4`, which carries NO tenant component: in a
+      // single operator bucket two tenants with the same project and shot ids would overwrite each
+      // other. Per-tenant buckets make that unrepresentable.
+      if (!tenantBucketName) {
+        throw new TenantModuleError(
+          "modules_upload",
+          `module ${spec.module} writes tenant renders but the tenant has no R2 bucket recorded; ` +
+            "uploading it would write those renders into the operator bucket",
+        );
+      }
+      bindings.push({ type: "r2_bucket", name: "R2_RENDERS", bucket_name: tenantBucketName });
     }
     if (spec.recordsRunpodJobs) {
       // cp#248 / vivijure-cf#279. RunPod cannot enumerate jobs, so a job id this worker does not

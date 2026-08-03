@@ -107,6 +107,8 @@ async function seedLiveTenant(store: MemoryStore, over: Partial<Tenant> = {}): P
   // A real live tenant has a studio database, and since cp#248 the module upload binds it as
   // TELEMETRY_DB, so a fixture without one is not a live tenant.
   await store.setTenantD1(t.id, "d1-uuid-hero");
+  // cp#284: a LIVE tenant has an R2 bucket, and the module upload binds it as R2_RENDERS.
+  await store.setTenantBucket(t.id, "vivijure-tenant-hero");
   await store.setTenantStudioToken(t.id, await encryptStudioToken(RING, "the-studio-token"));
   await store.setTenantScript(t.id, "tenant-hero-studio", OLD_RELEASE);
   await store.setTenantModulesRelease(t.id, OLD_RELEASE);
@@ -225,7 +227,7 @@ describe("preflight refuses before anything is written", () => {
     expect(pre.context.bundles).toBeInstanceOf(Map);
     // It carries the release the OPERATOR asked for, never the plane-wide deps.release.
     expect(pre.context.release).toBe(NEW_RELEASE);
-    expect(pre.context.bundles.size).toBe(7);   // cf#56 plan-enhance, then cp#284 finish-rife
+    expect(pre.context.bundles.size).toBe(15);   // + the 8 cp#284 cost-door rows
   });
 
   it("fetches every bundle at the REQUESTED release, not the plane-wide pin", async () => {
@@ -240,7 +242,7 @@ describe("preflight refuses before anything is written", () => {
 
     await preflightModuleUpgrade(d, tenant, NEW_RELEASE);
 
-    expect(fetchSpy).toHaveBeenCalledTimes(7);   // cf#56 plan-enhance, then cp#284 finish-rife
+    expect(fetchSpy).toHaveBeenCalledTimes(15);   // + the 8 cp#284 cost-door rows
     // deps.release is OLD_RELEASE; if the explicit release were being dropped this would be it.
     for (const call of fetchSpy.mock.calls as unknown as [string, string][]) {
       expect(call[0]).toBe(NEW_RELEASE);
@@ -264,10 +266,10 @@ describe("upgradeTenantModules", () => {
 
     expect(out.ok).toBe(true);
     // All SIX catalog modules, uploaded and installed again (cf#56 added plan-enhance).
-    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(7);   // cp#284: finish-rife joined the catalog
+    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(15);   // + the 8 cp#284 cost-door rows
     const installs = (d.callTenantStudio as unknown as { mock: { calls: [string, { path: string }][] } }).mock.calls
       .filter((c) => c[1].path === "/api/modules/install");
-    expect(installs).toHaveLength(7);   // cf#56 plan-enhance, then cp#284 finish-rife
+    expect(installs).toHaveLength(15);  // + the 8 cp#284 cost-door rows
   });
 
   it("uses the PRE-FETCHED bundles; it does not re-fetch during upload", async () => {
@@ -300,7 +302,15 @@ describe("upgradeTenantModules", () => {
     expect(out).toEqual({
       ok: true,
       release: NEW_RELEASE,
-      modules: ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale", "finish-rife", "plan-enhance"],
+      modules: [
+        // cp#284 added the 8 cost-door rows. STILL A HAND LIST, deliberately: deriving it from
+        // TENANT_MODULE_CATALOG would make it agree with whatever the catalog says, which is
+        // this assertion inverted. It exists to FAIL when the catalog moves.
+        "keyframe", "own-gpu", "finish-upscale", "finish-lipsync",
+        "speech-upscale", "finish-rife", "plan-enhance",
+        "alibaba-wan", "alibaba-wan-lora", "google-veo", "kling",
+        "minimax-hailuo", "narration-gen", "seedance", "vidu-q3",
+      ],
     });
     const after = (await store.getTenantById(tenant.id)) as Tenant;
     // THE RULE: status untouched. continueProvisionJob would have written awaiting_invoke_key here,
