@@ -32,6 +32,13 @@ tag-gated, so a merge runs CI and nothing else.
   red. The gate holds at provision time; a tenant row stays `shared` for life, so the predicate is
   what covers a plane whose proxy config is removed later.
 
+- **The `reachesRunpod` population rule is now stated in the code**, at the predicate's own
+  definition (Conrad's direction). Not a list of its three uses -- the point is that each was FIRST
+  attempted with a proxy for it, and each of those failed differently: `if (endpoint)` would have
+  failed SILENTLY with the direct key on a shared tenant, `runpod_mode` alone fails LOUD with every
+  render dead, and the whole catalog failed AT PROVISION and was green in test. Written once, with
+  the two other sites pointing at it rather than restating it.
+
 **Still open after this tag, deliberately:** the tenant STUDIO keeps its single copy of the key
 (cp#321). It genuinely submits RunPod work -- cast LoRA training -- and `vivijure-core` has no proxy
 branch, so removing it before core learns the proxy would break that path rather than close the
