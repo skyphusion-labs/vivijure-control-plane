@@ -91,9 +91,14 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
   it("does NOT leak the trio onto endpoint-backed modules", async () => {
     const { d, uploads } = deps();
     await uploadTenantModules(d, "ten_1", "acme-films", ENDPOINTS, TENANT_D1, "dedicated", undefined, "AIG_SECRET_VALUE");
-    for (const m of ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale"]) {
-      // TELEMETRY_DB is expected here (cp#248): these five modules submit RunPod jobs and record
+    for (const m of ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale", "finish-rife"]) {
+      // TELEMETRY_DB is expected here (cp#248): these six modules submit RunPod jobs and record
       // them. The exact-set shape is the point -- the AI Gateway trio must still not appear.
+      //
+      // finish-rife was added by cp#284 and this loop did NOT fail without it -- the test simply
+      // never looked. A coverage gap, not a regression, and exactly the shape a new catalog row
+      // opens: every per-module loop written against a hardcoded list silently stops covering the
+      // catalog the moment the catalog grows.
       expect(names(forModule(uploads, m)), m).toEqual(["RUNPOD_ENDPOINT_ID", "TELEMETRY_DB"]);
     }
   });

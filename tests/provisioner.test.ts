@@ -1052,7 +1052,7 @@ describe("cf#99 tenant module bridge", () => {
       mock: { calls: [{ namespace: string; scriptName: string; bindings: { type: string; name: string; text?: string }[] }][] };
     }).mock.calls.map((c) => c[0]);
 
-  it("uploads all 6 tenant module scripts into the modules namespace, tenant-id-prefixed", async () => {
+  it("uploads all 7 tenant module scripts into the modules namespace, tenant-id-prefixed", async () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
@@ -1062,6 +1062,7 @@ describe("cf#99 tenant module bridge", () => {
     expect(moduleUploads.map((u) => u.scriptName).sort()).toEqual(
       [
         `${t.id}-finish-lipsync`,
+        `${t.id}-finish-rife`,
         `${t.id}-finish-upscale`,
         `${t.id}-keyframe`,
         `${t.id}-own-gpu`,
@@ -1124,11 +1125,11 @@ describe("cf#99 tenant module bridge", () => {
       (c) => c[1] as { method: string; path: string; body?: string },
     );
     const installs = studioCalls.filter((c) => c.path === "/api/modules/install");
-    expect(installs).toHaveLength(6);   // cf#56: plan-enhance joined the catalog
+    expect(installs).toHaveLength(7);   // cf#56 plan-enhance, then cp#284 finish-rife
     // Each install carries the tenant-prefixed script name (not the bare module name).
     const scriptNames = installs.map((c) => JSON.parse(c.body!).script_name).sort();
     expect(scriptNames).toEqual(
-      ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale", "plan-enhance"]
+      ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale", "finish-rife", "plan-enhance"]
         .map((n) => `${t.id}-${n}`.replace(/_/g, "-"))
         .sort(),
     );

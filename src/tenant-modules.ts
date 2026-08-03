@@ -101,12 +101,18 @@ export interface TenantModuleSpec {
  * RUNPOD_ENDPOINT_ID + RUNPOD_API_KEY (verified against each module's Env), which is why the binding
  * set below is uniform. Extending the hosted tier is a row here plus the matching endpoint in runpod.ts.
  *
- * WHAT THIS LIST IS NOT (cp#248, written down because it is invisible from the vivijure-cf side).
- * SIX module workers record RunPod jobs upstream; FIVE of them are in this catalog. `finish-rife` is
- * built and PUBLISHED as a tenant module bundle by the studio release, and nothing in this plane
- * provisions it to a tenant -- so on the hosted door its jobs are not unrecorded, they do not
- * exist. Whether hosted should carry it is a product question and deliberately not settled here;
- * this note exists so the next reader does not count five modules and report a missing binding.
+ * THE UPSTREAM RECORDING SET IS NOW FULLY CATALOGUED (cp#284, cf#394 wave 0). Six module workers
+ * record RunPod jobs upstream and all six are here. The note that used to sit in this space said
+ * `finish-rife` was published as a tenant bundle and provisioned by nothing -- true from cp#248
+ * until this row landed, and retired rather than deleted so a reader meeting the six/five
+ * discrepancy in an older doc knows which way it was resolved.
+ *
+ * IT WAS ALWAYS THE ROW AND NOTHING ELSE. finish-rife reads no operator-only binding (its Env is
+ * the two RunPod credentials, the proxy pair, and TELEMETRY_DB), sits on the shared route seam, and
+ * its bundle is published by the same release as every other catalog module. It declares an
+ * `R2_RENDERS` bucket in its own wrangler.toml for the SELF-HOST deploy and reads it nowhere -- the
+ * binding does not appear in its Env interface at all -- so it is not in the cp#270 tenant-R2
+ * envelope lane and needs nothing from it.
  */
 export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   { module: "keyframe", endpointKey: "backend", recordsRunpodJobs: true },
@@ -114,6 +120,11 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   { module: "finish-upscale", endpointKey: "upscale", recordsRunpodJobs: true },
   { module: "finish-lipsync", endpointKey: "lipsync", recordsRunpodJobs: true },
   { module: "speech-upscale", endpointKey: "audio-upscale", recordsRunpodJobs: true },
+  // cp#284 / cf#394 wave 0. Rides the SAME shared backend endpoint as keyframe and own-gpu, which
+  // is read off the module rather than chosen here: its wrangler.toml binds RUNPOD_ENDPOINT_ID from
+  // the store secret BACKEND_RUNPOD_ENDPOINT_ID. Records, so it takes TELEMETRY_DB; endpoint-backed,
+  // so on a shared tenant it takes the cp#288 proxy pair like the other four.
+  { module: "finish-rife", endpointKey: "backend", recordsRunpodJobs: true },
   // cf#56: the Opus director pass. NOT endpoint-backed -- it reaches Anthropic through OUR AI
   // Gateway on unified billing, so the cost is ours and the per-tenant CF_AIG_TOKEN is what makes
   // that cost attributable and revocable one tenant at a time. Spend stays bounded today by the
