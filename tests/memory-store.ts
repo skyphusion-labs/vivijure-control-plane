@@ -18,6 +18,7 @@ import type {
   PreservationHold,
   PreservationHoldKind,
   ProvisionJob,
+  ProvisionJobFacts,
   Session,
   Tenant,
   TenantLifecycle,
@@ -35,6 +36,21 @@ import type {
   OpenProxyJob,
 } from "../src/store";
 import { classifySlugClaim, leaseIsLive, JOB_LEASE_SECONDS, TIER_A_STATUSES } from "../src/store";
+
+/**
+ * The job facts for tests that do not care which RunPod shape they got (cp#301).
+ *
+ * PRODUCIBLE BY THE PRODUCTION PATH, which is the requirement rather than a nicety: this is exactly
+ * the row POST /api/tenant/provision writes for a tenant that pasted a RunPod key, on a plane pinned
+ * to this release. A fixture the world cannot produce lets a suite go green over a state that does
+ * not exist, which is the defect the mode column was added to avoid in the first place.
+ *
+ * Tests that care about the SHARED shape must say so explicitly rather than reach for this.
+ */
+export const TEST_PROVISION_FACTS: ProvisionJobFacts = {
+  runpodMode: "dedicated",
+  toRelease: "v1.0.0",
+};
 
 export class MemoryStore implements ControlPlaneStore {
   accounts = new Map<string, Account>();
@@ -324,7 +340,12 @@ export class MemoryStore implements ControlPlaneStore {
     );
   }
 
-  async createProvisionJob(id: string, tenant_id: string, kind: "provision" | "deprovision") {
+  async createProvisionJob(
+    id: string,
+    tenant_id: string,
+    kind: "provision" | "deprovision",
+    facts: ProvisionJobFacts,
+  ) {
     const j: ProvisionJob = {
       id,
       tenant_id,
@@ -337,7 +358,10 @@ export class MemoryStore implements ControlPlaneStore {
       attempts: 0,
       lease_until: null,
       from_release: null,
-      to_release: null,
+      // cp#301: the memory store must persist these exactly as the D1 INSERT does, or a suite that
+      // never touches SQLite would pass over a store that silently drops the facts.
+      to_release: facts.toRelease,
+      runpod_mode: facts.runpodMode,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       finished_at: null,
@@ -650,6 +674,9 @@ export class MemoryStore implements ControlPlaneStore {
       lease_until: null,
       from_release: fromRelease,
       to_release: toRelease,
+      // An UPGRADE job has no provision mode: the column is a fact about which shape a PROVISION
+      // was created for, and an upgrade moves a tenant that already has one.
+      runpod_mode: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       finished_at: null,
@@ -672,6 +699,9 @@ export class MemoryStore implements ControlPlaneStore {
       lease_until: null,
       from_release: fromRelease,
       to_release: toRelease,
+      // An UPGRADE job has no provision mode: the column is a fact about which shape a PROVISION
+      // was created for, and an upgrade moves a tenant that already has one.
+      runpod_mode: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       finished_at: null,

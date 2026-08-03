@@ -17,7 +17,7 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import { kekRing } from "../src/token-crypto";
 import { runProvisionJob, type ProvisionDeps } from "../src/provisioner";
 import { CfApiError, type CfApi, type WorkerBinding } from "../src/cf-api";
-import { MemoryStore } from "./memory-store";
+import { MemoryStore, TEST_PROVISION_FACTS } from "./memory-store";
 import { VIDEO_FINISH_TIER_STATE_VAR, VIDEO_FINISH_UNPROVISIONABLE } from "../src/video-finish-tier-state";
 import type { Tenant } from "../src/store";
 
@@ -107,7 +107,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
 
 async function provision(d: ProvisionDeps): Promise<{ ok: boolean; step?: string; message?: string }> {
   const t: Tenant = await store.createTenant("ten_1", "hero", "acct_1", "pending");
-  const job = await store.createProvisionJob("job_1", t.id, "provision");
+  const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
   return (await runProvisionJob(d, job.id, t, "rpa_keyA")) as { ok: boolean; step?: string; message?: string };
 }
 
@@ -216,7 +216,7 @@ describe("the finish-tier state var on a provision upload (cp#136)", () => {
       at: "2026-07-26T12:00:00.000Z",
     });
     const row = (await store.getTenantById(t.id))!;
-    const job = await store.createProvisionJob("job_1", row.id, "provision");
+    const job = await store.createProvisionJob("job_1", row.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(deps({ videoFinishServiceId: SERVICE_ID }), job.id, row, "rpa_keyA");
 
     expect(studioUpload()!.bindings.find((b) => b.name === VIDEO_FINISH_TIER_STATE_VAR)).toEqual({

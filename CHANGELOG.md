@@ -6,6 +6,41 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(provision): record the RunPod mode and the release pin on the job row (cp#301)
+
+A provision that yields before `wfp_upload` is resumed by a POLL, which holds neither the RunPod key
+nor any way to learn which shape or which release the attempt was for. Nothing persisted could tell
+it. `tenants.runpod_mode` is written INSIDE the `runpod_endpoints` step and is `NOT NULL DEFAULT
+'dedicated'`, so for the whole region before that step every tenant row reads `dedicated` whether or
+not it is one; a resume gate keyed on it would refuse every real pooled tenant and fix nothing, while
+passing any test whose fixture hand-writes `shared` onto a pre-endpoints row. `tenants.studio_release`
+is written inside `wfp_upload`, so it is NULL across the same region.
+
+Both facts are now recorded on the JOB row at creation, in one INSERT, before any step runs.
+Migration `0022` adds `provision_jobs.runpod_mode`; `to_release` already existed from `0006` and
+provisions simply never wrote it.
+
+THE MODE COMES FROM THE KEY, never from whether the plane offers a pool. A plane with a pool armed
+still serves BYO dedicated tenants, so "a pool exists" would put a tenant who brought their own
+RunPod account onto ours. The route reads the key ONCE and uses that single value for both the
+recorded mode and the argument handed to the driver, so the row cannot assert a shape the provisioner
+did not take.
+
+NULL IS LOAD-BEARING and the column has no default: NULL means the job predates migration `0022` and
+nothing else. A default of `dedicated` would make an unrecorded job indistinguishable from a recorded
+one, and would hand a future resume a confident wrong answer instead of a refusal.
+
+`createProvisionJob` now takes those facts as a REQUIRED argument, so a call site cannot omit the
+mode and produce a silently unresumable job.
+
+CONTRACT CHANGE: a provision job's `to_release` is no longer NULL, and `GET /api/tenant/:id/job`
+reports it. `from_release` stays NULL on provisions, which do not move a tenant from anything.
+
+NOTHING IS RESUMABLE YET. This changes no guard and no provisioning behaviour: the driver still
+fetches `deps.release`, so `to_release` on a provision is the intent recorded at creation rather than
+a description of what was built. Making the pre-`wfp_upload` region resumable, and reading this pin,
+is the next item on cp#301.
+
 ### fix(provisioner): a resume uses the TENANT studio release, not the plane current pin (cp#301)
 
 `continueProvisionJob` passed `deps.release` to the module steps and wrote it to `modules_release`.

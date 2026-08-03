@@ -1,0 +1,34 @@
+-- Which RunPod shape THIS PROVISION ATTEMPT was created for (cp#301).
+--
+-- WHY A JOB COLUMN WHEN tenants.runpod_mode ALREADY EXISTS. They are different facts and only one of
+-- them can be read at the moment that matters.
+--
+-- tenants.runpod_mode (migration 0018) is written INSIDE the runpod_endpoints step, and it is
+-- NOT NULL DEFAULT 'dedicated'. 0018 ruled out a third value in terms: "Two values, not three. There
+-- is no 'unknown' ... A nullable third state would be a value every reader has to handle and no
+-- writer can ever produce." That was right for its readers (teardown, reconcile, invoke-key handoff),
+-- which only ever ask about a tenant that HAS endpoints.
+--
+-- It is wrong for a RESUME, which asks the question one phase earlier. For the whole region before
+-- runpod_endpoints runs, a pooled tenant row reads 'dedicated' -- the column DEFAULT, not a branch
+-- outcome -- and nothing distinguishes it from a genuine BYO tenant. So a resume gate keyed on the
+-- tenant column REFUSES EVERY REAL POOLED TENANT AND FIXES NOTHING, while passing any test whose
+-- fixture hand-writes 'shared' onto a pre-endpoints row. Production cannot produce that row.
+--
+-- The mode is decided at the route, before any step runs, by the fact index.ts already computes:
+-- a RunPod key was supplied, or it was not. This column records that decision where it is made.
+--
+-- NULLABLE, WITH NO DEFAULT, AND THAT IS THE WHOLE DESIGN OF THIS COLUMN. NULL means exactly one
+-- thing: this job row predates this migration. A DEFAULT of 'dedicated' would make an unrecorded job
+-- indistinguishable from a recorded dedicated one, which is the identical defect to the one above,
+-- one table over -- and it would hand a future resume a confident wrong answer instead of a refusal.
+-- Consumers of this column must treat NULL as "cannot be resumed across the boundary, say so", never
+-- as a fallback.
+--
+-- to_release IS NOT ADDED HERE. It already exists on this table from migration 0006 (the module
+-- upgrade lane); provisions have simply never written it. The design sketch on cp#301 listed both
+-- columns in one ALTER block, which would have failed as a duplicate column: corrected here, and
+-- disclosed on the issue rather than quietly fixed.
+--
+-- Additive and nullable -> rides the normal auto-apply, no manual gate.
+ALTER TABLE provision_jobs ADD COLUMN runpod_mode TEXT;

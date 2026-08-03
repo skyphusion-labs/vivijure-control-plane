@@ -9,7 +9,7 @@
 // PASS is indistinguishable from a gate that always passes.
 
 import { describe, it, expect } from "vitest";
-import { MemoryStore } from "./memory-store";
+import { MemoryStore, TEST_PROVISION_FACTS } from "./memory-store";
 import { classifySlugClaim, SLUG_TAKEN_REASON, type Tenant } from "../src/store";
 
 const OWNER = "acc_owner";
@@ -243,7 +243,7 @@ describe("the provision-lease race (cf#103)", () => {
     const store = new MemoryStore();
     const t = row({ status: "failed" });
     store.tenants.set(t.id, t);
-    await store.createProvisionJob("job_1", t.id, "provision");
+    await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const j = store.jobs.get("job_1")!;
     j.status = jobStatus;
     j.lease_until = leaseUntil;
@@ -386,7 +386,7 @@ describe("the reclaim lease: serializing two attempts on one slug (cf#103)", () 
 
   it("a reclaim cannot be claimed while a PROVISION driver holds its own lease", async () => {
     const store = await seedA();
-    await store.createProvisionJob("job_1", "ten_1", "provision");
+    await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
     const j = store.jobs.get("job_1")!;
     j.status = "running";
     j.lease_until = new Date(Date.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);

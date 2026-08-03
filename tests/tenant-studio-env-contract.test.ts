@@ -23,7 +23,7 @@ import {
 } from "../src/tenant-studio-env";
 import { runProvisionJob, type ProvisionDeps } from "../src/provisioner";
 import type { CfApi } from "../src/cf-api";
-import { MemoryStore } from "./memory-store";
+import { MemoryStore, TEST_PROVISION_FACTS } from "./memory-store";
 
 const MIGRATIONS = [{ name: "0001_init.sql", sql: "CREATE TABLE IF NOT EXISTS projects (id TEXT);" }];
 const ENDPOINTS = [
@@ -108,7 +108,7 @@ async function provisionAndCaptureStudioBindings() {
   const { deps, store, uploads } = recordingDeps();
   await store.createAccount("acct_1", "a@b.com");
   const tenant = await store.createTenant("ten_1", "hero", "acct_1", "pending");
-  const job = await store.createProvisionJob("job_1", tenant.id, "provision");
+  const job = await store.createProvisionJob("job_1", tenant.id, "provision", TEST_PROVISION_FACTS);
 
   const res = await runProvisionJob(deps, job.id, tenant, "rpa_keyA");
   expect(res, "provision should succeed in the fake").toMatchObject({ ok: true });

@@ -176,19 +176,57 @@ export interface ProvisionJob {
   /** Who is currently driving this job, expressed as when that claim expires (#112). */
   lease_until: string | null;
   /**
-   * An UPGRADE job (module_upgrade or studio_upgrade): the release it moved FROM and moved TO.
+   * The release pair. `from_release` belongs to the UPGRADE kinds; `to_release` is now written by
+   * PROVISION jobs as well (cp#301).
    *
    * from_release exists so a FAILED upgrade is still rollback-able. Rollback here is "re-run at the
    * previous release", and the upgrade NULLs tenants.modules_release before touching anything, so
    * after a failure this row is the only place the previous release still exists. Null on every
    * other job kind, and null-able on this one because the tenant may not have had a recorded module
    * release to move from.
+   *
+   * to_release ON A PROVISION is the plane pin AT THE MOMENT THE JOB WAS CREATED. It exists because
+   * a provision that yields and resumes must build from the release the job started on, not from
+   * whatever the plane is pinned to when a poll happens to drive it -- STUDIO_RELEASE moved
+   * v1.13.0 to v1.19.3 in a single day on 2026-08-03. tenants.studio_release cannot serve that: it
+   * is written inside wfp_upload, so it is NULL across the entire region the resume work is about.
    */
   from_release: string | null;
   to_release: string | null;
+  /**
+   * Which RunPod shape this provision ATTEMPT was created for (cp#301, migration 0022).
+   *
+   * Recorded at the route from the fact that decides it -- a RunPod key was supplied, or it was not
+   * -- because tenants.runpod_mode cannot answer the question this soon: it is written inside the
+   * runpod_endpoints step and is NOT NULL DEFAULT 'dedicated', so before that step every tenant row
+   * reads 'dedicated' whether or not it is one.
+   *
+   * NULL means the job predates migration 0022, and nothing else. A consumer must treat NULL as a
+   * refusal to resume, NEVER as a fallback to 'dedicated': that is the distinction the column exists
+   * to preserve, and a default would erase it.
+   */
+  runpod_mode: string | null;
   created_at: string;
   updated_at: string;
   finished_at: string | null;
+}
+
+/**
+ * The two facts a provision job must carry from the moment it is created (cp#301).
+ *
+ * BOTH ARE WRITTEN BY THE SAME INSERT, deliberately. They describe the same attempt, and two
+ * separate writes are two chances for a job row to carry a mode from one epoch and a release from
+ * another -- a disagreement no reader could detect and none of them would expect.
+ */
+export interface ProvisionJobFacts {
+  /**
+   * DERIVED FROM WHETHER A KEY WAS SUPPLIED, never from whether the plane happens to offer a pool.
+   * A plane with a pool armed also serves BYO dedicated tenants, so "a pool exists" would put a
+   * tenant who brought their own RunPod account onto ours.
+   */
+  runpodMode: RunPodMode;
+  /** The plane pin at job-creation time. The release THIS attempt is building. */
+  toRelease: string;
 }
 
 export interface LoginToken {
@@ -885,7 +923,20 @@ export interface ControlPlaneStore {
   setTenantStudioTokenIfUnchanged(id: string, expectedEnc: string, newEnc: string): Promise<boolean>;
 
   // provision jobs
-  createProvisionJob(id: string, tenantId: string, kind: "provision" | "deprovision"): Promise<ProvisionJob>;
+  /**
+   * Create a provision job, carrying the two facts a later resume cannot reconstruct (cp#301).
+   *
+   * `facts` is REQUIRED rather than optional, and that is the whole point of the parameter: an
+   * optional one would let a call site omit the mode and produce a job row that is silently
+   * unresumable, which is the exact silent-inert shape this repo keeps refusing. Same reasoning
+   * that made createModuleUpgradeJob a separate method below.
+   */
+  createProvisionJob(
+    id: string,
+    tenantId: string,
+    kind: "provision" | "deprovision",
+    facts: ProvisionJobFacts,
+  ): Promise<ProvisionJob>;
   /**
    * A module_upgrade job, which carries the release pair the provision kinds have no use for.
    * Separate from createProvisionJob so the release pair is REQUIRED where it is meaningful rather

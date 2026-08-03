@@ -22,6 +22,7 @@ import { D1Store } from "../src/store-d1";
 // The shim + migrated-db helpers live in sqlite-d1.ts so the #38 reclaim SEQUENCE rehearsal drives
 // the SAME store harness these store-half proofs do.
 import { d1Over, freshMigratedDb as freshDb } from "./sqlite-d1";
+import { TEST_PROVISION_FACTS } from "./memory-store";
 
 describe("store-d1 statements execute against real SQLite", () => {
   let db: DatabaseSync;
@@ -63,9 +64,49 @@ describe("store-d1 statements execute against real SQLite", () => {
   // The CONTROL. This statement was always correct; if it ever fails, the harness is broken rather
   // than the code, and a green regression above would be meaningless.
   it("createProvisionJob still inserts (control)", async () => {
-    const job = await store.createProvisionJob("job_3", "ten_1", "provision");
+    const job = await store.createProvisionJob("job_3", "ten_1", "provision", TEST_PROVISION_FACTS);
     expect(job.kind).toBe("provision");
     expect(job.status).toBe("queued");
+  });
+
+  // cp#301: the provision facts must survive the round trip through REAL SQLite, not just through
+  // the memory store. The memory store is a hand-written mirror, so a column that exists in the
+  // migration and is missing from the INSERT would pass every suite that never touches SQLite.
+  it("createProvisionJob persists runpod_mode and to_release (cp#301)", async () => {
+    const job = await store.createProvisionJob("job_facts", "ten_1", "provision", {
+      runpodMode: "shared",
+      toRelease: "v1.19.3",
+    });
+    expect(job.runpod_mode).toBe("shared");
+    expect(job.to_release).toBe("v1.19.3");
+
+    // Read it back through SQL rather than trusting the RETURNING row, for the reason the module
+    // upgrade case above already gives: RETURNING can describe a row the statement did not commit.
+    const back = db
+      .prepare("SELECT runpod_mode, to_release FROM provision_jobs WHERE id = ?1")
+      .get("job_facts") as { runpod_mode: string | null; to_release: string | null };
+    expect(back).toEqual({ runpod_mode: "shared", to_release: "v1.19.3" });
+  });
+
+  // The NULL that the column exists to preserve. A job row written before migration 0022 carries no
+  // mode, and a consumer must be able to tell that from a recorded 'dedicated'. Constructed by
+  // writing the pre-0022 shape directly, which is the one state the current code CANNOT produce and
+  // is therefore labelled synthetic rather than pretending otherwise: it stands in for every job row
+  // that existed on the plane before this migration applied.
+  it("a pre-0022 job row reads runpod_mode NULL, distinguishable from 'dedicated' (cp#301)", async () => {
+    db.prepare(
+      "INSERT INTO provision_jobs (id, tenant_id, kind, status) VALUES ('job_old', 'ten_1', 'provision', 'queued')",
+    ).run();
+    const old = await store.getJob("job_old");
+    expect(old?.runpod_mode ?? null).toBeNull();
+
+    const fresh = await store.createProvisionJob("job_new", "ten_1", "provision", {
+      runpodMode: "dedicated",
+      toRelease: "v1.0.0",
+    });
+    expect(fresh.runpod_mode).toBe("dedicated");
+    // The distinction is the whole design of the column: absent is not dedicated.
+    expect(old?.runpod_mode).not.toBe(fresh.runpod_mode);
   });
 
   it("the tenant row the jobs hang off is really there (control)", async () => {
@@ -355,7 +396,7 @@ describe("releaseJobLease, the yield hand-back (cp#158)", () => {
     store = new D1Store(d1Over(db));
     await store.createAccount("acct_1", "a@b.com");
     await store.createTenant("ten_1", "rehearsal", "acct_1", "provisioning");
-    await store.createProvisionJob("job_1", "ten_1", "provision");
+    await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
   });
 
   const row = () =>
@@ -412,7 +453,7 @@ describe("renewJobLease and the terminal-job guard (cp#148)", () => {
     store = new D1Store(d1Over(db));
     await store.createAccount("acct_1", "a@b.com");
     await store.createTenant("ten_1", "rehearsal", "acct_1", "provisioning");
-    await store.createProvisionJob("job_1", "ten_1", "provision");
+    await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
   });
 
   const row = () =>
