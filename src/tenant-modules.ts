@@ -25,7 +25,13 @@
 
 import type { CfApi, WorkerBinding } from "./cf-api";
 import { isScriptAbsent } from "./cf-api";
+import {
+  MODULE_PROXY_BASE_BINDING,
+  MODULE_PROXY_TOKEN_BINDING,
+  mintTenantProxyToken,
+} from "./runpod-proxy-auth";
 import type { TenantEndpoint } from "./provisioner";
+import type { RunPodMode } from "./runpod-pool";
 
 /**
  * A pre-built module worker bundle, fetched by name from the pinned release. Same seam as
@@ -162,6 +168,20 @@ export interface TenantModuleDeps {
    * needs GATEWAY_ID and CF_AIG_TOKEN both, and returns "local" when either is missing.
    */
   aiGatewayId: string | null;
+  /**
+   * Where a tenant module sends its RunPod calls and the key that signs the credential it presents
+   * there (cp#288), or null when this plane configures no proxy -- no CONTROL_PLANE_HOST to build
+   * an origin from, or no RUNPOD_PROXY_SIGNING_KEY to mint against (provisionerWiring, deps.ts).
+   *
+   * Null uploads the modules WITHOUT the pair, so they keep reaching RunPod with their direct
+   * RUNPOD_API_KEY. That is the pre-proxy behaviour unchanged, not a degrade invented here.
+   *
+   * The SIGNING KEY rather than a minted token, unlike aigTokenValue which arrives as a value: the
+   * mint is a pure HMAC over the tenant id (runpod-proxy-auth.ts) with no credential-minting REACH
+   * to keep out of this file, and it is per-tenant while this deps bundle is per-deploy -- so there
+   * is no wiring-time value to pass.
+   */
+  runpodProxy: { base: string; signingKey: string } | null;
   moduleBundle: ModuleBundleSource;
   release: string;
   /** Dispatch a GET to one tenant MODULE script over TENANT_MODULE_DISPATCH (cf#114). Separate from
@@ -245,6 +265,30 @@ export async function uploadTenantModules(
    * silently drops every row.
    */
   telemetryD1Id: string | null,
+  /**
+   * Which RunPod shape this tenant is on, and therefore whether the proxy pair is bound at all
+   * (cp#288).
+   *
+   * THE CROSS-REPO CONTRACT SAYS SHARED ONLY, and the consequence of ignoring it is not a missed
+   * optimisation. vivijure-cf@67302960 modules/_shared/runpod-route.ts branches on
+   * RUNPOD_PROXY_BASE being BOUND and states in terms that this is NOT a failover: bound means
+   * proxied, and a proxied module that cannot authenticate refuses honestly rather than finding
+   * another way to RunPod. Our own submit path then answers 403 `not_shared_mode` for anything that
+   * is not shared (runpod-proxy-routes.ts). So binding this on a dedicated tenant does not degrade
+   * it, it breaks every render on it, with the fallback deliberately unavailable.
+   *
+   * TYPED AS THE NARROWED UNION, NOT `string | null`. The tenants column is
+   * `NOT NULL DEFAULT 'dedicated'` and a caller holding it raw cannot pass it here without going
+   * through readRunPodMode(), so the narrowing rule has one home and forgetting it is a compile
+   * error rather than a tenant-visible outage. readRunPodMode maps anything unrecognised to
+   * 'dedicated', which is the correct failure direction here: dedicated binds nothing, the module
+   * stays on the direct path, and the direct path works.
+   *
+   * REQUIRED and positioned with the other tenant facts rather than appended as an optional, for
+   * the reason `tenantSlug` above and `release` on runModuleSteps both already give: an optional
+   * would let a caller omit it, bind nothing, and look correct.
+   */
+  runpodMode: RunPodMode,
   /** Pre-fetched bundles (prefetchModuleBundles). When absent each bundle is fetched inline, which
    *  is the original provision behaviour and is left exactly as it was. */
   prefetched?: Map<string, ModuleBundle>,
@@ -295,6 +339,55 @@ export async function uploadTenantModules(
       // provisioner binds its endpoint-id vars. The module reads env.RUNPOD_ENDPOINT_ID (string-typed
       // via secretValue), so a plain_text binding drops straight in.
       bindings.push({ type: "plain_text", name: "RUNPOD_ENDPOINT_ID", text: endpoint.id });
+
+      // cp#288: the pair that lets this module reach RunPod THROUGH the plane instead of holding a
+      // RunPod-capable credential in the tenant namespace. Bound only on endpoint-backed modules --
+      // a module that submits no RunPod job has nothing to send through a proxy, and handing it a
+      // plane credential widens its reach for no gain (the TELEMETRY_DB discipline above).
+      //
+      // ADDITIVE ON PURPOSE, AND THE ORDERING IS LOAD-BEARING (cf#394). RUNPOD_API_KEY is still
+      // installed on every module script by installInvokeKey (deps.ts) and nothing here touches
+      // that. vivijure-cf teaches its modules to prefer this base and FALL BACK to the direct key
+      // first; only after that has shipped and been verified may the plane stop installing the key.
+      // Binding the pair before a module reads it costs two unread vars. Removing the key before a
+      // module can fall back strands every render on that tenant.
+      //
+      // BOTH OR NEITHER. See MODULE_PROXY_BASE_BINDING: a base without a token is not a partial
+      // rollout, it is a module that switches to the proxy and is refused 401 on every call.
+      //
+      // SHARED ONLY. See the runpodMode parameter: on any other shape the pair must not be bound at
+      // all, because bound-and-refused is strictly worse than never bound.
+      const proxied = runpodMode === "shared";
+      const proxyToken =
+        proxied && deps.runpodProxy ? await mintTenantProxyToken(deps.runpodProxy.signingKey, tenantId) : null;
+      if (proxied && deps.runpodProxy && proxyToken) {
+        bindings.push({
+          type: "plain_text",
+          name: MODULE_PROXY_BASE_BINDING,
+          text: deps.runpodProxy.base,
+        });
+        // secret_text: it authenticates this tenant to OUR routes and is worthless anywhere else,
+        // but it is still a credential. Deterministic per tenant, so a re-provision re-derives the
+        // same value rather than leaving a second live one behind it.
+        bindings.push({
+          type: "secret_text",
+          name: MODULE_PROXY_TOKEN_BINDING,
+          text: proxyToken,
+        });
+      } else {
+        // Named separately so the two reasons are distinguishable in the log: an unconfigured plane
+        // and a tenant id the mint refuses are different problems with different repairs.
+        // Three distinguishable reasons, because they have three different repairs: this tenant is
+        // not on the shared tier (expected, and the overwhelmingly common case today), the plane
+        // configures no proxy, or the mint refused this tenant id.
+        deps.log("module.runpod_proxy_unbound", {
+          tenant: tenantId,
+          module: spec.module,
+          mode: runpodMode,
+          proxy: deps.runpodProxy ? "set" : "unset",
+          token: proxyToken ? "set" : "unset",
+        });
+      }
     }
     if (spec.recordsRunpodJobs) {
       // cp#248 / vivijure-cf#279. RunPod cannot enumerate jobs, so a job id this worker does not

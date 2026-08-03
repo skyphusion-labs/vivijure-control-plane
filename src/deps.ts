@@ -14,7 +14,7 @@ import type { LlmSpendStore } from "./llm-spend-ingest";
 import type { LlmSpendReadStore } from "./llm-spend-window";
 import { LlmSpendD1 } from "./store-d1";
 import type { ControlPlaneEnv } from "./env";
-import { studioKekRing } from "./env";
+import { studioKekRing, tenantModuleProxy } from "./env";
 import type { MailSender } from "./email";
 import { posternSender } from "./email";
 import {
@@ -523,6 +523,10 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     // Workers AI provider. Defaulting to a slug would bind tenants to a gateway nobody chose, and
     // the wrong gateway is worse than none -- skyphusion-llm is prism, not ours to point tenants at.
     aiGatewayId: env.TENANT_AI_GATEWAY_ID ?? null,
+    // cp#288: where a tenant module sends its RunPod calls and what signs the credential it
+    // presents there. Derived in env.ts (tenantModuleProxy) rather than assembled here, so the
+    // rule about when it is null has ONE statement and this wiring cannot drift from it.
+    runpodProxy: tenantModuleProxy(env),
     // cp#164: the intake page a reporter is sent to, DERIVED from the one host fact this plane
     // holds rather than configured beside it. Hosted-only by construction -- it is computed from
     // control-plane env, and the studio bytes we upload are the published release unmodified.

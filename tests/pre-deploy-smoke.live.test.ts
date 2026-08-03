@@ -326,6 +326,11 @@ function makeDeps(): TenantModuleDeps {
     cf,
     moduleNamespace: NAMESPACE,
     aiGatewayId: null,
+    // cp#288: STATED RATHER THAN OMITTED, per the note above about what this smoke can and cannot
+    // see. No signing key is plumbed into the smoke env, so this uploads modules WITHOUT the proxy
+    // pair and proves nothing about it. The unit suite (module-proxy-binding.test.ts) is what
+    // covers the bindings; a live upload carrying the pair is a separate, separately-plumbed step.
+    runpodProxy: null,
     moduleBundle: localModuleBundleSource(state.release!.dir),
     release: env!.studioRelease,
     // Transport-retried, and a door that still will not answer becomes status 0 rather than an
@@ -486,7 +491,7 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
     // The shipped guard from cp#248, exercised against the real API surface rather than a stub. It
     // runs FIRST because a refusal has changed nothing, so a failure here costs no cleanup.
     await expect(
-      uploadTenantModules(makeDeps(), TENANT_ID, "cpsmoke", endpoints, null),
+      uploadTenantModules(makeDeps(), TENANT_ID, "cpsmoke", endpoints, null, "dedicated"),
     ).rejects.toBeInstanceOf(TenantModuleError);
 
     // And it really did write nothing: the namespace holds no module scripts yet.
@@ -495,7 +500,7 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
   }, 120_000);
 
   it("POSITIVE: modules uploaded by THIS TREE report TELEMETRY_DB resolved in the running worker", async () => {
-    const uploaded = await uploadTenantModules(makeDeps(), TENANT_ID, "cpsmoke", endpoints, state.d1!);
+    const uploaded = await uploadTenantModules(makeDeps(), TENANT_ID, "cpsmoke", endpoints, state.d1!, "dedicated");
     state.uploaded.push(...uploaded);
     expect(uploaded.length).toBe(TENANT_MODULE_CATALOG.length);
 

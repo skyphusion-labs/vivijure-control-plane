@@ -109,6 +109,11 @@ beforeAll(async () => {
     // cp#270: the live e2e provisions a DEDICATED tenant with a real key A, unchanged.
     sharedPool: null,
     sharedPoolInvokeKey: null,
+    // cp#288: STATED RATHER THAN OMITTED. This live e2e does NOT exercise the RunPod proxy pair --
+    // it provisions against a plane fixture with no signing key, so the modules it uploads carry
+    // neither RUNPOD_PROXY_BASE nor RUNPOD_PROXY_TOKEN and reach RunPod with their direct key. A
+    // green run here is evidence about the pre-proxy path only.
+    runpodProxy: null,
     // cp#164: the live harness provisions a real tenant studio, so it binds the same derived intake
     // URL a real deploy does. Pointed at the live front door, which is where the page is served.
     aiGatewayId: null,
