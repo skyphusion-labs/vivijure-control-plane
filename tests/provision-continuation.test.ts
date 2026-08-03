@@ -758,7 +758,13 @@ describe("continueProvisionJob", () => {
       expect(res).toMatchObject({ ok: true });
       expect(revoke, "the old grant must be revoked").toHaveBeenCalledWith("tok-OLD");
       const uploadedAt = studioUpload(upload)!.order;
-      const revokedAt = revoke.mock.invocationCallOrder.at(-1) as number;
+      // THE FIRST revoke of the OLD token, not the last. Measured: an earlier draft read
+      // `.at(-1)`, and a mutation that ADDED a revoke before the mint while leaving the deferred one
+      // in place produced ZERO failures -- the last revoke was still correctly ordered, so the
+      // assertion could not see the early one at all. The hazard is that the old grant dies before
+      // the rebind, so EVERY revoke of it must be after, which means indexing the first.
+      const firstOldRevoke = revoke.mock.calls.findIndex((c) => c[0] === "tok-OLD");
+      const revokedAt = revoke.mock.invocationCallOrder[firstOldRevoke] as number;
       // ORDER, not merely both-happened. Revoking first is what leaves a live Worker holding a dead
       // credential: silent, deferred, and invisible to every check we run.
       expect(revokedAt, "revoke must come after the rebind, never before").toBeGreaterThan(uploadedAt);
