@@ -413,11 +413,219 @@ describe("continueProvisionJob", () => {
     expect((d as unknown as { moduleBundle: { fetch: ReturnType<typeof vi.fn> } }).moduleBundle.fetch).not.toHaveBeenCalled();
   });
 
+  // ---- cp#301 item 2: the restructured preamble --------------------------------------------------
+  //
+  // THE PROPERTY THIS BLOCK EXISTS TO PROVE, and it is the one the issue has been burned by three
+  // times: this change makes NO state admissible that was refused before. It changes the REASON a
+  // resume is refused, never the answer. Admitting the pre-upload region needs the credential
+  // re-mint and a full re-run of wfp_upload (item 3); admitting it here would reach that step unable
+  // to reconstruct s3Secret and bind a studio to a dead R2 secret.
+  //
+  // E-STATES ARE NAMED IN EVERY CASE so this suite and the table on the issue can be compared line
+  // by line. E0 = nothing marked, E1..E5 = through d1_create..runpod_endpoints, E6 = through
+  // wfp_upload (the first admissible state), E7/E8 = beyond it.
+
+  describe("resume preamble, restructured (cp#301 item 2)", () => {
+    // Progress prefixes, by E-id. Contiguous by construction, because mark() only ever appends.
+    const E: Record<string, string[]> = {
+      E0: [],
+      E1: ["d1_create"],
+      E2: ["d1_create", "d1_migrate"],
+      E3: ["d1_create", "d1_migrate", "r2_bucket"],
+      E4: ["d1_create", "d1_migrate", "r2_bucket", "r2_token"],
+      E5: ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints"],
+      E6: ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"],
+    };
+
+    /**
+     * Build a tenant row CONSISTENT with a progress prefix, the way production would leave it.
+     *
+     * The consistency is the point. runProvisionJob writes each resource id immediately BEFORE
+     * marking its step, so a row and its progress record always agree; a fixture that disagrees is
+     * a state the world cannot produce, and the integrity checks refuse it (see the dedicated cases
+     * below, which drive exactly that on purpose).
+     */
+    async function at(steps: string[], mode: string | null = "shared") {
+      const store = new MemoryStore();
+      await store.createAccount("acct_1", "a@b.com");
+      const t = await store.createTenant("ten_1", "hero", "acct_1", "provisioning");
+      if (steps.includes("d1_create")) await store.setTenantD1(t.id, "d1-uuid-hero");
+      if (steps.includes("runpod_endpoints")) await store.setTenantEndpoints(t.id, JSON.stringify(ENDPOINTS));
+      if (steps.includes("wfp_upload")) {
+        await store.setTenantStudioToken(t.id, await encryptStudioToken(RING, "the-studio-token"));
+        await store.setTenantScript(t.id, "tenant-hero-studio", "v1.0.0");
+      }
+      const job = await store.createProvisionJob("job_1", t.id, "provision", {
+        runpodMode: mode as never,
+        toRelease: "v1.0.0",
+      });
+      if (mode === null) {
+        // The pre-migration-0022 shape. SYNTHETIC and labelled: the current writer always records a
+        // mode, so this stands in for every job row that existed on the plane before 0022 applied.
+        store.jobs.get(job.id)!.runpod_mode = null;
+      }
+      const tenant = (await store.getTenantById(t.id))!;
+      return { store, job, tenant };
+    }
+
+    const resume = async (steps: string[], mode: string | null = "shared") => {
+      const { store, job, tenant } = await at(steps, mode);
+      const d = deps(store);
+      const res = await continueProvisionJob(d, job.id, tenant, steps, fakeClock(0), 15_000);
+      const bundleFetch = (d as unknown as { moduleBundle: { fetch: ReturnType<typeof vi.fn> } })
+        .moduleBundle.fetch;
+      return { res, store, d, bundleFetch, message: (res as { message?: string }).message ?? "" };
+    };
+
+    /**
+     * The refusal each mode must produce in the PRE-UPLOAD region.
+     *
+     * ASSERTING THE MESSAGE IS THE POINT, and `ok: false` is not enough. Measured while building
+     * this: with the shared refusal deleted, a resume at E0..E4 still fails -- one guard further
+     * down, on the endpoints it does not have -- so every `ok: false` assertion stayed GREEN while
+     * the boundary was wide open. A check that cannot tell an intact boundary from a relaxed one is
+     * decorative, and that is precisely the defect this whole change exists to prevent.
+     */
+    const PRE_UPLOAD_REFUSAL: Record<string, RegExp> = {
+      shared: /shared pool and needs no key of its own/,
+      dedicated: /the RunPod key needed to finish it is never stored/,
+    };
+
+    // THE ADMISSION INVARIANT. Every pre-upload state refuses, on BOTH modes, exactly as before --
+    // and refuses IN THE PRE-UPLOAD REGION, which is the part `ok: false` cannot establish.
+    for (const id of ["E0", "E1", "E2", "E3", "E4", "E5"]) {
+      for (const mode of ["shared", "dedicated"] as const) {
+        it(`${id} (${mode}) is REFUSED IN THE PRE-UPLOAD REGION, as it is today`, async () => {
+          const { res, message, bundleFetch } = await resume(E[id], mode);
+          expect(res).toMatchObject({ ok: false });
+          // WHICH refusal, not merely that one happened. See PRE_UPLOAD_REFUSAL above for the
+          // measurement that made this necessary.
+          expect(message).toMatch(PRE_UPLOAD_REFUSAL[mode]);
+          // And nothing downstream ran: no release was fetched, so no bytes could have shipped.
+          expect(bundleFetch).not.toHaveBeenCalled();
+        });
+      }
+    }
+
+    // ...and the first admissible state still completes, so the invariant is two-sided rather than
+    // "everything refuses", which any broken preamble would also satisfy.
+    it("E6 (through wfp_upload) still RESUMES TO COMPLETION -- the control", async () => {
+      const { res, store } = await resume(E.E6, "shared");
+      expect(res).toMatchObject({ ok: true, status: "awaiting_invoke_key" });
+      expect(store.jobs.get("job_1")!.status).toBe("succeeded");
+    });
+
+    // EACH REFUSAL NAMES ITS OWN CAUSE. Before this change all four states below produced ONE
+    // message, which named a RunPod key regardless of whether the tenant ever had one.
+    it("E4 dedicated: the key-A message, VERBATIM and unchanged", async () => {
+      const { message } = await resume(E.E4, "dedicated");
+      expect(message).toBe(
+        "provisioning was interrupted before the studio was uploaded, and the RunPod key needed to " +
+          "finish it is never stored; start provisioning again to continue",
+      );
+    });
+
+    it("E4 shared: says the capability is missing, and never mentions a key", async () => {
+      const { message } = await resume(E.E4, "shared");
+      expect(message).toMatch(/shared pool and needs no key of its own/);
+      expect(message).toMatch(/not supported yet/);
+      // The whole defect this replaces: a pooled tenant told its RunPod key cannot be recovered.
+      expect(message).not.toMatch(/the RunPod key needed to finish it/);
+    });
+
+    it("E4 with NO recorded mode (pre-0022 row): its own refusal, not a guess", async () => {
+      const { message } = await resume(E.E4, null);
+      expect(message).toMatch(/before the plane recorded which RunPod shape/);
+      // NOT narrowed to dedicated. readRunPodMode would have done exactly that, which is why the
+      // preamble deliberately does not use it.
+      expect(message).not.toMatch(/the RunPod key needed to finish it/);
+    });
+
+    it("E4 with an UNRECOGNISED mode refuses on its own branch, never falling through to shared", async () => {
+      const { message } = await resume(E.E4, "elastic");
+      expect(message).toMatch(/unrecognised RunPod shape/);
+      expect(message).toMatch(/"elastic"/);
+      expect(message).not.toMatch(/not supported yet/);
+    });
+
+    // ---- THE INTEGRITY CHECKS ------------------------------------------------------------------
+
+    it("a HOLED progress record refuses rather than inferring a step from its length", async () => {
+      // SYNTHETIC, and it cannot be otherwise: mark() only appends, so no code path produces a hole.
+      // It stands in for a hand-edited or partially-written row. The reason it must refuse is that
+      // inferStep maps done.length to a step BY INDEX, so a hole yields a plausible WRONG step name
+      // instead of an error, and every complete() below it silently means "in the set".
+      const { store, job, tenant } = await at(E.E4, "shared");
+      const holed = ["d1_create", "r2_bucket", "r2_token"];
+      const res = await continueProvisionJob(deps(store), job.id, tenant, holed, fakeClock(0), 15_000);
+      expect(res).toMatchObject({ ok: false });
+      expect((res as { message: string }).message).toMatch(/job progress is not contiguous/);
+    });
+
+    // GUARD 5, promoted from a struct field whose refusal lived one module away. Both directions,
+    // and they are NOT the same kind of state, which is stated on each.
+    it("progress claims d1_create but the row has no database id: refuses (guard 5)", async () => {
+      // SYNTHETIC. setTenantD1 runs immediately BEFORE mark("d1_create"), so production cannot mark
+      // that step without the id. This stands in for a corrupted or hand-edited row.
+      const { store, job } = await at(E.E4, "shared");
+      const rowWithoutD1 = { ...(await store.getTenantById("ten_1"))!, d1_database_id: null };
+      const res = await continueProvisionJob(deps(store), job.id, rowWithoutD1, E.E4, fakeClock(0), 15_000);
+      expect(res).toMatchObject({ ok: false });
+      expect((res as { message: string }).message).toMatch(/disagree about the database/);
+    });
+
+    it("the row has a database id but progress does not claim the step: refuses (guard 5)", async () => {
+      // PRODUCIBLE, unlike the case above: a driver that died between setTenantD1 and mark leaves
+      // exactly this. It refuses today too (everything pre-upload does), so nothing regresses -- but
+      // the disagreement is now the stated reason. Flagged on the PR: adopt-on-exists makes
+      // re-running d1_create safe, so item 3 may want this direction to be recoverable rather than
+      // refused.
+      const { store, job, tenant } = await at(E.E1, "shared");
+      const res = await continueProvisionJob(deps(store), job.id, tenant, E.E0, fakeClock(0), 15_000);
+      expect(res).toMatchObject({ ok: false });
+      expect((res as { message: string }).message).toMatch(/disagree about the database/);
+    });
+
+    it("a job row that no longer exists refuses by name rather than throwing on a null", async () => {
+      const { store, tenant } = await at(E.E4, "shared");
+      const res = await continueProvisionJob(deps(store), "job_gone", tenant, E.E4, fakeClock(0), 15_000);
+      expect(res).toMatchObject({ ok: false });
+      expect((res as { message: string }).message).toMatch(/no longer exists/);
+    });
+
+    // ---- PAST THE BOUNDARY: absence is CORRUPTION, and now says so ------------------------------
+
+    it("E6 with unreadable endpoints_json blames the data, not an unfinished step", async () => {
+      const { store, job, tenant } = await at(E.E6, "shared");
+      const res = await continueProvisionJob(
+        deps(store), job.id, { ...tenant, endpoints_json: "not json" }, E.E6, fakeClock(0), 15_000,
+      );
+      expect(res).toMatchObject({ ok: false });
+      expect((res as { message: string }).message).toMatch(/cannot be read, although the provision got past/);
+    });
+
+    it("E6 with no studio token blames the write that did not land", async () => {
+      const { store, job, tenant } = await at(E.E6, "shared");
+      const res = await continueProvisionJob(
+        deps(store), job.id, { ...tenant, studio_token_enc: null }, E.E6, fakeClock(0), 15_000,
+      );
+      expect(res).toMatchObject({ ok: false });
+      expect((res as { message: string }).message).toMatch(/although the provision got past the step that/);
+    });
+  });
+
   it("REFUSES honestly when the job never reached the studio upload (key A is unrecoverable)", async () => {
     // A continuation cannot mint endpoints: key A lives only in the request that carried it. Saying
     // so beats waiting forever for a driver that can never succeed.
     const store = new MemoryStore();
-    const t = await seedTenant(store);
+    const t0 = await seedTenant(store);
+    // THE D1 ID IS PART OF THE FIXTURE, not decoration (cp#301 item 2). This case claims progress
+    // through d1_create, and runProvisionJob calls setTenantD1 IMMEDIATELY BEFORE mark("d1_create"),
+    // so a row whose progress says that step completed always carries the id. Without this the
+    // fixture asserts the key-A refusal from a state production cannot produce, and the integrity
+    // check added by item 2 refuses it first -- correctly, which is how this was found.
+    await store.setTenantD1(t0.id, "d1-uuid-hero");
+    const t = (await store.getTenantById(t0.id))!;
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const stepsDone = ["d1_create", "d1_migrate"];
 
