@@ -130,10 +130,14 @@ export interface TenantModuleSpec {
 }
 
 /**
- * The tenant module set = the 4 endpoint-backed capabilities (keyframe + own-gpu both ride the backend
- * endpoint; upscale / lipsync / audio-upscale each get their own). Every module here reads exactly
- * RUNPOD_ENDPOINT_ID + RUNPOD_API_KEY (verified against each module's Env), which is why the binding
- * set below is uniform. Extending the hosted tier is a row here plus the matching endpoint in runpod.ts.
+ * The tenant module set. NEITHER "4 endpoint-backed capabilities" NOR a uniform binding set any
+ * more, which is what this paragraph used to claim: cp#284 / cf#394 wave 1 added the eight
+ * GPUless cost-door modules, which reach RunPod through PUBLIC vendor slugs and declare no
+ * endpoint of ours at all. Derive the populations from the catalog, never from this prose --
+ * `reachesRunpod` is the RunPod-reaching set (14 of 15 today, `plan-enhance` the only exclusion),
+ * `spec.endpointKey` the endpoint-backed subset, `spec.writesTenantRenders` the tenant-R2 writers.
+ * The binding set below branches on each of those separately. Extending the hosted tier is a row
+ * here, plus the matching endpoint in runpod.ts for an endpoint-backed module.
  *
  * THE UPSTREAM RECORDING SET IS NOW FULLY CATALOGUED (cp#284, cf#394 wave 0). Six module workers
  * record RunPod jobs upstream and all six are here. The note that used to sit in this space said
@@ -208,6 +212,58 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
  */
 export const reachesRunpod = (spec: TenantModuleSpec): boolean =>
   Boolean(spec.endpointKey) || Boolean(spec.publicEndpoint);
+
+/**
+ * The proxy credential this tenant's module workers will carry, or null when they will not be
+ * proxied (cp#288 / cp#290).
+ *
+ * THE ONE EXPRESSION, and that is the whole reason it exists as a function. TWO decisions now turn
+ * on this fact: whether uploadTenantModules BINDS the proxy pair, and whether installInvokeKey
+ * INSTALLS the direct RunPod key on the module scripts. Written out twice they are two expressions
+ * that can disagree, and there is exactly one state they can disagree INTO: neither pair nor key,
+ * a module with no route to RunPod at all, whose every render dies. MODULE_PROXY_BASE_BINDING
+ * already says a half-bound pair must never exist; this keeps the key on the same footing.
+ *
+ * NOT `runpodMode === "shared"` ALONE, which is the trap this replaces. Shared is NECESSARY and not
+ * SUFFICIENT: a shared tenant on a plane with no CONTROL_PLANE_HOST or no RUNPOD_PROXY_SIGNING_KEY
+ * resolves no proxy at all (tenantModuleProxy, env.ts), and a tenant id the mint refuses gets no
+ * token. Retire the key on the MODE and you retire it for tenants that never received a proxy. The
+ * predicate has to be the thing that actually decides, which is the cp#317 finding one layer over:
+ * there the population was right and the predicate was wrong, and it is the predicate again here.
+ *
+ * PER TENANT, NOT PER MODULE. The mint is a pure HMAC over the tenant id, so every module in the
+ * catalog computes the identical answer. Hoisting it out of the upload loop makes that a stated
+ * property rather than something that happens to hold fifteen times.
+ */
+export async function tenantModuleProxyBinding(
+  runpodMode: RunPodMode,
+  runpodProxy: { base: string; signingKey: string } | null,
+  tenantId: string,
+): Promise<{ base: string; token: string } | null> {
+  if (runpodMode !== "shared") return null;
+  if (!runpodProxy) return null;
+  const token = await mintTenantProxyToken(runpodProxy.signingKey, tenantId);
+  if (!token) return null;
+  return { base: runpodProxy.base, token };
+}
+
+/**
+ * WHY the pair was not bound, for the log line only. Never a control-flow input: the decision is
+ * tenantModuleProxyBinding above, and this exists so an operator reading `module.runpod_proxy_unbound`
+ * gets the repair rather than two set/unset fields to infer it from. Three causes, three repairs:
+ * the tenant is not on the shared tier (expected, and the overwhelmingly common case today), the
+ * plane configures no proxy, or the mint refused this tenant id.
+ */
+export function tenantModuleProxyUnboundReason(
+  runpodMode: RunPodMode,
+  runpodProxy: { base: string; signingKey: string } | null,
+  bound: { base: string; token: string } | null,
+): string {
+  if (bound) return "bound";
+  if (runpodMode !== "shared") return "not_shared_mode";
+  if (!runpodProxy) return "plane_configures_no_proxy";
+  return "mint_refused_tenant_id";
+}
 
 /**
  * The per-tenant script-name prefix in the shared modules namespace. Derived from the TENANT ID (not
@@ -421,6 +477,11 @@ export async function uploadTenantModules(
     );
   }
   await deps.cf.createDispatchNamespace(deps.moduleNamespace);
+  // ONE decision for the tenant, taken BEFORE the loop, because installInvokeKey has to reach the
+  // identical one. See tenantModuleProxyBinding: the pair and the direct key are two halves of the
+  // same choice and must never be decided by two expressions.
+  const moduleProxy = await tenantModuleProxyBinding(runpodMode, deps.runpodProxy, tenantId);
+  const moduleProxyReason = tenantModuleProxyUnboundReason(runpodMode, deps.runpodProxy, moduleProxy);
   const scriptNames: string[] = [];
   for (const spec of TENANT_MODULE_CATALOG) {
     // A spec WITHOUT an endpointKey is not endpoint-backed (cf#56, plan-enhance) and legitimately
@@ -466,26 +527,30 @@ export async function uploadTenantModules(
       // RUNPOD_API_KEY. That is a consumer holding a RunPod credential on our account, which
       // CLAUDE.md forbids outright. The predicate, not the population, was the defect.
       //
-      // ADDITIVE ON PURPOSE, AND THE ORDERING IS LOAD-BEARING (cf#394). RUNPOD_API_KEY is still
-      // installed on every module script by installInvokeKey (deps.ts) and nothing here touches
-      // that. vivijure-cf teaches its modules to prefer this base and FALL BACK to the direct key
-      // first; only after that has shipped and been verified may the plane stop installing the key.
-      // Binding the pair before a module reads it costs two unread vars. Removing the key before a
-      // module can fall back strands every render on that tenant.
+      // THE ORDERING WAS LOAD-BEARING AND IS NOW SATISFIED (cf#394). This comment used to say the
+      // key was still installed on every module script and that vivijure-cf modules "FALL BACK" to
+      // it. Both halves were wrong to leave standing. On the FALL BACK: the cf helper says in terms
+      // that the branch is BOUND-ness and NEVER a failover -- a proxied module with a broken token
+      // refuses honestly rather than finding another way to RunPod, because a shared tenant that
+      // could fall back to a direct key is the exact thing the proxy exists to make impossible.
+      // On the key: cf v1.20.0 shipped that helper and is the pinned STUDIO_RELEASE, so the
+      // ordering condition ("only after that has shipped may the plane stop installing the key")
+      // is MET, and installInvokeKey no longer installs it on a proxied tenant's modules.
+      //
+      // WHICH LEAVES ONE RULE FOR ANYONE EDITING EITHER SIDE: the pair and the key are decided by
+      // ONE expression (tenantModuleProxyBinding) read by both this function and installInvokeKey.
+      // Do not re-derive either of them from runpodMode here.
       //
       // BOTH OR NEITHER. See MODULE_PROXY_BASE_BINDING: a base without a token is not a partial
       // rollout, it is a module that switches to the proxy and is refused 401 on every call.
       //
       // SHARED ONLY. See the runpodMode parameter: on any other shape the pair must not be bound at
       // all, because bound-and-refused is strictly worse than never bound.
-      const proxied = runpodMode === "shared";
-      const proxyToken =
-        proxied && deps.runpodProxy ? await mintTenantProxyToken(deps.runpodProxy.signingKey, tenantId) : null;
-      if (proxied && deps.runpodProxy && proxyToken) {
+      if (moduleProxy) {
         bindings.push({
           type: "plain_text",
           name: MODULE_PROXY_BASE_BINDING,
-          text: deps.runpodProxy.base,
+          text: moduleProxy.base,
         });
         // secret_text: it authenticates this tenant to OUR routes and is worthless anywhere else,
         // but it is still a credential. Deterministic per tenant, so a re-provision re-derives the
@@ -493,20 +558,20 @@ export async function uploadTenantModules(
         bindings.push({
           type: "secret_text",
           name: MODULE_PROXY_TOKEN_BINDING,
-          text: proxyToken,
+          text: moduleProxy.token,
         });
       } else {
-        // Named separately so the two reasons are distinguishable in the log: an unconfigured plane
-        // and a tenant id the mint refuses are different problems with different repairs.
-        // Three distinguishable reasons, because they have three different repairs: this tenant is
-        // not on the shared tier (expected, and the overwhelmingly common case today), the plane
-        // configures no proxy, or the mint refused this tenant id.
+        // PER MODULE deliberately, even though the decision is per tenant: this is the line an
+        // operator greps when one module is not reaching RunPod, and a single tenant-level line
+        // would not tell them which scripts it covered. The REASON is computed once above and
+        // names the repair (tenantModuleProxyUnboundReason), rather than leaving the reader to
+        // infer it from two set/unset fields.
         deps.log("module.runpod_proxy_unbound", {
           tenant: tenantId,
           module: spec.module,
           mode: runpodMode,
           proxy: deps.runpodProxy ? "set" : "unset",
-          token: proxyToken ? "set" : "unset",
+          reason: moduleProxyReason,
         });
       }
     }

@@ -1,11 +1,17 @@
 // The credential a tenant module worker presents to the plane-side RunPod proxy (cp#288, cp#290).
 //
-// WHAT IT REPLACES. Today the plane writes the pool RunPod invoke key onto the tenant studio and
-// every tenant module script (deps.ts installInvokeKey, 1+5 copies per tenant). Under the proxy no
-// tenant-namespace script holds a RunPod credential at all: it holds THIS, which is worthless
-// anywhere except our own plane. That is the hard invariant satisfied by construction rather than
-// by policy -- a consumer reaches RunPod through our product or not at all (CLAUDE.md, Conrad
-// 2026-08-02), BYOK excepted.
+// WHAT IT REPLACES. The plane used to write the pool RunPod invoke key onto the tenant studio AND
+// every tenant module script (deps.ts installInvokeKey). The count in this comment was "1+5" and
+// went stale the day the catalog grew: it is 1 studio + TENANT_MODULE_CATALOG.length modules, which
+// is 1+15 today and will move again -- read it from the catalog, not from here.
+//
+// WHERE IT STANDS NOW. installInvokeKey no longer writes the key onto the module scripts of a
+// PROXIED tenant, so those hold THIS instead: a credential worthless anywhere except our own plane.
+// The STUDIO copy is still written on every tier, because the studio itself submits RunPod work
+// (cast LoRA training) and vivijure-core has no proxy branch yet. So the invariant -- a consumer
+// reaches RunPod through our product or not at all (CLAUDE.md, Conrad 2026-08-02), BYOK excepted --
+// is satisfied by construction for the modules and NOT YET for the studio. Do not read this file's
+// existence as the whole hole being closed.
 //
 // ------------------------------------------------------------------------------------------------
 // WHY IT IS STATELESS, AND THIS IS THE ONE DESIGN DECISION IN THE FILE.
