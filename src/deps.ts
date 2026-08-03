@@ -467,11 +467,33 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
   // four capabilities, which is silent. The refusal detail is LOGGED because a plane whose
   // operator believes it offers a shared tier and does not would otherwise have nothing to read.
   //
-  // BOTH HALVES OR NEITHER. The key without the endpoints has nothing to invoke; the endpoints
-  // without the key produce module workers whose /ready reports the credential unset and whose
-  // first render 401s. Neither half is a degraded pool.
+  // THREE PARTS OR NONE (cp#285). It was two -- endpoints and invoke key -- and the third is the
+  // PROXY CONFIG, on the same argument and for a reason Conrad's 2026-08-03 ruling made binding:
+  // the hosted tier must hold no RunPod key it could extract. A shared tenant reaches RunPod through
+  // the plane proxy or not at all, so a plane that cannot MINT proxy tokens (no CONTROL_PLANE_HOST,
+  // or no RUNPOD_PROXY_SIGNING_KEY) cannot serve a shared tenant without handing it the direct key.
+  //
+  // REFUSING THE TIER IS THE LOUD ANSWER. The route replies runpod_key_required -- a tenant who
+  // cannot provision -- rather than provisioning one we would have to violate the ruling to serve.
+  //
+  // WHAT THIS BUYS, AND ITS LIMIT, STATED RATHER THAN IMPLIED. It makes `shared` imply `proxied`
+  // AT PROVISION TIME, which is the moment `runpod_mode` is written. It does NOT hold for the
+  // lifetime of a tenant: the row stays `shared` for ever, so an operator who later removes the
+  // signing key leaves existing shared tenants whose next key install would find no proxy. That
+  // residual is exactly why installInvokeKey keeps its OWN predicate (tenantModuleProxyBinding)
+  // rather than trusting the mode -- this narrows the window, the predicate closes it, and neither
+  // one makes the other redundant.
+  //
+  // The key without the endpoints has nothing to invoke; the endpoints without the key produce
+  // module workers whose /ready reports the credential unset and whose first render 401s; and
+  // either without the proxy produces a tenant we cannot serve within the ruling. No part is a
+  // degraded pool.
   const poolConfig = parseSharedPool(env.SHARED_RUNPOD_ENDPOINTS);
   const poolInvokeKey = env.SHARED_RUNPOD_INVOKE_KEY?.trim() || null;
+  // Resolved ONCE and reused for the provisioner wiring below, so the config that decides whether
+  // this plane offers the shared tier and the config that binds the pair onto a module are the same
+  // read. Two reads of one fact is how they drift.
+  const moduleProxy = tenantModuleProxy(env);
   // Did anyone ASK for a shared tier? Read from the raw vars rather than from poolConfig.ok,
   // because the case that most needs the log line is the one where the config is set and WRONG:
   // keying the diagnostic off a successful parse would stay silent for exactly that operator.
@@ -482,6 +504,15 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       console.error("shared_pool.refused", poolConfig.detail);
     } else if (!poolInvokeKey) {
       console.error("shared_pool.refused", "SHARED_RUNPOD_ENDPOINTS is set but SHARED_RUNPOD_INVOKE_KEY is not");
+    } else if (!moduleProxy) {
+      // NAMED SEPARATELY from the other two refusals, because the repair is different and an
+      // operator who has set both pool vars will otherwise have no idea why the tier is off.
+      console.error(
+        "shared_pool.refused",
+        "the shared pool is configured but this plane cannot mint proxy tokens (CONTROL_PLANE_HOST " +
+          "or RUNPOD_PROXY_SIGNING_KEY is unset), and a shared tenant must reach RunPod through the " +
+          "proxy rather than holding our key (cp#285)",
+      );
     } else {
       sharedPool = poolConfig.pool;
     }
@@ -538,8 +569,9 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     aiGatewayId: env.TENANT_AI_GATEWAY_ID ?? null,
     // cp#288: where a tenant module sends its RunPod calls and what signs the credential it
     // presents there. Derived in env.ts (tenantModuleProxy) rather than assembled here, so the
-    // rule about when it is null has ONE statement and this wiring cannot drift from it.
-    runpodProxy: tenantModuleProxy(env),
+    // rule about when it is null has ONE statement and this wiring cannot drift from it. Reuses the
+    // value resolved above, so the shared-tier gate and this binding cannot disagree.
+    runpodProxy: moduleProxy,
     // cp#164: the intake page a reporter is sent to, DERIVED from the one host fact this plane
     // holds rather than configured beside it. Hosted-only by construction -- it is computed from
     // control-plane env, and the studio bytes we upload are the published release unmodified.
