@@ -6,6 +6,28 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### test(provision): gate the shared-pool refusal the RunPod-proxy reprovision proof rests on (cp#288, cf#394)
+
+Follow-up to the proxy binding. `tenant-runpod-reprovision.ts` is the third production call site of
+the new `runpodMode` parameter, and it needed the mode sourced correctly rather than plausibly.
+
+The comment shipped alongside the binding hedged that the value there is `'dedicated'` "in
+practice". It is stronger than that, and structurally so: `reprovisionTenantRunPod` cannot be
+entered without a `ReprovisionContext`, the only producer of one is `preflightRunPodReprovision`
+AFTER its `tenant_on_shared_pool` refusal, and the preflight returns a discriminated union so the
+context is unreachable on the refusal branch. Note the two are in DIFFERENT functions, so the guard
+dominates nothing syntactically; the proof is the type, not the line order.
+
+One residual survives and is now stated at the code: `tenant` is passed separately from `context`,
+so nothing forces the tenant the preflight examined to be the tenant handed to the call. The row is
+therefore still read rather than hardcoded to `'dedicated'`, which stays correct under both futures.
+
+**The defect this found: that refusal had no test coverage at all.** `tenant_on_shared_pool`
+appeared nowhere in the suite, so the guard a comment now leans on could have been removed by
+someone tidying with everything still green, and the proxy pair would then be bound on a pooled
+tenant. Added as one row in the existing table-driven preflight cases, and proved by mutation:
+deleting the refusal turns that row red, naming itself.
+
 ### feat(provision): point a tenant module at the plane-side RunPod proxy (cp#288, cf#394)
 
 The proxy was fully built, merged and completely unreachable. `PROXY_UPSTREAM_PREFIX` had no caller
