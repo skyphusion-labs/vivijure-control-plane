@@ -8,6 +8,7 @@
 // D1 or R2, and the studio does not know the control plane exists.
 
 import { kekRing, type KekRing } from "./token-crypto";
+import { PROXY_UPSTREAM_PREFIX } from "./runpod-proxy-route-match";
 
 /** CF rate-limit binding (same shape the studio uses in src/rate-limit.ts). */
 export interface RateLimiter {
@@ -459,6 +460,37 @@ export const publicOrigin = (env: ControlPlaneEnv): string => `https://${env.CON
 
 /** Tenant studios live at <slug><suffix>. Derived from the same single fact. */
 export const tenantDomainSuffix = (env: ControlPlaneEnv): string => `.${env.CONTROL_PLANE_HOST}`;
+
+/**
+ * What a tenant MODULE worker is pointed at so it reaches RunPod through this plane (cp#288), or
+ * null when this deploy configures no proxy. The ONE place this is derived, and it is a function
+ * rather than two lines in deps.ts so it can be driven directly instead of only through a
+ * provision -- an assertion that has to run a whole provision to reach the value is an assertion
+ * nobody writes.
+ *
+ * DERIVED, NOT CONFIGURED, for the reason CONTROL_PLANE_HOST's own comment gives: a second var
+ * naming the base could disagree with the routes we actually serve, and would fail only in
+ * production. `PROXY_UPSTREAM_PREFIX` is the proxy's own declaration of its URL surface
+ * (runpod-proxy-route-match.ts), so the base cannot drift from the paths the router matches.
+ *
+ * NULL UNLESS BOTH ARE PRESENT. A base with no signing key would bind half the credential pair,
+ * and half the pair is the ONLY state that breaks a module: with neither, the module keeps using
+ * its direct RUNPOD_API_KEY (the pre-proxy path, which works); with a base and no verifiable
+ * token, it switches to the proxy and is refused on every call. See MODULE_PROXY_BASE_BINDING.
+ *
+ * EMPTY IS ABSENT, not merely undefined -- `??` catches only undefined, and a var declared
+ * ALLOW_EMPTY in the deploy lists arrives as "" (the cp#218 shape spendDailyCeiling already
+ * carries). An empty host would derive `https:///api/runpod/v2`, which is a base that resolves
+ * nowhere while looking configured.
+ */
+export const tenantModuleProxy = (
+  env: ControlPlaneEnv,
+): { base: string; signingKey: string } | null => {
+  const host = env.CONTROL_PLANE_HOST?.trim();
+  const signingKey = env.RUNPOD_PROXY_SIGNING_KEY?.trim();
+  if (!host || !signingKey) return null;
+  return { base: `${publicOrigin(env)}${PROXY_UPSTREAM_PREFIX}`, signingKey };
+};
 
 /**
  * OPERATOR SMOKE-RENDER BOUNDS (cp#45). All optional, all vars rather than secrets -- they are

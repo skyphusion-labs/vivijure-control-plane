@@ -38,6 +38,25 @@ import { timingSafeEqual } from "./constant-time";
  *  reinterpreted -- a credential parsed under the wrong rules is a credential believed. */
 export const PROXY_TOKEN_PREFIX = "vjp1";
 
+/**
+ * The two bindings a tenant module worker carries so it reaches RunPod THROUGH this plane rather
+ * than directly (cp#288). Declared here, once, because the plane writes these names
+ * (tenant-modules.ts) and the module reads them out of its own env, and a name restated in two
+ * files is a fork waiting to happen -- the failure of a drifted name is an unread binding, which
+ * looks exactly like a module that was never given one.
+ *
+ * BASE is the plane origin plus PROXY_UPSTREAM_PREFIX (runpod-proxy-route-match.ts), so the module
+ * side is a single base-string swap and every suffix stays byte-identical to the direct RunPod
+ * path. TOKEN is what mintTenantProxyToken returns below, presented as a bearer.
+ *
+ * BOTH OR NEITHER, and this is the one thing to get right at the call site. A module with NEITHER
+ * keeps using its direct RUNPOD_API_KEY, which is the pre-proxy behaviour and works. A module with
+ * a BASE and no TOKEN does not degrade: it switches to the proxy and is refused 401 on every call,
+ * and nothing on the plane reports why.
+ */
+export const MODULE_PROXY_BASE_BINDING = "RUNPOD_PROXY_BASE";
+export const MODULE_PROXY_TOKEN_BINDING = "RUNPOD_PROXY_TOKEN";
+
 /** The MAC covers the prefix as well as the tenant id, so a v2 token can never verify as a v1 one
  *  for the same tenant. Domain separation is cheap here and impossible to retrofit. */
 function macInput(tenantId: string): string {

@@ -98,6 +98,9 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     // still exercises the dedicated path exactly as it did. The pooled cases override both.
     sharedPool: null,
     sharedPoolInvokeKey: null,
+    // cp#288: the DEFAULT fixture is a plane with NO proxy configured, so every pre-existing case
+    // still uploads modules exactly as it did. The proxy cases override it, same as sharedPool.
+    runpodProxy: null,
     // cp#164: the default fixture is a plane that publishes an intake page, because that is what a
     // configured deploy is. Tests that care about the unconfigured case override it with null.
     abuseReportUrl: "https://studio.example.com/report-abuse",

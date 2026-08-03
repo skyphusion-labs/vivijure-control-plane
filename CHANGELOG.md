@@ -6,6 +6,45 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(provision): point a tenant module at the plane-side RunPod proxy (cp#288, cf#394)
+
+The proxy was fully built, merged and completely unreachable. `PROXY_UPSTREAM_PREFIX` had no caller
+outside the proxy's own files, `RUNPOD_PROXY_BASE` existed only inside a comment, and
+`mintTenantProxyToken` was called by nothing but its own tests. A module worker was uploaded with
+seven bindings and not one of them told it a proxy existed, so every tenant render went straight to
+RunPod with a RunPod-capable credential in the tenant namespace, which is the thing the proxy was
+built to remove.
+
+`uploadTenantModules` now binds two more vars on every endpoint-backed module: `RUNPOD_PROXY_BASE`
+(plain_text, the plane origin plus the proxy's own declared prefix) and `RUNPOD_PROXY_TOKEN`
+(secret_text, the per-tenant MAC from `mintTenantProxyToken`). Both names are declared once, in
+`runpod-proxy-auth.ts`, because the plane writes them and the module reads them and a name restated
+in two repositories is a fork waiting to happen. The base is derived in one exported function
+(`tenantModuleProxy`, env.ts) next to `publicOrigin`, so it cannot disagree with the routes the
+router actually matches.
+
+**BOTH OR NEITHER, and that is the whole design constraint.** A module with neither binding keeps
+using its direct key, which is the pre-proxy path and works. A module with a base and no verifiable
+token does not degrade: it switches to the proxy and is refused on every call, with nothing on the
+plane reporting why. So `tenantModuleProxy` returns null unless a host and a signing key are BOTH
+configured (empty counts as absent, the cp#218 shape), and the upload binds the pair only when the
+mint actually produced a token. Modules that talk to no RunPod endpoint, which today is
+`plan-enhance`, get neither half; a proxy credential on a module that submits no job is reach it
+never uses.
+
+**Nothing is removed, and the ordering is the reason.** `RUNPOD_API_KEY` is still installed on every
+module script by `installInvokeKey`, untouched. vivijure-cf has to teach its modules to prefer the
+base and FALL BACK to the direct key first; only after that has shipped and been verified may the
+plane stop installing the key. Binding the pair early costs two unread vars on a module that has not
+learned to read them. Removing the key early strands every render on that tenant. A test asserts the
+key still lands on every module script through the REAL wiring, so the survival of the old path is
+a gate rather than an intention.
+
+Six mutations were run against the new suite -- pair dropped, half the pair bound, empty host
+accepted, pair bound on a non-RunPod module, base pointed back at RunPod, direct-key fan-out removed
+-- and each went red naming the assertion that should have caught it, against a green unmutated
+control.
+
 ### feat(provision): a pooled provision that was interrupted before the studio upload can now be resumed (cp#301)
 
 A shared-tier provision that yielded before `wfp_upload` could never be finished: the resumability

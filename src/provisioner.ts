@@ -251,6 +251,12 @@ export interface ProvisionDeps {
    * free local Workers AI provider rather than breaking it.
    */
   aiGatewayId: string | null;
+  /**
+   * The plane-side RunPod proxy a tenant module is pointed at (cp#288), or null when this plane
+   * configures none. Consumed by uploadTenantModules; see TenantModuleDeps.runpodProxy for what
+   * null means and why this carries the signing key rather than a minted token.
+   */
+  runpodProxy: { base: string; signingKey: string } | null;
   /** Optional per-tenant daily spend ceiling set as SPEND_DAILY_CEILING; null -> studio default. */
   spendDailyCeiling: string | null;
   /**

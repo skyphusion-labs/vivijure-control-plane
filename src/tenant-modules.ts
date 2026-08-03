@@ -25,6 +25,11 @@
 
 import type { CfApi, WorkerBinding } from "./cf-api";
 import { isScriptAbsent } from "./cf-api";
+import {
+  MODULE_PROXY_BASE_BINDING,
+  MODULE_PROXY_TOKEN_BINDING,
+  mintTenantProxyToken,
+} from "./runpod-proxy-auth";
 import type { TenantEndpoint } from "./provisioner";
 
 /**
@@ -162,6 +167,20 @@ export interface TenantModuleDeps {
    * needs GATEWAY_ID and CF_AIG_TOKEN both, and returns "local" when either is missing.
    */
   aiGatewayId: string | null;
+  /**
+   * Where a tenant module sends its RunPod calls and the key that signs the credential it presents
+   * there (cp#288), or null when this plane configures no proxy -- no CONTROL_PLANE_HOST to build
+   * an origin from, or no RUNPOD_PROXY_SIGNING_KEY to mint against (provisionerWiring, deps.ts).
+   *
+   * Null uploads the modules WITHOUT the pair, so they keep reaching RunPod with their direct
+   * RUNPOD_API_KEY. That is the pre-proxy behaviour unchanged, not a degrade invented here.
+   *
+   * The SIGNING KEY rather than a minted token, unlike aigTokenValue which arrives as a value: the
+   * mint is a pure HMAC over the tenant id (runpod-proxy-auth.ts) with no credential-minting REACH
+   * to keep out of this file, and it is per-tenant while this deps bundle is per-deploy -- so there
+   * is no wiring-time value to pass.
+   */
+  runpodProxy: { base: string; signingKey: string } | null;
   moduleBundle: ModuleBundleSource;
   release: string;
   /** Dispatch a GET to one tenant MODULE script over TENANT_MODULE_DISPATCH (cf#114). Separate from
@@ -295,6 +314,48 @@ export async function uploadTenantModules(
       // provisioner binds its endpoint-id vars. The module reads env.RUNPOD_ENDPOINT_ID (string-typed
       // via secretValue), so a plain_text binding drops straight in.
       bindings.push({ type: "plain_text", name: "RUNPOD_ENDPOINT_ID", text: endpoint.id });
+
+      // cp#288: the pair that lets this module reach RunPod THROUGH the plane instead of holding a
+      // RunPod-capable credential in the tenant namespace. Bound only on endpoint-backed modules --
+      // a module that submits no RunPod job has nothing to send through a proxy, and handing it a
+      // plane credential widens its reach for no gain (the TELEMETRY_DB discipline above).
+      //
+      // ADDITIVE ON PURPOSE, AND THE ORDERING IS LOAD-BEARING (cf#394). RUNPOD_API_KEY is still
+      // installed on every module script by installInvokeKey (deps.ts) and nothing here touches
+      // that. vivijure-cf teaches its modules to prefer this base and FALL BACK to the direct key
+      // first; only after that has shipped and been verified may the plane stop installing the key.
+      // Binding the pair before a module reads it costs two unread vars. Removing the key before a
+      // module can fall back strands every render on that tenant.
+      //
+      // BOTH OR NEITHER. See MODULE_PROXY_BASE_BINDING: a base without a token is not a partial
+      // rollout, it is a module that switches to the proxy and is refused 401 on every call.
+      const proxyToken = deps.runpodProxy
+        ? await mintTenantProxyToken(deps.runpodProxy.signingKey, tenantId)
+        : null;
+      if (deps.runpodProxy && proxyToken) {
+        bindings.push({
+          type: "plain_text",
+          name: MODULE_PROXY_BASE_BINDING,
+          text: deps.runpodProxy.base,
+        });
+        // secret_text: it authenticates this tenant to OUR routes and is worthless anywhere else,
+        // but it is still a credential. Deterministic per tenant, so a re-provision re-derives the
+        // same value rather than leaving a second live one behind it.
+        bindings.push({
+          type: "secret_text",
+          name: MODULE_PROXY_TOKEN_BINDING,
+          text: proxyToken,
+        });
+      } else {
+        // Named separately so the two reasons are distinguishable in the log: an unconfigured plane
+        // and a tenant id the mint refuses are different problems with different repairs.
+        deps.log("module.runpod_proxy_unconfigured", {
+          tenant: tenantId,
+          module: spec.module,
+          proxy: deps.runpodProxy ? "set" : "unset",
+          token: proxyToken ? "set" : "unset",
+        });
+      }
     }
     if (spec.recordsRunpodJobs) {
       // cp#248 / vivijure-cf#279. RunPod cannot enumerate jobs, so a job id this worker does not
