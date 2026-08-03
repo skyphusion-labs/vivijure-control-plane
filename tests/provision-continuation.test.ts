@@ -470,16 +470,39 @@ describe("continueProvisionJob", () => {
 
     const resume = async (steps: string[], mode: string | null = "shared") => {
       const { store, job, tenant } = await at(steps, mode);
-      const res = await continueProvisionJob(deps(store), job.id, tenant, steps, fakeClock(0), 15_000);
-      return { res, store, message: (res as { message?: string }).message ?? "" };
+      const d = deps(store);
+      const res = await continueProvisionJob(d, job.id, tenant, steps, fakeClock(0), 15_000);
+      const bundleFetch = (d as unknown as { moduleBundle: { fetch: ReturnType<typeof vi.fn> } })
+        .moduleBundle.fetch;
+      return { res, store, d, bundleFetch, message: (res as { message?: string }).message ?? "" };
     };
 
-    // THE ADMISSION INVARIANT. Every pre-upload state refuses, on BOTH modes, exactly as before.
+    /**
+     * The refusal each mode must produce in the PRE-UPLOAD region.
+     *
+     * ASSERTING THE MESSAGE IS THE POINT, and `ok: false` is not enough. Measured while building
+     * this: with the shared refusal deleted, a resume at E0..E4 still fails -- one guard further
+     * down, on the endpoints it does not have -- so every `ok: false` assertion stayed GREEN while
+     * the boundary was wide open. A check that cannot tell an intact boundary from a relaxed one is
+     * decorative, and that is precisely the defect this whole change exists to prevent.
+     */
+    const PRE_UPLOAD_REFUSAL: Record<string, RegExp> = {
+      shared: /shared pool and needs no key of its own/,
+      dedicated: /the RunPod key needed to finish it is never stored/,
+    };
+
+    // THE ADMISSION INVARIANT. Every pre-upload state refuses, on BOTH modes, exactly as before --
+    // and refuses IN THE PRE-UPLOAD REGION, which is the part `ok: false` cannot establish.
     for (const id of ["E0", "E1", "E2", "E3", "E4", "E5"]) {
       for (const mode of ["shared", "dedicated"] as const) {
-        it(`${id} (${mode}) is REFUSED, as it is today`, async () => {
-          const { res } = await resume(E[id], mode);
+        it(`${id} (${mode}) is REFUSED IN THE PRE-UPLOAD REGION, as it is today`, async () => {
+          const { res, message, bundleFetch } = await resume(E[id], mode);
           expect(res).toMatchObject({ ok: false });
+          // WHICH refusal, not merely that one happened. See PRE_UPLOAD_REFUSAL above for the
+          // measurement that made this necessary.
+          expect(message).toMatch(PRE_UPLOAD_REFUSAL[mode]);
+          // And nothing downstream ran: no release was fetched, so no bytes could have shipped.
+          expect(bundleFetch).not.toHaveBeenCalled();
         });
       }
     }
