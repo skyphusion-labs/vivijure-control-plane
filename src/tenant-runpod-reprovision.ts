@@ -235,7 +235,7 @@ export async function preflightRunPodReprovision(
   // bundle must refuse before the first RunPod write, not after the endpoints have been rebuilt.
   let bundles: Map<string, ModuleBundle>;
   try {
-    bundles = await prefetchModuleBundles({ ...deps, release: tenant.modules_release }, tenant.modules_release);
+    bundles = await prefetchModuleBundles(deps, tenant.modules_release);
   } catch (e) {
     return refuse("module_bundle_unavailable", 422, e instanceof TenantModuleError ? e.message : String(e));
   }

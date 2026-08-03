@@ -194,7 +194,6 @@ export interface TenantModuleDeps {
    */
   runpodProxy: { base: string; signingKey: string } | null;
   moduleBundle: ModuleBundleSource;
-  release: string;
   /** Dispatch a GET to one tenant MODULE script over TENANT_MODULE_DISPATCH (cf#114). Separate from
    *  callTenantStudio because module scripts live in a DIFFERENT dispatch namespace and take no
    *  bearer: /ready is unauthenticated by design (it carries booleans, never values, and the control
@@ -249,6 +248,23 @@ export async function prefetchModuleBundles(
 
 export async function uploadTenantModules(
   deps: TenantModuleDeps,
+  /**
+   * The release THIS WORK is building, stated by the caller (cp#315).
+   *
+   * REQUIRED and explicit, never read off deps. It used to be `deps.release` -- the PLANE-WIDE
+   * STUDIO_RELEASE, read fresh at the moment of driving -- while the studio came from the job's
+   * recorded pin. A resumed shared provision therefore got a studio from release A and modules
+   * from release B, silently and with ok:true, which is exactly the pair module-bundle-r2.ts says
+   * can never happen: "Modules ship WITH the studio release they were built and conformance-proven
+   * against (one tag, one artifact)."
+   *
+   * The FIELD was deleted from TenantModuleDeps rather than this argument merely being added, and
+   * that is the load-bearing half: every other call site threaded the release correctly and this
+   * one did not, so "remember to pass it" was already the condition that produced the bug. With no
+   * `release` on deps there is nothing to forget -- omitting it does not compile. Same reasoning
+   * this file already gives for tenantSlug and runpodMode being required rather than optional.
+   */
+  release: string,
   tenantId: string,
   /**
    * The tenant display slug, carried into `cf-aig-metadata` as a HUMAN LABEL only (cp#185).
@@ -338,7 +354,7 @@ export async function uploadTenantModules(
       bundle = ready;
     } else {
       try {
-        bundle = await deps.moduleBundle.fetch(deps.release, spec.module);
+        bundle = await deps.moduleBundle.fetch(release, spec.module);
       } catch (e) {
         throw new TenantModuleError("modules_upload", `fetch module bundle ${spec.module}: ${(e as Error).message}`);
       }

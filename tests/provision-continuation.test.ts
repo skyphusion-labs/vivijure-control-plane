@@ -425,6 +425,72 @@ describe("continueProvisionJob", () => {
     expect((d as unknown as { moduleBundle: { fetch: ReturnType<typeof vi.fn> } }).moduleBundle.fetch).not.toHaveBeenCalled();
   });
 
+
+  // ---- cp#315: the MODULE half of the same crosser ------------------------------------------------
+  //
+  // cp#301 threaded the release into the STUDIO bundle and stopped there. `runProvisionJob` was the
+  // only `uploadTenantModules` call site that did not thread it, so the modules were fetched at
+  // `deps.release` -- the plane's CURRENT pin -- while the studio came from the job's recorded
+  // `to_release`. Studio from release A, modules from release B, and it returned ok:true.
+  //
+  // WHY THE EXISTING cp#301 TESTS COULD NOT SEE IT: they drive `continueProvisionJob` PAST the
+  // wfp_upload boundary, where the release comes from tenants.studio_release and the modules are run
+  // by runModuleSteps. This is the region BEFORE that boundary, reached only by the shared-tier
+  // resume, and it runs a different code path to a different call site.
+  //
+  // NON-DEFAULT ON BOTH SIDES, deliberately: on a default the threaded and unthreaded reads are
+  // byte-identical, which is exactly how this survived cp#301's own suite.
+  it("cp#315: a PRE-UPLOAD shared resume fetches MODULES at the job's release, not the advanced pin", async () => {
+    const store = new MemoryStore();
+    await store.createAccount("acct_1", "a@b.com");
+    const t0 = await store.createTenant("ten_1", "hero", "acct_1", "provisioning");
+    // A SHARED tenant interrupted after runpod_endpoints and before wfp_upload -- the one region
+    // cp#301 item 3 made resumable, and the only way to reach this call site on a resume.
+    const job = await store.createProvisionJob("job_1", t0.id, "provision", {
+      runpodMode: "shared",
+      toRelease: "v1.0.0",
+    });
+    await store.setTenantD1(t0.id, "d1-uuid-hero");
+    await store.setTenantEndpoints(t0.id, JSON.stringify(ENDPOINTS));
+    await store.setTenantStudioToken(t0.id, await encryptStudioToken(RING, "the-studio-token"));
+    const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints"];
+    await store.updateJobProgress(job.id, "runpod_endpoints", JSON.stringify(stepsDone));
+    const t = (await store.getTenantById(t0.id)) as Tenant;
+    // THE OPERATOR ADVANCED THE PIN between this job's creation and the poll that resumes it.
+    const d = deps(store, { release: "v2.0.0" } as Partial<ProvisionDeps>);
+
+    const res = await continueProvisionJob(d, job.id, t, stepsDone, fakeClock(0), 15_000);
+
+    // It must SUCCEED. The defect was never a failure -- asserting ok:false here would pass on a
+    // provision broken for any unrelated reason, which is how six assertions went decorative on
+    // cp#301. The claim is about WHICH RELEASE, so every assertion below names one.
+    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+
+    const moduleFetches = (d as unknown as { moduleBundle: { fetch: ReturnType<typeof vi.fn> } })
+      .moduleBundle.fetch.mock.calls;
+    const studioFetches = (d as unknown as { bundle: { fetch: ReturnType<typeof vi.fn> } })
+      .bundle.fetch.mock.calls;
+    // FLOOR: a run that fetched nothing cannot answer the question, and would pass every
+    // "no fetch used the wrong release" assertion vacuously.
+    expect(moduleFetches.length).toBeGreaterThan(0);
+    expect(studioFetches.length).toBeGreaterThan(0);
+
+    // THE SPECIFIC DIVERGENCE, stated as the pair rather than as two independent facts: the whole
+    // defect is that these two can disagree, so the assertion is that they AGREE, on v1.0.0.
+    const studioAt = [...new Set(studioFetches.map((c) => c[0]))];
+    const modulesAt = [...new Set(moduleFetches.map((c) => c[0]))];
+    expect(studioAt).toEqual(["v1.0.0"]);
+    expect(modulesAt).toEqual(["v1.0.0"]);
+    expect(modulesAt).toEqual(studioAt);
+
+    // And the RECORD must not claim a release the bytes did not come from. modules_release is what
+    // smoke-render.ts cites as the provenance of a tenant's pixels.
+    const after = store.tenants.get(t.id)!;
+    expect(after.studio_release).toBe("v1.0.0");
+    expect(after.modules_release).toBe("v1.0.0");
+    expect(after.modules_release).toBe(after.studio_release);
+  });
+
   // ---- cp#301 item 2: the restructured preamble --------------------------------------------------
   //
   // THE PROPERTY THIS BLOCK EXISTS TO PROVE, and it is the one the issue has been burned by three
