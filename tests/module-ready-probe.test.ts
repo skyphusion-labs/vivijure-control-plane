@@ -14,11 +14,26 @@ import {
   tenantModuleScriptName,
   TENANT_MODULE_CATALOG,
   MODULE_READY_PROBE_DEADLINE_MS,
+  reachesRunpod,
   type TenantModuleDeps,
 } from "../src/tenant-modules";
 
 const TENANT = "ten_abc123";
-const ALL = TENANT_MODULE_CATALOG.map((s) => s.module);
+/** Every catalog module, for resolving a script name back to a module in the fake below. */
+const CATALOG_ALL = TENANT_MODULE_CATALOG.map((s) => s.module);
+/**
+ * THE POPULATION THIS PROBE ACTUALLY COVERS, and it is NOT the catalog.
+ *
+ * This suite used to say `ALL` and mean the whole catalog, with a fake fleet that answered a
+ * RunPod-shaped /ready for EVERY module -- including `plan-enhance`, which reaches no RunPod and
+ * whose real worker answers `gateway_id` / `cf_aig_token`. So the suite was green about a state
+ * production cannot produce, and that is precisely why it could not see the blocker: the fixture
+ * had stopped standing in for its subject. A fixture is a claim about the shape of real data.
+ *
+ * The contract is RunPod credential propagation (cf#114), so the population is the modules that
+ * HAVE such a credential. Derived, never re-listed.
+ */
+const PROBED = TENANT_MODULE_CATALOG.filter(reachesRunpod).map((s) => s.module);
 
 const readyBody = (module: string, key: boolean, endpoint = true) =>
   JSON.stringify({ ok: key && endpoint, module, credentials: { runpod_api_key: key, runpod_endpoint_id: endpoint } });
@@ -50,7 +65,7 @@ function fleet(answer: (module: string, attempt: number) => { status: number; te
   const deps = {
     callTenantModule: async (script: string, path: string) => {
       calls.push({ script, path });
-      const module = ALL.find((m) => script === tenantModuleScriptName(TENANT, m)) ?? script;
+      const module = CATALOG_ALL.find((m) => script === tenantModuleScriptName(TENANT, m)) ?? script;
       const n = (attempts.get(module) ?? 0) + 1;
       attempts.set(module, n);
       return answer(module, n);
@@ -110,14 +125,14 @@ describe("awaitTenantModulesReady: happy path", () => {
     const { timing } = fakeTiming();
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
 
-    expect(r.verified.sort()).toEqual([...ALL].sort());
+    expect(r.verified.sort()).toEqual([...PROBED].sort());
     expect(r.unverified).toEqual([]);
     expect(r.unconfirmed).toEqual([]);
     expect(r.attempts).toBe(1);
-    expect(calls).toHaveLength(ALL.length);
+    expect(calls).toHaveLength(PROBED.length);
     expect(calls.every((c) => c.path === "/ready")).toBe(true);
     // Tenant-prefixed script names: probing the wrong script would be a silent false pass.
-    for (const m of ALL) {
+    for (const m of PROBED) {
       expect(calls.map((c) => c.script)).toContain(tenantModuleScriptName(TENANT, m));
     }
   });
@@ -127,15 +142,15 @@ describe("awaitTenantModulesReady: happy path", () => {
     const { timing, sleeps } = fakeTiming();
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
 
-    expect(r.verified.sort()).toEqual([...ALL].sort());
+    expect(r.verified.sort()).toEqual([...PROBED].sort());
     expect(r.attempts).toBe(3);
-    expect(calls).toHaveLength(ALL.length * 3);
+    expect(calls).toHaveLength(PROBED.length * 3);
     expect(sleeps).toEqual([250, 500]); // backoff, and it stopped as soon as it was satisfied
   });
 
   it("a module that goes ready early is NOT re-probed while a slower one catches up", async () => {
     // Budget hygiene: five modules under ONE deadline means the fast ones must drop out of the loop.
-    const slow = ALL[0];
+    const slow = PROBED[0];
     const { deps, calls } = fleet((m, attempt) => ({
       status: 200,
       text: readyBody(m, m === slow ? attempt >= 3 : true),
@@ -144,7 +159,7 @@ describe("awaitTenantModulesReady: happy path", () => {
     await awaitTenantModulesReady(deps, TENANT, timing);
     const slowScript = tenantModuleScriptName(TENANT, slow);
     expect(calls.filter((c) => c.script === slowScript)).toHaveLength(3);
-    expect(calls.filter((c) => c.script !== slowScript)).toHaveLength(ALL.length - 1);
+    expect(calls.filter((c) => c.script !== slowScript)).toHaveLength(PROBED.length - 1);
   });
 });
 
@@ -162,7 +177,7 @@ describe("awaitTenantModulesReady: TRUE NEGATIVES (the retry must never launder 
     const { timing } = fakeTiming();
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
 
-    expect(r.unconfirmed.sort()).toEqual([...ALL].sort());
+    expect(r.unconfirmed.sort()).toEqual([...PROBED].sort());
     // THE LINE THAT MATTERS: nothing was laundered into verified.
     expect(r.verified).toEqual([]);
     expect(r.unverified).toEqual([]);
@@ -171,13 +186,13 @@ describe("awaitTenantModulesReady: TRUE NEGATIVES (the retry must never launder 
   });
 
   it("names exactly the modules that never came up, leaving the others verified", async () => {
-    const stuck = ALL[1];
+    const stuck = PROBED[1];
     const { deps } = fleet((m) => ({ status: 200, text: readyBody(m, m !== stuck) }));
     const { timing } = fakeTiming();
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
 
     expect(r.unconfirmed).toEqual([stuck]);
-    expect(r.verified.sort()).toEqual(ALL.filter((m) => m !== stuck).sort());
+    expect(r.verified.sort()).toEqual(PROBED.filter((m) => m !== stuck).sort());
     expect(r.verified).not.toContain(stuck);
   });
 
@@ -186,7 +201,7 @@ describe("awaitTenantModulesReady: TRUE NEGATIVES (the retry must never launder 
     const { timing, sleeps } = fakeTiming();
     await expect(awaitTenantModulesReady(deps, TENANT, timing)).rejects.toThrow(/not retryable/);
     expect(sleeps).toEqual([]); // never waited on it
-    expect(calls).toHaveLength(ALL.length); // one round, then stop
+    expect(calls).toHaveLength(PROBED.length); // one round, then stop
   });
 
   it("a 500 fails IMMEDIATELY, without spending the window", async () => {
@@ -209,13 +224,13 @@ describe("awaitTenantModulesReady: TRUE NEGATIVES (the retry must never launder 
     const { timing } = fakeTiming();
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
     expect(r.verified).toEqual([]);
-    expect(r.unconfirmed.sort()).toEqual([...ALL].sort());
+    expect(r.unconfirmed.sort()).toEqual([...PROBED].sort());
   });
 
   // The soft path must NOT swallow a real misconfiguration. This is the boundary control: the same
   // deadline machinery, but one module misconfigured -> still a hard throw, no soft outcome.
   it("BOUNDARY: a misconfigured module still THROWS even while others are merely not-visible-yet", async () => {
-    const bad = ALL[2];
+    const bad = PROBED[2];
     const { deps } = fleet((m) =>
       m === bad
         ? { status: 200, text: readyBody(m, false, false) } // endpoint id absent = real defect
@@ -228,7 +243,7 @@ describe("awaitTenantModulesReady: TRUE NEGATIVES (the retry must never launder 
 
 describe("awaitTenantModulesReady: nothing answers /ready at a script (404)", () => {
   it("does not hang and does not retry: it reports UNVERIFIABLE, honestly and by name", async () => {
-    const old = ALL[2];
+    const old = PROBED[2];
     const { deps, calls } = fleet((m) =>
       m === old ? { status: 404, text: "not found" } : { status: 200, text: readyBody(m, true) },
     );
@@ -236,7 +251,7 @@ describe("awaitTenantModulesReady: nothing answers /ready at a script (404)", ()
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
 
     expect(sleeps).toEqual([]);
-    expect(calls).toHaveLength(ALL.length);
+    expect(calls).toHaveLength(PROBED.length);
     expect(r.verified).not.toContain(old);
     expect(r.unverified).toEqual([
       {
@@ -247,7 +262,7 @@ describe("awaitTenantModulesReady: nothing answers /ready at a script (404)", ()
       },
     ]);
     // The honest part: it is NOT reported as verified, so the caller cannot mistake it for proven.
-    expect(r.verified.sort()).toEqual(ALL.filter((m) => m !== old).sort());
+    expect(r.verified.sort()).toEqual(PROBED.filter((m) => m !== old).sort());
   });
 
   it("an ENTIRELY pre-/ready fleet returns all-unverified rather than a false all-clear", async () => {
@@ -255,7 +270,7 @@ describe("awaitTenantModulesReady: nothing answers /ready at a script (404)", ()
     const { timing } = fakeTiming();
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
     expect(r.verified).toEqual([]);
-    expect(r.unverified.map((u) => u.module).sort()).toEqual([...ALL].sort());
+    expect(r.unverified.map((u) => u.module).sort()).toEqual([...PROBED].sort());
   });
 });
 
@@ -283,7 +298,7 @@ describe("classifyReadyResponse: the module echo must MATCH (wrong-script defenc
 
 describe("mixed fleets: every unproven module is named individually", () => {
   it("names EACH unverified module, not a single summary, when several do not answer", async () => {
-    const silent = [ALL[1], ALL[3]];
+    const silent = [PROBED[1], PROBED[3]];
     const { deps } = fleet((m) =>
       silent.includes(m) ? { status: 404, text: "not found" } : { status: 200, text: readyBody(m, true) },
     );
@@ -291,7 +306,7 @@ describe("mixed fleets: every unproven module is named individually", () => {
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
 
     expect(r.unverified.map((u) => u.module).sort()).toEqual([...silent].sort());
-    expect(r.verified.sort()).toEqual(ALL.filter((m) => !silent.includes(m)).sort());
+    expect(r.verified.sort()).toEqual(PROBED.filter((m) => !silent.includes(m)).sort());
     // Each entry carries its OWN module, its OWN script, and its own detail naming that script --
     // an operator has to be able to act per module, not on a collapsed summary string.
     for (const u of r.unverified) {
@@ -329,7 +344,7 @@ describe("mixed fleets: every unproven module is named individually", () => {
     const { timing } = fakeTiming();
     const r = await awaitTenantModulesReady(deps, TENANT, timing);
 
-    expect(r.unverified).toHaveLength(ALL.length);
+    expect(r.unverified).toHaveLength(PROBED.length);
     for (const u of r.unverified) {
       expect(u.detail).toContain("TENANT_MODULE_DISPATCH not bound");
       // And it must still point the operator at the response rather than at a re-provision.
@@ -359,7 +374,7 @@ describe("mixed fleets: every unproven module is named individually", () => {
 
 describe("unverified is STRUCTURALLY distinguishable from verified", () => {
   it("no consumer can conflate the two by truthiness or by shape", async () => {
-    const old = ALL[0];
+    const old = PROBED[0];
     const { deps } = fleet((m) =>
       m === old ? { status: 404, text: "not found" } : { status: 200, text: readyBody(m, true) },
     );
@@ -377,7 +392,7 @@ describe("unverified is STRUCTURALLY distinguishable from verified", () => {
     // And the truthiness trap specifically: a non-empty unverified list is TRUTHY, so any consumer
     // testing "did anything go unproven" gets the right answer without inspecting elements.
     expect(Boolean(r.unverified.length)).toBe(true);
-    expect(r.verified.length + r.unverified.length).toBe(ALL.length);
+    expect(r.verified.length + r.unverified.length).toBe(PROBED.length);
   });
 
   it("a fully-proven fleet reports an EMPTY unverified list, never a placeholder entry", async () => {

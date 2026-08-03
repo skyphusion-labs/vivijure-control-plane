@@ -1092,6 +1092,17 @@ export interface ModuleReadiness {
    * design exists to keep customers out of. Soft response, tenant stays gated.
    */
   unconfirmed: string[];
+  /**
+   * Catalog modules this probe DELIBERATELY did not ask, because they carry no RunPod credential to
+   * propagate and this contract is about RunPod credential propagation (cf#114).
+   *
+   * REPORTED RATHER THAN SILENT, and that is the whole reason the field exists. A module dropped
+   * from a probe's population is indistinguishable from a module the probe forgot, and "deliberately
+   * excluded" and "never looked at" must not render identically -- that is the shape this file's own
+   * `unverifiable` vocabulary was written to avoid, applied to the population instead of the verdict.
+   * A reader counting `verified + unverified + unconfirmed + notProbed` gets the catalog back.
+   */
+  notProbed: string[];
   attempts: number;
   elapsedMs: number;
 }
@@ -1117,12 +1128,51 @@ export async function awaitTenantModulesReady(
   tenantId: string,
   timing: ProbeTiming = realTiming,
   deadlineMs: number = MODULE_READY_PROBE_DEADLINE_MS,
+  /**
+   * The catalog this probe derives its population from. Injected for the SAME reason `timing` is:
+   * the empty-population floor below is a real refusal path, and a guard that cannot be driven is a
+   * guard nobody has watched fail. Production never passes it.
+   */
+  catalog: readonly TenantModuleSpec[] = TENANT_MODULE_CATALOG,
 ): Promise<ModuleReadiness> {
   const started = timing.now();
   let attempts = 0;
   const verified: string[] = [];
   const unverified: UnverifiedModule[] = [];
-  let pending = TENANT_MODULE_CATALOG.map((spec) => spec.module);
+  // THE POPULATION IS THE RUNPOD-REACHING SET, NOT THE CATALOG, and getting that wrong was a
+  // launch blocker rather than a nicety.
+  //
+  // WHAT WENT WRONG. This contract asks one question -- can the version the edge serves READ ITS
+  // RUNPOD CREDENTIAL (cf#114) -- and classifyReadyResponse enforces it by requiring boolean
+  // `runpod_api_key` and `runpod_endpoint_id` in the body. `plan-enhance` reaches Anthropic through
+  // the AI Gateway and submits no RunPod job, so it answers with `gateway_id` / `cf_aig_token` and
+  // carries neither required field. That falls to `misconfigured`, which is explicitly NOT
+  // retryable and THROWS -- so every invoke-key install failed, for every tenant, in every mode.
+  //
+  // It was armed by a change that made things BETTER: vivijure-cf#308 extended GET /ready from 6
+  // modules to 26. Before it, plan-enhance had no /ready at all, answered 404, and classified
+  // `unverifiable` -- recorded and benign. After it, the same module answers 200 in a shape this
+  // contract does not accept. A COVERAGE IMPROVEMENT CONVERTED A BENIGN 404 INTO A FATAL VERDICT
+  // on the critical path of every tenant going live, and it is invisible to both repos' suites
+  // because each half is correct on its own. Only the cross-repo pair is wrong (cf#403).
+  //
+  // KEYED ON reachesRunpod, WHICH IS THE THIRD TIME THIS PREDICATE HAS BEEN THE ANSWER: the proxy
+  // pair binding (cp#284), the invoke-key retirement (cp#290), and now this. They are all asking
+  // the same question -- does this module talk to RunPod -- and every one of them was previously
+  // keyed on something that merely correlated with it. If a fourth arrives, key it here too.
+  let pending = catalog.filter(reachesRunpod).map((spec) => spec.module);
+  const notProbed = catalog.filter((spec) => !reachesRunpod(spec)).map((s) => s.module);
+  // POSITIVE-EVIDENCE FLOOR. An empty population would make this function return a clean readiness
+  // for a tenant nothing was ever asked about -- a green that cannot go red, which is precisely the
+  // failure class this probe exists inside. If the predicate ever excludes everything, that is a
+  // defect in the catalog or the predicate and it must be loud, never a pass.
+  if (pending.length === 0) {
+    throw new TenantModuleError(
+      "verify",
+      `no RunPod-reaching modules in a catalog of ${catalog.length}: refusing to report ` +
+        "readiness for a tenant whose module set was never probed (reachesRunpod excluded every row)",
+    );
+  }
   let last = "";
 
   for (;;) {
@@ -1189,8 +1239,14 @@ export async function awaitTenantModulesReady(
         elapsedMs,
         verified: verified.length,
         unverified: unverified.map((u) => u.module),
+        // THE DENOMINATOR, beside the result: `probed` and `catalog` together make a shrunken
+        // population visible instead of inferable. A verified count alone reads identically whether
+        // the probe asked fourteen modules or one.
+        probed: verified.length + unverified.length,
+        catalog: catalog.length,
+        notProbed,
       });
-      return { verified, unverified, unconfirmed: [], attempts, elapsedMs };
+      return { verified, unverified, unconfirmed: [], notProbed, attempts, elapsedMs };
     }
 
     const wait = MODULE_READY_BACKOFF_MS[Math.min(attempts - 1, MODULE_READY_BACKOFF_MS.length - 1)];
@@ -1214,7 +1270,7 @@ export async function awaitTenantModulesReady(
         unconfirmed: pending,
         last,
       });
-      return { verified, unverified, unconfirmed: [...pending], attempts, elapsedMs };
+      return { verified, unverified, unconfirmed: [...pending], notProbed, attempts, elapsedMs };
     }
     await timing.sleep(wait);
   }

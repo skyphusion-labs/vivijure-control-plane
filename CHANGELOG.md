@@ -27,6 +27,28 @@ anywhere except our own routes. **16 copies per tenant becomes 1.**
   it before core learns the proxy would break that path rather than close the hole. Tracked
   separately; Conrad's ruling is not fully satisfied until it lands.
 
+### fix(provision): module readiness probed the whole catalog and blocked every provision
+
+**LAUNCH BLOCKER.** At any `STUDIO_RELEASE` >= vivijure-cf v1.14.0 -- which includes the current pin
+v1.20.0 and the previous v1.19.3 -- no tenant could complete an invoke-key install, in any mode. It
+had been live and unnoticed because the only live tenant sits at `modules_release=v1.6.0` and never
+re-runs the path.
+
+`awaitTenantModulesReady` probed every catalog module and `classifyReadyResponse` requires boolean
+`runpod_api_key` / `runpod_endpoint_id`. `plan-enhance` reaches Anthropic through the AI Gateway,
+submits no RunPod job, and answers with `gateway_id` / `cf_aig_token` -- so it classified
+`misconfigured`, which is non-retryable and throws, and the route answered 503 `modules_not_ready`.
+
+It was armed by an improvement: vivijure-cf#308 extended `GET /ready` from 6 modules to 26. Before
+it, `plan-enhance` had no `/ready`, answered 404, and classified `unverifiable` -- benign. Each half
+is correct on its own, which is why neither repo's suite could see it.
+
+- The readiness population is now `reachesRunpod`, 14 of 15, matching what the contract is about.
+- `ModuleReadiness` gains `notProbed`, so the exclusion is reported rather than silent and the four
+  counts reconstruct the catalog.
+- An empty probed population REFUSES instead of returning a clean readiness for a tenant nothing was
+  asked about.
+
 ## v1.21.0 -- 2026-08-03
 
 ### chore(release): v1.21.0 -- what this tag actually deploys
