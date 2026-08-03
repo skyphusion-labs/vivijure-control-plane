@@ -258,10 +258,22 @@ describe("the pair is bound for SHARED tenants only", () => {
   it("does not MINT for a dedicated tenant, not merely decline to bind", async () => {
     // A token minted and dropped is a live credential nobody asked for. Asserted through the log
     // line rather than by spying the mint, because the log is what an operator would read.
+    //
+    // cp#290 CHANGED THE EVIDENCE AND MADE IT STRONGER. This used to read `token: "unset"`, which
+    // is a value that is ALSO produced by a mint that ran and refused -- one field covering two
+    // states, the shape this estate keeps getting caught by. The log now names the REASON, and
+    // `not_shared_mode` is only reachable by the branch that returns BEFORE the mint
+    // (tenantModuleProxyBinding), so it proves the stronger claim this test's title always made.
     const { d, logs } = deps();
     await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "dedicated", undefined, "AIG");
     const unbound = logs.filter((l) => l[0] === "module.runpod_proxy_unbound");
-    expect((unbound[0][1] as { token: string }).token).toBe("unset");
+    expect((unbound[0][1] as { reason: string }).reason).toBe("not_shared_mode");
+    // CONTROL: the reason field discriminates. A plane with no proxy configured is a DIFFERENT
+    // repair and must not collapse into the same string.
+    const noProxy = deps({ runpodProxy: null } as Partial<TenantModuleDeps>);
+    await uploadTenantModules(noProxy.d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG");
+    const unbound2 = noProxy.logs.filter((l) => l[0] === "module.runpod_proxy_unbound");
+    expect((unbound2[0][1] as { reason: string }).reason).toBe("plane_configures_no_proxy");
   });
 });
 

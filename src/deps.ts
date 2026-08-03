@@ -36,7 +36,7 @@ import {
   type TeardownOutcome,
 } from "./provisioner";
 import { convergeTenantTemplateImages, createTenantEndpoints } from "./runpod";
-import { parseSharedPool } from "./runpod-pool";
+import { parseSharedPool, readRunPodMode } from "./runpod-pool";
 import type { SharedRunPodPool } from "./runpod-pool";
 import type { ControlPlaneStore, CreditStore, Tenant } from "./store";
 import {
@@ -102,6 +102,8 @@ import {
   TENANT_MODULE_CATALOG,
   awaitTenantModulesReady,
   probeTenantModuleReadiness,
+  tenantModuleProxyBinding,
+  tenantModuleProxyUnboundReason,
   tenantModuleScriptName,
   type ModuleReadiness,
   type TenantModuleObservation,
@@ -124,10 +126,21 @@ export interface ProvisionerWiring {
    */
   resume(jobId: string, tenant: Tenant, stepsDone: readonly string[]): Promise<void>;
   /**
-   * Install the VERIFIED invoke key as the tenant studio secret AND every tenant module script, then
-   * PROVE the modules actually serve it before the caller flips the tenant live (cf#114). Throws on
-   * API failure, and on a readiness probe that fails or times out -- the tenant then stays at
-   * awaiting_invoke_key rather than being promoted on credentials nothing has proven.
+   * Install the VERIFIED invoke key as the tenant studio secret, and on every tenant module script
+   * EXCEPT where those modules are proxied, then PROVE the modules actually serve a credential
+   * before the caller flips the tenant live (cf#114). Throws on API failure, and on a readiness
+   * probe that fails or times out -- the tenant then stays at awaiting_invoke_key rather than being
+   * promoted on credentials nothing has proven.
+   *
+   * THE EXCEPTION IS THE POINT (cp#288). A proxied module reaches RunPod through the plane on its
+   * RUNPOD_PROXY_TOKEN and must hold no RunPod credential at all; an unproxied one (dedicated, BYO,
+   * self-host) still needs the key and still gets it. The two cases are decided by the SAME
+   * expression that binds the proxy pair, never by a second reading of the tenant's mode.
+   *
+   * Readiness is unaffected by the exception, and that is measured rather than assumed: a proxied
+   * module's /ready reports `credentials.runpod_api_key = Boolean(route.credential)` where the
+   * credential IS the proxy token, so it answers true with no RunPod key bound. The field keeps its
+   * name deliberately (vivijure-cf modules/_shared/runpod-route.ts).
    */
   installInvokeKey(tenant: Tenant, key: string): Promise<ModuleReadiness>;
   /**
@@ -667,17 +680,55 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     },
     async installInvokeKey(tenant, key): Promise<ModuleReadiness> {
       if (!tenant.script_name) throw new Error("tenant has no studio worker to install the key on");
-      // Key B lands on the studio AND every tenant module script (cf#99): the studio reads its own
-      // RUNPOD_API_KEY, and each module worker reads it to reach RunPod. Rotates in place
-      // (putScriptSecret, no re-upload). Module script names are deterministic from the tenant id.
+      // Key B lands on the studio (cf#99): the studio reads its own RUNPOD_API_KEY. Rotates in
+      // place (putScriptSecret, no re-upload).
+      //
+      // THE STUDIO COPY IS STILL INSTALLED ON EVERY TIER, INCLUDING SHARED, AND THAT IS A KNOWN
+      // GAP RATHER THAN THE INTENDED END STATE (cp#288, Conrad 2026-08-03: the hosted tier must
+      // hold no RunPod key it could extract, in any fashion). The studio genuinely SUBMITS RunPod
+      // work -- cast LoRA training, vivijure-core runpod-submit submitTrainLoraJob, reached from
+      // vivijure-cf src/index.ts via handleCastTrainLora -- and vivijure-core has no proxy branch
+      // at all, so removing this copy before core learns the proxy would break that path rather
+      // than close the hole. Closing it is a core release, then a cf release, then a plane change;
+      // it is tracked separately. Retiring the FIFTEEN module copies below does not depend on it.
       await cf.putScriptSecret(DISPATCH_NAMESPACE, tenant.script_name, TENANT_RUNPOD_SECRET, key);
-      for (const spec of TENANT_MODULE_CATALOG) {
-        await cf.putScriptSecret(
-          TENANT_MODULE_NAMESPACE,
-          tenantModuleScriptName(tenant.id, spec.module),
-          TENANT_RUNPOD_SECRET,
-          key,
-        );
+      // THE SAME EXPRESSION uploadTenantModules used to decide whether to bind the proxy pair. Not
+      // a second reading of the mode: see tenantModuleProxyBinding for why two expressions here can
+      // only disagree into the one state that breaks every render (neither pair nor key).
+      //
+      // A PROXIED MODULE MUST NOT RECEIVE THIS KEY. It reaches RunPod through the plane on its
+      // RUNPOD_PROXY_TOKEN, so the direct key is dead weight AND a live invariant violation -- a
+      // consumer holding a RunPod credential on our account. An UNPROXIED module still needs it:
+      // that is dedicated, BYO and the self-host door, which is the permanently supported unbound
+      // branch of vivijure-cf modules/_shared/runpod-route.ts and must never lose the key.
+      const moduleProxy = await tenantModuleProxyBinding(
+        readRunPodMode(tenant.runpod_mode),
+        deps.runpodProxy,
+        tenant.id,
+      );
+      if (moduleProxy) {
+        // Deliberately LOUD and deliberately not silent-by-omission: absence is the mechanism on
+        // this path, so a reader has to be able to tell "retired on purpose" from "the install
+        // loop never ran". Counted from the catalog, never from a remembered number.
+        deps.log("modules_invoke_key_retired", {
+          tenant: tenant.id,
+          modules: TENANT_MODULE_CATALOG.length,
+          reason: "proxied",
+        });
+      } else {
+        deps.log("modules_invoke_key_installed", {
+          tenant: tenant.id,
+          modules: TENANT_MODULE_CATALOG.length,
+          reason: tenantModuleProxyUnboundReason(readRunPodMode(tenant.runpod_mode), deps.runpodProxy, moduleProxy),
+        });
+        for (const spec of TENANT_MODULE_CATALOG) {
+          await cf.putScriptSecret(
+            TENANT_MODULE_NAMESPACE,
+            tenantModuleScriptName(tenant.id, spec.module),
+            TENANT_RUNPOD_SECRET,
+            key,
+          );
+        }
       }
       // cf#114: the secrets PUT returning 200 does NOT mean the edge serves the key yet. Prove it on
       // the modules before the caller promotes the tenant, or fail honestly saying we could not.
