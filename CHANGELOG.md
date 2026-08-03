@@ -6,6 +6,25 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(provision): a plane that cannot mint proxy tokens no longer offers the shared tier
+
+Conrad ruled 2026-08-03 that the hosted tier holds no RunPod key it could extract. A shared tenant
+reaches RunPod through the plane proxy or not at all, so a plane with no `CONTROL_PLANE_HOST` or no
+`RUNPOD_PROXY_SIGNING_KEY` cannot serve one without handing it the direct key. The shared pool now
+requires **three parts or none** -- endpoints, invoke key, and proxy config -- on the same argument
+`deps.ts` already made for the first two. The provision route answers `runpod_key_required`, which is
+a tenant who cannot provision (loud) rather than one we would have to violate the ruling to serve.
+
+- The refusal is logged and **names the proxy specifically**, distinguishably from the other two, so
+  an operator who has set both pool vars is not handed a message about the vars they already set.
+- **This does NOT replace `installInvokeKey`'s own predicate.** The gate makes `shared` imply
+  `proxied` at the moment `runpod_mode` is written; the row then stays `shared` for ever, so an
+  operator who later removes the signing key leaves existing shared tenants whose next key install
+  would find no proxy. The gate narrows that window and `tenantModuleProxyBinding` closes it.
+  Mutation-proved: with this gate in place, weakening the removal-site predicate to the mode alone
+  still turns 8 tests red.
+
+
 ### feat(provision): the module-side RunPod key is retired on proxied tenants
 
 Conrad ruled 2026-08-03 that the hosted tier holds no RunPod key it could extract, in any fashion.
