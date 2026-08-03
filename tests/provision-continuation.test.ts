@@ -36,6 +36,18 @@ const ENDPOINTS = [
   { key: "audio-upscale", label: "Audio", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
 ];
 
+/**
+ * The R2 S3 secret the provisioner derives from a minted token value.
+ *
+ * Recomputed here from the DOCUMENTED rule (SHA-256 hex of the token value) rather than imported,
+ * because sha256Hex is private to provisioner.ts. Derived, not transcribed: a hardcoded digest would
+ * be two single-engine tests that agree with each other and could both be wrong together.
+ */
+async function expectedS3Secret(tokenValue: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(tokenValue));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** A clock the test drives by hand, so a 15s budget costs no real time. */
 function fakeClock(step = 0) {
   let t = 0;
@@ -450,6 +462,9 @@ describe("continueProvisionJob", () => {
       await store.createAccount("acct_1", "a@b.com");
       const t = await store.createTenant("ten_1", "hero", "acct_1", "provisioning");
       if (steps.includes("d1_create")) await store.setTenantD1(t.id, "d1-uuid-hero");
+      if (steps.includes("r2_bucket")) await store.setTenantBucket(t.id, "vivijure-tenant-hero");
+      // setTenantR2Token runs INSIDE step 4, so a row whose progress claims it always carries an id.
+      if (steps.includes("r2_token")) await store.setTenantR2Token(t.id, "tok-OLD");
       if (steps.includes("runpod_endpoints")) await store.setTenantEndpoints(t.id, JSON.stringify(ENDPOINTS));
       if (steps.includes("wfp_upload")) {
         await store.setTenantStudioToken(t.id, await encryptStudioToken(RING, "the-studio-token"));
@@ -478,6 +493,34 @@ describe("continueProvisionJob", () => {
     };
 
     /**
+     * A plane whose POOL IS ARMED, which is the only plane on which a shared job can exist.
+     *
+     * Without this, the endpoints step has neither a key nor a pool and returns runpod_key_required,
+     * so a test would exercise the refusal instead of the path it means to drive.
+     */
+    const pooledDeps = (store: MemoryStore, over: Partial<ProvisionDeps> = {}) =>
+      deps(store, { sharedPool: { endpoints: ENDPOINTS, ids: new Set(), names: new Set() }, ...over } as Partial<ProvisionDeps>);
+
+    const resumePooled = async (steps: string[], over: Partial<ProvisionDeps> = {}) => {
+      const { store, job, tenant } = await at(steps, "shared");
+      const d = pooledDeps(store, over);
+      const res = await continueProvisionJob(d, job.id, tenant, steps, fakeClock(0), 15_000);
+      const f = d as unknown as {
+        cf: { uploadUserWorker: ReturnType<typeof vi.fn> };
+        tokenMinter: { mintBucketToken: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> };
+        bundle: { fetch: ReturnType<typeof vi.fn> };
+      };
+      return {
+        res, store, d,
+        upload: f.cf.uploadUserWorker,
+        mint: f.tokenMinter.mintBucketToken,
+        revoke: f.tokenMinter.revoke,
+        bundleFetch: f.bundle.fetch,
+        message: (res as { message?: string }).message ?? "",
+      };
+    };
+
+    /**
      * The refusal each mode must produce in the PRE-UPLOAD region.
      *
      * ASSERTING THE MESSAGE IS THE POINT, and `ok: false` is not enough. Measured while building
@@ -491,20 +534,25 @@ describe("continueProvisionJob", () => {
       dedicated: /the RunPod key needed to finish it is never stored/,
     };
 
-    // THE ADMISSION INVARIANT. Every pre-upload state refuses, on BOTH modes, exactly as before --
-    // and refuses IN THE PRE-UPLOAD REGION, which is the part `ok: false` cannot establish.
+    // THE DEDICATED INVARIANT, and it is now the PERMANENT one. Every pre-upload state refuses for a
+    // tenant that brought its own RunPod account, because key A lives in the request that carried it
+    // and no continuation can hold it.
+    //
+    // THE SHARED HALF OF THIS LOOP MOVED, it was not dropped: cp#301 item 3 makes those states the
+    // supported path, and they are asserted in the item 3 block below with assertions that check the
+    // credential was re-minted and rebound. `ok: true` would be exactly as blind there as `ok: false`
+    // was here.
     for (const id of ["E0", "E1", "E2", "E3", "E4", "E5"]) {
-      for (const mode of ["shared", "dedicated"] as const) {
-        it(`${id} (${mode}) is REFUSED IN THE PRE-UPLOAD REGION, as it is today`, async () => {
-          const { res, message, bundleFetch } = await resume(E[id], mode);
-          expect(res).toMatchObject({ ok: false });
-          // WHICH refusal, not merely that one happened. See PRE_UPLOAD_REFUSAL above for the
-          // measurement that made this necessary.
-          expect(message).toMatch(PRE_UPLOAD_REFUSAL[mode]);
-          // And nothing downstream ran: no release was fetched, so no bytes could have shipped.
-          expect(bundleFetch).not.toHaveBeenCalled();
-        });
-      }
+      it(`${id} (dedicated) is REFUSED IN THE PRE-UPLOAD REGION, permanently`, async () => {
+        const { res, message, bundleFetch } = await resume(E[id], "dedicated");
+        expect(res).toMatchObject({ ok: false });
+        // WHICH refusal, not merely that one happened. Measured while building item 2: with the
+        // boundary deleted, every `ok: false` assertion here stayed green because a relaxed boundary
+        // still fails one guard further down.
+        expect(message).toMatch(PRE_UPLOAD_REFUSAL.dedicated);
+        // And nothing downstream ran: no release was fetched, so no bytes could have shipped.
+        expect(bundleFetch).not.toHaveBeenCalled();
+      });
     }
 
     // ...and the first admissible state still completes, so the invariant is two-sided rather than
@@ -525,11 +573,11 @@ describe("continueProvisionJob", () => {
       );
     });
 
-    it("E4 shared: says the capability is missing, and never mentions a key", async () => {
-      const { message } = await resume(E.E4, "shared");
-      expect(message).toMatch(/shared pool and needs no key of its own/);
-      expect(message).toMatch(/not supported yet/);
-      // The whole defect this replaces: a pooled tenant told its RunPod key cannot be recovered.
+    it("E4 shared is no longer refused at all (cp#301 item 3 made it the supported path)", async () => {
+      // The refusal this replaced named a RunPod key that a pooled tenant never had. Kept as a case
+      // rather than deleted, so the contract move is visible in the suite rather than only in git.
+      const { res, message } = await resumePooled(E.E4);
+      expect(res).toMatchObject({ ok: true });
       expect(message).not.toMatch(/the RunPod key needed to finish it/);
     });
 
@@ -564,26 +612,26 @@ describe("continueProvisionJob", () => {
 
     // GUARD 5, promoted from a struct field whose refusal lived one module away. Both directions,
     // and they are NOT the same kind of state, which is stated on each.
-    it("progress claims d1_create but the row has no database id: refuses (guard 5)", async () => {
-      // SYNTHETIC. setTenantD1 runs immediately BEFORE mark("d1_create"), so production cannot mark
+    // GUARD 5, SPLIT IN ITEM 3. The two directions are different kinds of state and only one is
+    // corruption, so they are two named refusals and item 3 relaxes exactly one.
+    it("progress claims d1_create but the row has NO database id: refuses, permanently", async () => {
+      // NOT PRODUCIBLE. setTenantD1 runs immediately BEFORE mark("d1_create"), so no code path marks
       // that step without the id. This stands in for a corrupted or hand-edited row.
       const { store, job } = await at(E.E4, "shared");
       const rowWithoutD1 = { ...(await store.getTenantById("ten_1"))!, d1_database_id: null };
       const res = await continueProvisionJob(deps(store), job.id, rowWithoutD1, E.E4, fakeClock(0), 15_000);
       expect(res).toMatchObject({ ok: false });
-      expect((res as { message: string }).message).toMatch(/disagree about the database/);
+      expect((res as { message: string }).message).toMatch(/no database id, so this row is inconsistent/);
     });
 
-    it("the row has a database id but progress does not claim the step: refuses (guard 5)", async () => {
-      // PRODUCIBLE, unlike the case above: a driver that died between setTenantD1 and mark leaves
-      // exactly this. It refuses today too (everything pre-upload does), so nothing regresses -- but
-      // the disagreement is now the stated reason. Flagged on the PR: adopt-on-exists makes
-      // re-running d1_create safe, so item 3 may want this direction to be recoverable rather than
-      // refused.
+    it("the row has a database id but progress does not claim the step: ADOPTS it, does not refuse", async () => {
+      // PRODUCIBLE: a driver that died between setTenantD1 and mark leaves exactly this, and
+      // createD1 is adopt-on-exists so re-running the step lands on the same database. Refusing it
+      // would strand a tenant that is fine. Ruled on the issue and split out of the case above.
       const { store, job, tenant } = await at(E.E1, "shared");
-      const res = await continueProvisionJob(deps(store), job.id, tenant, E.E0, fakeClock(0), 15_000);
-      expect(res).toMatchObject({ ok: false });
-      expect((res as { message: string }).message).toMatch(/disagree about the database/);
+      const d = pooledDeps(store);
+      const res = await continueProvisionJob(d, job.id, tenant, E.E0, fakeClock(0), 15_000);
+      expect(res, "a recoverable disagreement must not be refused").toMatchObject({ ok: true });
     });
 
     it("a job row that no longer exists refuses by name rather than throwing on a null", async () => {
@@ -611,6 +659,137 @@ describe("continueProvisionJob", () => {
       );
       expect(res).toMatchObject({ ok: false });
       expect((res as { message: string }).message).toMatch(/although the provision got past the step that/);
+    });
+  });
+
+  // ---- cp#301 item 3: the pooled pre-upload resume ---------------------------------------------
+  //
+  // These are the states item 2 refused and this change ADMITS. `ok: true` is not the assertion --
+  // it is exactly as blind here as `ok: false` was for the boundary in item 2, because a resume that
+  // completes with a DEAD R2 binding also returns success. What each case asserts is that the
+  // credential was RE-MINTED and that the worker was REBOUND with it.
+
+  describe("pooled pre-upload resume (cp#301 item 3)", () => {
+    const E: Record<string, string[]> = {
+      E0: [],
+      E1: ["d1_create"],
+      E2: ["d1_create", "d1_migrate"],
+      E3: ["d1_create", "d1_migrate", "r2_bucket"],
+      E4: ["d1_create", "d1_migrate", "r2_bucket", "r2_token"],
+      E5: ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints"],
+    };
+
+    async function at(steps: string[], mode: string | null = "shared", toRelease = "v1.0.0") {
+      const store = new MemoryStore();
+      await store.createAccount("acct_1", "a@b.com");
+      const t = await store.createTenant("ten_1", "hero", "acct_1", "provisioning");
+      if (steps.includes("d1_create")) await store.setTenantD1(t.id, "d1-uuid-hero");
+      if (steps.includes("r2_bucket")) await store.setTenantBucket(t.id, "vivijure-tenant-hero");
+      if (steps.includes("r2_token")) await store.setTenantR2Token(t.id, "tok-OLD");
+      if (steps.includes("runpod_endpoints")) await store.setTenantEndpoints(t.id, JSON.stringify(ENDPOINTS));
+      const job = await store.createProvisionJob("job_1", t.id, "provision", {
+        runpodMode: mode as never,
+        toRelease,
+      });
+      return { store, job, tenant: (await store.getTenantById(t.id))! };
+    }
+
+    const pooled = (store: MemoryStore, over: Partial<ProvisionDeps> = {}) =>
+      deps(store, { sharedPool: { endpoints: ENDPOINTS, ids: new Set(), names: new Set() }, ...over } as Partial<ProvisionDeps>);
+
+    const drive = async (steps: string[], over: Partial<ProvisionDeps> = {}, toRelease = "v1.0.0") => {
+      const { store, job, tenant } = await at(steps, "shared", toRelease);
+      const d = pooled(store, over);
+      const res = await continueProvisionJob(d, job.id, tenant, steps, fakeClock(0), 15_000);
+      const f = d as unknown as {
+        cf: { uploadUserWorker: ReturnType<typeof vi.fn> };
+        tokenMinter: { mintBucketToken: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> };
+        bundle: { fetch: ReturnType<typeof vi.fn> };
+      };
+      return {
+        res, store,
+        upload: f.cf.uploadUserWorker, mint: f.tokenMinter.mintBucketToken,
+        revoke: f.tokenMinter.revoke, bundleFetch: f.bundle.fetch,
+        message: (res as { message?: string }).message ?? "",
+      };
+    };
+
+    /**
+     * The STUDIO upload, located by script name rather than by position.
+     *
+     * uploadUserWorker is called for the studio AND once per module, so `.at(-1)` is a MODULE upload
+     * whose bindings carry no R2 secret at all -- it returns undefined, which reads as "the secret
+     * was not bound" when the truth is "you read the wrong call". Cost me two failing assertions
+     * before I looked at what I was indexing.
+     */
+    const studioUpload = (upload: ReturnType<typeof vi.fn>) => {
+      const i = upload.mock.calls.findIndex(
+        (c) => (c[0] as { scriptName?: string } | undefined)?.scriptName === "tenant-hero-studio",
+      );
+      if (i < 0) return null;
+      const args = upload.mock.calls[i][0] as { bindings: { name: string; text?: string }[] };
+      return {
+        secret: args.bindings.find((b) => b.name === "R2_S3_SECRET_ACCESS_KEY")?.text,
+        order: upload.mock.invocationCallOrder[i] as number,
+      };
+    };
+
+    // EVERY ADMITTED STATE, and the assertion is the CREDENTIAL, not the status. A resume that
+    // completed while binding a stale or empty secret returns ok:true and produces a studio that
+    // cannot read its own bucket, which is the outcome this whole issue exists to prevent.
+    for (const id of ["E0", "E1", "E2", "E3", "E4", "E5"]) {
+      it(`${id} (shared) RESUMES, re-mints the bucket credential, and REBINDS the worker with it`, async () => {
+        const { res, mint, upload } = await drive(E[id]);
+        expect(res).toMatchObject({ ok: true, status: "awaiting_invoke_key" });
+        // The value is never stored, so a resume that did not re-mint has nothing to bind.
+        expect(mint, "the bucket credential must be re-minted on every resume").toHaveBeenCalled();
+        // sha256("SECRET"), the fake minter's value. The worker must carry THIS, not an empty
+        // binding and not a stale one.
+        expect(upload).toHaveBeenCalled();
+        expect(studioUpload(upload)?.secret, "the worker must be rebound with the newly minted secret")
+          .toBe(await expectedS3Secret("SECRET"));
+      });
+    }
+
+    // THE E5 ORDERING CASE, and it is the reason the mint/revoke order was inverted. At E5 a Worker
+    // may already exist bound to the OLD secret, and the row cannot say so.
+    it("E5: revokes the OLD grant only AFTER the worker has been rebound (mint -> rebind -> revoke)", async () => {
+      const { res, upload, revoke } = await drive(E.E5);
+      expect(res).toMatchObject({ ok: true });
+      expect(revoke, "the old grant must be revoked").toHaveBeenCalledWith("tok-OLD");
+      const uploadedAt = studioUpload(upload)!.order;
+      const revokedAt = revoke.mock.invocationCallOrder.at(-1) as number;
+      // ORDER, not merely both-happened. Revoking first is what leaves a live Worker holding a dead
+      // credential: silent, deferred, and invisible to every check we run.
+      expect(revokedAt, "revoke must come after the rebind, never before").toBeGreaterThan(uploadedAt);
+    });
+
+    // A resume must build the release the JOB recorded, not the plane pin at poll time.
+    it("builds from the JOB release, not deps.release", async () => {
+      const { res, bundleFetch } = await drive(E.E4, { release: "v9.9.9" } as Partial<ProvisionDeps>, "v1.13.0");
+      expect(res).toMatchObject({ ok: true });
+      expect(bundleFetch).toHaveBeenCalledWith("v1.13.0");
+      expect(bundleFetch).not.toHaveBeenCalledWith("v9.9.9");
+    });
+
+    it("REFUSES when the job recorded no release, rather than falling back to the plane pin", async () => {
+      const { store, job, tenant } = await at(E.E4, "shared", "");
+      store.jobs.get(job.id)!.to_release = null;
+      const d = pooled(store);
+      const res = await continueProvisionJob(d, job.id, tenant, E.E4, fakeClock(0), 15_000);
+      expect(res).toMatchObject({ ok: false });
+      expect((res as { message: string }).message).toMatch(/did not record which release/);
+      expect((d as unknown as { bundle: { fetch: ReturnType<typeof vi.fn> } }).bundle.fetch)
+        .not.toHaveBeenCalled();
+    });
+
+    // The pool can be withdrawn between the provision and the resume. Admitting the state must not
+    // mean assuming the tier is still there.
+    it("REFUSES when the plane no longer offers the pool the job was created for", async () => {
+      const { store, job, tenant } = await at(E.E2, "shared");
+      const res = await continueProvisionJob(deps(store), job.id, tenant, E.E2, fakeClock(0), 15_000);
+      expect(res).toMatchObject({ ok: false, step: "runpod_endpoints" });
+      expect((res as { message: string }).message).toBe("runpod_key_required");
     });
   });
 
