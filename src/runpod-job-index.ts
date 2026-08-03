@@ -1,4 +1,4 @@
-// Harvest the RunPod job -> tenant index out of a tenant's own database (cp#270, for cp#225).
+// Harvest the RunPod job -> tenant index out of a tenant's own database (cp#270, for vivijure-cf#225).
 //
 // READ-ONLY against the tenant. Nothing here writes to a tenant database, and no tenant worker
 // writes to ours: the control plane already holds every `d1_database_id` because it created them, so
