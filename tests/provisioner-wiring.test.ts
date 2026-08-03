@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { provisionerWiring } from "../src/deps";
 import { CfApi } from "../src/cf-api";
-import { tenantModuleScriptName, TENANT_MODULE_CATALOG } from "../src/tenant-modules";
+import { tenantModuleScriptName, TENANT_MODULE_CATALOG, reachesRunpod } from "../src/tenant-modules";
 import type { ControlPlaneEnv } from "../src/env";
 import type { ControlPlaneStore, Tenant } from "../src/store";
 
@@ -123,11 +123,21 @@ describe("installInvokeKey probes module readiness (cf#114)", () => {
 
     const readiness = await w.installInvokeKey(tenant, "rpa_keyB_SECRET");
 
+    // THE PROBED POPULATION IS THE RUNPOD-REACHING SET, NOT THE CATALOG. This assertion used to
+    // read TENANT_MODULE_CATALOG.length and passed only because the fake answered a RunPod-shaped
+    // /ready for every module including `plan-enhance`, which reaches no RunPod and whose real
+    // worker answers `gateway_id` / `cf_aig_token`. That fixture had stopped standing in for its
+    // subject, and it is why the plane-side suite could not see the blocker.
+    const reachers = TENANT_MODULE_CATALOG.filter(reachesRunpod).map((s) => s.module);
     // Control: the probe actually ran (a silent no-op would make the assertion below vacuous).
-    expect(probed).toHaveLength(TENANT_MODULE_CATALOG.length);
+    expect(probed).toHaveLength(reachers.length);
     expect(probed.every((p) => p.endsWith("/ready"))).toBe(true);
-    expect(readiness.verified.sort()).toEqual(TENANT_MODULE_CATALOG.map((s) => s.module).sort());
+    expect(readiness.verified.sort()).toEqual([...reachers].sort());
     expect(readiness.unverified).toEqual([]);
+    // And the exclusion is REPORTED, not silent.
+    expect(readiness.notProbed.sort()).toEqual(
+      TENANT_MODULE_CATALOG.filter((s) => !reachesRunpod(s)).map((s) => s.module).sort(),
+    );
   });
 
   it("THROWS on a bad module answer, so the caller cannot promote the tenant to live", async () => {
@@ -156,6 +166,6 @@ describe("installInvokeKey probes module readiness (cf#114)", () => {
     const w = provisionerWiring(fullEnv({ TENANT_MODULE_DISPATCH: undefined }), store)!;
     const readiness = await w.installInvokeKey(tenant, "rpa_keyB_SECRET");
     expect(readiness.verified).toEqual([]);
-    expect(readiness.unverified).toHaveLength(TENANT_MODULE_CATALOG.length);
+    expect(readiness.unverified).toHaveLength(TENANT_MODULE_CATALOG.filter(reachesRunpod).length);
   });
 });
