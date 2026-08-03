@@ -6,6 +6,43 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(provision): a pooled provision that was interrupted before the studio upload can now be resumed (cp#301)
+
+A shared-tier provision that yielded before `wfp_upload` could never be finished: the resumability
+boundary refused everything short of that step, on the grounds that the RunPod key needed to finish
+is never stored. True for a tenant that brought its own RunPod account, and false for a pooled one,
+which has no key at all. Yielding is designed behaviour, so the shared tier's normal recovery
+mechanism was the broken one, and it fired on the first pooled provision ever attempted.
+
+Those states are now resumable. The steps live in one function: the resume hands the job back to
+`runProvisionJob` with the progress it already recorded, rather than a second copy of the
+provisioning sequence that would drift on the path nobody exercises until something has gone wrong.
+
+**The bucket credential is re-minted, and the ORDER of the mint and the revoke has been inverted.**
+The value is never stored, so no continuation can reconstruct it. The revoke used to run BEFORE the
+mint, which is safe on a fresh provision because nothing is bound yet, and is not safe on a resume:
+`wfp_upload` is not atomic, so a driver that died after the worker upload but before its step was
+marked leaves a LIVE tenant Worker holding the old secret, and the tenant row cannot detect it
+(`script_name` is written after the upload, so NULL is produced identically by "no Worker" and
+"Worker exists and is bound"). The order is now mint, rebind, then revoke. The two failure directions
+are not symmetric and that is the whole reason: dying after the mint leaves two live grants, which is
+loud, logged and revocable by id and by name; dying after an early revoke leaves a studio that
+provisions green and cannot read or write its own bucket.
+
+`r2_token` is also yield-unsafe on a resume, for the same reason `runpod_endpoints` always is: the
+only thing that binds the new secret is `wfp_upload`, so the mint and its rebind must be carried
+through in one invocation.
+
+**The dedicated path is unchanged and still refuses, permanently and as an explicit assertion.** Key
+A lives in the request that carried it.
+
+The release comes from the job row recorded at creation, never the plane pin at poll time, and a job
+with no recorded release refuses rather than falling back. The two directions of the
+progress-versus-row disagreement about the database are now separate refusals: progress claiming
+`d1_create` on a row with no id is corruption and refuses permanently, while a row carrying an id the
+progress does not claim is what a driver dying between the write and the mark leaves, and `createD1`
+is adopt-on-exists, so it is adopted and logged rather than refused.
+
 ### fix(provision): each resume guard checks what it needs, and every refusal names its own cause (cp#301)
 
 `continueProvisionJob`'s preamble was four guards in sequence, and only the first was independently
