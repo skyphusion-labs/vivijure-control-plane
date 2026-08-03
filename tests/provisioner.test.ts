@@ -742,7 +742,19 @@ describe("runProvisionJob", () => {
     expect(store.tenants.get(t.id)?.status).toBe("failed");
   });
 
-  it("re-running is safe: it revokes the previous R2 token rather than leaving live grants behind", async () => {
+  it("re-running is safe: it revokes the previous R2 token, AFTER the worker is rebound", async () => {
+    // ORDER INVERTED BY cp#301 item 3, and this test asserted the old one. The revoke still happens
+    // and no live grant is left behind, which was and remains the point; what moved is WHEN.
+    //
+    // It used to run BEFORE the mint, which is safe on a fresh provision because nothing is bound
+    // yet. It is NOT safe on a resume: wfp_upload is not atomic, so a driver that died after the
+    // worker upload but before its step was marked leaves a live Worker holding the OLD secret, and
+    // the tenant row cannot detect it. Revoking first there produces a studio that provisions green
+    // and cannot read its own bucket -- silent, and surfacing weeks later in another subsystem.
+    //
+    // Both paths share this code, so the order that is correct for both is the one that waits. The
+    // failure directions are not symmetric: mint-then-die leaves TWO live grants, which is loud,
+    // logged and revocable by id and by name; revoke-then-die leaves a dead binding, which is not.
     const t = await tenant();
     await store.setTenantR2Token(t.id, "tok-old");
     const fresh = (await store.getTenantById(t.id))!;
@@ -751,7 +763,8 @@ describe("runProvisionJob", () => {
     await runProvisionJob(d, job.id, fresh, "rpa_keyA");
 
     expect(d.tokenMinter.revoke).toHaveBeenCalledWith("tok-old");
-    expect(calls.indexOf("revokeToken")).toBeLessThan(calls.indexOf("mintR2Token"));
+    expect(calls.indexOf("mintR2Token")).toBeLessThan(calls.indexOf("revokeToken"));
+    expect(calls.indexOf("uploadUserWorker")).toBeLessThan(calls.indexOf("revokeToken"));
     expect(store.tenants.get(t.id)?.r2_token_id).toBe("tok-1");
   });
 

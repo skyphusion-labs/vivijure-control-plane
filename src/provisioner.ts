@@ -487,6 +487,20 @@ export class ProvisionFailure extends Error {
  * runpodApiKey is key A: transient, used once, never stored. Pass null to resume the CF-side steps
  * only; the run then stops honestly at runpod_endpoints rather than pretending.
  */
+/**
+ * Carried by a RESUME of the pre-upload region (cp#301 item 3).
+ *
+ * Its presence is what makes this function a continuation rather than a fresh provision, and it
+ * carries the two facts a poll cannot derive: how far the job got, and which release it is building.
+ * `release` is REQUIRED rather than defaulted for the reason `runModuleSteps` already gives one
+ * field over: deps.release is the PLANE-WIDE pin read at the moment of driving, and a resume that
+ * used it could upload a studio from one release onto a schema migrated by another.
+ */
+export interface ProvisionResume {
+  done: readonly MarkableProvisionStep[];
+  release: string;
+}
+
 export async function runProvisionJob(
   deps: ProvisionDeps,
   jobId: string,
@@ -494,9 +508,15 @@ export async function runProvisionJob(
   runpodApiKey: string | null,
   clock: ProvisionClock = realClock,
   budgetMs: number = PROVISION_INVOCATION_BUDGET_MS,
+  resume?: ProvisionResume,
 ): Promise<ProvisionOutcome> {
   const startedAt = clock.now();
-  const done: MarkableProvisionStep[] = [];
+  // Resuming starts from what the job already recorded; a fresh provision starts from nothing. One
+  // list either way, so every `complete()` below reads the same thing on both paths.
+  const done: MarkableProvisionStep[] = resume ? [...resume.done] : [];
+  const complete = (step: MarkableProvisionStep) => done.includes(step);
+  // THE RELEASE THIS INVOCATION IS BUILDING. Never deps.release on a resume: see ProvisionResume.
+  const release = resume ? resume.release : deps.release;
 
   /**
    * Record a completed step, then YIELD if this invocation is out of budget (#112).
@@ -508,7 +528,9 @@ export async function runProvisionJob(
    */
   const timeStep = stepTimer(startedAt);
   const mark = async (step: MarkableProvisionStep) => {
-    done.push(step);
+    // A RESUME re-runs r2_token on a job that already recorded it, so pushing unconditionally would
+    // put a duplicate in the progress list and break the contiguity check the resume preamble runs.
+    if (!done.includes(step)) done.push(step);
     await deps.store.updateJobProgress(jobId, step, JSON.stringify(done));
     // ONE clock read, reused for both the timing and the budget check. Reading the clock twice
     // would be the obvious way to write this and it would be wrong: the tests drive a hand-rolled
@@ -516,7 +538,13 @@ export async function runProvisionJob(
     // perturbing the instrument the measurement is about (cp#18), not a style preference.
     const at = clock.now();
     deps.log("provision.step", { tenant: tenant.id, job: jobId, phase: "provision", ...timeStep(step, at) });
-    if (!YIELD_UNSAFE_STEPS.has(step) && at - startedAt >= budgetMs) throw new ProvisionYield(step);
+    // R2_TOKEN IS YIELD-UNSAFE ON A RESUME, for the same reason runpod_endpoints always is. A resume
+    // re-mints the bucket credential and the ONLY thing that binds the new secret is wfp_upload, so
+    // yielding between them would leave the old grant live, and the next invocation would mint again
+    // and orphan another. Carrying r2_token through to wfp_upload keeps the mint and its rebind in
+    // one invocation. On a FRESH provision nothing has been bound yet, so the old rule stands.
+    const yieldUnsafe = YIELD_UNSAFE_STEPS.has(step) || (resume !== undefined && step === "r2_token");
+    if (!yieldUnsafe && at - startedAt >= budgetMs) throw new ProvisionYield(step);
   };
 
   // The lease is the claim of THIS driver, and it is only true while the driver is alive (cp#148).
@@ -544,7 +572,7 @@ export async function runProvisionJob(
     // burn the budget having marked nothing.
     let built: Awaited<ReturnType<StudioBundleSource["fetch"]>>;
     try {
-      built = await deps.bundle.fetch(deps.release);
+      built = await deps.bundle.fetch(release);
     } catch (e) {
       // Name the real cause. The message is the source error verbatim (a tag mismatch, a missing
       // manifest, a migration hash failure, a pre-v1.3.1 artifact), so the tenant-facing text says
@@ -578,41 +606,64 @@ export async function runProvisionJob(
     }
 
     // 1. D1. Adopt-on-exists makes a re-run safe.
-    const db = await deps.cf.createD1(tenantD1Name(tenant.slug));
-    await deps.store.setTenantD1(tenant.id, db.uuid);
-    await mark("d1_create");
+    //
+    // ON A RESUME the id is read from the row rather than re-created. Not an optimisation: the
+    // resume preamble has already proved the progress record and the row AGREE about it, so this is
+    // the one place that fact is consumed. Re-creating would also be safe (adopt-on-exists), but it
+    // would spend invocation budget re-proving something already recorded.
+    let dbUuid: string;
+    if (complete("d1_create")) {
+      dbUuid = tenant.d1_database_id as string;
+    } else {
+      const db = await deps.cf.createD1(tenantD1Name(tenant.slug));
+      dbUuid = db.uuid;
+      await deps.store.setTenantD1(tenant.id, dbUuid);
+      await mark("d1_create");
+    }
 
     // 2. Migrations: the SAME migration files the studio ships, applied only where missing and
     //    recorded per-migration in the schema_migrations table of the tenant D1 (#105). This step
     //    MUST tolerate an adopted, already-migrated D1: the previous unconditional replay assumed
     //    the files were all CREATE TABLE IF NOT EXISTS, and died on the first ALTER TABLE.
-    const migrated = await applyStudioMigrations(deps.cf, db.uuid, built.migrations);
-    deps.log("d1.migrate", {
-      tenant: tenant.id,
-      applied: migrated.applied,
-      seeded: migrated.seeded,
-    });
-    await mark("d1_migrate");
+    if (!complete("d1_migrate")) {
+      const migrated = await applyStudioMigrations(deps.cf, dbUuid, built.migrations);
+      deps.log("d1.migrate", {
+        tenant: tenant.id,
+        applied: migrated.applied,
+        seeded: migrated.seeded,
+      });
+      await mark("d1_migrate");
+    }
 
     // 3. Bucket per tenant (not a prefix): satellite-visible R2 creds must reach ONLY this tenant.
+    // The NAME is derived from the immutable slug, so it is the same value on a resume without
+    // reading the row; only the CREATE is skipped.
     const bucket = tenantBucketName(tenant.slug);
-    await deps.cf.createR2Bucket(bucket);
-    await deps.store.setTenantBucket(tenant.id, bucket);
-    await mark("r2_bucket");
-
-    // 4. Bucket-scoped creds. Re-minted on every run: we never stored the value, so there is
-    //    nothing to reuse. The previous token is revoked first so a retry does not leave a trail of
-    //    live grants behind it.
-    const previousTokenId = tenant.r2_token_id;
-    if (previousTokenId) {
-      try {
-        await deps.tokenMinter.revoke(previousTokenId);
-      } catch (e) {
-        // A stale token that will not revoke must not strand the tenant, but it MUST be visible:
-        // it is a live credential we failed to clean up.
-        deps.log("r2_token.revoke_failed", { tenant: tenant.id, error: String(e) });
-      }
+    if (!complete("r2_bucket")) {
+      await deps.cf.createR2Bucket(bucket);
+      await deps.store.setTenantBucket(tenant.id, bucket);
+      await mark("r2_bucket");
     }
+
+    // 4. Bucket-scoped creds. ALWAYS re-minted, on a fresh run and on a resume alike: the value is
+    //    never stored, so there is nothing to reuse and nothing a continuation could reconstruct.
+    //
+    //    MINT -> REBIND -> REVOKE, and the ORDER IS THE SAFETY PROPERTY (cp#301 item 3). The revoke
+    //    used to run FIRST, which is correct on a fresh provision because nothing is bound yet. It
+    //    is NOT correct on a resume: wfp_upload is not atomic, so a driver that died after the
+    //    worker upload but before its step was marked leaves a LIVE tenant Worker holding the old
+    //    secret, and the tenant row cannot detect it (script_name is written after the upload, so
+    //    NULL is produced identically by "no Worker" and "Worker exists and is bound").
+    //
+    //    THE TWO FAILURE DIRECTIONS ARE NOT SYMMETRIC, which is the whole reason for the order:
+    //      revoke-then-die  -> a live Worker bound to a DEAD credential. Silent, surfaces weeks
+    //                          later as a storage bug in another subsystem, and nothing points at
+    //                          it. Unrecoverable without already knowing to look.
+    //      mint-then-die    -> TWO live grants, one orphaned. Loud, logged, revocable by id, and
+    //                          teardownTenant also revokes by NAME, so it is reaped either way.
+    //    A cleanup task with an owner beats a studio that provisions green and cannot read its own
+    //    bucket. The revoke therefore happens AFTER wfp_upload has rebound the worker, below.
+    const previousTokenId = tenant.r2_token_id;
     const token = await deps.tokenMinter.mintBucketToken(tenantR2TokenName(tenant.slug), bucket);
     // Persist the id IMMEDIATELY (cf#91 / #93): if we die between mint and the next await, teardown
     // can still revoke by id. Hashing the secret value is pure CPU and can wait.
@@ -637,7 +688,19 @@ export async function runProvisionJob(
     //    because the tenant brings the account. Deriving the mode from who brought a key means
     //    there is no third state where the two can disagree.
     let endpoints: TenantEndpoint[];
-    if (runpodApiKey) {
+    if (complete("runpod_endpoints")) {
+      // RESUME past the endpoints step. Read them back rather than re-resolving: on the dedicated
+      // shape re-creating would touch a key this invocation does not have, and on the shared shape
+      // the pool could have been reconfigured since, which would silently move a live tenant.
+      endpoints = readTenantEndpoints(tenant);
+      if (!endpoints.length) {
+        throw new ProvisionFailure(
+          "runpod_endpoints",
+          "the endpoints recorded for this tenant cannot be read, although the provision got past " +
+            "the step that writes them; re-provision to continue",
+        );
+      }
+    } else if (runpodApiKey) {
       endpoints = await deps.runpod.createEndpoints(runpodApiKey, tenant.slug, {
         endpoint: deps.r2Endpoint,
         accessKeyId: token.id,
@@ -709,7 +772,7 @@ export async function runProvisionJob(
         // studio code, so the studio bytes stay byte-identical to self-host (parity). A WfP user
         // worker carrying a dispatch_namespace binding was live-proven in the cf#99 step-1 probe.
         { type: "dispatch_namespace", name: "MODULE_DISPATCH", namespace: deps.moduleNamespace },
-        { type: "d1", name: "DB", id: db.uuid },
+        { type: "d1", name: "DB", id: dbUuid },
         { type: "r2_bucket", name: "R2_RENDERS", bucket_name: bucket },
         { type: "r2_bucket", name: "R2", bucket_name: bucket },
         { type: "plain_text", name: "AUTH_MODE", text: "token" },
@@ -786,10 +849,32 @@ export async function runProvisionJob(
         ...abuseReportUrlBindings(deps.abuseReportUrl),
       ],
     });
-    await deps.store.setTenantScript(tenant.id, deps.tenantScriptName(tenant.slug), deps.release);
+    await deps.store.setTenantScript(tenant.id, deps.tenantScriptName(tenant.slug), release);
     // Persist the token VALUE, encrypted, so the dispatcher can inject it. Never plaintext at rest.
     await deps.store.setTenantStudioToken(tenant.id, await encryptStudioToken(deps.kek, studioApiToken));
     await mark("wfp_upload");
+
+    // THE REVOKE, DEFERRED TO HERE (cp#301 item 3). See the ordering rationale at the mint above.
+    //
+    // The worker is now bound to the NEW secret, so the old grant is provably unreferenced and can
+    // go. Running it before the upload was safe on a fresh provision and unsafe on a resume, and the
+    // two paths share this code, so the order that is correct for both is the one that waits.
+    //
+    // GUARDED ON INEQUALITY as well as presence: the mint is by NAME and adopt-by-name is a shape
+    // this repo uses elsewhere, so a minter that returned the SAME id would otherwise have us revoke
+    // the credential we just bound -- the exact dead-binding outcome the ordering exists to prevent,
+    // reached from the other side.
+    //
+    // Failure here is LOGGED, not fatal, unchanged from the original placement: a stale grant we
+    // could not clean up is a real problem and it must be visible, but stranding a provisioned
+    // tenant over it would be worse.
+    if (previousTokenId && previousTokenId !== token.id) {
+      try {
+        await deps.tokenMinter.revoke(previousTokenId);
+      } catch (e) {
+        deps.log("r2_token.revoke_failed", { tenant: tenant.id, error: String(e) });
+      }
+    }
 
     // 7. Upload the tenant MODULE scripts (cf#99) into the shared modules namespace, each carrying
     //    its endpoint id. Key B is NOT bound yet -- it lands in installInvokeKey, alongside the
@@ -809,7 +894,7 @@ export async function runProvisionJob(
       }
       aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
     }
-    await uploadTenantModules(deps, tenant.id, tenant.slug, endpoints, db.uuid, undefined, aigTokenValue);
+    await uploadTenantModules(deps, tenant.id, tenant.slug, endpoints, dbUuid, undefined, aigTokenValue);
     await mark("modules_upload");
 
     // 8. Install each module through the studio's OWN conformance-gated route (cf#99): the studio
@@ -973,7 +1058,9 @@ export async function continueProvisionJob(
   budgetMs: number = PROVISION_INVOCATION_BUDGET_MS,
 ): Promise<ProvisionOutcome> {
   const startedAt = clock.now();
-  const done: ProvisionStep[] = PROVISION_STEPS.filter((s) => stepsDone.includes(s));
+  // Typed MARKABLE rather than ProvisionStep: the source is PROVISION_STEPS itself, so every
+  // element is a step a job can record, and a resume hands this list straight to runProvisionJob.
+  const done: MarkableProvisionStep[] = PROVISION_STEPS.filter((s) => stepsDone.includes(s));
   const timeStep = stepTimer(startedAt);
   const mark = async (step: MarkableProvisionStep) => {
     done.push(step);
@@ -986,7 +1073,7 @@ export async function continueProvisionJob(
     deps.log("provision.step", { tenant: tenant.id, job: jobId, phase: "resume", ...timeStep(step, at) });
     if (!YIELD_UNSAFE_STEPS.has(step) && at - startedAt >= budgetMs) throw new ProvisionYield(step);
   };
-  const complete = (step: ProvisionStep) => done.includes(step);
+  const complete = (step: MarkableProvisionStep) => done.includes(step);
 
   const stopHeartbeat = startLeaseHeartbeat(deps, jobId);
   try {
@@ -1014,17 +1101,39 @@ export async function continueProvisionJob(
           "from it; this row cannot be resumed",
       );
     }
-    // GUARD 5, PROMOTED. This was never written as a guard: it was a `telemetryD1Id` field handed to
-    // runModuleSteps, whose refusal lives one module away in uploadTenantModules. It is coupled to
-    // the boundary exactly like the visible guards below and was invisible to anyone reading this
-    // preamble. Stated here, where the disagreement it detects is a fact about THIS row.
-    if (complete("d1_create") !== (tenant.d1_database_id !== null)) {
+    // GUARD 5, PROMOTED then SPLIT. This was never written as a guard: it was a `telemetryD1Id`
+    // field handed to runModuleSteps, whose refusal lives one module away in uploadTenantModules.
+    //
+    // SPLIT INTO TWO NAMED REFUSALS (cp#301 item 3) because the two directions of the disagreement
+    // are not the same kind of state, and item 3 relaxes exactly one of them. One combined check
+    // with one message would mean relaxing half a condition, which is the shape that takes the other
+    // half with it by accident.
+    //
+    // NOT PRODUCIBLE: progress claims the step and the row has no id. runProvisionJob calls
+    // setTenantD1 IMMEDIATELY BEFORE mark("d1_create"), so no code path marks that step without the
+    // id. This is corruption, and it refuses permanently on both shapes.
+    if (complete("d1_create") && tenant.d1_database_id === null) {
       throw new ProvisionFailure(
         "d1_create",
-        "the job progress record and the tenant row disagree about the database " +
-          `(progress says d1_create ${complete("d1_create") ? "completed" : "did not run"}, the row ` +
-          `${tenant.d1_database_id ? "has" : "has no"} database id); this row cannot be resumed`,
+        "the job progress record says the database was created but the tenant row has no database " +
+          "id, so this row is inconsistent and cannot be resumed",
       );
+    }
+    // PRODUCIBLE, and therefore RECOVERABLE rather than refused: the row has an id and progress does
+    // not claim the step, which is exactly what a driver that died between setTenantD1 and mark
+    // leaves behind. createD1 is adopt-on-exists, so re-running that step is safe and lands on the
+    // same database. Refusing here would strand a tenant that is fine.
+    //
+    // It is NOT silently ignored: the mismatch is logged, because a row and its progress disagreeing
+    // is worth seeing even when it is benign, and this is the only place that can see it.
+    if (!complete("d1_create") && tenant.d1_database_id !== null) {
+      deps.log("provision.resume_adopts_database", {
+        tenant: tenant.id,
+        job: jobId,
+        database: tenant.d1_database_id,
+        reason: "the row carries a database id that the progress record does not claim; d1_create " +
+          "will re-run and adopt it",
+      });
     }
 
     // ---- THE MODE, FROM THE JOB ROW (cp#301, migration 0022) -------------------------------------
@@ -1078,14 +1187,43 @@ export async function continueProvisionJob(
         );
       }
       if (recordedMode === "shared") {
-        // The one refusal that is a MISSING CAPABILITY rather than a custody rule. Named as such so
-        // it is not mistaken for the permanent one above, and so item 3 has an unambiguous target.
-        throw new ProvisionFailure(
-          inferStep(done),
-          "this studio runs on the shared pool and needs no key of its own, but finishing an " +
-            "interrupted provision from this point is not supported yet; start provisioning again " +
-            "to continue",
-        );
+        // THE SUPPORTED PATH (cp#301 item 3). A pooled tenant needs no key A, so everything this
+        // region does is reachable from persisted state plus a credential we can re-mint.
+        //
+        // DELEGATES rather than reimplementing. The steps live in exactly one function, the way the
+        // module half already does (runModuleSteps, cf#103): a second copy of the provisioning
+        // sequence is a copy that drifts, and this one would drift on the path nobody exercises
+        // until something has already gone wrong.
+        //
+        // THE RELEASE COMES FROM THE JOB ROW, never deps.release. tenants.studio_release is NULL
+        // across this entire region (it is written inside wfp_upload), which is why item 1 recorded
+        // the pin on the job at creation. A missing pin REFUSES: a fallback would turn "I cannot
+        // tell which release this job is building" into a confident wrong answer, and the schema is
+        // already migrated by then.
+        if (!job.to_release) {
+          throw new ProvisionFailure(
+            inferStep(done),
+            "this provision did not record which release it was building, so resuming it could " +
+              "upload a studio that does not match the database schema already created for it; " +
+              "start provisioning again to continue",
+          );
+        }
+        // The heartbeat is handed over with the job: runProvisionJob starts its own, and two
+        // beating on one lease is two writers on one claim.
+        stopHeartbeat();
+        deps.log("provision.resume_pooled", {
+          tenant: tenant.id,
+          job: jobId,
+          from: inferStep(done),
+          release: job.to_release,
+        });
+        // No key, by construction: this branch exists BECAUSE the tenant brought none. Passing null
+        // is what selects the shared shape inside the endpoints step, the same way the original
+        // provision selected it.
+        return await runProvisionJob(deps, jobId, tenant, null, clock, budgetMs, {
+          done,
+          release: job.to_release,
+        });
       }
       // An unrecognised value is its own case, NOT a fall-through into the shared branch. The column
       // is written by one call site with a typed value, so reaching this means something else wrote
