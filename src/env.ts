@@ -175,6 +175,22 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    */
   SHARED_RUNPOD_INVOKE_KEY?: string;
 
+  /**
+   * The key that signs the per-tenant proxy credential (cp#290, runpod-proxy-auth.ts). A SECRET,
+   * and a per-function one: it authenticates tenants to OUR routes and is worthless anywhere else.
+   *
+   * NOT the RunPod key and not interchangeable with it. SHARED_RUNPOD_INVOKE_KEY is the credential
+   * the plane presents UPSTREAM to RunPod; this is the credential tenants present DOWNSTREAM to the
+   * plane. Conflating them would put a RunPod-capable secret back inside a tenant namespace, which
+   * is the entire thing the proxy exists to stop.
+   *
+   * ABSENT MEANS THE PROXY REFUSES EVERY CALL, which is the correct failure direction: no token can
+   * be minted and none can verify, so a misconfigured plane serves nobody rather than serving
+   * everybody. Rotating it invalidates every tenant's token at once -- deliberately coarse, and the
+   * reason per-tenant refusal is enforced on the submit path instead.
+   */
+  RUNPOD_PROXY_SIGNING_KEY?: string;
+
   // ---- provisioner wiring (#53). ALL of these must be present for provisioning to be offered;
   // a partially configured provisioner refuses (503 provisioner_unconfigured) rather than parking
   // tenants on jobs nothing will ever run. ----
@@ -409,6 +425,9 @@ export const ENV_SECRETS = [
   // sibling SHARED_RUNPOD_ENDPOINTS is a plain var and IS in the four lists, which is the split
   // this pair exists to make: identifiers in the config, the credential out of band.
   "SHARED_RUNPOD_INVOKE_KEY",
+  // cp#290: signs the per-tenant proxy credential. Declared here for the same reason its sibling
+  // is -- it is delivered by `wrangler secret put`, so the census must not ask a deploy list for it.
+  "RUNPOD_PROXY_SIGNING_KEY",
 ] as const satisfies readonly (keyof ControlPlaneEnv)[];
 
 export const ENV_BINDINGS = [

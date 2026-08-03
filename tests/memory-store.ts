@@ -29,6 +29,9 @@ import type {
   TenantResourceKind,
   TenantResourceRefs,
   ResourceReferrer,
+  ProxyJobOpen,
+  ProxyJobRef,
+  ProxyJobClose,
 } from "../src/store";
 import { classifySlugClaim, leaseIsLive, JOB_LEASE_SECONDS, TIER_A_STATUSES } from "../src/store";
 
@@ -480,6 +483,61 @@ export class MemoryStore implements ControlPlaneStore {
       });
     }
     return rows.length;
+  }
+
+  /**
+   * cp#290, the PROXY push path. Mirrors the two D1 semantics a caller can actually observe:
+   * `source` is 'proxy' on a row the proxy opened, and the close is guarded by `terminal_at IS
+   * NULL` so a duplicate terminal is a no-op returning 0 rather than a second write. A fake that
+   * closed unconditionally would let the idempotency tests pass against semantics production does
+   * not have, which is the one thing a fake store must never do.
+   */
+  async openRunpodProxyJob(row: ProxyJobOpen): Promise<void> {
+    const prev = this.jobIndex.get(row.job_id);
+    this.jobIndex.set(row.job_id, {
+      ...prev,
+      job_id: row.job_id,
+      tenant_id: row.tenant_id,
+      tenant_slug: row.tenant_slug,
+      module: row.module ?? prev?.module ?? null,
+      endpoint_id: row.endpoint_id,
+      outcome: prev?.outcome ?? "submitted",
+      submitted_at: prev?.submitted_at ?? row.submitted_at,
+      terminal_at: prev?.terminal_at ?? null,
+      source: "proxy",
+      webhook_token_sha256: row.webhook_token_sha256,
+    });
+  }
+
+  async findRunpodProxyJobByWebhookToken(tokenSha256: string): Promise<ProxyJobRef | null> {
+    for (const row of this.jobIndex.values()) {
+      if (row.webhook_token_sha256 === tokenSha256) {
+        return {
+          job_id: String(row.job_id),
+          tenant_id: String(row.tenant_id),
+          endpoint_id: row.endpoint_id == null ? null : String(row.endpoint_id),
+          terminal_at: row.terminal_at == null ? null : Number(row.terminal_at),
+        };
+      }
+    }
+    return null;
+  }
+
+  async closeRunpodProxyJob(row: ProxyJobClose): Promise<number> {
+    const prev = this.jobIndex.get(row.job_id);
+    // FIRST WRITE WINS, exactly as the SQL guard does. Absent row and already-closed row both
+    // answer 0, and both are states the callback route has to be able to tell from a real close.
+    if (!prev || prev.terminal_at != null) return 0;
+    this.jobIndex.set(row.job_id, {
+      ...prev,
+      outcome: row.outcome,
+      status_raw: row.status_raw,
+      execution_ms: row.execution_ms,
+      delay_ms: row.delay_ms,
+      terminal_at: row.terminal_at,
+      closed_at: new Date().toISOString(),
+    });
+    return 1;
   }
 
   // ---- preservation holds (cp#118) -------------------------------------------------------------

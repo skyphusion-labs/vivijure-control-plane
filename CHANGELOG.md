@@ -6,6 +6,47 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(runpod-proxy): wire the ingress -- submit, poll and callback routes (cp#290)
+
+cp#291 landed the primitives and said plainly that they had no caller, so every ruling on cp#290
+guarded nothing in production. This is the caller. `POST <base>/<endpoint>/run`, the three poll
+verbs, and `POST /api/runpod/webhook/<token>` are mounted ABOVE the session gate, because the caller
+is a tenant module worker holding a bearer token and no cookie.
+
+THE VERB SURFACE IS THE POINT. `purge-queue` -- which takes no job id, wipes an endpoint's queue for
+every tenant on it, and which RunPod's three-value per-endpoint enum can never refuse while
+permitting `run` -- is now refused by a matcher rather than bounded by a key. An unmatched path
+under the prefix answers 404 and is never forwarded. `runsync` is absent because nothing uses it and
+a verb the meter has never seen is a verb it cannot price.
+
+THE CALLBACK IS AN UNTRUSTED TRIGGER, MADE STRUCTURAL. `handleProxyWebhook` is not handed the
+Request at all, so there is no body in scope to be believed; terminal facts come from a
+`GET /status/{id}` we issue with our own credential, at the endpoint from our own row. Proved by
+injecting the real defect (a handler that trusts the inbound body) and watching four tests go red,
+including the forged-token case, then reverting. A test asserts that a callback whose body ERRORS on
+read still closes the row, with the same poisoned body on the submit route as its control.
+
+THE TENANT CREDENTIAL IS A KEYED MAC, NOT A STORED TOKEN, and that is a deliberate trade. The poll
+half must hold no store -- that is what makes a poll structurally incapable of metering, and the
+intended deployment is a poll Worker with no D1 binding at all. A token requiring a table lookup
+cannot be verified on a Worker without a database, so choosing one would have quietly foreclosed
+that split. The cost is that revocation is not per-row: per-tenant refusal is enforced on the SUBMIT
+path (live, unsuspended, `runpod_mode = 'shared'`), which is the only path that spends, while poll
+and cancel stay reachable for jobs already in flight because cancel is the spend-leak guard.
+
+Also: migration 0021 (`webhook_token_sha256` plus a partial UNIQUE index) because RunPod takes the
+callback URL in the /run body, so the token must exist before the job id does and cannot be derived
+from it. Three store methods proved against real SQLite through the shipped `D1Store`, including the
+`WHERE terminal_at IS NULL` guard that stands between one job and a triple charge. New secret
+`RUNPOD_PROXY_SIGNING_KEY` (docs/deploy.md); absent means the proxy refuses everything, which is the
+correct direction. Ten live probes against `wrangler dev` on workerd, which is how the callback path
+was caught answering a generic 500 instead of a named refusal on a store failure.
+
+NOT DONE, and stated rather than left to be noticed: no tenant module calls any of this yet. The
+module-side base-URL swap and the provisioning change that stops installing the RunPod key are
+separate, and until both land the shared tier still reaches RunPod directly.
+
+
 ### feat(runpod-proxy): submit interception, job-id -> tenant push, meter at submit and terminal (cp#288)
 
 The plane-side RunPod proxy foundation. On the shared tier no tenant-namespace script may hold a

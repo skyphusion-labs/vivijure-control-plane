@@ -468,6 +468,51 @@ export interface AdminAuditRow {
   created_at: string;
 }
 
+/**
+ * A job the proxy is opening (cp#290). Every field is known at submit time except the job id, which
+ * is why this write happens AFTER the upstream call rather than before it.
+ */
+export interface ProxyJobOpen {
+  job_id: string;
+  tenant_id: string;
+  /** The slug AS IT WAS at submit. Slugs are leases and get reused; resolving one later would
+   *  answer about whoever holds it now, so it is denormalised here as a fact about this job. */
+  tenant_slug: string;
+  /** Tenant-ASSERTED label (a request header), used for attribution only. It never decides money:
+   *  what a job cost is priced off endpoint_id, which the tenant cannot misreport because the proxy
+   *  read it off the URL it was willing to forward. */
+  module: string | null;
+  /** A pooled endpoint id, or a public model slug. Both meanings live in this column by design
+   *  (see migration 0020) because the cost door prices per slug. */
+  endpoint_id: string;
+  submitted_at: number;
+  /** SHA-256 hex of the per-job callback token. The raw token is never stored. */
+  webhook_token_sha256: string;
+}
+
+/** What the callback route needs to go and ask RunPod what actually happened. */
+export interface ProxyJobRef {
+  job_id: string;
+  tenant_id: string;
+  endpoint_id: string | null;
+  /** Non-null means this job is already closed. The close is idempotent regardless; this is here so
+   *  a duplicate callback can be LOGGED as a duplicate rather than looking like a first delivery. */
+  terminal_at: number | null;
+}
+
+/** Terminal facts, taken from a status read WE initiated. Never from the inbound webhook body. */
+export interface ProxyJobClose {
+  job_id: string;
+  outcome: string;
+  /** The vendor's own vocabulary, verbatim, so a state we have not modelled is still recoverable. */
+  status_raw: string;
+  /** NULL, never 0, when RunPod did not report it: a CANCELLED job reports neither field, and a
+   *  zero would read as a real measurement of a job that took no time. */
+  execution_ms: number | null;
+  delay_ms: number | null;
+  terminal_at: number;
+}
+
 export interface ControlPlaneStore {
   // accounts + identities
   getAccountById(id: string): Promise<Account | null>;
@@ -666,6 +711,45 @@ export interface ControlPlaneStore {
     tenantSlug: string,
     rows: HarvestedJob[],
   ): Promise<number>;
+
+  // ---- the PROXY push path into the same index (cp#290, migrations 0020 + 0021) ----------------
+  //
+  // Two writes per job, and no more: one when the proxy submits, one when the job ends. The poll
+  // path has no store at all, which is what keeps this at ~2 writes per job rather than the
+  // (shots x ticks) a per-poll write would cost on a database that serialises queries.
+
+  /**
+   * Open the row at SUBMIT, the moment RunPod hands back a job id.
+   *
+   * This is the attribution write, and it is the whole reason the proxy exists: the (job id ->
+   * tenant) map is produced AT SOURCE instead of reconstructed later by a fan-out scan of every
+   * tenant database. `source` is written 'proxy' so a reader can tell a row we saw submitted from
+   * one we found afterwards -- different freshness, different coverage, and a reader that cannot
+   * tell them apart will read an absent push as an absent JOB.
+   */
+  openRunpodProxyJob(row: ProxyJobOpen): Promise<void>;
+
+  /**
+   * Resolve the callback credential to its job. Returns null for an unknown token, which is the
+   * ONLY thing the callback route is allowed to learn from an unverified caller.
+   *
+   * The endpoint id comes back because the authoritative `GET /status/{id}` needs it, and it must
+   * come from OUR row rather than from the inbound body -- the body is a stranger's claim.
+   */
+  findRunpodProxyJobByWebhookToken(tokenSha256: string): Promise<ProxyJobRef | null>;
+
+  /**
+   * Close the row at TERMINAL, from facts we read ourselves.
+   *
+   * IDEMPOTENT BY `WHERE terminal_at IS NULL`, and that guard is load-bearing under ORDINARY
+   * conditions, not only against an attacker: RunPod delivered one job's terminal callback THREE
+   * times with byte-identical bodies when the receiver was merely slow enough to look failed
+   * (measured 2026-08-02). Without it that is a 3x double-count of one job.
+   *
+   * Returns the number of rows actually written, so a caller can tell a first close from a
+   * duplicate rather than reading a silent no-op as success.
+   */
+  closeRunpodProxyJob(row: ProxyJobClose): Promise<number>;
 
   // ---- preservation holds (cp#118) -------------------------------------------------------------
   //
