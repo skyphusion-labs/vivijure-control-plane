@@ -1,11 +1,11 @@
--- The control-plane-side RunPod job -> tenant index (cp#270, for cp#225).
+-- The control-plane-side RunPod job -> tenant index (cp#270, for vivijure-cf#225).
 --
 -- WHY IT EXISTS. On the dedicated shape the endpoint NAME carried attribution for free: an endpoint
 -- is called `vivijure-<slug>-<key>`, so a job on it belongs to that tenant by construction. Pooling
 -- removes that. A pooled endpoint's jobs are a mixture, and the only remaining map from a RunPod job
 -- id back to a tenant is a fan-out scan of every tenant database.
 --
--- WHY THAT MATTERS ENOUGH TO BE A TABLE. cp#225 is the report-driven CSAM enforcement path, and it
+-- WHY THAT MATTERS ENOUGH TO BE A TABLE. vivijure-cf#225 is the report-driven CSAM enforcement path, and it
 -- is the one sanctioned deviation from the no-surveillance posture. A credible report arrives and
 -- the entire procedure is reaching the specific job. A design that makes that reachable only by
 -- scanning every tenant database degrades the one enforcement mechanism this product has committed
@@ -57,6 +57,6 @@ CREATE TABLE IF NOT EXISTS runpod_job_index (
   harvested_at TEXT NOT NULL
 );
 
--- The cp#225 access path: given a tenant under investigation, its jobs in time order.
+-- The vivijure-cf#225 access path: given a tenant under investigation, its jobs in time order.
 CREATE INDEX IF NOT EXISTS idx_runpod_job_index_tenant
   ON runpod_job_index (tenant_id, submitted_at);

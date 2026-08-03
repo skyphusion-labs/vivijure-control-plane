@@ -114,11 +114,11 @@ guarded path. Route wiring and the reconciler sweep are not here, so **cp#290's 
 ENFORCED until the handler lands**. And `COMPLETED` was never observed in the probe (all three probe
 jobs terminated FAILED or CANCELLED), so ledger coverage is measured and BILLING coverage is not --
 confirming the COMPLETED payload on the first real job the proxy handles is an explicit step.
-### feat(teardown): harvest the RunPod job to tenant index before reaping a tenant D1 (cp#270, for cp#225)
+### feat(teardown): harvest the RunPod job to tenant index before reaping a tenant D1 (cp#270, for vivijure-cf#225)
 
 On the dedicated shape the endpoint NAME carried attribution for free (`vivijure-<slug>-<key>`).
 Pooling removes that: a pooled endpoint's jobs are a mixture, and the only remaining map from a
-RunPod job id back to a tenant is a fan-out scan of every tenant database. That degrades cp#225,
+RunPod job id back to a tenant is a fan-out scan of every tenant database. That degrades vivijure-cf#225,
 the report-driven CSAM enforcement path, where reaching the specific job IS the procedure.
 
 HARVESTED, NOT PUSHED. The obvious shape is for the submitting module worker to write the mapping
