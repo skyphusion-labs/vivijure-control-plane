@@ -1838,7 +1838,7 @@ export async function teardownTenant(
   }
 
   if (opts.deleteData) {
-    // ---- HARVEST BEFORE REAP (cp#270, for cp#225) --------------------------------------------
+    // ---- HARVEST BEFORE REAP (cp#270, for vivijure-cf#225) --------------------------------------------
     //
     // ORDERED AHEAD OF THE D1 DELETE, and that order is the entire point. The RunPod job -> tenant
     // index is built by a periodic sweep that READS each tenant database, which leaves one hole:
@@ -1849,7 +1849,7 @@ export async function teardownTenant(
     // A FAILED HARVEST FAILS THE TEARDOWN. It joins `failures`, so the row does not reach the
     // provably-reaped state and a re-run will try again. That is deliberate and it is the
     // uncomfortable direction: it means a tenant database we cannot read blocks a teardown. The
-    // alternative is deleting the only copy of the attribution that cp#225's report-driven
+    // alternative is deleting the only copy of the attribution that vivijure-cf#225's report-driven
     // investigation depends on, in order to finish a cleanup that can safely be retried. An
     // un-run teardown is recoverable; a deleted mapping is not.
     //

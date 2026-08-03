@@ -1,4 +1,4 @@
-// The RunPod job -> tenant index harvest (cp#270, for cp#225).
+// The RunPod job -> tenant index harvest (cp#270, for vivijure-cf#225).
 //
 // WHAT MATTERS HERE is not that a harvest reads rows. It is the three states a harvest can be in and
 // the fact that they are DISTINGUISHABLE: complete-with-rows, complete-with-no-table, and

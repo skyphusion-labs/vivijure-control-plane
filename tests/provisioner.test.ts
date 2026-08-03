@@ -334,7 +334,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
   });
 });
 
-// cp#270 / cp#225: the harvest interlock. A tenant database is the ONLY source of the job -> tenant
+// cp#270 / vivijure-cf#225: the harvest interlock. A tenant database is the ONLY source of the job -> tenant
 // mapping, and teardown deletes it, so the harvest is ordered ahead of the delete and a harvest that
 // cannot be proven complete must stop the delete. Both directions are tested: the block, and the
 // control that shows it is not simply always blocking.
@@ -373,7 +373,7 @@ describe("teardown harvests the job index before reaping the D1 (cp#270)", () =>
   });
 
   it("BLOCKS THE D1 DELETE when the harvest fails, and records it as a failure", async () => {
-    // The interlock. The alternative is deleting the only copy of the attribution cp#225 depends on
+    // The interlock. The alternative is deleting the only copy of the attribution vivijure-cf#225 depends on
     // in order to finish a cleanup that could simply be retried.
     const t = await tenant();
     const cf = jobLogCf(() => {
