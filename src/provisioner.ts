@@ -1008,6 +1008,40 @@ export async function continueProvisionJob(
     const studioApiToken = await decryptStudioToken(deps.kek, tenant.studio_token_enc);
     const script = deps.tenantScriptName(tenant.slug);
 
+    // THE RELEASE THIS TENANT IS ACTUALLY ON, not the plane's current pin (cp#301).
+    //
+    // WHAT WAS WRONG: this function passed `deps.release` to runModuleSteps and wrote it to
+    // modules_release. `deps.release` is the PLANE-WIDE STUDIO_RELEASE, read fresh on every
+    // invocation, while the studio worker was uploaded from whatever the pin was at `wfp_upload`
+    // time and recorded in tenants.studio_release. A resume that runs after the operator advances
+    // the pin therefore gave the tenant a studio from release A and MODULES FROM RELEASE B.
+    //
+    // That is precisely the pairing module-bundle-r2.ts says cannot happen: "Modules ship WITH the
+    // studio release they were built and conformance-proven against (one tag, one artifact), so a
+    // tenant's studio and its modules can never be a mismatched pair." The resume path could
+    // produce exactly that pair, and the window is real -- STUDIO_RELEASE moved v1.13.0 -> v1.19.3
+    // in a single day on 2026-08-03.
+    //
+    // Same lesson the MODULE UPGRADE route already learned (see `release` being a required argument
+    // rather than deps.release, below): a release is a property of the WORK, not of the moment the
+    // work happens to be driven.
+    //
+    // REFUSES rather than falling back. A fallback to deps.release is exactly the wrong shape here:
+    // it would turn "I cannot tell which release this tenant is on" into a confident wrong answer,
+    // which is the mismatch this block exists to prevent. Unreachable today (guard 1 above proves
+    // wfp_upload completed, and setTenantScript writes script_name and studio_release together in
+    // that step), so it is a structural assertion rather than an expected path -- and it must STAY
+    // a refusal if cp#301's re-mint work later makes the pre-wfp_upload region resumable, where the
+    // pin will have to come from the job row instead.
+    const pinnedRelease = tenant.studio_release;
+    if (!pinnedRelease) {
+      throw new ProvisionFailure(
+        "wfp_upload",
+        "no studio release recorded for this tenant, so the modules that pair with its studio " +
+          "cannot be identified; re-provision to continue",
+      );
+    }
+
     await runModuleSteps(
       deps,
       {
@@ -1016,7 +1050,7 @@ export async function continueProvisionJob(
         script,
         endpoints,
         studioApiToken,
-        release: deps.release,
+        release: pinnedRelease,
         telemetryD1Id: tenant.d1_database_id,
       },
       // Resume semantics: skip what the progress record says is already done. The UPGRADE caller
@@ -1030,7 +1064,10 @@ export async function continueProvisionJob(
     // never runs the tail of runProvisionJob. Missing it here would mean the column is populated
     // only for tenants whose provision happened to fit in one invocation, which is exactly the kind
     // of state that looks correct until the slow case shows up.
-    await deps.store.setTenantModulesRelease(tenant.id, deps.release);
+    // The release we ACTUALLY uploaded from, so the column is a record rather than a guess. Writing
+    // deps.release here would restate the current pin regardless of what these modules were built
+    // from, which is the same defect one field over.
+    await deps.store.setTenantModulesRelease(tenant.id, pinnedRelease);
     await deps.store.setTenantStatus(tenant.id, "awaiting_invoke_key");
     await deps.store.finishJob(jobId, "succeeded", null, null);
     deps.log("provision.resumed_to_completion", { tenant: tenant.id });
