@@ -6,9 +6,16 @@
 // can never be answered. Every other outcome leaves the row OPEN, because an open row says "nobody
 // knows" out loud and a wrongly-closed row asserts something nobody observed.
 
+import { readFileSync } from "node:fs";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { MemoryStore } from "./memory-store";
-import { runRunpodJobSweep, SWEEP_MAX_ROWS_PER_RUN, type JobSweepDeps } from "../src/runpod-job-sweep";
+import {
+  runRunpodJobSweep,
+  SWEEP_ATTEMPTS_PER_ROW,
+  SWEEP_CRON_PERIOD_MS,
+  SWEEP_MAX_ROWS_PER_RUN,
+  type JobSweepDeps,
+} from "../src/runpod-job-sweep";
 import { OBSERVED_RESULT_RETENTION_MS, RECONCILER_ADOPT_AFTER_MS } from "../src/runpod-proxy";
 
 const NOW = 1_750_000_000_000;
@@ -242,5 +249,56 @@ describe("the denominator", () => {
     expect(res).toEqual({
       ran: true, eligible: 0, examined: 0, closed: 0, unknown: 0, stillRunning: 0, errors: 0,
     });
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// THE CADENCE IS A CORRECTNESS PARAMETER, so it gets a test rather than a comment (cp#290).
+//
+// The sweep exists to catch jobs whose primary mechanism already failed once. If the resolvable
+// window only fits ONE attempt, a single slow tick or upstream blip makes a row permanently
+// `unknown` -- silently, and looking exactly like a job RunPod genuinely could not answer. Any
+// future edit to the adopt delay, the retention figure or the cron period that collapses the
+// backstop to one shot must fail HERE rather than in production months later.
+// ------------------------------------------------------------------------------------------------
+
+/** The SHIPPED computation, re-expressed for an arbitrary period so a control can drive it at a
+ *  cadence we do not deploy. Deliberately mirrors src/runpod-job-sweep.ts rather than importing a
+ *  parameterised helper: if the two ever disagree, THAT is the finding. */
+const attemptsAt = (periodMs: number): number =>
+  Math.max(0, Math.ceil((OBSERVED_RESULT_RETENTION_MS - RECONCILER_ADOPT_AFTER_MS - periodMs) / periodMs));
+
+describe("the backstop gets more than one attempt", () => {
+  it("fits at least two attempts in the resolvable window, and four at the shipped cadence", () => {
+    expect(SWEEP_ATTEMPTS_PER_ROW).toBeGreaterThanOrEqual(2);
+    expect(SWEEP_ATTEMPTS_PER_ROW).toBe(4);
+    // The shipped constant and the re-expressed computation must agree at the shipped period.
+    expect(attemptsAt(SWEEP_CRON_PERIOD_MS)).toBe(SWEEP_ATTEMPTS_PER_ROW);
+  });
+
+  // THIS CONTROL EARNED ITS PLACE IMMEDIATELY. The first formula used Math.floor and returned the
+  // correct 4 at the shipped cadence -- by accident, because 20/5 divides exactly -- while returning
+  // ZERO here, at the cadence the ruling was actually about. The control disagreed with the
+  // prediction, and the FORMULA was what was wrong. Without it a silently-wrong computation would
+  // have shipped agreeing with us on the one input we happened to check.
+  it("CONTROL: the same computation collapses to ONE attempt at the old 15-minute cadence", () => {
+    expect(attemptsAt(15 * 60_000)).toBe(1);
+  });
+
+  it("CONTROL: and to ZERO when a period cannot fit in the window at all", () => {
+    // Guards the clamp, and pins the direction: an impossible cadence must report no attempts
+    // rather than a negative number that compares as "fine" against a >= 2 floor.
+    expect(attemptsAt(40 * 60_000)).toBe(0);
+  });
+
+  it("the deployed cron matches the period the arithmetic assumes", () => {
+    // The number lives in wrangler.toml.example, which no test imports. Reading the file is what
+    // stops the config and this computation drifting apart silently -- the failure otherwise is a
+    // backstop that believes it has four attempts and has one.
+    const toml = readFileSync(new URL("../wrangler.toml.example", import.meta.url).pathname, "utf8");
+    const cron = /crons\s*=\s*\[\s*"([^"]+)"/.exec(toml)?.[1];
+    expect(cron).toBe("*/5 * * * *");
+    const everyMinutes = Number(/^\*\/(\d+)/.exec(cron ?? "")?.[1]);
+    expect(everyMinutes * 60_000).toBe(SWEEP_CRON_PERIOD_MS);
   });
 });

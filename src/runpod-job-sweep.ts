@@ -43,6 +43,45 @@ import type { ControlPlaneStore, OpenProxyJob } from "./store";
  *  one -- that is the whole reason `countOpenRunpodProxyJobs` exists beside the list. */
 export const SWEEP_MAX_ROWS_PER_RUN = 50;
 
+/** The cron period this sweep is deployed on (wrangler.toml.example `[triggers]`). Declared here so
+ *  the arithmetic below is recomputed from a number a test can assert against, rather than from a
+ *  value that lives only in a config file nobody diffs against this file. */
+export const SWEEP_CRON_PERIOD_MS = 5 * 60_000;
+
+/**
+ * HOW MANY CHANCES THIS BACKSTOP ACTUALLY GETS. The number that decides whether it works, and the
+ * one nobody would ever recompute later, so it is computed rather than written down.
+ *
+ * A row is eligible from RECONCILER_ADOPT_AFTER_MS and unanswerable after OBSERVED_RESULT_RETENTION_MS,
+ * so the resolvable window is [adopt, retention]. Worst case a row becomes eligible immediately
+ * after a tick, losing up to one full period:
+ *
+ *     every 15 min -> 1 attempt   (t+20, then t+35, which is past retention)
+ *     every  5 min -> 4 attempts  (t+10, t+15, t+20, t+25)
+ *
+ * ONE ATTEMPT IS NOT A BACKSTOP. This exists to catch jobs whose primary mechanism already failed
+ * once; a single non-retryable shot means one slow tick, one D1 blip or one RunPod 5xx makes the row
+ * permanently `unknown` -- silently, and looking exactly like a job RunPod could not answer.
+ *
+ * A test asserts this stays >= 2, so shortening the retention figure, lengthening the adopt delay,
+ * or slowing the cron fails LOUDLY instead of quietly reducing the backstop to a single shot.
+ */
+export const SWEEP_ATTEMPTS_PER_ROW = Math.max(
+  0,
+  // COUNTS TICKS STRICTLY BEFORE RETENTION, starting one full period after eligibility (the worst
+  // case, where the row becomes eligible just after a tick and loses that one).
+  //
+  // CEIL, NOT FLOOR, and the difference is not cosmetic: the count is `k` values satisfying
+  // adopt + (k+1)*period < retention, which is ceil of the quotient. Floor happens to agree
+  // whenever the division is exact -- as it is at the shipped 5-minute cadence, 20/5 = 4 -- and
+  // disagrees everywhere else. The first version of this shipped floor, returned the right answer
+  // for the config we deploy, and returned ZERO for the 15-minute cadence the ruling was about.
+  // Caught only because the control asserting the old cadence still yields 1 disagreed with it.
+  Math.ceil(
+    (OBSERVED_RESULT_RETENTION_MS - RECONCILER_ADOPT_AFTER_MS - SWEEP_CRON_PERIOD_MS) / SWEEP_CRON_PERIOD_MS,
+  ),
+);
+
 export interface JobSweepDeps {
   fetchImpl: typeof fetch;
   runpodApiKey: () => Promise<string>;

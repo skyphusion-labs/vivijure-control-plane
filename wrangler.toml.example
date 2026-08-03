@@ -331,13 +331,38 @@ simple = { limit = 5, period = 60 }
 # Drives the scheduled() handler in src/index.ts, which pages AI Gateway logs from a watermark and
 # writes integer micro-USD usage rows the credit ledger bills from.
 #
-# WHY 15 MINUTES. Not retention: gateway retention is COUNT based (10,000,000 rows, DELETE_OLDEST)
-# rather than a time window, so at the hosted Opus call rate no plausible cadence loses rows. The
-# interval is chosen against two other things. Shorter would bill in tighter windows but writes a
-# period row per tick forever (a 5-minute cron is 288 rows a day of pure bookkeeping); longer leaves
-# a bigger backlog for one run to page, and a run that hits its page cap reports the window
-# incomplete, which is honest but unbillable until it catches up. 15 minutes is 96 rows a day and a
-# backlog one run clears many times over.
+# WHY 5 MINUTES, AND WHY THIS BLOCK USED TO ARGUE FOR 15 (cp#290).
+#
+# There are now TWO consumers on this cron and only one of them is indifferent to the cadence. The
+# reasoning below is preserved rather than replaced, because it was correct for the meter and is
+# still the reason the change is cheap -- what moved is that a second consumer arrived for whom the
+# interval is a CORRECTNESS parameter, not a bookkeeping one.
+#
+#   THE METER (unchanged, cadence-indifferent). Gateway retention is COUNT based (10,000,000 rows,
+#   DELETE_OLDEST) rather than a time window, so at the hosted Opus call rate no plausible cadence
+#   loses rows. Shorter bills in tighter windows but writes a period row per tick forever: 5 minutes
+#   is 288 rows a day against 96 at 15. That is the entire cost of this change to the meter, it is
+#   pure bookkeeping volume, and period windows TILE off the previous run's recorded instant rather
+#   than off this number -- so the interval and the ledger cannot disagree about where a window
+#   ended. This block previously rejected 5 minutes on that row count alone. With one consumer that
+#   was the right call.
+#
+#   THE RUNPOD JOB SWEEP (new, and cadence IS correctness). A row becomes eligible at
+#   RECONCILER_ADOPT_AFTER_MS (5 min) and becomes unanswerable at RunPod's result retention
+#   (30 min, first-party docs), so the window in which a lost job can still be resolved is
+#   [t+5, t+30] -- 25 minutes wide. THE NUMBER THAT DECIDES WHETHER THE BACKSTOP WORKS IS HOW MANY
+#   ATTEMPTS FIT IN IT:
+#
+#       at */15 : worst case ticks at t+20, then t+35 -- past retention. ONE attempt.
+#       at */5  : worst case ticks at t+10/15/20/25.  FOUR attempts (five when aligned).
+#
+#   One non-retryable attempt is not a backstop. This sweep exists to catch jobs whose primary
+#   mechanism ALREADY failed once, so a single slow tick, D1 blip or RunPod 5xx would make the row
+#   permanently `unknown` -- silent, and indistinguishable from a job RunPod genuinely could not
+#   answer. 192 extra bookkeeping rows a day is the correct price for that.
+#
+# Recomputed in src/runpod-job-sweep.ts (SWEEP_ATTEMPTS_PER_ROW) so the arithmetic lives beside the
+# constants it is derived from and goes stale loudly rather than silently.
 #
 # CHANGING IT IS SAFE AND NEEDS NO CODE CHANGE. Period windows TILE off the previous run's recorded
 # instant, never off a configured interval, so this number and the ledger can never disagree about
@@ -348,7 +373,7 @@ simple = { limit = 5, period = 60 }
 # windowed read is what catches it -- a billing window with no roll-up run assigned to it reports
 # complete:false, so a statement built on it refuses rather than bills a zero.
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/5 * * * *"]
 
 # SECRETS (wrangler secret put, never in this file):
 #   POSTERN_SEND_TOKEN          -- bearer for postern's send door; the sender identity is BOUND to
