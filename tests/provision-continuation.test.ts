@@ -359,6 +359,58 @@ describe("continueProvisionJob", () => {
     expect((d as unknown as { moduleBundle: { fetch: ReturnType<typeof vi.fn> } }).moduleBundle.fetch).not.toHaveBeenCalled();
   });
 
+
+  // ---------------------------------------------------------------------------------------------
+  // cp#301: a resume must use the release the TENANT is on, never the plane's current pin.
+  //
+  // WHY NO EXISTING TEST COULD SEE THIS: `seedTenant({throughStudio:true})` records
+  // studio_release "v1.0.0" and the `deps()` fixture sets `release: "v1.0.0"`. They are THE SAME
+  // VALUE, so every assertion passed identically whether the code read the tenant or the plane.
+  // The instrument was fully capable; the two inputs had simply never been allowed to differ.
+  // Making them differ is the entire fixture change, and it is what turns these into tests.
+  it("uses the TENANT's studio release for module bundles, not the plane's advanced pin", async () => {
+    // The operator advanced STUDIO_RELEASE between this tenant's studio upload and the poll that
+    // resumes it. Real: the pin moved v1.13.0 -> v1.19.3 in one day on 2026-08-03.
+    const store = new MemoryStore();
+    const t = await seedTenant(store, { throughStudio: true }); // studio_release = v1.0.0
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"];
+    await store.updateJobProgress(job.id, "wfp_upload", JSON.stringify(stepsDone));
+    const d = deps(store, { release: "v2.0.0" } as Partial<ProvisionDeps>);
+
+    const res = await continueProvisionJob(d, job.id, t, stepsDone, fakeClock(0), 15_000);
+
+    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    // EVERY module bundle fetch must ask for the tenant's release. Asserting on the calls rather
+    // than on a count, because "it fetched something" is not the claim.
+    const fetches = (d as unknown as { moduleBundle: { fetch: ReturnType<typeof vi.fn> } }).moduleBundle.fetch.mock.calls;
+    expect(fetches.length).toBeGreaterThan(0); // floor: a vacuous pass proves nothing
+    for (const call of fetches) expect(call[0]).toBe("v1.0.0");
+    // and the recorded column must be a RECORD of what shipped, not a restatement of the pin.
+    expect(store.tenants.get(t.id)!.modules_release).toBe("v1.0.0");
+  });
+
+  it("REFUSES a resume when no studio release is recorded, rather than falling back to the pin", async () => {
+    // A fallback to deps.release would convert "I cannot tell which release this tenant is on" into
+    // a confident wrong answer, which is the mismatch the fix exists to prevent. Structurally
+    // unreachable today (guard 1 proves wfp_upload completed, which writes the column) -- asserted
+    // anyway, because it must STAY a refusal when cp#301's re-mint work opens the earlier region.
+    const store = new MemoryStore();
+    const t = await seedTenant(store, { throughStudio: true });
+    await store.setTenantStudioRelease(t.id, null);
+    const stranded = (await store.getTenantById(t.id)) as Tenant;
+    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"];
+    const d = deps(store, { release: "v2.0.0" } as Partial<ProvisionDeps>);
+
+    const res = await continueProvisionJob(d, job.id, stranded, stepsDone, fakeClock(0), 15_000);
+
+    expect(res).toMatchObject({ ok: false });
+    expect((res as { message: string }).message).toMatch(/no studio release recorded/);
+    // NOT merely "it failed": it must not have shipped anything from the wrong release first.
+    expect((d as unknown as { moduleBundle: { fetch: ReturnType<typeof vi.fn> } }).moduleBundle.fetch).not.toHaveBeenCalled();
+  });
+
   it("REFUSES honestly when the job never reached the studio upload (key A is unrecoverable)", async () => {
     // A continuation cannot mint endpoints: key A lives only in the request that carried it. Saying
     // so beats waiting forever for a driver that can never succeed.
