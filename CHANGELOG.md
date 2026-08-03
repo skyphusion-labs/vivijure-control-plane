@@ -6,6 +6,38 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.21.0 -- 2026-08-03
+
+### chore(release): v1.21.0 -- what this tag actually deploys
+
+Everything below has been on `main` and NONE of it has been live: this repo is tag-gated, so a merge
+runs CI and nothing else. This is the first tag since **34 commits** landed, and it is a substantial
+one. What the deploy carries:
+
+- **The tenant module catalog goes 7 -> 15.** The eight GPUless cost-door modules (`alibaba-wan`,
+  `alibaba-wan-lora`, `google-veo`, `kling`, `minimax-hailuo`, `narration-gen`, `seedance`,
+  `vidu-q3`) become part of what a hosted tenant is provisioned with, alongside `finish-rife`.
+- **Tenant renders land in the TENANT's bucket.** Those eight modules get an `r2_bucket` binding
+  pointing `R2_RENDERS` at the tenant bucket. Without it their self-host default is the OPERATOR
+  bucket, so this is the difference between a tenant's renders being theirs and being ours.
+- **The RunPod proxy pair is re-keyed to `reachesRunpod`.** It was bound on endpoint-backed modules
+  only; the cost door reaches RunPod at a public vendor slug with no endpoint of ours, so under the
+  old predicate all eight would have run on the direct RunPod key on a shared tenant.
+- **Module bundles are fetched at the release the WORK is on**, not the plane's current pin, so a
+  resumed provision can no longer pair a studio from one release with modules from another.
+- **The pooled shared tier**, its pre-upload resumability, the RunPod proxy ingress, the submit/
+  terminal meter, the reconciler sweep on a 5-minute cron, and the teardown job-index harvest.
+
+**`STUDIO_RELEASE` now points at the studio's `v1.20.0`**, so this deploy provisions tenants against
+that studio release and the sixteen module bundles it publishes.
+
+**TWO DIFFERENT THINGS ARE CALLED v1.20.0 AND THIS RELEASE IS WHERE THEY STOP COLLIDING.** The
+CONTROL PLANE's own previous tag was `v1.20.0`; the STUDIO release this plane pins is ALSO `v1.20.0`,
+and they are unrelated objects on separate cadences in separate repositories (see "Tag semantics" in
+`docs/deploy.md`). Until now `v1.20.0` in a sentence about this system was genuinely ambiguous.
+Moving the plane to `v1.21.0` disambiguates them by construction. When reading anything written
+before 2026-08-03, check which repo a bare `v1.20.0` refers to.
+
 ### feat(provision): the GPUless cost door for hosted tenants, with their renders in their own bucket (cp#284, cp#270, cf#394)
 
 A hosted tenant had no cost door at all: the eight cloud i2v/audio modules were published as tenant
