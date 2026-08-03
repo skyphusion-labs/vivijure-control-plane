@@ -70,20 +70,33 @@ const RECORDING = TENANT_MODULE_CATALOG.filter((s) => s.recordsRunpodJobs).map((
 const NOT_RECORDING = TENANT_MODULE_CATALOG.filter((s) => !s.recordsRunpodJobs).map((s) => s.module);
 
 describe("the catalog says WHICH modules record", () => {
-  it("five modules record, and plan-enhance does not", () => {
-    // A number, deliberately: if a sixth becomes recording, this fails and somebody re-reads the
-    // upstream module set instead of assuming the catalog kept up.
+  it("six modules record, and plan-enhance does not", () => {
+    // A LIST, deliberately, and still hand-maintained: if a seventh becomes recording, this fails
+    // and somebody re-reads the upstream module set instead of assuming the catalog kept up. It is
+    // not derived from the catalog on purpose -- a derived expectation agrees with whatever the
+    // catalog happens to say, which is this assertion inverted.
+    //
+    // cp#284 moved this from five to six: finish-rife was the sixth upstream recorder and was
+    // published as a tenant bundle by every release this plane pins while being uploaded by
+    // nothing. This test is what fired when the row landed.
     expect(RECORDING.sort()).toEqual(
-      ["finish-lipsync", "finish-upscale", "keyframe", "own-gpu", "speech-upscale"],
+      ["finish-lipsync", "finish-rife", "finish-upscale", "keyframe", "own-gpu", "speech-upscale"],
     );
     expect(NOT_RECORDING).toEqual(["plan-enhance"]);
   });
 
-  it("finish-rife, the SIXTH recording module upstream, is not provisioned by this plane at all", () => {
-    // Not a gap in this change. It is published as a tenant bundle by the studio release and this
-    // plane never uploads it, so on the hosted door its jobs do not exist rather than go unrecorded.
-    // Asserted so the day somebody adds it, they are told to set recordsRunpodJobs too.
-    expect(TENANT_MODULE_CATALOG.map((s) => s.module)).not.toContain("finish-rife");
+  it("finish-rife is catalogued AND recording, so the upstream set is fully covered (cp#284)", () => {
+    // The inverse of what this assertion said until cp#284, and kept rather than deleted because
+    // the hazard it was written for is still live: the day somebody adds a module they must set
+    // recordsRunpodJobs too, or it uploads fine, renders fine, and records nothing.
+    //
+    // Two halves, and the second is the one that would have been missed: PRESENT in the catalog,
+    // and present WITH the recording flag. A row added without the flag satisfies the first and
+    // silently drops every job row for that module.
+    const rife = TENANT_MODULE_CATALOG.find((s) => s.module === "finish-rife");
+    expect(rife, "finish-rife must be catalogued").toBeDefined();
+    expect(rife!.recordsRunpodJobs, "finish-rife records RunPod jobs upstream").toBe(true);
+    expect(rife!.endpointKey, "it rides the shared backend endpoint, per its own wrangler.toml").toBe("backend");
   });
 });
 

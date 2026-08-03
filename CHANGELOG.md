@@ -6,6 +6,43 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(provision): catalogue `finish-rife`, closing the upstream recording set (cp#284, cf#394)
+
+Six module workers record RunPod jobs upstream and five were provisioned. `finish-rife` was built
+and PUBLISHED as a tenant bundle by every release this plane pins, and uploaded by nothing, so on
+the hosted door its jobs did not go unrecorded, they did not exist. It needed a catalog row and
+nothing else.
+
+**Verified against the artifacts rather than the description**, because the audit column that made
+this look trivial says "operator-only bindings **read**" and its wrangler.toml declares an
+`R2_RENDERS` bucket. Those reconcile: the binding is declared for the SELF-HOST deploy and read
+nowhere, and it is absent from the module's `Env` interface entirely. So this is not the cp#270
+tenant-R2 envelope lane. Its Env is the two RunPod credentials, the cp#288 proxy pair and
+`TELEMETRY_DB`; its endpoint comes from the store secret `BACKEND_RUNPOD_ENDPOINT_ID`, so the row
+rides the same shared backend endpoint as `keyframe` and `own-gpu`.
+
+**The premise that actually gates a catalog row is bundle availability, and it is checked here
+against the real release.** `scripts/check-release-modules.py` against the live `v1.19.3` artifact
+goes from 6 to 7 modules and stays rc 0, with a nonexistent-module control returning rc 1 so the
+pass discriminates. A row whose bundle a release does not publish makes `moduleBundle.fetch` throw
+at `modules_upload` and fails EVERY provision, which is the ordering hazard the `plan-enhance` entry
+already documents.
+
+**Eight guards fired and every one of them was working.** Hand-maintained counts and name lists in
+`provisioner.test.ts`, `module-upgrade.test.ts` and `module-telemetry-binding.test.ts` exist so a
+catalog change cannot land unnoticed, and one says so in its own comment. They are updated, never
+derived from `TENANT_MODULE_CATALOG.length`: a derived expectation agrees with whatever the catalog
+happens to say, which is the assertion inverted. A ninth site was a COVERAGE gap rather than a
+failure -- `tenant-aig-token.test.ts` loops a hardcoded list of endpoint-backed modules and simply
+never looked at the new one, which is the shape every catalog addition opens.
+
+**One substantive consequence, flagged rather than resolved.** `finish-rife` serves the `finish`
+hook, measured at vivijure-cf `origin/main` alongside `finish-upscale` and `finish-lipsync`, so the
+partial-upgrade compatibility argument in `provisioner.ts` and `docs/control-plane.md` -- written
+for "the one coupled PAIR ... which CHAIN" -- now describes a chain of THREE. Whether a mixed state
+across three links can express an incompatibility the two-link argument does not cover is an open
+question. Both sites now say so instead of silently generalising.
+
 ### test(provision): gate the shared-pool refusal the RunPod-proxy reprovision proof rests on (cp#288, cf#394)
 
 Follow-up to the proxy binding. `tenant-runpod-reprovision.ts` is the third production call site of

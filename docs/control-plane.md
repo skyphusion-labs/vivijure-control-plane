@@ -174,7 +174,8 @@ but not through.
 The provisioner closes it the SAME way self-host does (Phase-3 dynamic dispatch), per tenant:
 
 1. **Module scripts.** Tenant-configured copies of the module workers (`keyframe`, `own-gpu`,
-   `finish-upscale`, `finish-lipsync`, `speech-upscale`) upload into ONE shared dispatch namespace
+   `finish-upscale`, `finish-lipsync`, `speech-upscale`, `finish-rife`) upload into ONE shared
+   dispatch namespace
    (`TENANT_MODULE_NAMESPACE`, e.g. `vivijure-tenant-modules`), script names prefixed with the
    TENANT ID (stable across renames; teardown is a prefix sweep). Each carries only its own
    endpoint id (`RUNPOD_ENDPOINT_ID`, plain_text). The catalog (`src/tenant-modules.ts`,
@@ -223,10 +224,11 @@ An upload REPLACES a script binding set, so every path that re-uploads module sc
 resume, module upgrade, RunPod reprovision) restates this binding; `uploadTenantModules` REFUSES on
 a tenant with no recorded database rather than uploading modules that would record nothing.
 
-**Not every recording module is here.** Six module workers record RunPod jobs upstream; five are in
-`TENANT_MODULE_CATALOG`. `finish-rife` is built and published as a tenant module bundle by the
-studio release and this plane never uploads it, so on the hosted door its jobs do not exist rather
-than go unrecorded. Whether hosted should carry it is a product question, open.
+**Every recording module is now here** (cp#284). Six module workers record RunPod jobs upstream and
+all six are in `TENANT_MODULE_CATALOG`. `finish-rife` was the odd one out: published as a tenant
+bundle by the studio release and uploaded by nothing, so on the hosted door its jobs did not exist
+rather than go unrecorded. It needed a catalog row and nothing else -- no operator-only binding, no
+tenant-R2 envelope, and its bundle was already in every release this plane pins.
 
 **Bundles.** Module workers cannot be built at provision time (the control plane is a Worker), the
 same constraint the studio bundle has. They ship in the SAME release artifact under
@@ -488,8 +490,12 @@ A partial failure can leave some modules at the new release and some at the old.
 safe is a question about the CATALOG, not about the conformance gate (which is per-module and says
 nothing about pairs):
 
-- The five catalog modules serve four hooks: `keyframe` (keyframe), `own-gpu` (motion.backend),
-  `speech-upscale` (speech), and `finish-upscale` + `finish-lipsync` (both `finish`).
+- The six RunPod catalog modules serve four hooks: `keyframe` (keyframe), `own-gpu`
+  (motion.backend), `speech-upscale` (speech), and `finish-upscale` + `finish-lipsync` +
+  `finish-rife` (all three `finish`). **cp#284 made `finish` a chain of THREE, not a pair** --
+  measured at vivijure-cf `origin/main`, all three manifests declare `hooks: ["finish"]`. What a
+  three-long chain does to the mixed-state analysis below is NOT re-derived here; the pair argument
+  is stated for two and has not been re-run for three.
 - Modules on **different** hooks never see each other output, so a mixed state across those is not
   expressible as an incompatibility.
 - The one coupled pair is the two `finish` modules, which **chain**: each takes
@@ -959,8 +965,8 @@ tenant `modules_release` so a whole-fleet absence reads as the stale release pin
 and `null` are in it on purpose: "the binding is missing" and "this image is too old to say" are
 different problems with the same consequence, which is rows nobody will ever get.
 
-The answer covers the modules this plane PROVISIONS. `finish-rife` is not one of them, so a green
-reading here says nothing about it.
+The answer covers the modules this plane PROVISIONS, which since cp#284 is all six upstream
+recording modules including `finish-rife`.
 
 ### `GET /api/platform/version`
 
