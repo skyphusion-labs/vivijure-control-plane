@@ -491,7 +491,7 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
     // The shipped guard from cp#248, exercised against the real API surface rather than a stub. It
     // runs FIRST because a refusal has changed nothing, so a failure here costs no cleanup.
     await expect(
-      uploadTenantModules(makeDeps(), TENANT_ID, "cpsmoke", endpoints, null),
+      uploadTenantModules(makeDeps(), TENANT_ID, "cpsmoke", endpoints, null, "dedicated"),
     ).rejects.toBeInstanceOf(TenantModuleError);
 
     // And it really did write nothing: the namespace holds no module scripts yet.
@@ -500,7 +500,7 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
   }, 120_000);
 
   it("POSITIVE: modules uploaded by THIS TREE report TELEMETRY_DB resolved in the running worker", async () => {
-    const uploaded = await uploadTenantModules(makeDeps(), TENANT_ID, "cpsmoke", endpoints, state.d1!);
+    const uploaded = await uploadTenantModules(makeDeps(), TENANT_ID, "cpsmoke", endpoints, state.d1!, "dedicated");
     state.uploaded.push(...uploaded);
     expect(uploaded.length).toBe(TENANT_MODULE_CATALOG.length);
 

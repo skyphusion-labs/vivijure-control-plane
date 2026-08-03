@@ -354,6 +354,11 @@ export async function reprovisionTenantRunPod(
         // module scripts, and an upload REPLACES the binding set, so a binding not passed here is a
         // binding dropped (cp#248).
         telemetryD1Id: tenant.d1_database_id,
+        // Same restatement, same reason, for the proxy pair (cp#288). Note this path re-points a
+        // tenant at NEW endpoints, which is a dedicated-shape operation, so in practice this reads
+        // 'dedicated' -- taken from the row rather than assumed, because "in practice" is not a
+        // guarantee and a wrong assumption here binds a proxy on a tenant the plane will refuse.
+        runpodMode: readRunPodMode(tenant.runpod_mode),
       },
       { shouldRun: () => true, onDone: async (done) => void moduleScripts.push(done) },
     );

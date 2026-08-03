@@ -20,7 +20,7 @@ import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
 import type { TemplateConvergence, TenantR2Creds } from "./runpod";
 import type { SharedRunPodPool } from "./runpod-pool";
-import { readRunPodMode } from "./runpod-pool";
+import { readRunPodMode, type RunPodMode } from "./runpod-pool";
 import { harvestTenantJobLog, HARVEST_ROW_CAP } from "./runpod-job-index";
 import {
   JOB_LEASE_SECONDS,
@@ -694,11 +694,20 @@ export async function runProvisionJob(
     //    because the tenant brings the account. Deriving the mode from who brought a key means
     //    there is no third state where the two can disagree.
     let endpoints: TenantEndpoint[];
+    // The mode this step DECIDES, carried forward rather than re-read off `tenant` (cp#288). The row
+    // is updated by setTenantRunPodMode below; the in-memory object this invocation holds is not, so
+    // reading it after the write would report the pre-write default on the very tenants the shared
+    // tier is for. Definite-assignment does the enforcing: a branch that forgets to set it will not
+    // compile.
+    let runpodMode: RunPodMode;
     if (complete("runpod_endpoints")) {
       // RESUME past the endpoints step. Read them back rather than re-resolving: on the dedicated
       // shape re-creating would touch a key this invocation does not have, and on the shared shape
       // the pool could have been reconfigured since, which would silently move a live tenant.
       endpoints = readTenantEndpoints(tenant);
+      // RESUME: the endpoints step ran in an EARLIER invocation, so the row is authoritative here in
+      // a way it is not on the branches below.
+      runpodMode = readRunPodMode(tenant.runpod_mode);
       if (!endpoints.length) {
         throw new ProvisionFailure(
           "runpod_endpoints",
@@ -719,6 +728,7 @@ export async function runProvisionJob(
       // no endpoints and teardown finds none. The reverse order would leave a row carrying POOL
       // endpoint ids under the default mode 'dedicated', which is the one combination that makes
       // reconciliation attribute production endpoints to a tenant and call them its debris.
+      runpodMode = "dedicated";
       await deps.store.setTenantRunPodMode(tenant.id, "dedicated");
       await deps.store.setTenantEndpoints(tenant.id, JSON.stringify(endpoints));
     } else if (deps.sharedPool) {
@@ -728,6 +738,7 @@ export async function runProvisionJob(
       // uploadTenantModules) read only `id` and `endpointVar`, so neither can tell the
       // difference -- which is why this is a branch here and not a second provisioning path.
       endpoints = deps.sharedPool.endpoints;
+      runpodMode = "shared";
       await deps.store.setTenantRunPodMode(tenant.id, "shared");
       await deps.store.setTenantEndpoints(tenant.id, JSON.stringify(endpoints));
       deps.log("provision.shared_pool", {
@@ -900,7 +911,7 @@ export async function runProvisionJob(
       }
       aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
     }
-    await uploadTenantModules(deps, tenant.id, tenant.slug, endpoints, dbUuid, undefined, aigTokenValue);
+    await uploadTenantModules(deps, tenant.id, tenant.slug, endpoints, dbUuid, runpodMode, undefined, aigTokenValue);
     await mark("modules_upload");
 
     // 8. Install each module through the studio's OWN conformance-gated route (cf#99): the studio
@@ -1318,6 +1329,8 @@ export async function continueProvisionJob(
         studioApiToken,
         release: pinnedRelease,
         telemetryD1Id: tenant.d1_database_id,
+        // From the ROW: the endpoints step completed in an earlier invocation, so it is written.
+        runpodMode: readRunPodMode(tenant.runpod_mode),
       },
       // Resume semantics: skip what the progress record says is already done. The UPGRADE caller
       // passes the opposite (always run), which is the entire behavioural difference between the
@@ -1429,6 +1442,17 @@ export interface ModuleStepsArgs {
    * caller inventing its own message.
    */
   telemetryD1Id: string | null;
+  /**
+   * The tenant's RunPod shape, which decides whether the proxy pair is bound (cp#288). Every caller
+   * of this seam runs against a tenant whose endpoints step already completed, so the ROW is
+   * authoritative and `readRunPodMode(tenant.runpod_mode)` is the right source at all three call
+   * sites -- unlike the fresh provision, which decides the mode in the same run and must carry it.
+   *
+   * Required, and narrowed rather than `string | null`, so a caller cannot pass the raw column and
+   * cannot omit it: an upload REPLACES the binding set, so a mode not passed here is a proxy pair
+   * silently stripped off a shared tenant that already had it, the same trap TELEMETRY_DB carries.
+   */
+  runpodMode: RunPodMode;
   /** Bundles already fetched by the caller (the upgrade path fetches all of them up front). */
   prefetched?: Map<string, ModuleBundle>;
 }
@@ -1457,7 +1481,16 @@ export async function runModuleSteps(
       }
       aigTokenValue = (await at.tokenMinter.mintAigToken(tenantAigTokenName(args.slug))).value;
     }
-    await uploadTenantModules(at, tenantId, args.slug, endpoints, args.telemetryD1Id, args.prefetched, aigTokenValue);
+    await uploadTenantModules(
+      at,
+      tenantId,
+      args.slug,
+      endpoints,
+      args.telemetryD1Id,
+      args.runpodMode,
+      args.prefetched,
+      aigTokenValue,
+    );
     await hooks.onDone("modules_upload");
   }
   if (hooks.shouldRun("modules_install")) {
@@ -1706,6 +1739,8 @@ export async function upgradeTenantModules(
         // the binding set, so TELEMETRY_DB has to be restated here or an upgrade would silently
         // strip it back off a tenant that already had it (cp#248).
         telemetryD1Id: tenant.d1_database_id,
+        // Same restatement, same reason, for the proxy pair (cp#288).
+        runpodMode: readRunPodMode(tenant.runpod_mode),
       },
       // An upgrade re-runs every module step against a tenant that already completed them, which is
       // exactly what resume must never do.

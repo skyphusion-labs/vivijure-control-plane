@@ -24,7 +24,7 @@ import {
   MODULE_PROXY_TOKEN_BINDING,
   verifyTenantProxyToken,
 } from "../src/runpod-proxy-auth";
-import { PROXY_UPSTREAM_PREFIX } from "../src/runpod-proxy-route-match";
+import { PROXY_UPSTREAM_PREFIX, matchProxyRoute } from "../src/runpod-proxy-route-match";
 import { tenantModuleProxy, publicOrigin, type ControlPlaneEnv } from "../src/env";
 import { provisionerWiring } from "../src/deps";
 import { CfApi, type WorkerBinding } from "../src/cf-api";
@@ -92,7 +92,7 @@ const NOT_ENDPOINT_BACKED = TENANT_MODULE_CATALOG.filter((s) => !s.endpointKey).
 describe("CONTROL: the binding finder can return both answers", () => {
   it("finds a binding that is definitely there, and misses one that is definitely not", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG");
+    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     const keyframe = forModule(uploads, "keyframe");
     // POSITIVE: a binding the pre-existing code has always pushed.
     expect(named(keyframe, "RUNPOD_ENDPOINT_ID")).toBeDefined();
@@ -107,7 +107,7 @@ describe("CONTROL: the binding finder can return both answers", () => {
 describe("uploadTenantModules binds the RunPod proxy pair", () => {
   it("binds base + token on every endpoint-backed module", async () => {
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG");
+    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     expect(ENDPOINT_BACKED.length).toBeGreaterThan(0); // denominator, so an empty catalog cannot pass
     for (const m of ENDPOINT_BACKED) {
       const u = forModule(uploads, m);
@@ -126,7 +126,7 @@ describe("uploadTenantModules binds the RunPod proxy pair", () => {
     // The shape that would otherwise ship silently: a well-formed token minted for the wrong tenant,
     // or under the wrong key. Both bind fine, both look fine, and both 401 at the first submit.
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG");
+    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     const token = text(named(forModule(uploads, "keyframe"), MODULE_PROXY_TOKEN_BINDING));
     expect(await verifyTenantProxyToken(SIGNING_KEY, token)).toBe(TENANT);
     // Control on the verifier itself: it must be capable of returning null here, or the line above
@@ -137,8 +137,8 @@ describe("uploadTenantModules binds the RunPod proxy pair", () => {
   it("gives two tenants two different tokens", async () => {
     const a = deps();
     const b = deps();
-    await uploadTenantModules(a.d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG");
-    await uploadTenantModules(b.d, OTHER_TENANT, "beta-films", ENDPOINTS, TENANT_D1, undefined, "AIG");
+    await uploadTenantModules(a.d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(b.d, OTHER_TENANT, "beta-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     const ta = text(named(forModule(a.uploads, "keyframe"), MODULE_PROXY_TOKEN_BINDING));
     const tb = text(named(forModule(b.uploads, "keyframe"), MODULE_PROXY_TOKEN_BINDING));
     expect(ta).not.toEqual(tb);
@@ -148,8 +148,8 @@ describe("uploadTenantModules binds the RunPod proxy pair", () => {
   it("re-deriving is idempotent -- a re-provision does not issue a second live credential", async () => {
     const first = deps();
     const second = deps();
-    await uploadTenantModules(first.d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG");
-    await uploadTenantModules(second.d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG");
+    await uploadTenantModules(first.d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    await uploadTenantModules(second.d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     expect(text(named(forModule(first.uploads, "keyframe"), MODULE_PROXY_TOKEN_BINDING))).toEqual(
       text(named(forModule(second.uploads, "keyframe"), MODULE_PROXY_TOKEN_BINDING)),
     );
@@ -159,7 +159,7 @@ describe("uploadTenantModules binds the RunPod proxy pair", () => {
     // plan-enhance reaches Anthropic through the AI Gateway and submits no RunPod job, so a proxy
     // credential there is reach it never uses. Same discipline as TELEMETRY_DB.
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG");
+    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     expect(NOT_ENDPOINT_BACKED.length).toBeGreaterThan(0);
     for (const m of NOT_ENDPOINT_BACKED) {
       const u = forModule(uploads, m);
@@ -174,7 +174,7 @@ describe("uploadTenantModules binds the RunPod proxy pair", () => {
 describe("an unconfigured plane binds NEITHER half", () => {
   it("uploads modules with no proxy binding at all, and says so", async () => {
     const { d, uploads, logs } = deps({ runpodProxy: null } as Partial<TenantModuleDeps>);
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG");
+    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     for (const m of ENDPOINT_BACKED) {
       const u = forModule(uploads, m);
       expect(named(u, MODULE_PROXY_BASE_BINDING), m).toBeUndefined();
@@ -184,7 +184,7 @@ describe("an unconfigured plane binds NEITHER half", () => {
       expect(named(u, "RUNPOD_ENDPOINT_ID"), m).toBeDefined();
     }
     // A silent skip and a reported one are different things; only one is findable at 3am.
-    expect(logs.filter((l) => l[0] === "module.runpod_proxy_unconfigured")).toHaveLength(
+    expect(logs.filter((l) => l[0] === "module.runpod_proxy_unbound")).toHaveLength(
       ENDPOINT_BACKED.length,
     );
   });
@@ -193,10 +193,60 @@ describe("an unconfigured plane binds NEITHER half", () => {
     // mintTenantProxyToken returns null on an id carrying the token separator. The pair must go
     // together: binding the base here would point the module at the proxy with nothing to present.
     const { d, uploads } = deps();
-    await uploadTenantModules(d, "ten.dotted", "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG");
+    await uploadTenantModules(d, "ten.dotted", "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     const u = forModule(uploads, "keyframe");
     expect(named(u, MODULE_PROXY_BASE_BINDING)).toBeUndefined();
     expect(named(u, MODULE_PROXY_TOKEN_BINDING)).toBeUndefined();
+  });
+});
+
+// ---- 2b. SHARED ONLY. the cross-repo contract, and the reason it is not a preference ----------
+//
+// vivijure-cf@67302960 modules/_shared/runpod-route.ts:45 -- "Bound ONLY for runpod_mode =
+// 'shared'". That file branches on the base being BOUND and says in terms that it is NOT a
+// failover, so a bound base on a tenant our own submit path refuses (runpod-proxy-routes.ts:73,
+// 403 not_shared_mode) is not a degrade: it is every render on that tenant failing, with the
+// direct path deliberately unavailable. `tenants.runpod_mode` is NOT NULL DEFAULT 'dedicated', so
+// this is the majority population, not an edge case.
+
+describe("the pair is bound for SHARED tenants only", () => {
+  it("binds NEITHER half on a dedicated tenant", async () => {
+    const { d, uploads, logs } = deps();
+    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "dedicated", undefined, "AIG");
+    for (const m of ENDPOINT_BACKED) {
+      const u = forModule(uploads, m);
+      expect(named(u, MODULE_PROXY_BASE_BINDING), m).toBeUndefined();
+      expect(named(u, MODULE_PROXY_TOKEN_BINDING), m).toBeUndefined();
+      // The dedicated tenant is not degraded, it is UNCHANGED: it keeps its endpoint id and gets
+      // its own RunPod key later, exactly as before this feature existed.
+      expect(named(u, "RUNPOD_ENDPOINT_ID"), m).toBeDefined();
+    }
+    // The plane IS configured here -- the deps carry a live proxy. So this proves the MODE is what
+    // refused, not a missing configuration, which is the distinction the log line has to make.
+    const unbound = logs.filter((l) => l[0] === "module.runpod_proxy_unbound");
+    expect(unbound).toHaveLength(ENDPOINT_BACKED.length);
+    expect((unbound[0][1] as { mode: string; proxy: string }).mode).toBe("dedicated");
+    expect((unbound[0][1] as { mode: string; proxy: string }).proxy).toBe("set");
+  });
+
+  it("POSITIVE CONTROL: the same deps, same tenant, same everything, shared -> both halves bound", async () => {
+    // Without this the test above passes on a build where the pair is never bound at all, which is
+    // the state the whole PR exists to leave behind.
+    const { d, uploads } = deps();
+    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    for (const m of ENDPOINT_BACKED) {
+      expect(named(forModule(uploads, m), MODULE_PROXY_BASE_BINDING), m).toBeDefined();
+      expect(named(forModule(uploads, m), MODULE_PROXY_TOKEN_BINDING), m).toBeDefined();
+    }
+  });
+
+  it("does not MINT for a dedicated tenant, not merely decline to bind", async () => {
+    // A token minted and dropped is a live credential nobody asked for. Asserted through the log
+    // line rather than by spying the mint, because the log is what an operator would read.
+    const { d, logs } = deps();
+    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "dedicated", undefined, "AIG");
+    const unbound = logs.filter((l) => l[0] === "module.runpod_proxy_unbound");
+    expect((unbound[0][1] as { token: string }).token).toBe("unset");
   });
 });
 
@@ -274,7 +324,57 @@ describe("RUNPOD_API_KEY is still installed alongside the proxy pair (cf#394 ord
     // A worker upload REPLACES its bindings, so the key has always arrived afterwards by PUT. Said
     // out loud here because the obvious wrong fix for the test above is to bind the key at upload.
     const { d, uploads } = deps();
-    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, undefined, "AIG");
+    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
     for (const u of uploads) expect(named(u, "RUNPOD_API_KEY"), u.scriptName).toBeUndefined();
+  });
+});
+
+// ---- 5. END TO END: the base we bind is a path this plane actually serves ----------------------
+//
+// The suffix is the half nobody checks. cf appends `/<endpointId>` then a RunPod verb to whatever
+// we bind; if our base carried the wrong prefix, a trailing slash, or the bare origin, every call
+// would 404 and the only symptom would be renders failing after this merged. So rather than
+// asserting the string looks right, take the base we ACTUALLY bind, build the URL the way cf
+// builds it, and feed the path to this plane's own shipped router.
+
+describe("the bound base round-trips through the plane's own matcher", () => {
+  /** cf's construction, mirrored from modules/_shared/runpod-route.ts: trim, strip trailing
+   *  slashes, then `base + "/" + endpointId` and a verb suffix. */
+  const cfUrl = (base: string, endpointId: string, suffix: string) =>
+    base.trim().replace(/\/+$/, "") + "/" + endpointId + suffix;
+
+  const boundBase = async (): Promise<string> => {
+    const { d, uploads } = deps();
+    await uploadTenantModules(d, TENANT, "acme-films", ENDPOINTS, TENANT_D1, "shared", undefined, "AIG");
+    return text(named(forModule(uploads, "keyframe"), MODULE_PROXY_BASE_BINDING))!;
+  };
+
+  it("submit, status, cancel and health all resolve to a route this plane serves", async () => {
+    const base = await boundBase();
+    const path = (suffix: string) => new URL(cfUrl(base, "ep1", suffix)).pathname;
+
+    expect(matchProxyRoute("POST", path("/run"))).toEqual({ kind: "submit", endpointId: "ep1" });
+    expect(matchProxyRoute("GET", path("/status/job_1"))).toMatchObject({ kind: "poll", op: "status" });
+    expect(matchProxyRoute("POST", path("/cancel/job_1"))).toMatchObject({ kind: "poll", op: "cancel" });
+    expect(matchProxyRoute("GET", path("/health"))).toMatchObject({ kind: "poll", op: "health" });
+  });
+
+  it("CONTROL: the matcher rejects a base built the WRONG way", async () => {
+    // Without this the four assertions above are satisfied by a matcher that says yes to anything.
+    // Both wrong shapes are ones a plausible implementation of this PR would have produced: the
+    // bare origin, and the prefix without RunPod's own `/v2`.
+    const origin = `https://${HOST}`;
+    expect(matchProxyRoute("POST", new URL(cfUrl(origin, "ep1", "/run")).pathname)).toBeNull();
+    expect(matchProxyRoute("POST", new URL(cfUrl(`${origin}/api/runpod`, "ep1", "/run")).pathname))
+      .toEqual({ kind: "unknown" });
+  });
+
+  it("a trailing slash would still resolve, because cf strips it -- stated, not relied on", async () => {
+    // cf tolerates one (`.replace(/\/+$/, "")`). We emit none. Asserting both keeps a future
+    // reader from tightening our side against a tolerance that is really cf's.
+    const base = await boundBase();
+    expect(base.endsWith("/")).toBe(false);
+    expect(matchProxyRoute("POST", new URL(cfUrl(base + "/", "ep1", "/run")).pathname))
+      .toEqual({ kind: "submit", endpointId: "ep1" });
   });
 });

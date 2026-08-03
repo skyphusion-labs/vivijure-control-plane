@@ -23,6 +23,24 @@ in two repositories is a fork waiting to happen. The base is derived in one expo
 (`tenantModuleProxy`, env.ts) next to `publicOrigin`, so it cannot disagree with the routes the
 router actually matches.
 
+**SHARED TENANTS ONLY.** The cross-repo contract (`vivijure-cf@67302960`
+`modules/_shared/runpod-route.ts:45`) binds the base for `runpod_mode = 'shared'` and nothing else,
+and the reason is not tidiness. cf branches on the base being BOUND and states that this is **not a
+failover**: bound means proxied, and a proxied module that cannot authenticate refuses honestly
+rather than finding another way to RunPod. Our own submit path answers 403 `not_shared_mode` for
+anything that is not shared. So a base bound on a dedicated tenant does not degrade that tenant, it
+breaks every render on it with the direct path deliberately unavailable, and
+`tenants.runpod_mode` is `NOT NULL DEFAULT 'dedicated'`, so that is the majority population.
+
+`uploadTenantModules` and `ModuleStepsArgs` therefore take a required `runpodMode`, typed as the
+narrowed `RunPodMode` union rather than the raw column, so a caller cannot pass a database value
+without going through `readRunPodMode` and cannot omit it without failing to compile. That narrowing
+maps anything unrecognised to `dedicated`, which is the correct failure direction here: dedicated
+binds nothing, the module stays on the direct path, and the direct path works. The fresh provision
+carries the mode the endpoints step DECIDES rather than re-reading the tenant row, because the row
+is updated while the in-memory object is not, and reading it after the write would report the
+pre-write default on exactly the tenants the shared tier is for.
+
 **BOTH OR NEITHER, and that is the whole design constraint.** A module with neither binding keeps
 using its direct key, which is the pre-proxy path and works. A module with a base and no verifiable
 token does not degrade: it switches to the proxy and is refused on every call, with nothing on the
@@ -40,10 +58,18 @@ learned to read them. Removing the key early strands every render on that tenant
 key still lands on every module script through the REAL wiring, so the survival of the old path is
 a gate rather than an intention.
 
-Six mutations were run against the new suite -- pair dropped, half the pair bound, empty host
-accepted, pair bound on a non-RunPod module, base pointed back at RunPod, direct-key fan-out removed
--- and each went red naming the assertion that should have caught it, against a green unmutated
-control.
+Nine mutations were run against the new suite -- pair dropped, half the pair bound, empty host
+accepted, pair bound on a non-RunPod module, base pointed back at RunPod, direct-key fan-out
+removed, the shared-mode gate removed, the shared-mode gate inverted, and the base reduced to the
+bare origin -- and each went red naming the assertion that should have caught it, against a green
+unmutated control. The gate is mutated in BOTH directions deliberately: a gate that only fails one
+way is a constant.
+
+The suffix is proved end to end rather than by inspection. The test takes the base actually bound,
+builds the URL the way cf builds it (`base + "/" + endpointId` plus a verb), and feeds the path to
+this plane's own shipped `matchProxyRoute`, with a control asserting the matcher rejects both wrong
+shapes a plausible implementation would have produced: the bare origin, and the prefix without
+RunPod's own `/v2`.
 
 ### feat(provision): a pooled provision that was interrupted before the studio upload can now be resumed (cp#301)
 
