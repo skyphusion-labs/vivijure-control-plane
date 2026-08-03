@@ -6,6 +6,43 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(provisioner): a resume uses the TENANT studio release, not the plane current pin (cp#301)
+
+`continueProvisionJob` passed `deps.release` to the module steps and wrote it to `modules_release`.
+`deps.release` is the PLANE-WIDE `STUDIO_RELEASE`, read fresh on every invocation, while the studio
+worker was uploaded from the pin as it stood at `wfp_upload` and recorded in `tenants.studio_release`.
+So a resume driven after an operator advanced the pin handed the tenant a studio from one release and
+MODULES FROM ANOTHER -- precisely the pair `module-bundle-r2.ts` states cannot exist ("Modules ship
+WITH the studio release they were built and conformance-proven against (one tag, one artifact), so a
+tenant's studio and its modules can never be a mismatched pair").
+
+LIVE, not theoretical. `STUDIO_RELEASE` moved v1.13.0 -> v1.19.3 in a single day on 2026-08-03; a
+tenant straddling that would have been nine releases mismatched between its D1 schema and its studio
+bytes.
+
+The resume now resolves the release from `tenants.studio_release` and REFUSES when it is absent
+rather than falling back to the pin -- a fallback would turn "I cannot tell which release this tenant
+is on" into a confident wrong answer, which is the mismatch the change exists to prevent. That
+refusal is unreachable today (the resumability boundary proves `wfp_upload` completed, and
+`setTenantScript` writes `script_name` and `studio_release` together in that step), so it is a
+structural assertion that must STAY a refusal when the pre-`wfp_upload` region is later made
+resumable, where the pin has to come from the job row instead.
+
+WHY THE SUITE COULD NOT SEE IT, worth recording because it is a class rather than an instance: the
+fixture seeded `studio_release` as `v1.0.0` and the deps fixture set `release: "v1.0.0"` -- the same
+value -- so every assertion passed identically whether the code read the tenant or the plane. The
+instrument was fully capable and the two inputs had never been allowed to differ. Making them differ
+is the whole change to the tests; the assertions already existed. A capable instrument aimed at a
+safe input is indistinguishable from a working test.
+
+Both new tests were watched failing against the unpatched code with the right red rather than merely
+red ("expected 'v2.0.0' to be 'v1.0.0'", and the refusal case silently succeeding), and all 35
+pre-existing tests in that file pass with and without the fix.
+
+Found while censusing which values steps 1-6 mint and which later steps consume, for separate
+resume work -- not by looking for it. The release bundle is the one crosser that is neither persisted
+nor a credential, which is why reading the diagnosis had not surfaced it.
+
 ### feat(runpod-sweep): the reconciler backstop, and the cron moves to every 5 minutes (cp#290)
 
 Every failure path in the proxy ended "the reconciler picks it up" while
