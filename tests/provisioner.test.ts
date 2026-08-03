@@ -19,7 +19,7 @@ import type { CfApi } from "../src/cf-api";
 import type { Tenant } from "../src/store";
 import { sha256Hex } from "../src/crypto";
 import { decryptStudioToken, kekRing } from "../src/token-crypto";
-import { MemoryStore, recordingStore } from "./memory-store";
+import { MemoryStore, recordingStore, TEST_PROVISION_FACTS } from "./memory-store";
 import { HARVEST_ROW_CAP } from "../src/runpod-job-index";
 import { expectProvisionFailure } from "./provision-assert";
 
@@ -244,7 +244,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     // workers, forever (teardown structurally cannot reap them). A shared tenant must consume none.
     const t = await tenant();
     const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
     const res = await runProvisionJob(d, job.id, t, null);
 
@@ -257,7 +257,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
   it("records the mode AND the pool endpoints on the row", async () => {
     const t = await tenant();
     const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, null);
 
     const row = store.tenants.get(t.id)!;
@@ -274,7 +274,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     const t = await tenant();
     const { store: recorder, journal } = recordingStore(store);
     const d = deps({ store: recorder, sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, null);
 
     // The journal records `name(args...)`, so match on the call NAME rather than on equality: an
@@ -293,7 +293,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     // `endpointVar`, which is exactly why one branch can feed both -- prove it rather than assume.
     const t = await tenant();
     const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, null);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
@@ -310,7 +310,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     // tenant who supplied their own key.
     const t = await tenant();
     const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     expect(d.runpod.createEndpoints).toHaveBeenCalledTimes(1);
@@ -323,7 +323,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     // default and a plane with no shared tier is silently provisioning tenants onto nothing.
     const t = await tenant();
     const d = deps({ sharedPool: null, sharedPoolInvokeKey: null });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
     const res = await runProvisionJob(d, job.id, t, null);
 
@@ -436,7 +436,7 @@ describe("teardown harvests the job index before reaping the D1 (cp#270)", () =>
 describe("runProvisionJob", () => {
   it("runs the steps in order and parks at awaiting_invoke_key, not live", async () => {
     const t = await tenant();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(deps(), job.id, t, "rpa_keyA");
 
     expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
@@ -452,7 +452,7 @@ describe("runProvisionJob", () => {
     // render. The seam now takes the credential, so prove it is the mint, S3-derived.
     const t = await tenant();
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res.ok).toBe(true);
 
@@ -485,7 +485,7 @@ describe("runProvisionJob", () => {
     // reporter where to go.
     const t = await tenant();
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
@@ -505,7 +505,7 @@ describe("runProvisionJob", () => {
     // feature read as shipped. It asserts what the plane SENT, not what a fixture ended up holding.
     const t = await tenant();
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
@@ -521,7 +521,7 @@ describe("runProvisionJob", () => {
   it("binds NO ceiling when the plane configures none, because absent IS how core reads off", async () => {
     const t = await tenant();
     const d = deps({ storageQuota: { bytes: null, invalid: null } });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
@@ -541,7 +541,7 @@ describe("runProvisionJob", () => {
     await store.setTenantStorageQuota(row.id, { mode: "none" });
     const t = (await store.getTenantById(row.id)) as Tenant;
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
@@ -558,7 +558,7 @@ describe("runProvisionJob", () => {
     await store.setTenantStorageQuota(row.id, { mode: "set", bytes: "500" });
     const t = (await store.getTenantById(row.id)) as Tenant;
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
@@ -575,7 +575,7 @@ describe("runProvisionJob", () => {
     await store.setTenantStorageQuota(row.id, { mode: "none" });
     const t = (await store.getTenantById(row.id)) as Tenant;
     const d = deps({ storageQuota: { bytes: null, invalid: "100GB" } });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
   });
 
@@ -585,7 +585,7 @@ describe("runProvisionJob", () => {
     // The refusal lands beside the var-contract check, BEFORE any tenant resource exists.
     const t = await tenant();
     const d = deps({ storageQuota: { bytes: null, invalid: "100GB" } });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     const failure = expectProvisionFailure(res);
@@ -602,7 +602,7 @@ describe("runProvisionJob", () => {
     // would send reporters somewhere worse than nowhere.
     const t = await tenant();
     const d = deps({ abuseReportUrl: null });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
@@ -617,7 +617,7 @@ describe("runProvisionJob", () => {
   it("wires ASSETS + the endpoint-id vars + STUDIO_API_TOKEN, and persists the ENCRYPTED token value", async () => {
     const t = await tenant();
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res.ok).toBe(true);
 
@@ -653,7 +653,7 @@ describe("runProvisionJob", () => {
         return { status: 200, text: JSON.stringify({ modules: [{ name: "keyframe" }] }) };
       }),
     });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res).toMatchObject({ ok: false, step: "verify" });
     expect(store.tenants.get(t.id)?.status).toBe("failed");
@@ -666,7 +666,7 @@ describe("runProvisionJob", () => {
     // "overwritten a moment later" is not custody. The key must never reach the store at all.
     const t = await tenant();
     const rec = recordingStore(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(deps({ store: rec.store }), job.id, t, "rpa_KEY_A_MUST_NOT_PERSIST");
 
     expect(rec.journal.join("\n")).not.toContain("rpa_KEY_A_MUST_NOT_PERSIST");
@@ -677,7 +677,7 @@ describe("runProvisionJob", () => {
   it("NEVER PASSES the minted R2 credential VALUE to the store (only its id)", async () => {
     const t = await tenant();
     const rec = recordingStore(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(deps({ store: rec.store }), job.id, t, "rpa_keyA");
 
     expect(store.tenants.get(t.id)?.r2_token_id).toBe("tok-1"); // the id IS kept: teardown revokes by it
@@ -688,7 +688,7 @@ describe("runProvisionJob", () => {
   it("binds a per-tenant BUCKET, never a shared bucket with a prefix", async () => {
     const t = await tenant();
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     const upload = (d.cf.uploadUserWorker as unknown as { mock: { calls: [{ bindings: { name: string; bucket_name?: string }[] }][] } }).mock.calls[0][0];
@@ -700,7 +700,7 @@ describe("runProvisionJob", () => {
   it("STOPS honestly at runpod_endpoints when resuming without key A (never fakes it)", async () => {
     const t = await tenant();
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(d, job.id, t, null);
 
     expect(res).toEqual({ ok: false, step: "runpod_endpoints", message: "runpod_key_required" });
@@ -712,7 +712,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const quotaError = new CfApiError("d1.create", 400, [{ message: "workers.api.error.d1_quota_exceeded" }]);
     const d = deps({ cf: fakeCf({ createD1: vi.fn(async () => { throw quotaError; }) }) });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     expect(res.ok).toBe(false);
@@ -730,7 +730,7 @@ describe("runProvisionJob", () => {
     // The upload "succeeded" but the worker is not what we asked for. Trusting our own write here
     // is exactly the reads-safe-but-isn't trap; we ask the API what it actually built.
     const d = deps({ cf: fakeCf({ getScriptBindings: vi.fn(async () => [{ type: "d1", name: "DB" }]) }) });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     expect(res.ok).toBe(false);
@@ -747,7 +747,7 @@ describe("runProvisionJob", () => {
     await store.setTenantR2Token(t.id, "tok-old");
     const fresh = (await store.getTenantById(t.id))!;
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, fresh, "rpa_keyA");
 
     expect(d.tokenMinter.revoke).toHaveBeenCalledWith("tok-old");
@@ -757,7 +757,7 @@ describe("runProvisionJob", () => {
 
   it("uses deterministic per-tenant resource names (idempotency depends on it)", async () => {
     const t = await tenant();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(deps(), job.id, t, "rpa_keyA");
     expect(calls).toContain(`createD1:${tenantD1Name("hero")}`);
     expect(calls).toContain(`createR2:${tenantBucketName("hero")}`);
@@ -880,7 +880,7 @@ describe("teardownTenant", () => {
   it("mints the AI Gateway token at provision, under the deterministic name", async () => {
     const t = await tenant();
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(d.tokenMinter.mintAigToken).toHaveBeenCalledWith(tenantAigTokenName("hero"));
     // Revoke-then-mint: a retry must not leave a trail of live grants behind it.
@@ -892,7 +892,7 @@ describe("teardownTenant", () => {
   it("mints NO AI Gateway token when the plane names no gateway", async () => {
     const t = await tenant();
     const d = deps({ aiGatewayId: null });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(d.tokenMinter.mintAigToken).not.toHaveBeenCalled();
   });
@@ -939,7 +939,7 @@ describe("auto-teardown on provision failure (cf#91)", () => {
         convergeTemplateImages: vi.fn(async () => []),
       },
     });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     expect(res.ok).toBe(false);
@@ -964,7 +964,7 @@ describe("auto-teardown on provision failure (cf#91)", () => {
         }),
       },
     });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(d.tokenMinter.revoke).toHaveBeenCalledWith("tok-1");
     // NARROWED, not dropped (cf#56): revokeByName is now legitimately used for the per-tenant AI
@@ -1001,7 +1001,7 @@ describe("assets_config (the hosted-only parity defect, #77/#78)", () => {
     // identical code. The upload SUCCEEDS either way, which is why nothing else caught it.
     const t = await tenant();
     const d = withBundle({ html_handling: "none", run_worker_first: true });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(uploadArg(d).assetsConfig).toEqual({ html_handling: "none", run_worker_first: true });
   });
@@ -1012,7 +1012,7 @@ describe("assets_config (the hosted-only parity defect, #77/#78)", () => {
     // drift the manifest exists to prevent.
     const t = await tenant();
     const d = withBundle({});
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(uploadArg(d).assetsConfig).toEqual({});
   });
@@ -1020,7 +1020,7 @@ describe("assets_config (the hosted-only parity defect, #77/#78)", () => {
   it("never invents a config when the release carries none", async () => {
     const t = await tenant();
     const d = withBundle(undefined);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(uploadArg(d).assetsConfig).toBeUndefined();
   });
@@ -1039,7 +1039,7 @@ describe("cf#99 tenant module bridge", () => {
   it("uploads all 6 tenant module scripts into the modules namespace, tenant-id-prefixed", async () => {
     const t = await tenant();
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     const moduleUploads = uploads(d).filter((u) => u.namespace === "vivijure-tenant-modules");
@@ -1060,7 +1060,7 @@ describe("cf#99 tenant module bridge", () => {
   it("wires each module's RUNPOD_ENDPOINT_ID to its endpoint, and does NOT bind key B at upload", async () => {
     const t = await tenant();
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     const byScript = new Map(
@@ -1086,7 +1086,7 @@ describe("cf#99 tenant module bridge", () => {
   it("binds MODULE_DISPATCH -> the modules namespace on the STUDIO worker (upload metadata, not code)", async () => {
     const t = await tenant();
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await runProvisionJob(d, job.id, t, "rpa_keyA");
 
     const studio = uploads(d).find((u) => u.namespace === "vivijure-tenants")!;
@@ -1100,7 +1100,7 @@ describe("cf#99 tenant module bridge", () => {
   it("drives the studio's own install route for each module and verifies a non-empty installed set", async () => {
     const t = await tenant();
     const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res.ok).toBe(true);
 
@@ -1129,7 +1129,7 @@ describe("cf#99 tenant module bridge", () => {
         return { status: 200, text: "" };
       }),
     });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res).toMatchObject({ ok: false, step: "modules_install" });
     expect(expectProvisionFailure(res).message).toContain("conformance failed");
@@ -1145,7 +1145,7 @@ describe("cf#99 tenant module bridge", () => {
         return { status: 200, text: "" };
       }),
     });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
     expect(res).toMatchObject({ ok: false, step: "verify" });
     expect(expectProvisionFailure(res).message).toContain("zero installed modules");

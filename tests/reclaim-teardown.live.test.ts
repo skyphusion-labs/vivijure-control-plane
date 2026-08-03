@@ -49,6 +49,7 @@ import { emptyBucketBounded } from "../src/r2-empty";
 import type { Tenant } from "../src/store";
 import { D1Store } from "../src/store-d1";
 import { d1Over, freshMigratedDb } from "./sqlite-d1";
+import { TEST_PROVISION_FACTS } from "./memory-store";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -617,7 +618,7 @@ describe.skipIf(!LIVE)("the reclaim SEQUENCE against a real store and real cloud
     expect(after!.d1_database_id ?? null).toBeNull();
 
     // 5. And the slug is genuinely reusable: a follow-on provision job starts on the same row.
-    const job = await store.createProvisionJob("job_seq", "ten_seq", "provision");
+    const job = await store.createProvisionJob("job_seq", "ten_seq", "provision", TEST_PROVISION_FACTS);
     expect(job.tenant_id).toBe("ten_seq");
     expect(["queued", "running"]).toContain(job.status);
   }, 300_000);

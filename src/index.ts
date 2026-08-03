@@ -88,7 +88,7 @@ import { JOB_LEASE_SECONDS, RECLAIM_LEASE_SECONDS, jobAwaitsFirstDriver, jobHasL
 import { StudioBindingError } from "./tenant-studio-bindings";
 import { ReprovisionError } from "./tenant-runpod-reprovision";
 import type { PreservationHoldKind } from "./store";
-import type { Account, Tenant, ProvisionJob, SmokeRender } from "./store";
+import type { Account, Tenant, ProvisionJob, ProvisionJobFacts, SmokeRender } from "./store";
 import {
   advanceSmokeRender,
   resolveSmokeRenderBounds,
@@ -946,6 +946,30 @@ async function provision(
   if (!body?.runpod_api_key && !deps.provisioner.offersSharedTier()) {
     return err("runpod_key_required", 400);
   }
+
+  // ONE read of the key, used for BOTH the recorded mode and the value handed to the driver.
+  //
+  // THIS IS THE POINT OF THE VARIABLE, not tidiness. The mode is a claim about which branch
+  // runProvisionJob will take, and that branch is decided by the key it receives. Deriving the two
+  // from separate expressions would let them disagree on any edge the two expressions treat
+  // differently (an empty string is the obvious one), and a job row asserting `dedicated` over a
+  // provision that took the shared branch is a lie no reader could detect.
+  const runpodApiKey = body?.runpod_api_key ?? null;
+
+  // The two facts a later resume cannot reconstruct (cp#301). Derived here, ONCE, above both
+  // createProvisionJob call sites, so the reclaim path and the fresh path cannot record different
+  // things for the same request.
+  //
+  // MODE COMES FROM THE KEY, never from whether the plane offers a pool. A plane with a pool armed
+  // still serves BYO dedicated tenants -- that is what the refusal above is careful to allow -- so
+  // "a pool exists" would put a tenant who brought their own RunPod account onto ours.
+  //
+  // RELEASE IS THE PIN NOW, because the pin moves. A poll-driven resume reads it at poll time, and
+  // STUDIO_RELEASE went v1.13.0 to v1.19.3 in a single day on 2026-08-03.
+  const jobFacts: ProvisionJobFacts = {
+    runpodMode: runpodApiKey ? "dedicated" : "shared",
+    toRelease: deps.provisioner.currentRelease(),
+  };
   // A GRANTED RECLAIM CANNOT GO THROUGH THIS ROUTE, and that refusal is deliberate rather than a
   // gap. tenants.slug is UNIQUE, so createTenant on a reclaimable row is guaranteed to hit the
   // constraint; and the row can still carry a half-built D1, bucket, and R2 token that must be torn
@@ -1021,8 +1045,8 @@ async function provision(
     // The row is ours, blanked, and back at pending -- same id, same slug. Provision continues on
     // THIS row: createTenant would hit the UNIQUE constraint, and a second row would orphan the
     // first. No getTenantForAccount check here: the reclaimed row IS this account tenant.
-    const job = await deps.store.createProvisionJob(newId("job"), reclaimed.id, "provision");
-    ctx.waitUntil(deps.provisioner.start(job.id, reclaimed, body?.runpod_api_key ?? null));
+    const job = await deps.store.createProvisionJob(newId("job"), reclaimed.id, "provision", jobFacts);
+    ctx.waitUntil(deps.provisioner.start(job.id, reclaimed, runpodApiKey));
     return json({ tenant_id: reclaimed.id, job_id: job.id, reclaimed: true }, 202);
   }
 
@@ -1035,13 +1059,13 @@ async function provision(
   // the reclaim path can destroy anything.
 
   const tenant = await deps.store.createTenant(newId("ten"), slug, account.id, "pending");
-  const job = await deps.store.createProvisionJob(newId("job"), tenant.id, "provision");
+  const job = await deps.store.createProvisionJob(newId("job"), tenant.id, "provision", jobFacts);
   // The runner records every outcome on the job row (honest failures, real step errors); waitUntil
   // keeps it going after this 202 returns. The key rides the call and dies with it.
   // `?? null` is the cp#270 shared path, not defensive typing: an absent key is now a MEANINGFUL
   // argument (put this tenant on the shared pool), and the provisioner distinguishes it from a
   // present one to choose the shape. The route already refused above if neither is possible.
-  ctx.waitUntil(deps.provisioner.start(job.id, tenant, body?.runpod_api_key ?? null));
+  ctx.waitUntil(deps.provisioner.start(job.id, tenant, runpodApiKey));
   return json({ tenant_id: tenant.id, job_id: job.id }, 202);
 }
 

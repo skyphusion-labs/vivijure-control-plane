@@ -12,7 +12,7 @@ import type { ControlPlaneDeps, ProvisionerWiring } from "../src/deps";
 import type { ControlPlaneEnv } from "../src/env";
 import { SESSION_COOKIE, startSession } from "../src/auth";
 import { sha256Hex } from "../src/crypto";
-import { MemoryStore } from "./memory-store";
+import { MemoryStore, TEST_PROVISION_FACTS } from "./memory-store";
 import type { Tenant } from "../src/store";
 import { TenantModuleError } from "../src/tenant-modules";
 import { StudioBindingError } from "../src/tenant-studio-bindings";
@@ -182,6 +182,11 @@ let wiring: {
   // body is invisible to the compiler at every other call site.
   offersSharedTier: ReturnType<typeof vi.fn>;
   sharedPoolInvokeKey: ReturnType<typeof vi.fn>;
+  // cp#301, declared here for the same reason as the pair above: this double is a hand-written
+  // shape rather than a ProvisionerWiring, so widening the real interface cannot break it at the
+  // gate. Adding currentRelease to the seam took 8 route tests red at RUNTIME with
+  // "currentRelease is not a function", which is the compiler's job arriving as a test failure.
+  currentRelease: ReturnType<typeof vi.fn>;
 };
 
 const env = (over: Partial<ControlPlaneEnv> = {}): ControlPlaneEnv =>
@@ -290,6 +295,9 @@ beforeEach(() => {
     // asserting the dedicated behaviour, which is the safe direction to default in.
     offersSharedTier: vi.fn(() => false),
     sharedPoolInvokeKey: vi.fn(() => null),
+    // cp#301: the pin a provision job records at creation. Matches TEST_PROVISION_FACTS.toRelease so
+    // a route-created job and a hand-created one describe the same plane.
+    currentRelease: vi.fn(() => "v1.0.0"),
   };
   deps = {
     store,
@@ -695,6 +703,83 @@ describe("POST /api/tenant/provision", () => {
     expect((await post({ slug: "hero2", runpod_api_key: "rpa_x" })).status).toBe(409); // second tenant
   });
 
+  // ---- cp#301: the two facts a resume cannot reconstruct -------------------------------------
+  //
+  // A provision that yields before wfp_upload is resumed by a POLL, which has neither the RunPod key
+  // nor any way to learn which shape or which release the attempt was for. tenants.runpod_mode
+  // cannot answer: it is written INSIDE the runpod_endpoints step and is NOT NULL DEFAULT
+  // 'dedicated', so for the whole region before that step every row reads 'dedicated' whether or not
+  // it is one. These assert the JOB row carries both facts from the moment it exists.
+  //
+  // EVERY STATE HERE IS BUILT BY CALLING THE ROUTE. Nothing hand-writes a job row, because a
+  // hand-written combination is one production may not be able to produce, and a suite asserting
+  // over an unproducible state is green about nothing. That is the same defect this column exists to
+  // avoid, so building the fixtures the easy way would have hidden it.
+
+  describe("job facts recorded at creation (cp#301)", () => {
+    const provision = async (cookie: string, body: unknown) =>
+      handle(jsonReq("/api/tenant/provision", body, { headers: { cookie } }), env(), ctx, deps);
+
+    const jobOf = async (res: Response) => {
+      expect(res.status, "expected the route to accept this provision").toBe(202);
+      const { job_id } = (await res.json()) as { job_id: string };
+      const job = await store.getJob(job_id);
+      expect(job, "the route reported a job id that does not resolve").not.toBeNull();
+      return job!;
+    };
+
+    // THE NEXT TWO TESTS ARE ONE CONTROL AND MUST NOT BE SEPARATED. Both arm the pool; they differ
+    // in exactly one input, whether a key was pasted. A derivation that read "this plane has a pool"
+    // rather than "this tenant brought a key" PASSES the first and FAILS the second, and that
+    // failure is the BYO-tenant-silently-on-our-pool defect the design rejected. Either test alone
+    // is satisfied by the wrong rule.
+    it("mode is SHARED when no key was pasted (pool armed)", async () => {
+      wiring.offersSharedTier.mockReturnValue(true);
+      const { cookie } = await ready();
+      const job = await jobOf(await provision(cookie, { slug: "pooled" }));
+      expect(job.runpod_mode).toBe("shared");
+    });
+
+    it("mode is DEDICATED when a key was pasted, on a plane that DOES offer a pool", async () => {
+      wiring.offersSharedTier.mockReturnValue(true);
+      const { cookie } = await ready();
+      const job = await jobOf(await provision(cookie, { slug: "byo", runpod_api_key: "rpa_x" }));
+      expect(job.runpod_mode, "a tenant who brought a key is dedicated, pool or no pool").toBe("dedicated");
+    });
+
+    it("records the plane pin as to_release, and leaves from_release NULL", async () => {
+      const { cookie } = await ready();
+      const job = await jobOf(await provision(cookie, { slug: "pinned", runpod_api_key: "rpa_x" }));
+      expect(job.to_release).toBe("v1.0.0");
+      expect(wiring.currentRelease, "the pin must be read from the seam, not re-derived").toHaveBeenCalled();
+      // A provision does not move a tenant FROM anything.
+      expect(job.from_release).toBeNull();
+    });
+
+    // The recorded mode is a claim about which branch runProvisionJob will take, and that branch is
+    // decided by the key the driver receives. This asserts the two cannot disagree rather than
+    // trusting the route to have derived them from one expression.
+    it("the recorded mode agrees with the key actually handed to the driver", async () => {
+      wiring.offersSharedTier.mockReturnValue(true);
+      const { cookie } = await ready();
+      const job = await jobOf(await provision(cookie, { slug: "agree" }));
+      const call = wiring.start.mock.calls.at(-1) as [string, unknown, string | null];
+      expect(job.runpod_mode).toBe("shared");
+      expect(call[2], "shared was recorded, so the driver must have received no key").toBeNull();
+    });
+
+    // THE SECOND CALL SITE. A change that touched only the fresh path passes every test above.
+    it("the RECLAIM path records the facts too", async () => {
+      wiring.offersSharedTier.mockReturnValue(true);
+      const { cookie, account } = await ready();
+      // Tier A: this account own never-live failed provision, which the owner may retake.
+      await store.createTenant("ten_reclaimme", "again", account.id, "failed");
+      const job = await jobOf(await provision(cookie, { slug: "again" }));
+      expect(job.runpod_mode, "the reclaim call site must record the mode as well").toBe("shared");
+      expect(job.to_release).toBe("v1.0.0");
+    });
+  });
+
   it("REFUSES a slug already taken by another account", async () => {
     await store.createTenant("ten_other", "taken", "acct_other", "live");
     const { cookie } = await ready();
@@ -933,15 +1018,21 @@ describe("POST /api/tenant/provision", () => {
       expect(body.finished_at).not.toBeNull();
     });
 
-    it("reports the pair as NULL on a PROVISION job rather than omitting the fields", async () => {
+    it("reports from_release NULL and to_release SET on a PROVISION job, never omitting either", async () => {
       // Absent and null are different answers. A caller that has to distinguish "no release pair
       // because this kind has none" from "the field was not sent" is back to guessing.
+      //
+      // CONTRACT MOVED BY cp#301, and this test previously asserted the opposite for to_release.
+      // A provision now records the plane pin it was created against, because a resume driven by a
+      // poll would otherwise read the pin at POLL time and could build a studio from a different
+      // release than the schema it migrated. from_release stays NULL: a provision does not move a
+      // tenant FROM anything, so there is no earlier release to record.
       const s = await accepted();
       // A queued provision job IS driven by this poll, and the wiring stub has no resume, so arm it
       // or the route 500s on a TypeError instead of answering.
       (wiring as unknown as { resume: unknown }).resume = vi.fn(async () => {});
       await store.createTenant("ten_dd0001", "other", s.account.id, "provisioning");
-      await store.createProvisionJob("job_p1", "ten_dd0001", "provision");
+      await store.createProvisionJob("job_p1", "ten_dd0001", "provision", TEST_PROVISION_FACTS);
 
       const res = await handle(req("/api/tenant/ten_dd0001/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
       const body = (await res.json()) as Record<string, unknown>;
@@ -952,7 +1043,7 @@ describe("POST /api/tenant/provision", () => {
         "steps_done", "to_release",
       ]);
       expect(body.from_release).toBeNull();
-      expect(body.to_release).toBeNull();
+      expect(body.to_release).toBe(TEST_PROVISION_FACTS.toRelease);
       expect(body.finished_at).toBeNull();
     });
   });
@@ -1015,7 +1106,7 @@ describe("GET /api/tenant/:id/job -- drives PROVISION jobs only", () => {
     const resume = armResume();
     const s = await accepted();
     await store.createTenant("ten_dd0001", "other", s.account.id, "provisioning");
-    await store.createProvisionJob("job_p1", "ten_dd0001", "provision");
+    await store.createProvisionJob("job_p1", "ten_dd0001", "provision", TEST_PROVISION_FACTS);
     // A driver took it and died: running, lease lapsed, no heartbeat behind it.
     await store.setJobRunning("job_p1");
     expireLease("job_p1");
@@ -1042,7 +1133,7 @@ describe("GET /api/tenant/:id/job -- drives PROVISION jobs only", () => {
     const resume = armResume();
     const s = await accepted();
     await store.createTenant("ten_cc0001", "fresh", s.account.id, "provisioning");
-    await store.createProvisionJob("job_q1", "ten_cc0001", "provision");
+    await store.createProvisionJob("job_q1", "ten_cc0001", "provision", TEST_PROVISION_FACTS);
 
     const res = await handle(req("/api/tenant/ten_cc0001/job", { headers: { cookie: s.cookie } }), env(), ctx, deps);
     await flush();
@@ -1064,7 +1155,7 @@ describe("GET /api/tenant/:id/job -- drives PROVISION jobs only", () => {
     const resume = armResume();
     const s = await accepted();
     await store.createTenant("ten_cc0002", "beating", s.account.id, "provisioning");
-    await store.createProvisionJob("job_q2", "ten_cc0002", "provision");
+    await store.createProvisionJob("job_q2", "ten_cc0002", "provision", TEST_PROVISION_FACTS);
     // setJobRunning is the first thing a driver writes, and its heartbeat keeps this lease live.
     await store.setJobRunning("job_q2");
 
@@ -1084,7 +1175,7 @@ describe("GET /api/tenant/:id/job -- drives PROVISION jobs only", () => {
     const resume = armResume();
     const s = await accepted();
     await store.createTenant("ten_cc0003", "stalled", s.account.id, "provisioning");
-    await store.createProvisionJob("job_q3", "ten_cc0003", "provision");
+    await store.createProvisionJob("job_q3", "ten_cc0003", "provision", TEST_PROVISION_FACTS);
     const stalled = store.jobs.get("job_q3")!;
     // Off the ROUTE clock (deps.now is fixed in this harness), not the wall clock: the stale rule
     // compares updated_at against deps.now(), and a stamp taken from Date.now() reads as a job whose
@@ -1841,7 +1932,7 @@ describe("POST /api/admin/tenants/:id/upgrade-modules", () => {
 
   it("REFUSES while another job for this tenant holds a live lease (no two drivers, one script set)", async () => {
     await liveTenant();
-    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision", TEST_PROVISION_FACTS);
     running.status = "running";
     running.lease_until = new Date(Date.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
 
@@ -2008,7 +2099,7 @@ describe("POST /api/admin/tenants/:id/upgrade-studio (cp#139)", () => {
 
   it("REFUSES while another job holds a live lease: two drivers, one studio script", async () => {
     await liveTenant();
-    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision", TEST_PROVISION_FACTS);
     running.status = "running";
     running.lease_until = new Date(Date.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
 
@@ -2131,7 +2222,7 @@ describe("POST /api/admin/tenants/:id/refresh-studio-bindings (cp#112)", () => {
 
   it("REFUSES while a job holds a live lease: a binding patch must not race an upload", async () => {
     await existingTenant();
-    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision", TEST_PROVISION_FACTS);
     running.status = "running";
     // Stamped off deps.now(), NOT Date.now(). The harness clock is fixed in the past, so a lease
     // built from the wall clock is "live" no matter what it was meant to express -- which is how a
@@ -2146,7 +2237,7 @@ describe("POST /api/admin/tenants/:id/refresh-studio-bindings (cp#112)", () => {
 
   it("POSITIVE CONTROL: a dead lease does NOT block, or the guard would wedge every tenant", async () => {
     await existingTenant();
-    const stale = await store.createProvisionJob("job_stale", "ten_abc123", "provision");
+    const stale = await store.createProvisionJob("job_stale", "ten_abc123", "provision", TEST_PROVISION_FACTS);
     stale.status = "running";
     stale.lease_until = stamp(deps.now() - 60_000);
 
@@ -2600,7 +2691,7 @@ describe("POST /api/admin/tenants/:id/abuse-report-url (cp#164)", () => {
 
   it("REFUSES while a job holds a live lease: this patch must not race an upload", async () => {
     await existingTenant();
-    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision", TEST_PROVISION_FACTS);
     running.status = "running";
     running.lease_until = new Date(deps.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
 
@@ -2726,7 +2817,7 @@ describe("POST /api/admin/tenants/:id/storage-quota (cp#183)", () => {
 
   it("REFUSES while a job holds a live lease: this patch must not race an upload", async () => {
     await existingTenant();
-    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision", TEST_PROVISION_FACTS);
     running.status = "running";
     running.lease_until = new Date(deps.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
 
@@ -2944,7 +3035,7 @@ describe("POST /api/admin/tenants/:id/video-finish-tier-state (cp#136)", () => {
 
   it("REFUSES while a job holds a live lease: this patch must not race an upload", async () => {
     await existingTenant();
-    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision", TEST_PROVISION_FACTS);
     running.status = "running";
     running.lease_until = new Date(deps.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
 
@@ -3058,7 +3149,7 @@ describe("POST /api/admin/tenants/:id/video-finish-binding (cp#136)", () => {
 
   it("REFUSES while a job holds a live lease, in BOTH directions", async () => {
     await existingTenant();
-    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision", TEST_PROVISION_FACTS);
     running.status = "running";
     running.lease_until = new Date(deps.now() + 60_000).toISOString().replace("T", " ").slice(0, 19);
 
@@ -3163,7 +3254,7 @@ describe("POST /api/admin/tenants/:id/reprovision-runpod (cp#137)", () => {
 
   it("REFUSES while a job holds a live lease: this must not race an upload", async () => {
     await liveTenant();
-    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision");
+    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision", TEST_PROVISION_FACTS);
     running.status = "running";
     running.lease_until = stamp(deps.now() + 60_000);
 
@@ -3175,7 +3266,7 @@ describe("POST /api/admin/tenants/:id/reprovision-runpod (cp#137)", () => {
 
   it("POSITIVE CONTROL: a dead lease does NOT block, or the guard would wedge the route forever", async () => {
     await liveTenant();
-    const stale = await store.createProvisionJob("job_stale", "ten_abc123", "provision");
+    const stale = await store.createProvisionJob("job_stale", "ten_abc123", "provision", TEST_PROVISION_FACTS);
     stale.status = "running";
     stale.lease_until = stamp(deps.now() - 60_000);
 

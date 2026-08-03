@@ -48,7 +48,7 @@ import { provisionE2eLive, provisionE2eEnvOrThrow } from "./provision-e2e-env";
 import { wfpDispatchFetch } from "./wfp-dispatch-fetch";
 import { deployHarnessDispatcher, type HarnessDispatcher } from "./e2e-harness-dispatcher";
 import { tenantModuleScriptPrefix } from "../src/tenant-modules";
-import { MemoryStore } from "./memory-store";
+import { MemoryStore, TEST_PROVISION_FACTS } from "./memory-store";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { expectProvisionFailure } from "./provision-assert";
@@ -202,7 +202,7 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
     expect(scratchOk).toBe(true);
     const account = await store.createAccount("acct_e2e", "e2e@example.com");
     const tenant = await store.createTenant(TENANT_ID, slug, account.id, "pending");
-    const job = await store.createProvisionJob("job_e2e", tenant.id, "provision");
+    const job = await store.createProvisionJob("job_e2e", tenant.id, "provision", TEST_PROVISION_FACTS);
 
     // DRIVE IT THE WAY PRODUCTION DRIVES IT (#112 budget yield).
     //

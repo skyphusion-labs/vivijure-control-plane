@@ -144,6 +144,20 @@ export interface ProvisionerWiring {
    */
   offersSharedTier(): boolean;
   /**
+   * The plane's CURRENT studio release pin (cp#301).
+   *
+   * A STRING, not the bundle, and the mirror of offersSharedTier above: the provision route needs
+   * exactly one fact -- which release this attempt is being created against -- so it can record it
+   * on the job row before any step runs. The provisioner still owns fetching and validating the
+   * artifact; this is only the pin's identity.
+   *
+   * WHY THE ROUTE NEEDS IT AT ALL: a resume driven by a poll reads the pin at POLL time, and the
+   * pin moves (STUDIO_RELEASE went v1.13.0 to v1.19.3 in one day on 2026-08-03). Recording it at
+   * job creation is what makes "which release is this job building" answerable later, instead of
+   * being re-derived from whatever the plane happens to hold.
+   */
+  currentRelease(): string;
+  /**
    * The shared pool's invoke key, or null when this plane offers no shared tier (cp#270).
    *
    * A SECRET crossing this interface, which is unusual here and is justified only by what it
@@ -638,6 +652,11 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     },
     offersSharedTier(): boolean {
       return sharedPool !== null;
+    },
+    currentRelease(): string {
+      // deps.release, not the env var re-read: one source, so the pin a job records and the pin the
+      // provisioner would fetch cannot be two different reads of the same config.
+      return deps.release;
     },
     sharedPoolInvokeKey(): string | null {
       return deps.sharedPoolInvokeKey;

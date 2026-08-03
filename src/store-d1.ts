@@ -21,6 +21,7 @@ import type {
   PreservationHold,
   PreservationHoldKind,
   ProvisionJob,
+  ProvisionJobFacts,
   Session,
   SlugClaim,
   SmokeRender,
@@ -543,12 +544,18 @@ export class D1Store implements ControlPlaneStore, CreditStore {
     id: string,
     tenantId: string,
     kind: "provision" | "deprovision",
+    facts: ProvisionJobFacts,
   ): Promise<ProvisionJob> {
+    // ONE INSERT carries the id, the mode and the release (cp#301). Writing the facts in a second
+    // statement would open a window where a job exists and cannot say what it is building, and the
+    // driver is dispatched under waitUntil by the same request -- so that window is not theoretical,
+    // it is exactly where the cp#132 early-poller lives.
     const row = await this.db
       .prepare(
-        "INSERT INTO provision_jobs (id, tenant_id, kind, status) VALUES (?1, ?2, ?3, 'queued') RETURNING *",
+        "INSERT INTO provision_jobs (id, tenant_id, kind, status, runpod_mode, to_release) " +
+          "VALUES (?1, ?2, ?3, 'queued', ?4, ?5) RETURNING *",
       )
-      .bind(id, tenantId, kind)
+      .bind(id, tenantId, kind, facts.runpodMode, facts.toRelease)
       .first<ProvisionJob>();
     if (!row) throw new Error("createProvisionJob: insert returned no row");
     return row;

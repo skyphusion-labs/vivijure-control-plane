@@ -22,7 +22,7 @@ import type { CfApi } from "../src/cf-api";
 import type { Tenant, ProvisionJob } from "../src/store";
 import { jobHasLiveDriver } from "../src/store";
 import { encryptStudioToken, kekRing } from "../src/token-crypto";
-import { MemoryStore } from "./memory-store";
+import { MemoryStore, TEST_PROVISION_FACTS } from "./memory-store";
 
 const KEK = btoa("0123456789abcdef0123456789abcdef");
 const RING = kekRing(KEK);
@@ -141,7 +141,7 @@ describe("the job lease (#112 concurrency guard)", () => {
     // Without this, both polls drive the provisioner and we double-mint credentials.
     const store = new MemoryStore();
     await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+    const job = await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
 
     const results = await Promise.all([store.claimJob(job.id, 60), store.claimJob(job.id, 60)]);
 
@@ -151,7 +151,7 @@ describe("the job lease (#112 concurrency guard)", () => {
   it("a second poller is refused while the lease is LIVE", async () => {
     const store = new MemoryStore();
     await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+    const job = await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
 
     expect(await store.claimJob(job.id, 60)).toBe(true);
     expect(await store.claimJob(job.id, 60)).toBe(false);
@@ -160,7 +160,7 @@ describe("the job lease (#112 concurrency guard)", () => {
   it("an EXPIRED lease is reclaimable, so a dead driver does not freeze the job", async () => {
     const store = new MemoryStore();
     await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+    const job = await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
 
     expect(await store.claimJob(job.id, -1)).toBe(true); // already expired
     expect(await store.claimJob(job.id, 60)).toBe(true);
@@ -169,7 +169,7 @@ describe("the job lease (#112 concurrency guard)", () => {
   it("a FINISHED job cannot be claimed at all", async () => {
     const store = new MemoryStore();
     await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+    const job = await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
     await store.finishJob(job.id, "succeeded", null, null);
 
     expect(await store.claimJob(job.id, 60)).toBe(false);
@@ -194,6 +194,8 @@ describe("jobHasLiveDriver (#44 upgrade guard)", () => {
     lease_until: null,
     from_release: "v1.0.0",
     to_release: "v1.1.0",
+    // kind is module_upgrade here: an upgrade carries no provision mode.
+    runpod_mode: null,
     created_at: "2026-01-01 00:00:00",
     updated_at: "2026-01-01 00:00:00",
     finished_at: null,
@@ -220,7 +222,7 @@ describe("runProvisionJob budget yielding", () => {
     // The old behaviour was worse than a failure: nothing was written at all.
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     // Clock jumps a full budget per reading, so the first mark() is already over.
     const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(20_000), 15_000);
 
@@ -234,7 +236,7 @@ describe("runProvisionJob budget yielding", () => {
   it("finishes in one invocation when the budget is ample (no behaviour change)", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
     const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(0), 15_000);
 
@@ -259,11 +261,11 @@ describe("cp#158: a yielding driver HANDS THE LEASE BACK instead of leaving it t
   it("the job is claimable IMMEDIATELY after a yield, with no lease left to wait out", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
     // THE CONTROL, taken BEFORE the yield: the same store, the same claim, on a job whose lease is
     // live. If claimJob said yes to everything this suite would prove nothing about the release.
-    const control = await store.createProvisionJob("job_control", t.id, "provision");
+    const control = await store.createProvisionJob("job_control", t.id, "provision", TEST_PROVISION_FACTS);
     await store.setJobRunning(control.id);
     expect(await store.claimJob(control.id, 60)).toBe(false);
 
@@ -281,7 +283,7 @@ describe("cp#158: a yielding driver HANDS THE LEASE BACK instead of leaving it t
   it("a RESUMED driver hands it back too, so a multi-yield provision pays the wait exactly never", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store, { throughStudio: true });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await store.setJobRunning(job.id);
     const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"];
 
@@ -302,7 +304,7 @@ describe("cp#158: a yielding driver HANDS THE LEASE BACK instead of leaving it t
     try {
       const store = new MemoryStore();
       const t = await seedTenant(store);
-      const job = await store.createProvisionJob("job_1", t.id, "provision");
+      const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
       const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(20_000), 15_000);
       expect(res).toMatchObject({ ok: false, yielded: true });
@@ -322,7 +324,7 @@ describe("cp#158: a yielding driver HANDS THE LEASE BACK instead of leaving it t
     // record: the store refuses it rather than the column happening to look right.
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     await store.finishJob(job.id, "failed", "d1_create", "taken by a poll");
 
     expect(await store.releaseJobLease(job.id)).toBe(false);
@@ -335,7 +337,7 @@ describe("continueProvisionJob", () => {
     // Exactly run 4: the invocation died inside modules_install. Key A is gone forever by design.
     const store = new MemoryStore();
     const t = await seedTenant(store, { throughStudio: true });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"];
     await store.updateJobProgress(job.id, "wfp_upload", JSON.stringify(stepsDone));
 
@@ -349,7 +351,7 @@ describe("continueProvisionJob", () => {
   it("does NOT redo steps already recorded", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store, { throughStudio: true });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const stepsDone = [...PROVISION_STEPS].slice(0, PROVISION_STEPS.indexOf("modules_install"));
     const d = deps(store);
 
@@ -373,7 +375,7 @@ describe("continueProvisionJob", () => {
     // resumes it. Real: the pin moved v1.13.0 -> v1.19.3 in one day on 2026-08-03.
     const store = new MemoryStore();
     const t = await seedTenant(store, { throughStudio: true }); // studio_release = v1.0.0
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"];
     await store.updateJobProgress(job.id, "wfp_upload", JSON.stringify(stepsDone));
     const d = deps(store, { release: "v2.0.0" } as Partial<ProvisionDeps>);
@@ -399,7 +401,7 @@ describe("continueProvisionJob", () => {
     const t = await seedTenant(store, { throughStudio: true });
     await store.setTenantStudioRelease(t.id, null);
     const stranded = (await store.getTenantById(t.id)) as Tenant;
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"];
     const d = deps(store, { release: "v2.0.0" } as Partial<ProvisionDeps>);
 
@@ -416,7 +418,7 @@ describe("continueProvisionJob", () => {
     // so beats waiting forever for a driver that can never succeed.
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const stepsDone = ["d1_create", "d1_migrate"];
 
     const res = await continueProvisionJob(deps(store), job.id, t, stepsDone, fakeClock(0), 15_000);
@@ -429,7 +431,7 @@ describe("continueProvisionJob", () => {
   it("yields again if one continuation is still not enough", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store, { throughStudio: true });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"];
 
     const res = await continueProvisionJob(deps(store), job.id, t, stepsDone, fakeClock(20_000), 15_000);
@@ -462,7 +464,7 @@ describe("the runpod_endpoints -> wfp_upload yield strand (cp#18)", () => {
   it("never yields in the unresumable window: a yield past runpod_endpoints carries wfp_upload too", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const d = deps(store);
 
     const res = await runProvisionJob(d, job.id, t, "rpa_keyA", scriptedClock(CROSS_AT_RUNPOD), 15_000);
@@ -481,7 +483,7 @@ describe("the runpod_endpoints -> wfp_upload yield strand (cp#18)", () => {
   it("the yielded job is RESUMABLE to succeeded by a keyless poll", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
     // First invocation crosses the budget at the runpod_endpoints boundary and yields.
     const first = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", scriptedClock(CROSS_AT_RUNPOD), 15_000);
@@ -519,7 +521,7 @@ describe("cp#248e: provision RECORDS the module release", () => {
   it("the single-invocation path records deps.release", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
     // PRECONDITION, asserted rather than assumed: it starts NULL, so a pass cannot come from a
     // fixture that was already carrying the value.
@@ -534,7 +536,7 @@ describe("cp#248e: provision RECORDS the module release", () => {
   it("the RESUMED path records it too", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store, { throughStudio: true });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"];
     await store.updateJobProgress(job.id, "wfp_upload", JSON.stringify(stepsDone));
 
@@ -551,7 +553,7 @@ describe("cp#248e: provision RECORDS the module release", () => {
     // were never installed would be a worse lie than NULL: it asserts uniformity nothing achieved.
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
     // A clock that burns the whole budget on every reading forces a yield at the first boundary.
     const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(60_000), 15_000);
@@ -606,7 +608,7 @@ describe("per-step provision timing (cp#18)", () => {
   it("records timing on the SUCCESS path -- the entire gap this closes", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const logs: { event: string; fields: Record<string, unknown> }[] = [];
 
     const res = await runProvisionJob(
@@ -631,7 +633,7 @@ describe("per-step provision timing (cp#18)", () => {
   it("stepMs is THIS step alone; elapsedMs stays cumulative", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const logs: { event: string; fields: Record<string, unknown> }[] = [];
     // now() is read once at start, then exactly once per mark. Deltas are uneven on purpose: a
     // cumulative-vs-per-step bug is invisible against evenly spaced readings.
@@ -659,7 +661,7 @@ describe("per-step provision timing (cp#18)", () => {
   it("resolves the two steps cp#18 is actually about, by name", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const logs: { event: string; fields: Record<string, unknown> }[] = [];
 
     await runProvisionJob(
@@ -687,7 +689,7 @@ describe("per-step provision timing (cp#18)", () => {
     // after the budget check would silently drop exactly that one.
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const logs: { event: string; fields: Record<string, unknown> }[] = [];
 
     const res = await runProvisionJob(
@@ -710,7 +712,7 @@ describe("per-step provision timing (cp#18)", () => {
   it("tags the RESUME path so its steps are distinguishable from a first invocation", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store, { throughStudio: true });
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const logs: { event: string; fields: Record<string, unknown> }[] = [];
 
     await continueProvisionJob(
@@ -736,7 +738,7 @@ describe("per-step provision timing (cp#18)", () => {
   it("CONTROL: one clock read per mark, so yield timing is unchanged", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision");
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     let reads = 0;
     const counting = { now: () => (reads++, 0) };
 
@@ -768,7 +770,7 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
     try {
       const store = new MemoryStore();
       const tenant = await seedTenant(store);
-      const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+      const job = await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
 
       // TWO promises, not a spin loop. The test has to wait for the driver to be INSIDE the RunPod
       // step, and polling for it (drain microtasks, check the spy) is both flaky and self-defeating:
@@ -793,7 +795,7 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
       // THE POSITIVE CONTROL, and it is the point of the whole test: a second job, driven by nobody,
       // takes the same 60s lease at the same instant. If 90 seconds of this harness clock did not
       // really expire an un-heartbeated lease, the assertion below would pass for the wrong reason.
-      const idle = await store.createProvisionJob("job_control", "ten_1", "provision");
+      const idle = await store.createProvisionJob("job_control", "ten_1", "provision", TEST_PROVISION_FACTS);
       await store.setJobRunning(idle.id);
 
       const run = runProvisionJob(d, job.id, tenant, "key-A", fakeClock(1));
@@ -829,7 +831,7 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
     try {
       const store = new MemoryStore();
       const tenant = await seedTenant(store);
-      const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+      const job = await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
 
       // TWO promises, not a spin loop. The test has to wait for the driver to be INSIDE the RunPod
       // step, and polling for it (drain microtasks, check the spy) is both flaky and self-defeating:
@@ -872,7 +874,7 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
   it("a heartbeat CANNOT resurrect a job somebody else already finished", async () => {
     const store = new MemoryStore();
     await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+    const job = await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
 
     // Control first: while the job is live, the renew really does work. Without this the refusal
     // below would pass against a renewJobLease that never renews anything.
@@ -887,7 +889,7 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
   it("a LATE mark from a driver that lost its job does not overwrite the terminal record", async () => {
     const store = new MemoryStore();
     await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+    const job = await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
     await store.setJobRunning(job.id);
     await store.updateJobProgress(job.id, "r2_token", JSON.stringify(["d1_create", "r2_token"]));
     await store.finishJob(job.id, "failed", "runpod_endpoints", "keyless refusal");
@@ -918,7 +920,7 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
     try {
       const store = new MemoryStore();
       const tenant = await seedTenant(store);
-      const job = await store.createProvisionJob("job_1", "ten_1", "provision");
+      const job = await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
 
       let entered!: () => void;
       const inUpload = new Promise<void>((r) => {
