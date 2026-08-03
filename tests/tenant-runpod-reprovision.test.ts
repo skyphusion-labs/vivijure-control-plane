@@ -440,6 +440,11 @@ describe("cp#137 rebuild: preflight refuses before writing anything", () => {
     { name: "a suspended tenant", over: { suspended_at: "2026-07-01 00:00:00" }, code: "tenant_suspended" },
     { name: "a tenant mid-provision", over: { status: "provisioning" }, code: "tenant_not_reprovisionable" },
     { name: "a tenant with no studio script", over: { script_name: null }, code: "not_provisioned" },
+    // cp#288: this row was ABSENT until the proxy-binding work leaned on it. The refusal is what
+    // makes `runpodMode` provably 'dedicated' at the runModuleSteps call below it, and nothing
+    // gated it -- so the guard could have been removed by someone tidying with the suite still
+    // green, and the proxy pair would then have been bound on a pooled tenant.
+    { name: "a tenant on the shared pool", over: { runpod_mode: "shared" }, code: "tenant_on_shared_pool" },
     { name: "a tenant with no bucket", over: { r2_bucket_name: null }, code: "tenant_bucket_missing" },
     { name: "a tenant with no recorded module release", over: { modules_release: null }, code: "modules_release_unknown" },
     { name: "a tenant with no studio token", over: { studio_token_enc: null }, code: "tenant_studio_token_missing" },

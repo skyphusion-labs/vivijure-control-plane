@@ -354,10 +354,21 @@ export async function reprovisionTenantRunPod(
         // module scripts, and an upload REPLACES the binding set, so a binding not passed here is a
         // binding dropped (cp#248).
         telemetryD1Id: tenant.d1_database_id,
-        // Same restatement, same reason, for the proxy pair (cp#288). Note this path re-points a
-        // tenant at NEW endpoints, which is a dedicated-shape operation, so in practice this reads
-        // 'dedicated' -- taken from the row rather than assumed, because "in practice" is not a
-        // guarantee and a wrong assumption here binds a proxy on a tenant the plane will refuse.
+        // Same restatement, same reason, for the proxy pair (cp#288).
+        //
+        // THIS READS 'dedicated' ON EVERY REACHABLE PATH, and that is structural rather than a
+        // convention anyone has to remember: preflightRunPodReprovision refuses a shared tenant
+        // outright (`tenant_on_shared_pool`, above), and this function cannot be entered without a
+        // ReprovisionContext, whose only producer is that same preflight AFTER the refusal. The
+        // preflight returns a discriminated union, so the context is not reachable on the refusal
+        // branch at all.
+        //
+        // READ FROM THE ROW ANYWAY, and the residual is why. `tenant` is passed SEPARATELY from
+        // `context`, so nothing forces the tenant examined by the preflight to be the tenant handed
+        // to this call. Today's single caller passes the same variable; a future one need not.
+        // Hardcoding 'dedicated' on the strength of the proof above would then bind NO proxy on a
+        // shared tenant that reached here, silently, while every other path bound one -- a
+        // divergence no test would show. Reading the row is correct under both futures.
         runpodMode: readRunPodMode(tenant.runpod_mode),
       },
       { shouldRun: () => true, onDone: async (done) => void moduleScripts.push(done) },
