@@ -6,6 +6,27 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(provision): the module-side RunPod key is retired on proxied tenants
+
+Conrad ruled 2026-08-03 that the hosted tier holds no RunPod key it could extract, in any fashion.
+A proxied tenant's fifteen module scripts no longer receive the pool RunPod invoke key: they reach
+RunPod through the plane on their `RUNPOD_PROXY_TOKEN`, which is inert against RunPod and worthless
+anywhere except our own routes. **16 copies per tenant becomes 1.**
+
+- **The predicate is the change, not the deletion.** Binding the proxy pair and installing the key
+  are two halves of one decision, and as two expressions they can disagree into exactly one state:
+  neither pair nor key, a module with no route to RunPod at all. `tenantModuleProxyBinding` is now
+  the single expression both `uploadTenantModules` and `installInvokeKey` read.
+- **Not keyed on `runpod_mode` alone.** Shared is necessary and not sufficient -- a shared tenant on
+  a plane with no `CONTROL_PLANE_HOST` or no `RUNPOD_PROXY_SIGNING_KEY` gets no proxy, and keying on
+  the mode would retire the key for tenants that never received one.
+- **Dedicated, BYO and self-host are untouched** and keep the direct key. That unbound path is the
+  self-host door and is permanently supported.
+- **The STUDIO copy stays, as a known remaining gap rather than an oversight.** The studio itself
+  submits RunPod work (cast LoRA training) and `vivijure-core` carries no proxy branch, so removing
+  it before core learns the proxy would break that path rather than close the hole. Tracked
+  separately; Conrad's ruling is not fully satisfied until it lands.
+
 ## v1.21.0 -- 2026-08-03
 
 ### chore(release): v1.21.0 -- what this tag actually deploys
