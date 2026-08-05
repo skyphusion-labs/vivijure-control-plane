@@ -6,6 +6,17 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(provision): backend plan label no longer promises cast LoRA training (cp#303)
+
+`PROVISION_PLAN`'s backend entry was labelled "Render (keyframes, video, cast LoRA training)".
+Training does not run on that endpoint and cannot fall back to it: cast LoRA training is
+fail-closed on its own satellite (`vivijure-wan-train` / `RUNPOD_WAN_TRAIN_ENDPOINT_ID`). The
+label is tenant-visible (onboarding renders from the plan), so the clause was a product lie and
+invited the inference that the shared pool already covers training because it covers `backend`.
+
+Dropped the training clause on the plan label, the onboarding representative plan purpose strings,
+and the hosted-tier docs table. A unit test pins the backend label so the promise cannot return.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys
