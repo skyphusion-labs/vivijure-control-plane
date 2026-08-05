@@ -941,6 +941,9 @@ describe("POST /api/tenant/provision", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("reclaim_teardown_failed");
     expect(body.failures).toEqual([{ resource: "r2_bucket", error: "bucket is not empty" }]);
+    // GENUINELY STUCK (cp#304): no self-serve move, so the sentence must say contact us, not try again.
+    expect(String(body.message)).toMatch(/contact us/i);
+    expect(String(body.message)).not.toMatch(/try again/i);
     // THE ASSERTION THIS TEST EXISTS FOR: reclaimSlug blanks the resource columns, so completing
     // here would erase the only record of what we failed to delete. The row keeps its ids.
     const after = await store.getTenantById("ten_halfbuilt");
