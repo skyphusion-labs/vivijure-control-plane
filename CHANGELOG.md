@@ -6,6 +6,16 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Fixed
+
+- **test(aig): credential-boundary guards derive their population from `TENANT_MODULE_CATALOG`
+  (cp#314).** `tenant-aig-token.test.ts` looped a hardcoded list of endpoint-backed modules when
+  asserting the AI Gateway trio never leaks. When `finish-rife` joined the catalog the guard stayed
+  green and simply never looked -- the silent-gap shape, not a red stale assertion. Same doctrine
+  the proxy suite already uses: derive the modules to inspect, keep the expectation about what
+  must be absent. Attribution vars (`TENANT_ID` / `TENANT_SLUG`) now walk every non-gateway module
+  too, not only `keyframe`.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys
