@@ -6,6 +6,13 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(ci): gate commit messages against issue-linking auto-close keywords (cp#265)
+
+The PR-body guard (#263) covers the surface a human reads. On squash merge the squash body is the
+**commit message**, not the PR body, and that is what GitHub auto-closes from. Enumerate every
+commit on the PR and run the same matcher (`scripts/pr-body-guard.py`) over each message. Zero
+commits in range is exit 2, never a vacuous pass. Self-test pins the caller.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys
