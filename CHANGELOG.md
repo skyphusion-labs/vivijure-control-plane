@@ -6,6 +6,10 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys
