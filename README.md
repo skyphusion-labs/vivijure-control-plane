@@ -297,7 +297,9 @@ to cover module bytes.
 **The pin has a floor: `v1.3.1`.** Migrations and `required_vars` only started riding the manifest
 at that release, so an earlier artifact cannot describe a tenant fully enough to build one. The
 control plane refuses a pre-`v1.3.1` artifact outright rather than provisioning a studio it cannot
-finish. (The live plane currently pins `v1.2.0`; the bump to `v1.3.1` rides the `v1.0.0` cutover.)
+finish. Code floor: `MANIFEST_PIN_FLOOR` in `src/bundle-r2.ts`. The live pin is the operator-set
+`STUDIO_RELEASE` env var and must be at or above that floor (CHANGELOG records pin advances; recent
+narrative includes studio **v1.12.0** for storage quota and plan-enhance).
 
 That last row is the important one. If this repo kept its own idea of what a tenant studio needs,
 the two lists would drift apart the first time the studio gained a setting, and the failure would
