@@ -85,6 +85,24 @@ describe("tenantView", () => {
     expect(view).toMatchObject({ status: "suspended", url: null, suspended_reason: "abuse" });
   });
 
+  // cp#281: status alone collapsed suspension over a deleted row into "suspended", so an operator
+  // picking from the admin list could not tell restorable from gone. lifecycle carries the truth.
+  it("exposes lifecycle so a suspended-over-deleted tenant is not mistaken for restorable", () => {
+    const view = tenantView(
+      tenant({ status: "deleted", suspended_at: "now", suspended_reason: "abuse" }),
+      ".studio.vivijure.com",
+    );
+    expect(view.status).toBe("suspended");
+    expect(view.lifecycle).toBe("deleted");
+    expect(view.url).toBeNull();
+  });
+
+  it("lifecycle matches status when the tenant is not suspended", () => {
+    const view = tenantView(tenant({ status: "live" }), ".studio.vivijure.com");
+    expect(view.status).toBe("live");
+    expect(view.lifecycle).toBe("live");
+  });
+
   // cp#43: modules_release was written, load-bearing, and projected by NOTHING, so the only way to
   // read it was prod D1 with a separately minted credential. These two assertions are the pair that
   // keeps that from recurring: one names the field, one pins the whole key set so the next field
@@ -105,7 +123,7 @@ describe("tenantView", () => {
 
   it("projects EXACTLY the agreed key set, in both directions", () => {
     expect(Object.keys(tenantView(tenant({}), ".studio.vivijure.com")).sort()).toEqual([
-      "created_at", "id", "live_at", "modules_release", "slug", "status", "studio_release",
+      "created_at", "id", "lifecycle", "live_at", "modules_release", "slug", "status", "studio_release",
       "suspended_reason", "url",
     ]);
   });
