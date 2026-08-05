@@ -6,6 +6,15 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### docs(modules): control-plane.md matches the shipped 15-entry catalog (cp#284)
+
+`docs/control-plane.md` still described the tenant module bridge as six endpoint-backed workers and
+"all six" recording modules. That was true after wave 0 (`finish-rife`) and false after wave 1
+(the eight GPUless cost-door rows, plane PR #317 / studio release bundles from cf PR #406). The
+section now states the three binding shapes (endpoint-backed, public-slug cost door, AI Gateway),
+the `reachesRunpod` population rule, the tenant-R2 refuse path, and which studio/plane pins first
+carried the door. No code change -- the catalog and provisioner already ship this on main.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys
