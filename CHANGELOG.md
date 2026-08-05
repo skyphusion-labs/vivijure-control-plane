@@ -6,6 +6,17 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(runpod-sweep): log gated refusals so a no-op is distinguishable from silence (cp#300)
+
+`runRunpodJobSweep` already refused honestly when the pool credential was missing or unreadable
+(`ran:false, reason:credential_unavailable`), but both early returns exited before the only tick
+log line, and the scheduled caller discarded the return value. From outside the Worker a correctly
+gated no-op and a silently broken sweep were identical: no log, no metric, no throw.
+
+Every exit path now emits `runpod_sweep.tick` (including `ran:false`), at error level when the
+sweep refused or left work unresolved. Matches the meter half of the same scheduled tick, which
+already announced its own refusals.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys
