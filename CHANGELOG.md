@@ -6,6 +6,15 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(docs): RunPod proxy census comment said 23 of 26 modules; measured 14 (cp#298)
+
+`src/runpod-proxy-route-match.ts` claimed "23 of 26 modules" referenced `api.runpod.ai` at
+vivijure-cf@d26db49. Re-measurement at that sha (and at b295309) is **14**, matching the census
+already written in `src/runpod-proxy.ts` (8 public slug + 6 `RUNPOD_ENDPOINT_ID`). The count is
+not load-bearing for routing, but a wrong measured figure in a source comment becomes scoping
+evidence. Comment corrected; `tests/runpod-proxy-census.test.ts` pins the two comments to the
+reproducible split so 23 cannot re-land.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys
