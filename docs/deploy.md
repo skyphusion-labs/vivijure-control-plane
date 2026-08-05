@@ -21,6 +21,10 @@ git push origin main --follow-tags
 6. **verify nothing is still pending** -- fails the deploy if it is
 7. **`wrangler deploy`**
 
+Which guards run on CI only vs deploy (and why) is enumerated in
+[`docs/ci-deploy-guard-census.md`](./ci-deploy-guard-census.md) (cp#260). Re-measure when
+workflows change.
+
 ## Tag semantics
 
 Split per repository, deliberately (cf#85):
