@@ -6,6 +6,12 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### chore(onboarding): remove dead scopeVerdict helper (cp#30)
+
+`scopeVerdict()` had no production caller after the cp#20 client fix (PR #29 deleted the only
+reader of a probe payload no route emits). Removed the helper, its types, export, and unit tests.
+Live invoke-key UX stays on reason-code copy (`invokeRejectionCopy` / `REJECTION_COPY`).
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys

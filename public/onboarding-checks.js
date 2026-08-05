@@ -248,62 +248,13 @@
     return "$" + amount.toFixed(2);
   }
 
-  // Turn the control plane's live scope probe of key B into a verdict.
-  //
-  // The probes are the #60-proven ones: GET /health must succeed on each of the
-  // 4 endpoints we created, AND a graphql call must be DENIED. Both halves
-  // matter and they catch different mistakes:
-  //   - graphql NOT denied  => they pasted a full/graphql key. It would work
-  //     fine, which is exactly the danger: we would be storing account-wide
-  //     power forever to save one screen of friction.
-  //   - a health failure    => the key is scoped to the wrong endpoints (403).
-  // Either way we refuse and never store it. "It works" is not the bar; "it can
-  // do only what it needs" is.
-  function scopeVerdict(probe) {
-    const p = probe || {};
-    const health = p.health && typeof p.health === "object" ? p.health : null;
-    const failures = [];
-
-    if (p.graphql_denied !== true) {
-      failures.push(
-        "That key can do more than run your renders: it still has account access. " +
-          "This is the one thing we will not store, so we have not kept it. Mint a key with " +
-          "the invoke surface only, and api.runpod.io/graphql set to None.",
-      );
-    }
-
-    if (!health) {
-      failures.push("We could not check that key against your endpoints, so we have not stored it.");
-    } else {
-      const unreachable = Object.keys(health).filter(function (id) { return health[id] !== true; });
-      if (unreachable.length) {
-        failures.push(
-          "That key cannot reach " +
-            (unreachable.length === 1 ? "this endpoint" : "these endpoints") +
-            ": " +
-            unreachable.join(", ") +
-            ". Check you gave it Read/Write on all four of the endpoints we just created.",
-        );
-      }
-    }
-
-    return {
-      ok: failures.length === 0,
-      failures: failures,
-      message: failures.length === 0
-        ? "That key checks out: it can run jobs on your four endpoints, and nothing else."
-        : failures[0],
-    };
-  }
-
   // Map the control plane's invoke-key rejection REASON codes (#52, as
   // implemented in src/runpod-invoke-key.ts) to copy that tells
   // the tenant which way their key is wrong. "Rejected" alone is not an honest
   // error: too-powerful and scoped-to-the-wrong-endpoints are different fixes.
-  //
-  // scopeVerdict (above) reads a probe payload; this reads reason codes. The
-  // shipped control plane returns reasons today, so this is the live path; the
-  // probe path stays for when #53 carries the field.
+  // This is the live path: the plane returns reason codes, not a probe body.
+  // A client-side probe verdict was removed in cp#30 (no production caller after
+  // the cp#20 client fix, and no route emits the probe shape it read).
   const REJECTION_COPY = {
     graphql_capable:
       "That key can do more than run your renders: it still has account access. This is the one " +
@@ -754,7 +705,6 @@
     keyShapeHint: keyShapeHint,
     slugHint: slugHint,
     SLUG_RESERVED: SLUG_RESERVED,
-    scopeVerdict: scopeVerdict,
     invokeRejectionCopy: invokeRejectionCopy,
     invokeKeyVerdict: invokeKeyVerdict,
     aupAcceptFailureCopy: aupAcceptFailureCopy,
