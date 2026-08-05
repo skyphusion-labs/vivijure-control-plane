@@ -6,6 +6,13 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### test(runpod-proxy): pin plane-refusal header wire name (cf#403)
+
+`PLANE_REFUSAL_HEADER` is the same string literal in this repo and vivijure-cf with no shared
+package. Both sides now pin `"x-vivijure-plane-refusal"` in
+`tests/plane-refusal-header-contract.test.ts` so a one-sided rename fails CI before it restores the
+forever-pend cf#398 / cp#288 closed. Docs: `docs/deploy.md`.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys

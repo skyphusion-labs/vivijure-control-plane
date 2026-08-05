@@ -162,6 +162,13 @@ token can be minted and none can verify, so a misconfigured plane serves nobody 
 everybody. If shared-tier submits are 401ing on a plane you believe is configured, check this
 secret first.
 
+**Wire header contract (cf#403).** The header name is `PLANE_REFUSAL_HEADER` in
+`src/runpod-proxy-poll.ts`, currently the literal `x-vivijure-plane-refusal`. vivijure-cf modules
+read the same name from `modules/_shared/runpod-route.ts`. Both repos pin that exact string in
+`tests/plane-refusal-header-contract.test.ts` so a rename without the twin fails CI on the side that
+moved. There is no shared package; equality is the dual pin, not an import. A one-sided rename
+makes every plane refusal look like a non-refusal to modules (forever-pend; cf#398 / cp#288).
+
 **Rotating it invalidates every tenant's token at once**, deliberately: a stateless token cannot be
 revoked row by row. Per-tenant refusal lives on the SUBMIT path instead, which reads the tenant row
 and refuses anything not live, unsuspended and `runpod_mode = 'shared'` -- and submit is the only

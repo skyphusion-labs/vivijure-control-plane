@@ -54,6 +54,8 @@ export function upstreamUrlFor(op: PassthroughOp, endpointId: string, jobId?: st
  * honestly. Teaching the modules to READ that header is a vivijure-cf change, filed separately; this
  * side emits it so the two can land independently.
  */
+/** Wire name modules read via vivijure-cf `PLANE_REFUSAL_HEADER`. Dual-repo pin:
+ *  tests/plane-refusal-header-contract.test.ts (mirrored on vivijure-cf; cf#403). */
 export const PLANE_REFUSAL_HEADER = "x-vivijure-plane-refusal";
 
 export async function passthrough(
