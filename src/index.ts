@@ -1737,6 +1737,20 @@ async function adminRoutes(
 
   if (request.method === "POST" && path === "/api/admin/llm-meter/run") {
     const outcome = await runLlmMeterTick(env, deps);
+    // PLATFORM action, not a tenant read (cp#243). A manual tick advances the ingestion watermark,
+    // which determines which rows land in which billing period, so who forced it and what it reported
+    // must be reconstructable. Same shape as meter.settle_llm below: operator, action name, target
+    // that is not a tenant id, and the outcome the run reported.
+    await deps.store.recordAdminAction(
+      actor,
+      "meter.tick_llm",
+      "llm_meter",
+      JSON.stringify(
+        outcome.ran
+          ? { ran: true }
+          : { ran: false, reason: outcome.reason ?? "unknown" },
+      ),
+    );
     if (!outcome.ran) {
       // 503 and the reason NAMED. Not 200-with-a-null: an operator asking the meter to run and
       // getting a success back has been told the meter ran.
