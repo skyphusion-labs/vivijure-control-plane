@@ -970,17 +970,24 @@ recording modules including `finish-rife`.
 
 ### `GET /api/platform/version`
 
-Returns `{ "control_plane_version": "<semver>" }` from `src/version.ts`, which the existing lockstep
-test keeps equal to `package.json`. Before this, `CONTROL_PLANE_VERSION` was referenced by nothing at
-runtime: confirming which release the plane served meant fetching a changed asset and reading the
-patched line off the wire. That works, but it is archaeology, not observability.
+Returns release **and** build identity (cp#289):
 
-It is its OWN route rather than a field on `/api/platform/config` deliberately. That route is a
-policy projection the front door renders from -- it has a UI contract and a UI audience. Deploy
-identity is an operator/CI fact with a different audience and different cache semantics, and folding
-it in is how a config endpoint turns into a junk drawer. Unauthenticated, like the config route: the
-version of an AGPL codebase whose tags are public is not a secret, and a version you need a
-credential to read is useless to the monitoring that needs it most.
+```json
+{
+  "control_plane_version": "<semver>",
+  "build": { "id": "<worker-version-id|null>", "timestamp": "<iso|null>", "tag": "<string|null>" }
+}
+```
+
+- `control_plane_version` is the **release** from `src/version.ts` (lockstep with `package.json` /
+  the `v*` tag). Two deploys of the same tag share this string.
+- `build` is CF Worker version metadata (`CF_VERSION_METADATA` binding): unique `id` and upload
+  `timestamp` **per deploy**, so two redeploys at one tag are distinguishable. Fields are `null`
+  when the binding is absent (unit tests, older local config).
+
+Before cf#114d, `CONTROL_PLANE_VERSION` was referenced by nothing at runtime. Before cp#289 the
+route answered release only and invited being read as "which build". Unauthenticated, like the
+config route: the version of an AGPL codebase whose tags are public is not a secret.
 
 ## Watching a hosted tenant actually render (cp#45)
 
