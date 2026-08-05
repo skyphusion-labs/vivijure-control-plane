@@ -6,6 +6,10 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Standing WAF watch for OWASP 949110 (cp#14).** `docs/waf-post-enforce-watch.md` -- enforce mode has no pre-block signal; keep 949110 at zero on legitimate surfaces.
+
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys
