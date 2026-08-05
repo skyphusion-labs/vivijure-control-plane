@@ -188,10 +188,8 @@ describe("teardown referential guard", () => {
     expect(live.script_name).toBe(SCRIPT);
   });
 
-  it("refuses a resource shared only with TOMBSTONES too, and says so without crying wolf", async () => {
-    // Any referrer blocks: a resource shared only with deleted rows is still not provably ours, and
-    // picking a winner among tombstones is a rule nobody has written. But the message must NOT claim
-    // a live blocker, or the warning stops meaning anything when there IS one.
+  it("cp#106 D: recorded owner can reap past tombstone-only referrers", async () => {
+    // own() goes through setTenantD1 which claims ownership. Last claim (ten_t2) is the owner.
     await store.createTenant("ten_t1", "t-one", "acct_1", "failed");
     await store.setTenantStatus("ten_t1", "deleted");
     await own("ten_t1", { d1: D1_ID });
@@ -200,12 +198,31 @@ describe("teardown referential guard", () => {
     await store.setTenantStatus("ten_t2", "deleted");
     await own("ten_t2", { d1: D1_ID });
     const t2 = (await store.getTenantById("ten_t2"))!;
+    expect(await store.getResourceOwner("d1", D1_ID)).toBe("ten_t2");
 
+    const res = await teardownTenant(deps, t2, { deleteData: true });
+
+    expect(res.ok, JSON.stringify(res.failures)).toBe(true);
+    expect(log.deleteD1).toEqual([D1_ID]);
+  });
+
+  it("cp#106 D: non-owner still refused when only tombstones alias the resource", async () => {
+    await store.createTenant("ten_t1", "t-one", "acct_1", "failed");
+    await store.setTenantStatus("ten_t1", "deleted");
+    await own("ten_t1", { d1: D1_ID });
+
+    await store.createTenant("ten_t2", "t-two", "acct_1", "failed");
+    await store.setTenantStatus("ten_t2", "deleted");
+    await own("ten_t2", { d1: D1_ID });
+    // Ghost is recorded owner; neither tombstone may reap.
+    await store.claimResourceOwnership("d1", D1_ID, "ten_ghost");
+
+    const t2 = (await store.getTenantById("ten_t2"))!;
     const res = await teardownTenant(deps, t2, { deleteData: true });
 
     const d1Failure = res.failures.find((f) => f.resource === "d1")!;
     expect(d1Failure.error).toMatch(/^refused:/);
-    expect(d1Failure.error).toContain("ten_t1");
+    expect(d1Failure.error).toContain("recorded owner is ten_ghost");
     expect(d1Failure.error).not.toContain("AT LEAST ONE IS NOT DELETED");
     expect(log.deleteD1).toEqual([]);
   });

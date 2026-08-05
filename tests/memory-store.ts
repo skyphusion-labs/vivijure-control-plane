@@ -369,17 +369,27 @@ export class MemoryStore implements ControlPlaneStore {
     this.jobs.set(id, j);
     return j;
   }
+  /** cp#106 D: kind + key -> owner tenant id */
+  private ownership = new Map<string, string>();
+
+  private ownershipKey(kind: TenantResourceKind, resourceKey: string): string {
+    return `${kind}\0${resourceKey}`;
+  }
+
   async setTenantD1(id: string, databaseId: string) {
     const t = this.tenants.get(id);
     if (t) t.d1_database_id = databaseId;
+    await this.claimResourceOwnership("d1", databaseId, id);
   }
   async setTenantBucket(id: string, bucket: string) {
     const t = this.tenants.get(id);
     if (t) t.r2_bucket_name = bucket;
+    await this.claimResourceOwnership("r2_bucket", bucket, id);
   }
   async setTenantR2Token(id: string, tokenId: string) {
     const t = this.tenants.get(id);
     if (t) t.r2_token_id = tokenId;
+    await this.claimResourceOwnership("r2_token", tokenId, id);
   }
   async setTenantEndpoints(id: string, endpointsJson: string) {
     const t = this.tenants.get(id);
@@ -396,6 +406,7 @@ export class MemoryStore implements ControlPlaneStore {
       t.script_name = scriptName;
       t.studio_release = release;
     }
+    await this.claimResourceOwnership("worker", scriptName, id);
   }
   async setTenantModulesRelease(id: string, release: string | null) {
     const t = this.tenants.get(id);
@@ -432,11 +443,33 @@ export class MemoryStore implements ControlPlaneStore {
   async clearTenantResource(id: string, resource: TenantResourceKind) {
     const t = this.tenants.get(id);
     if (!t) return;
-    if (resource === "d1") t.d1_database_id = null;
-    else if (resource === "r2_bucket") t.r2_bucket_name = null;
-    else if (resource === "r2_token") t.r2_token_id = null;
-    else if (resource === "worker") t.script_name = null;
-    else throw new Error(`unknown tenant resource kind: ${resource}`);
+    let key: string | null = null;
+    if (resource === "d1") {
+      key = t.d1_database_id;
+      t.d1_database_id = null;
+    } else if (resource === "r2_bucket") {
+      key = t.r2_bucket_name;
+      t.r2_bucket_name = null;
+    } else if (resource === "r2_token") {
+      key = t.r2_token_id;
+      t.r2_token_id = null;
+    } else if (resource === "worker") {
+      key = t.script_name;
+      t.script_name = null;
+    } else throw new Error(`unknown tenant resource kind: ${resource}`);
+    if (key && this.ownership.get(this.ownershipKey(resource, key)) === id) {
+      this.ownership.delete(this.ownershipKey(resource, key));
+    }
+  }
+
+  async claimResourceOwnership(kind: TenantResourceKind, resourceKey: string, ownerTenantId: string) {
+    if (!resourceKey) return;
+    this.ownership.set(this.ownershipKey(kind, resourceKey), ownerTenantId);
+  }
+
+  async getResourceOwner(kind: TenantResourceKind, resourceKey: string): Promise<string | null> {
+    if (!resourceKey) return null;
+    return this.ownership.get(this.ownershipKey(kind, resourceKey)) ?? null;
   }
 
   async setApiTokenRotatedAt(id: string) {
