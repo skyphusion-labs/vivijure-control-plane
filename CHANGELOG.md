@@ -6,6 +6,14 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(admin): module-readiness double-samples /ready after upgrades (cp#254)
+
+`GET /api/admin/tenants/:id/module-readiness` was a single-shot probe. Right after a module upload,
+`/ready` can be answered by a stale isolate, so one sample is not evidence either way.
+`probeTenantModuleReadiness` now samples twice with a short (~250ms) gap and reports the second
+sample. Not the multi-second key-install wait; only a cheap second look. Injectable timing keeps the
+gap testable.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys

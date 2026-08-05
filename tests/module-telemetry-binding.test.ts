@@ -17,6 +17,7 @@ import {
   TenantModuleError,
   tenantModuleScriptName,
   type TenantModuleDeps,
+  type ProbeTiming,
 } from "../src/tenant-modules";
 import type { WorkerBinding } from "../src/cf-api";
 
@@ -179,10 +180,13 @@ function readyDeps(answer: (module: string) => { status: number; text: string })
   } as Partial<TenantModuleDeps>);
 }
 
+/** Zero-wait clock for the double sample so unit tests never burn the production gap. */
+const instantTiming: ProbeTiming = { now: () => 0, sleep: async () => {} };
+
 describe("probeTenantModuleReadiness", () => {
   it("reports job_log TRUE when the worker resolved the binding", async () => {
     const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m, { telemetry: { job_log: true } }) }));
-    const obs = await probeTenantModuleReadiness(d, TENANT);
+    const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
     for (const o of obs.filter((x) => x.records_runpod_jobs)) expect(o.job_log, o.module).toBe(true);
   });
 
@@ -190,7 +194,7 @@ describe("probeTenantModuleReadiness", () => {
     // THE CASE THAT MATTERS: ok is still true, credentials are still true, the module still renders.
     // Only this field distinguishes a tenant whose jobs are being recorded from one whose are not.
     const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m, { telemetry: { job_log: false } }) }));
-    const obs = await probeTenantModuleReadiness(d, TENANT);
+    const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
     const keyframe = obs.find((o) => o.module === "keyframe")!;
     expect(keyframe.ok).toBe(true);
     expect(keyframe.credentials).toEqual({ runpod_api_key: true, runpod_endpoint_id: true });
@@ -202,13 +206,13 @@ describe("probeTenantModuleReadiness", () => {
     // false would say the binding is missing when what is missing is the report, and would send
     // somebody to re-provision a tenant whose real problem is a stale release pin.
     const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m) }));
-    const obs = await probeTenantModuleReadiness(d, TENANT);
+    const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
     for (const o of obs) expect(o.job_log, o.module).toBeNull();
   });
 
   it("reports NULL and the raw response when nothing answered", async () => {
     const { d } = readyDeps(() => ({ status: 404, text: "TENANT_MODULE_DISPATCH not bound" }));
-    const obs = await probeTenantModuleReadiness(d, TENANT);
+    const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
     for (const o of obs) {
       expect(o.status, o.module).toBe(404);
       expect(o.job_log, o.module).toBeNull();
@@ -221,7 +225,7 @@ describe("probeTenantModuleReadiness", () => {
     // Script names are tenant-prefixed and derived. A neighbouring module answering healthily must
     // never be recorded as proof about this one.
     const { d } = readyDeps(() => ({ status: 200, text: readyBody("some-other-module", { telemetry: { job_log: true } }) }));
-    const obs = await probeTenantModuleReadiness(d, TENANT);
+    const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
     for (const o of obs) {
       expect(o.job_log, o.module).toBeNull();
       expect(o.credentials, o.module).toBeNull();
@@ -230,22 +234,45 @@ describe("probeTenantModuleReadiness", () => {
 
   it("marks plan-enhance as a module that is NOT expected to record", async () => {
     const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m, { telemetry: { job_log: true } }) }));
-    const obs = await probeTenantModuleReadiness(d, TENANT);
+    const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
     expect(obs.find((o) => o.module === "plan-enhance")!.records_runpod_jobs).toBe(false);
     for (const m of RECORDING) expect(obs.find((o) => o.module === m)!.records_runpod_jobs, m).toBe(true);
   });
 
-  it("probes the tenant-prefixed script name for every catalog module, once each", async () => {
+  // cp#254: two samples with a gap, second wins. A single pass after an upgrade can be a stale
+  // isolate; the second sample is the reported answer.
+  it("probes every catalog module TWICE and reports the second sample", async () => {
     const seen: string[] = [];
+    let afterGap = false;
+    const slept: number[] = [];
+    const timing: ProbeTiming = {
+      now: () => 0,
+      sleep: async (ms) => {
+        slept.push(ms);
+        afterGap = true;
+      },
+    };
     const { d } = deps({
       callTenantModule: vi.fn(async (scriptName: string, path: string) => {
         seen.push(scriptName + " " + path);
-        return { status: 200, text: "{}" };
+        const spec = TENANT_MODULE_CATALOG.find((s) => scriptName === tenantModuleScriptName(TENANT, s.module));
+        // First pass: job_log false (stale). After the gap: true (converged). Report must be true.
+        const jobLog = afterGap;
+        if (spec) {
+          return {
+            status: 200,
+            text: readyBody(spec.module, { telemetry: { job_log: jobLog } }),
+          };
+        }
+        return { status: 404, text: "no such script" };
       }),
     } as Partial<TenantModuleDeps>);
-    await probeTenantModuleReadiness(d, TENANT);
-    expect(seen.sort()).toEqual(
-      TENANT_MODULE_CATALOG.map((s) => tenantModuleScriptName(TENANT, s.module) + " /ready").sort(),
-    );
+    const obs = await probeTenantModuleReadiness(d, TENANT, timing, 250);
+    expect(slept).toEqual([250]);
+    const once = TENANT_MODULE_CATALOG.map((s) => tenantModuleScriptName(TENANT, s.module) + " /ready");
+    expect(seen.sort()).toEqual([...once, ...once].sort());
+    for (const o of obs.filter((x) => x.records_runpod_jobs)) {
+      expect(o.job_log, o.module).toBe(true);
+    }
   });
 });
