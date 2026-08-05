@@ -218,6 +218,10 @@ describe("the tenant studio platform-env contract (#116)", () => {
       type: "plain_text",
       text: "vivijure-hosted",
     });
+    // Credential must not land as plain_text (dashboard/CLI readable).
+    expect(studio!.bindings.find((b) => b.name === "CF_AIG_TOKEN")).toMatchObject({
+      type: "secret_text",
+    });
   });
 
   it("does NOT half-bind the gateway pair when the plane names no gateway", async () => {

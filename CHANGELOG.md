@@ -6,6 +6,15 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### feat(provision): bind AI + GATEWAY_ID on the tenant studio (cf#98)
+
+Hosted planner / chat / enhance need `env.AI` and a resolvable `GATEWAY_ID` on the **studio** worker,
+not only on plan-enhance modules. New provisions bind `AI` always (Workers AI local path when no
+gateway is configured), and bind `GATEWAY_ID` + `CF_AIG_TOKEN` (both-or-neither) when
+`TENANT_AI_GATEWAY_ID` is set. The studio Run token is a **separate** grant from the module token
+(`…-aig-studio` vs `…-aig`) so compromise of one surface does not expose the other; teardown revokes
+both by name.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys

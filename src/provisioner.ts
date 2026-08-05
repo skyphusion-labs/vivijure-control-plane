@@ -300,12 +300,19 @@ export const tenantD1Name = (slug: string) => `vivijure-tenant-${slug}`;
 export const tenantBucketName = (slug: string) => `vivijure-tenant-${slug}`;
 export const tenantR2TokenName = (slug: string) => `vivijure-tenant-${slug}-r2`;
 /**
- * This tenant AI Gateway Run token (cf#56). DETERMINISTIC from the slug, like the R2 token name and
- * for the same reason: the value is never stored, so a token whose id we lost can still be revoked
- * by name (the cf#91 census path). No new column is needed -- unlike the R2 credential, whose id
- * doubles as the S3 access key id, this token id is only ever needed to revoke.
+ * This tenant AI Gateway Run token for MODULE workers (cf#56). DETERMINISTIC from the slug, like
+ * the R2 token name and for the same reason: the value is never stored, so a token whose id we lost
+ * can still be revoked by name (the cf#91 census path). No new column is needed -- unlike the R2
+ * credential, whose id doubles as the S3 access key id, this token id is only ever needed to revoke.
+ *
+ * Studio planner/chat uses a SEPARATE grant (`tenantStudioAigTokenName`): sharing one Run token
+ * between the studio script and every module would mean a compromise of either surface bills and
+ * revokes the other (cf#98 audit).
  */
 export const tenantAigTokenName = (slug: string) => `vivijure-tenant-${slug}-aig`;
+
+/** Studio-only AI Gateway Run token (cf#98). Distinct from the module grant above. */
+export const tenantStudioAigTokenName = (slug: string) => `vivijure-tenant-${slug}-aig-studio`;
 
 /**
  * The credential a TEARDOWN cycle mints for itself to empty a bucket (cf#72). Deliberately a
@@ -763,18 +770,18 @@ export async function runProvisionJob(
     // credential stored as a VALUE; token-crypto encrypts it under STUDIO_TOKEN_KEK before D1.
     const studioApiToken = randomToken();
 
-    // cf#98 / cf#56: mint the per-tenant AI Gateway Run token BEFORE the studio upload so the
-    // planner/chat surface on the studio can bind GATEWAY_ID + CF_AIG_TOKEN (same both-or-neither
-    // rule as plan-enhance modules). Revoke-then-mint by NAME; the value is never stored. Modules
-    // uploaded below reuse this value rather than minting a second grant for the same tenant.
-    let aigTokenValue: string | null = null;
+    // cf#98: mint a STUDIO-scoped AI Gateway Run token BEFORE the studio upload so planner/chat can
+    // bind GATEWAY_ID + CF_AIG_TOKEN (both-or-neither). Distinct name from the module grant minted
+    // below -- one surface's compromise must not expose the other's credential.
+    let studioAigTokenValue: string | null = null;
     if (deps.aiGatewayId) {
       try {
-        await deps.tokenMinter.revokeByName(tenantAigTokenName(tenant.slug));
+        await deps.tokenMinter.revokeByName(tenantStudioAigTokenName(tenant.slug));
       } catch (e) {
-        deps.log("aig_token.revoke_failed", { tenant: tenant.id, error: String(e) });
+        const msg = e instanceof Error ? e.message : "revoke failed";
+        deps.log("aig_token.studio_revoke_failed", { tenant: tenant.id, error: msg });
       }
-      aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
+      studioAigTokenValue = (await deps.tokenMinter.mintAigToken(tenantStudioAigTokenName(tenant.slug))).value;
     }
 
     // Each created endpoint carries the studio env var its id belongs in (spec.endpointVar); the
@@ -881,12 +888,13 @@ export async function runProvisionJob(
         // cf#98: planner / chat / enhance on the STUDIO (not only plan-enhance modules) need env.AI
         // and a resolvable GATEWAY_ID. AI is bound unconditionally so a plane with no gateway still
         // has a working Workers AI local path; GATEWAY_ID + CF_AIG_TOKEN are both-or-neither when
-        // TENANT_AI_GATEWAY_ID is configured (same rule as modules).
+        // TENANT_AI_GATEWAY_ID is configured (same rule as modules). CF_AIG_TOKEN is secret_text only.
         { type: "ai", name: "AI" },
-        ...(deps.aiGatewayId && aigTokenValue
+        ...(deps.aiGatewayId && studioAigTokenValue
           ? [
               { type: "plain_text" as const, name: "GATEWAY_ID", text: deps.aiGatewayId },
-              { type: "secret_text" as const, name: "CF_AIG_TOKEN", text: aigTokenValue },
+              // secret_text only -- never plain_text (credential must not appear in script metadata).
+              { type: "secret_text" as const, name: "CF_AIG_TOKEN", text: studioAigTokenValue },
             ]
           : []),
       ],
@@ -922,8 +930,17 @@ export async function runProvisionJob(
     //    its endpoint id. Key B is NOT bound yet -- it lands in installInvokeKey, alongside the
     //    studio. The studio (with its MODULE_DISPATCH binding) is already up, so the install pass
     //    below can reach these. Idempotent-by-name (adopt-on-exists), like every other step.
-    // cf#56 / cf#98: AIG token was minted above (before studio upload) and is reused here so studio
-    // and modules share one revoke-able grant per tenant.
+    // cf#56: module AI Gateway Run token (separate grant from the studio token minted above).
+    let aigTokenValue: string | null = null;
+    if (deps.aiGatewayId) {
+      try {
+        await deps.tokenMinter.revokeByName(tenantAigTokenName(tenant.slug));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "revoke failed";
+        deps.log("aig_token.revoke_failed", { tenant: tenant.id, error: msg });
+      }
+      aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
+    }
     await uploadTenantModules(
       deps, release, tenant.id, tenant.slug, endpoints, dbUuid, bucket, runpodMode, undefined, aigTokenValue,
     );
@@ -2200,11 +2217,10 @@ export async function teardownTenant(
     });
   }
 
-  // cf#56: the per-tenant AI Gateway Run token. BY NAME ONLY, because its id is deliberately not
-  // persisted: unlike the R2 credential (whose id doubles as the S3 access key id) this token is
-  // only ever needed in order to revoke it, so the deterministic name IS the handle. Revoked here,
-  // alongside the R2 grant and for the same reason -- a stranded live grant is the worst leftover
-  // this path can produce, and this one bills to US.
+  // cf#56 / cf#98: per-tenant AI Gateway Run tokens (module + studio). BY NAME ONLY, because their
+  // ids are deliberately not persisted: unlike the R2 credential (whose id doubles as the S3 access
+  // key id) these tokens are only ever needed in order to revoke them, so the deterministic name IS
+  // the handle. Revoked here, alongside the R2 grant -- a stranded live grant bills to US.
   //
   // Guarded on the SAME r2_token guard, deliberately: both names derive from the SLUG, so if slug
   // reuse means another live row owns these credentials, neither may be revoked out from under it.
@@ -2214,6 +2230,15 @@ export async function teardownTenant(
       if (!hit) {
         // Never minted (a plane with no gateway configured) or already gone. Not a failure.
         deps.log("teardown.aig_token_absent", { tenant: tenant.id, name: tenantAigTokenName(tenant.slug) });
+      }
+    });
+    await attempt("aig_studio_token_by_name", async () => {
+      const hit = await deps.tokenMinter.revokeByName(tenantStudioAigTokenName(tenant.slug));
+      if (!hit) {
+        deps.log("teardown.aig_studio_token_absent", {
+          tenant: tenant.id,
+          name: tenantStudioAigTokenName(tenant.slug),
+        });
       }
     });
   }
