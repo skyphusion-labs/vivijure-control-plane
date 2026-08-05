@@ -6,6 +6,16 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### test(routes): type the provisioner double as every Wiring member (cp#307)
+
+The route suite's provisioner seam double was a hand-written object of `vi.fn()` members,
+structurally typed. Widening `ProvisionerWiring` (adding `currentRelease` for cp#301) produced
+zero typecheck errors and eight runtime reds saying "currentRelease is not a function".
+
+The double is now built as a `WiringDouble` mapped over `keyof ProvisionerWiring`, so a missing
+member fails `tsc -p tsconfig.tests.json` at the factory with the member name. Same completeness
+gate that production wiring already has; the suite can no longer invent a partial subject.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys
