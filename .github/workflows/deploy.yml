@@ -156,6 +156,9 @@ jobs:
           SMOKE_RENDER_COOLDOWN_SECONDS: ${{ vars.SMOKE_RENDER_COOLDOWN_SECONDS }}
           SMOKE_RENDER_DAILY_CAP: ${{ vars.SMOKE_RENDER_DAILY_CAP }}
           SMOKE_RENDER_INFLIGHT_SECONDS: ${{ vars.SMOKE_RENDER_INFLIGHT_SECONDS }}
+          # cp#48: keep SELFHOST-SKIP fleet blocks (tail_consumers -> vivijure-tail). Self-host
+          # renders strip them by default so a dangling tail name does not fail wrangler deploy.
+          KEEP_FLEET_ONLY: "1"
         run: scripts/render-wrangler.sh wrangler.toml
 
       # ARTIFACT-EXISTENCE GATE (cp#187). Read the step comment on "Deploy control-plane worker"
@@ -344,6 +347,9 @@ jobs:
           SMOKE_RENDER_COOLDOWN_SECONDS: ${{ vars.SMOKE_RENDER_COOLDOWN_SECONDS }}
           SMOKE_RENDER_DAILY_CAP: ${{ vars.SMOKE_RENDER_DAILY_CAP }}
           SMOKE_RENDER_INFLIGHT_SECONDS: ${{ vars.SMOKE_RENDER_INFLIGHT_SECONDS }}
+          # cp#48: keep SELFHOST-SKIP fleet blocks (tail_consumers -> vivijure-tail). Self-host
+          # renders strip them by default so a dangling tail name does not fail wrangler deploy.
+          KEEP_FLEET_ONLY: "1"
         run: scripts/render-wrangler.sh wrangler.toml
 
       # MIGRATE BEFORE DEPLOY, deliberately. This ordering is load-bearing.
