@@ -763,6 +763,20 @@ export async function runProvisionJob(
     // credential stored as a VALUE; token-crypto encrypts it under STUDIO_TOKEN_KEK before D1.
     const studioApiToken = randomToken();
 
+    // cf#98 / cf#56: mint the per-tenant AI Gateway Run token BEFORE the studio upload so the
+    // planner/chat surface on the studio can bind GATEWAY_ID + CF_AIG_TOKEN (same both-or-neither
+    // rule as plan-enhance modules). Revoke-then-mint by NAME; the value is never stored. Modules
+    // uploaded below reuse this value rather than minting a second grant for the same tenant.
+    let aigTokenValue: string | null = null;
+    if (deps.aiGatewayId) {
+      try {
+        await deps.tokenMinter.revokeByName(tenantAigTokenName(tenant.slug));
+      } catch (e) {
+        deps.log("aig_token.revoke_failed", { tenant: tenant.id, error: String(e) });
+      }
+      aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
+    }
+
     // Each created endpoint carries the studio env var its id belongs in (spec.endpointVar); the
     // studio cannot dispatch a render without these. The mapping is DATA from the provision plan, so
     // adding a service is a plan entry, not an edit here.
@@ -864,6 +878,17 @@ export async function runProvisionJob(
         // a self-hoster installs -- their unset var renders nothing, which is correct because we
         // cannot act on their content. Absent when the plane cannot name its own page.
         ...abuseReportUrlBindings(deps.abuseReportUrl),
+        // cf#98: planner / chat / enhance on the STUDIO (not only plan-enhance modules) need env.AI
+        // and a resolvable GATEWAY_ID. AI is bound unconditionally so a plane with no gateway still
+        // has a working Workers AI local path; GATEWAY_ID + CF_AIG_TOKEN are both-or-neither when
+        // TENANT_AI_GATEWAY_ID is configured (same rule as modules).
+        { type: "ai", name: "AI" },
+        ...(deps.aiGatewayId && aigTokenValue
+          ? [
+              { type: "plain_text" as const, name: "GATEWAY_ID", text: deps.aiGatewayId },
+              { type: "secret_text" as const, name: "CF_AIG_TOKEN", text: aigTokenValue },
+            ]
+          : []),
       ],
     });
     await deps.store.setTenantScript(tenant.id, deps.tenantScriptName(tenant.slug), release);
@@ -897,20 +922,8 @@ export async function runProvisionJob(
     //    its endpoint id. Key B is NOT bound yet -- it lands in installInvokeKey, alongside the
     //    studio. The studio (with its MODULE_DISPATCH binding) is already up, so the install pass
     //    below can reach these. Idempotent-by-name (adopt-on-exists), like every other step.
-    // cf#56: this tenant AI Gateway Run token, minted fresh. Revoke-then-mint by NAME, the same
-    // shape as the R2 credential above and for the same reason: we never stored the value, so a
-    // retry cannot reuse the old one and must not leave a trail of live grants behind it. A failed
-    // revoke is logged loudly rather than fatal -- it is a live credential we did not clean up, but
-    // stranding the tenant over it would be worse.
-    let aigTokenValue: string | null = null;
-    if (deps.aiGatewayId) {
-      try {
-        await deps.tokenMinter.revokeByName(tenantAigTokenName(tenant.slug));
-      } catch (e) {
-        deps.log("aig_token.revoke_failed", { tenant: tenant.id, error: String(e) });
-      }
-      aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
-    }
+    // cf#56 / cf#98: AIG token was minted above (before studio upload) and is reused here so studio
+    // and modules share one revoke-able grant per tenant.
     await uploadTenantModules(
       deps, release, tenant.id, tenant.slug, endpoints, dbUuid, bucket, runpodMode, undefined, aigTokenValue,
     );
