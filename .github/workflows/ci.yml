@@ -139,10 +139,16 @@ jobs:
       - name: Mirror-key confinement
         run: python3 tests/mirror-key-confinement.test.py
 
-      # THE REAL GATE, on every PR. This is the whole reason it reads the GitHub release rather
-      # than R2: no credential, so it runs here AND on fork PRs. The R2_STORAGE_QUOTA_BYTES
-      # disposition gap that took the plane down would have been caught at THIS step, before merge,
-      # instead of at a tenant first provision.
+      # THE REAL GATE, on every PR. The GITHUB half is credential-free so it runs on fork PRs too.
+      # The R2_STORAGE_QUOTA_BYTES disposition gap that took the plane down would have been caught
+      # at THIS step, before merge, instead of at a tenant first provision.
+      #
+      # cp#319: THE MIRROR HALF. The provisioner reads R2 (module-bundle-r2.ts has no fallback).
+      # Deploy always passes --mirror-bucket; until this step did too, a release that was perfect on
+      # GitHub but never mirrored passed PR CI and failed only at deploy (or at first provision if
+      # deploy were ever weakened). Same-repo PRs hold STUDIO_RELEASES_R2_TOKEN and run the same
+      # mirror path the deploy gate uses. Forks and any run missing the token still get the GitHub
+      # half; the notice names that the mirror was NOT checked so a green cannot be misread.
       #
       # Fork PRs may not receive repo variables. When STUDIO_RELEASE is absent this NOTICEs and
       # skips rather than failing, because failing every fork PR is how a gate gets removed. The
@@ -152,7 +158,9 @@ jobs:
       # THE RESIDUAL RISK, written down rather than left for someone to rediscover: if repo
       # variables ever stop reaching PR runs, this path turns the gate into a silent no-op that
       # looks exactly like a passing gate. That is the same shape as every other failure this gate
-      # exists to catch, so it does not get to hide in a skip branch.
+      # exists to catch, so it does not get to hide in a skip branch. Same for the R2 token: if it
+      # stops being available to PR runs, the GitHub half still runs and the notice says the
+      # mirror was not checked -- that must never be edited into a silent pass.
       #
       # CHECKED, NOT ASSUMED: variables DO reach PR runs today. Verified 2026-07-27 in CI run
       # 30253531388, where this step logged `STUDIO_RELEASE: v1.12.0` and printed the real OK line
@@ -161,13 +169,27 @@ jobs:
       - name: Pinned release is satisfiable by this plane
         env:
           STUDIO_RELEASE: ${{ vars.STUDIO_RELEASE }}
+          STUDIO_RELEASES_BUCKET: ${{ vars.STUDIO_RELEASES_BUCKET }}
+          # Same account-wide R2 read as deploy.yml preflight (cp#209). Blast radius bounded by
+          # mirror_key() under studio-releases/; tests/mirror-key-confinement.test.py drives that.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.STUDIO_RELEASES_R2_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${STUDIO_RELEASE:-}" ]; then
             echo "::notice::STUDIO_RELEASE is not available (fork PR); the pin check is enforced at deploy."
             exit 0
           fi
-          python3 scripts/check-release-modules.py . --release "$STUDIO_RELEASE"
+          # Same R2 path the provisioner and deploy gate use, when the credential is present.
+          # Without it (fork / missing secret) the GitHub half still runs; the notice is mandatory
+          # so "green" cannot mean "mirror verified" when it was not.
+          if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${STUDIO_RELEASES_BUCKET:-}" ]; then
+            python3 scripts/check-release-modules.py . \
+              --release "$STUDIO_RELEASE" \
+              --mirror-bucket "$STUDIO_RELEASES_BUCKET"
+          else
+            echo "::notice::R2 mirror credentials not available on this run; checking the GitHub release only. Mirror is enforced on same-repo PRs with the secret and always at deploy (cp#319)."
+            python3 scripts/check-release-modules.py . --release "$STUDIO_RELEASE"
+          fi
 
       # The guard above gates a PR; THIS gates the guard. Every REFUSE fixture is a string GitHub
       # would genuinely auto-close on, including the two VERBATIM disclaimers that closed cp#246 and

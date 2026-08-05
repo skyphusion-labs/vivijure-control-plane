@@ -138,6 +138,37 @@ check("ci resolves satellite image pins too", "check:pins" in ci_text)
 check("the deploy path uses the credential-free REGISTRY mode, not --prod",
       "check:pins:prod" not in preflight_text and "--prod" not in preflight_text,
       "preflight must not require a production RunPod key")
+
+# ------------------------------------------------------------------------------------------------
+# cp#319. PR CI AND THE PROVISIONER MUST AGREE ON WHICH SOURCE THEY GATE.
+#
+# The provisioner reads R2 (module-bundle-r2.ts has no fallback). check-release-modules.py can
+# validate the GitHub release alone, or the release PLUS the R2 mirror via --mirror-bucket.
+# Deploy always spans both. Until cp#319, PR CI validated GitHub only: a release that was perfect
+# on GitHub but never mirrored passed every PR and failed only at deploy (or at first provision).
+#
+# SHAPE assertions, not a live R2 read (this suite is credential-free):
+#   1. deploy preflight still passes --mirror-bucket (the provisioner path stays gated on tag).
+#   2. ci.yml's pin step ALSO carries a --mirror-bucket path (same-repo PRs with the R2 token).
+#   3. That ci path is not silent-when-missing: a notice names the residual when the secret is
+#      absent (forks), so a green cannot be misread as "mirror verified".
+#
+# A future editor that drops --mirror-bucket from ci while leaving the GitHub half fails (2).
+# One that drops the notice on the no-secret branch fails (3). One that drops deploy's mirror
+# fails (1). That is the class: the two sources cannot disagree without a gate naming it.
+check("deploy pin check verifies the R2 mirror (--mirror-bucket)",
+      "--mirror-bucket" in preflight_text,
+      "deploy preflight must span the source the provisioner reads")
+check("ci pin check carries a --mirror-bucket path (cp#319)",
+      "--mirror-bucket" in ci_text,
+      "PR CI must be able to verify the same R2 path as deploy, not only GitHub")
+check("ci pin check uses the R2 read token secret (same grant as deploy)",
+      "STUDIO_RELEASES_R2_TOKEN" in str(ci_wf),
+      "without the token the --mirror-bucket path is dead code")
+check("ci pin check names the residual when mirror credentials are absent",
+      "mirror" in ci_text.lower() and ("notice" in ci_text.lower() or "::notice::" in ci_text),
+      "a green without mirror coverage must say so out loud")
+
 print("")
 print("  " + str(checks - len(failures)) + " passed, " + str(len(failures)) + " failed")
 sys.exit(1 if failures else 0)
