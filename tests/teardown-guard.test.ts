@@ -238,6 +238,28 @@ describe("teardown referential guard", () => {
     expect(await store.getResourceOwner("d1", D1_ID)).toBe("ten_live");
   });
 
+  it("cp#106 C+D: i_own cannot override a different recorded owner", async () => {
+    await store.createTenant("ten_own", "own-slug", "acct_1", "failed");
+    await store.setTenantStatus("ten_own", "deleted");
+    await own("ten_own", { d1: D1_ID });
+
+    await store.createTenant("ten_other", "other-slug", "acct_1", "failed");
+    await store.setTenantStatus("ten_other", "deleted");
+    await own("ten_other", { d1: D1_ID });
+    // ten_own is still the recorded owner if we re-claim for them after other wrote the column.
+    await store.claimResourceOwnership("d1", D1_ID, "ten_own");
+
+    const other = (await store.getTenantById("ten_other"))!;
+    const res = await teardownTenant(deps, other, {
+      deleteData: true,
+      ignoreTombstoneReferrers: true,
+    });
+    const d1Failure = res.failures.find((f) => f.resource === "d1")!;
+    expect(d1Failure.error).toMatch(/recorded owner is ten_own/);
+    expect(d1Failure.error).toMatch(/i_own cannot override/);
+    expect(log.deleteD1).toEqual([]);
+  });
+
   it("blanks a column ONLY on that resource's successful deletion", async () => {
     await store.createTenant("ten_mix", "mixed", "acct_1", "failed");
     await own("ten_mix", { d1: "db-mix", bucket: "bkt-mix", script: "scr-mix" });

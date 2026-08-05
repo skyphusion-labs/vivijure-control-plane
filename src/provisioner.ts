@@ -2044,6 +2044,7 @@ export async function teardownTenant(
         });
       }
     }
+    // D: recorded owner + tombstone-only referrers -> allow
     if (recordedOwner === tenant.id && !live) {
       deps.log("teardown.ownership_allows", {
         tenant: tenant.id,
@@ -2052,9 +2053,11 @@ export async function teardownTenant(
       });
       return false;
     }
-    // Optional C (when wired by the route): ignoreTombstoneReferrers for legacy rows.
+    // C (operator i_own): only for LEGACY rows with no ownership claim. A recorded owner that is
+    // not this tenant always wins over i_own -- otherwise the hatch would undo option D.
     if (
       !live &&
+      !recordedOwner &&
       (opts as { ignoreTombstoneReferrers?: boolean }).ignoreTombstoneReferrers
     ) {
       deps.log("teardown.tombstone_referrers_overridden", {
@@ -2069,7 +2072,7 @@ export async function teardownTenant(
       (live
         ? " -- AT LEAST ONE IS NOT DELETED, this resource is in use"
         : recordedOwner && recordedOwner !== tenant.id
-          ? ` -- recorded owner is ${recordedOwner}, not this tenant`
+          ? ` -- recorded owner is ${recordedOwner}, not this tenant (i_own cannot override a recorded owner)`
           : " -- all referrers are tombstones; recorded owner unknown (legacy) -- re-run with i_own or re-provision to record ownership (cp#106)");
     failures.push({ resource, error });
     deps.log("teardown.refused", {
