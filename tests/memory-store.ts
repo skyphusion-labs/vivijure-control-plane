@@ -464,6 +464,13 @@ export class MemoryStore implements ControlPlaneStore {
 
   async claimResourceOwnership(kind: TenantResourceKind, resourceKey: string, ownerTenantId: string) {
     if (!resourceKey) return;
+    const prior = this.ownership.get(this.ownershipKey(kind, resourceKey));
+    if (prior && prior !== ownerTenantId) {
+      const priorRow = this.tenants.get(prior);
+      if (priorRow && priorRow.status !== "deleted" && priorRow.status !== "failed") {
+        return;
+      }
+    }
     this.ownership.set(this.ownershipKey(kind, resourceKey), ownerTenantId);
   }
 

@@ -227,6 +227,17 @@ describe("teardown referential guard", () => {
     expect(log.deleteD1).toEqual([]);
   });
 
+  it("cp#106 D: claim does not steal ownership from a LIVE tenant", async () => {
+    await store.createTenant("ten_live", "live-slug", "acct_1", "live");
+    await own("ten_live", { d1: D1_ID });
+    expect(await store.getResourceOwner("d1", D1_ID)).toBe("ten_live");
+
+    await store.createTenant("ten_new", "new-slug", "acct_1", "provisioning");
+    // Would claim the same physical id (bug / race); live owner must keep the row.
+    await store.setTenantD1("ten_new", D1_ID);
+    expect(await store.getResourceOwner("d1", D1_ID)).toBe("ten_live");
+  });
+
   it("blanks a column ONLY on that resource's successful deletion", async () => {
     await store.createTenant("ten_mix", "mixed", "acct_1", "failed");
     await own("ten_mix", { d1: "db-mix", bucket: "bkt-mix", script: "scr-mix" });

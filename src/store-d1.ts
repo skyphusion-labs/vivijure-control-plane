@@ -982,6 +982,18 @@ export class D1Store implements ControlPlaneStore, CreditStore {
     ownerTenantId: string,
   ): Promise<void> {
     if (!resourceKey) return;
+    // cp#106 D: do not silently steal from a LIVE owner. Slug reuse re-claims after the prior
+    // tenant is deleted/failed (tombstone); a live tenant still pointing at the same physical id
+    // must keep ownership so a half-built claim cannot re-point the guard.
+    const prior = await this.getResourceOwner(kind, resourceKey);
+    if (prior && prior !== ownerTenantId) {
+      const priorRow = await this.getTenantById(prior);
+      if (priorRow && priorRow.status !== "deleted" && priorRow.status !== "failed") {
+        // Keep prior owner; the column write on `tenants` still happened (caller already wrote it).
+        // Teardown will refuse the non-owner via getResourceOwner.
+        return;
+      }
+    }
     await this.db
       .prepare(
         "INSERT INTO tenant_resource_ownership (resource_kind, resource_key, owner_tenant_id, provisioned_at) " +
