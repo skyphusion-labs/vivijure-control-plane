@@ -2226,7 +2226,11 @@ async function adminRoutes(
     const tenant = await deps.store.getTenantById(teardown[1]);
     if (!tenant) return err("not_found", 404);
 
-    const body = (await readJson(request)) as { confirm_slug?: unknown; delete_data?: unknown } | null;
+    const body = (await readJson(request)) as {
+      confirm_slug?: unknown;
+      delete_data?: unknown;
+      i_own?: unknown;
+    } | null;
     // Name the target out loud. Tenant ids are opaque and adjacent in a listing; the slug is what an
     // operator actually recognises, and typing it is the difference between tearing down the studio
     // you meant and the one above it.
@@ -2237,6 +2241,21 @@ async function adminRoutes(
     // and the credential -- the tenant stops being reachable and stops being able to write -- and
     // LEAVES the data. Reaping a customer films is an explicit second decision.
     const deleteData = body.delete_data === true;
+
+    // cp#106 option C: operator names THIS row as the owner so tombstone-only referrers stop
+    // blocking. Must equal the tenant id under teardown -- no other value, no silent default.
+    // Live referrers still always refuse. The human decision is audited below with the actor.
+    let ignoreTombstoneReferrers = false;
+    if (body?.i_own !== undefined && body.i_own !== null) {
+      if (typeof body.i_own !== "string" || body.i_own.trim() !== tenant.id) {
+        return err("i_own_mismatch", 400, {
+          message:
+            "i_own must equal this tenant's id (you are asserting ownership of resources this row claims)",
+          tenant_id: tenant.id,
+        });
+      }
+      ignoreTombstoneReferrers = true;
+    }
 
     // ONE destructive pass at a time, on the same lease the reclaim path uses: resource names derive
     // from the slug, so two overlapping teardowns issue the same deletes and the second can land on
@@ -2250,7 +2269,10 @@ async function adminRoutes(
 
     // TEAR DOWN FROM THE LEASED ROW, not from the row read before the lease: beginTeardown is the
     // serialization point, so those are the authoritative ids (same rule the reclaim path states).
-    const result = await deps.provisioner.teardown(lease.tenant, { deleteData });
+    const result = await deps.provisioner.teardown(lease.tenant, {
+      deleteData,
+      ignoreTombstoneReferrers,
+    });
 
     // WHAT WAS ACTUALLY REAPED is read back off the ROW rather than taken from the return value.
     // Columns blank only on their own resource successful deletion, so this diff is the plane own
@@ -2283,6 +2305,8 @@ async function adminRoutes(
       tenant.id,
       JSON.stringify({
         delete_data: deleteData,
+        // cp#106: whether the operator asserted ownership to override tombstone-only referrers.
+        i_own: ignoreTombstoneReferrers ? tenant.id : null,
         reaped,
         refused: refused.length,
         failed: failed.length,
@@ -2297,6 +2321,7 @@ async function adminRoutes(
       // mid-pass, which is exactly the case where an assumed status would be wrong.
       status: finished?.status ?? after?.status ?? tenant.status,
       delete_data: deleteData,
+      i_own: ignoreTombstoneReferrers ? tenant.id : null,
       reaped,
       refused,
       failed,
