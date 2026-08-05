@@ -6,6 +6,13 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(admin): project lifecycle so suspended != deleted (cp#281)
+
+`tenantView` projected suspension into a single `status` field, so a deleted tenant with a suspend
+flag looked restorable on the admin list. Keep `status` as the existing suspended-or-lifecycle
+projection for the API contract, and add **`lifecycle`** carrying the stored column verbatim so a
+caller can answer "is this restorable?" without performing a state change.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys
