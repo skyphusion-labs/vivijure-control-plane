@@ -6,6 +6,11 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **RunPod terms / metered-resale research (cp#287).** Landed Ernst's public-document read at
+  `docs/legal/runpod-terms-resale.md` (not legal advice). Consent tripwire, DPA, AUP items for tenants.
+
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys
