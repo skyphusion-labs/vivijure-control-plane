@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### feat(platform): `/api/platform/version` surfaces build identity, not only release (cp#289)
 
 The route answered `{ control_plane_version }` only -- which release, not which build. Two deploys

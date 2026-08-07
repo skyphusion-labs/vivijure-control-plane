@@ -196,7 +196,7 @@ The provisioner closes it the SAME way self-host does (Phase-3 dynamic dispatch)
 safe because module conformance is envelope+degrade only (async GPU modules return pending/degrade;
 the gate never triggers real GPU work), and every module answers the conformance probe with a
 well-formed `{ ok:false }` envelope before it reads any RunPod credential (live-verified across all
-five modules with no key B bound). Key B lands on the studio AND every module script in
+catalogued modules with no key B bound). Key B lands on the studio AND every module script in
 `installInvokeKey`, in place (a secret PUT, no re-upload) -- the module can then render.
 
 **The job-log binding (cp#248).** Every module that submits a RunPod job also carries the tenant
@@ -813,7 +813,7 @@ Still elsewhere: routing/domains #55, quotas #56, AUP text #57, onboarding UX #5
 
 ### The window this closes
 
-`installInvokeKey` writes key B to the tenant studio and to all five tenant module scripts, then the
+`installInvokeKey` writes key B to the tenant studio and to every tenant module script in the catalog, then the
 route flips the tenant to `live`. A `200` from the secrets PUT means the secret is stored; it does
 NOT mean the version the edge is serving can read it. In the cf#99 finale a tenant that had just
 reported `live` failed its first render citing a credential that was demonstrably present, and the
@@ -826,7 +826,7 @@ to be a module endpoint, which is what `GET /ready` (vivijure-cf#114) is.
 ### The probe
 
 `awaitTenantModulesReady` (`src/tenant-modules.ts`) runs after the key-B fan-out and BEFORE
-`setTenantStatus(..., "live")`. It probes `GET /ready` on all five tenant module scripts over the
+`setTenantStatus(..., "live")`. It probes `GET /ready` on every tenant module script in the catalog over the
 `TENANT_MODULE_DISPATCH` binding, unauthenticated (the endpoint carries booleans, never values, and
 the plane must be able to ask before the tenant has a working credential to authenticate with).
 
