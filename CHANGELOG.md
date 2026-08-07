@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### fix(admin): module-readiness double-samples /ready after upgrades (cp#254)
 
 `GET /api/admin/tenants/:id/module-readiness` was a single-shot probe. Right after a module upload,
