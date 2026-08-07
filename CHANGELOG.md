@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### test(routes): type the provisioner double as every Wiring member (cp#307)
 
 The route suite's provisioner seam double was a hand-written object of `vi.fn()` members,
