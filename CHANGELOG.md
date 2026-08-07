@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### fix(meter): audit the manual tick (and keep settlement audited) (cp#243)
 
 `POST /api/admin/llm-meter/run` was gated `meter:operate` but wrote no `admin_audit` row. A forced
