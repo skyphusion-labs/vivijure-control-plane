@@ -9,6 +9,14 @@ is a separate product on a separate cadence).
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+### feat(platform): `/api/platform/version` surfaces build identity, not only release (cp#289)
+
+The route answered `{ control_plane_version }` only -- which release, not which build. Two deploys
+at one tag (measured at v1.20.0) read identically, and the route was blind to whether a merge
+between those deploys was live. Bound `CF_VERSION_METADATA` (Worker version id + upload timestamp)
+and return it as `build.{id,timestamp,tag}` alongside the release. Null when unbound so tests and
+older local configs stay honest. Comments and docs no longer claim the release field alone is
+deploy identity.
 
 ## v1.22.0 -- 2026-08-03
 

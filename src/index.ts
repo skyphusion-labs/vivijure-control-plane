@@ -307,16 +307,27 @@ export async function handle(
       });
     }
 
-    // What is actually running. src/version.ts was referenced by nothing at runtime, so confirming a
-    // release meant fetching a changed asset and reading the patched line off the wire -- archaeology,
-    // not observability (cf#114d). Its OWN route rather than a field on /api/platform/config: that
-    // route is a POLICY projection the front door renders from, with a UI contract and a different
-    // audience; deploy identity is an operator/CI fact with different cache semantics, and folding it
-    // in is how a config endpoint becomes a junk drawer. Unauthenticated, like the config route: the
-    // version of an AGPL codebase whose tags are public is not a secret, and a version you must hold
-    // a credential to read is useless to the monitoring that needs it most.
+    // RELEASE + BUILD identity (cf#114d, cp#289). `control_plane_version` is the RELEASE (SemVer,
+    // lockstep with package.json / the v* tag). It alone cannot tell two deploys of the same tag
+    // apart -- measured 2026-08-02 when two deploys at v1.20.0 both answered "1.20.0" and the route
+    // was blind to whether pooling was live. `build` carries CF_VERSION_METADATA (unique version id
+    // + upload timestamp per deploy). Absent binding => null fields, never a fake id.
+    //
+    // Its OWN route rather than a field on /api/platform/config: that route is a POLICY projection
+    // the front door renders from, with a UI contract and a different audience; this is an
+    // operator/CI fact with different cache semantics. Unauthenticated: the version of an AGPL
+    // codebase whose tags are public is not a secret, and a version you must hold a credential to
+    // read is useless to the monitoring that needs it most.
     if (request.method === "GET" && path === "/api/platform/version") {
-      return json({ control_plane_version: CONTROL_PLANE_VERSION });
+      const meta = env.CF_VERSION_METADATA;
+      return json({
+        control_plane_version: CONTROL_PLANE_VERSION,
+        build: {
+          id: meta?.id ?? null,
+          timestamp: meta?.timestamp ?? null,
+          tag: meta?.tag ?? null,
+        },
+      });
     }
 
     if (request.method === "GET" && path === "/api/aup/current") {
