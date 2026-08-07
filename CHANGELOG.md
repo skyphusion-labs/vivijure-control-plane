@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### test(runpod-proxy): pin plane-refusal header wire name (cf#403)
 
 `PLANE_REFUSAL_HEADER` is the same string literal in this repo and vivijure-cf with no shared
