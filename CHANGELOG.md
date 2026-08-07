@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### chore(onboarding): remove dead scopeVerdict helper (cp#30)
 
 `scopeVerdict()` had no production caller after the cp#20 client fix (PR #29 deleted the only
