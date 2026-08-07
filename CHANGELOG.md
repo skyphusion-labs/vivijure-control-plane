@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### fix(admin): project lifecycle so suspended != deleted (cp#281)
 
 `tenantView` projected suspension into a single `status` field, so a deleted tenant with a suspend
