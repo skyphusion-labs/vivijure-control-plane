@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### feat(teardown): operator `i_own` to override tombstone-only referrers (cp#106)
 
 The referential guard correctly refuses resources other rows still claim, including tombstones, so
