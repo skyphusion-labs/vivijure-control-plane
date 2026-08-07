@@ -222,7 +222,10 @@ export interface ProvisionerWiring {
    * client it does it with, so a reads-only surface cannot quietly acquire write reach later.
    */
   r2Usage(bucket: string): Promise<{ payloadBytes: number; objectCount: number }>;
-  teardown(tenant: Tenant, opts: { deleteData: boolean }): Promise<TeardownOutcome>;
+  teardown(
+    tenant: Tenant,
+    opts: { deleteData: boolean; ignoreTombstoneReferrers?: boolean },
+  ): Promise<TeardownOutcome>;
   /**
    * Check everything a module upgrade needs WITHOUT writing anything (cf#103), so the route can
    * refuse before it creates a job. Split from upgradeModules for exactly that reason: the refusal

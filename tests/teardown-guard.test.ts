@@ -207,7 +207,54 @@ describe("teardown referential guard", () => {
     expect(d1Failure.error).toMatch(/^refused:/);
     expect(d1Failure.error).toContain("ten_t1");
     expect(d1Failure.error).not.toContain("AT LEAST ONE IS NOT DELETED");
+    // cp#106 option C: message names the escape hatch so the operator does not invent one.
+    expect(d1Failure.error).toContain(`i_own: "${t2.id}"`);
     expect(log.deleteD1).toEqual([]);
+  });
+
+  // cp#106 option C / Gate 2: operator asserts ownership so tombstone-only referrers stop blocking.
+  // Live referrers still refuse -- the hatch is not last-referrer-wins.
+  it("with ignoreTombstoneReferrers, reaps when referrers are ALL tombstones", async () => {
+    await store.createTenant("ten_own1", "own-one", "acct_1", "failed");
+    await store.setTenantStatus("ten_own1", "deleted");
+    await own("ten_own1", { d1: D1_ID, bucket: BUCKET, script: SCRIPT });
+
+    await store.createTenant("ten_own2", "own-two", "acct_1", "failed");
+    await store.setTenantStatus("ten_own2", "deleted");
+    await own("ten_own2", { d1: D1_ID, bucket: BUCKET, script: SCRIPT });
+    const owner = (await store.getTenantById("ten_own2"))!;
+
+    const res = await teardownTenant(deps, owner, {
+      deleteData: true,
+      ignoreTombstoneReferrers: true,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.failures.filter((f) => f.error.startsWith("refused:"))).toEqual([]);
+    expect(log.deleteD1).toEqual([D1_ID]);
+    expect(log.deleteR2Bucket).toEqual([BUCKET]);
+    expect(log.deleteUserWorker).toContain(SCRIPT);
+  });
+
+  it("with ignoreTombstoneReferrers, STILL refuses when a live row references the resource", async () => {
+    await store.createTenant("ten_live2", "shared-live", "acct_1", "live");
+    await own("ten_live2", { d1: D1_ID, bucket: BUCKET, script: SCRIPT });
+
+    await store.createTenant("ten_dead2", "shared-dead", "acct_1", "failed");
+    await store.setTenantStatus("ten_dead2", "deleted");
+    await own("ten_dead2", { d1: D1_ID, bucket: BUCKET, script: SCRIPT });
+    const dead = (await store.getTenantById("ten_dead2"))!;
+
+    const res = await teardownTenant(deps, dead, {
+      deleteData: true,
+      ignoreTombstoneReferrers: true,
+    });
+
+    expect(res.ok).toBe(false);
+    const refused = Object.fromEntries(res.failures.map((f) => [f.resource, f.error]));
+    expect(refused.d1).toMatch(/AT LEAST ONE IS NOT DELETED/);
+    expect(log.deleteD1).toEqual([]);
+    expect(log.deleteR2Bucket).toEqual([]);
   });
 
   it("blanks a column ONLY on that resource's successful deletion", async () => {

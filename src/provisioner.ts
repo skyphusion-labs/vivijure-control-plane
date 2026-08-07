@@ -1904,10 +1904,20 @@ export interface TeardownOutcome {
   absent: { resource: string; detail: string }[];
 }
 
+export interface TeardownOpts {
+  deleteData: boolean;
+  /**
+   * cp#106 option C: when true, referrers that are ALL status=`deleted` do not block. Live
+   * referrers still always refuse. Only set after the operator has named this row as owner via
+   * `i_own` on the admin teardown route; the decision is audited there, not here.
+   */
+  ignoreTombstoneReferrers?: boolean;
+}
+
 export async function teardownTenant(
   deps: ProvisionDeps,
   tenant: Tenant,
-  opts: { deleteData: boolean },
+  opts: TeardownOpts,
 ): Promise<TeardownOutcome> {
   const failures: { resource: string; error: string }[] = [];
   // ALREADY GONE is not a failure, and it is not a reap either (cp#110). It gets its own list so
@@ -2010,20 +2020,32 @@ export async function teardownTenant(
   /**
    * Refuse a resource another row still points at, and say who.
    *
-   * ANY referrer blocks, not just a live one. A resource shared only with tombstones is still not
-   * provably ours -- the tombstone is the row that would tell us what happened -- and deciding
-   * which of several tombstones "owns" a shared object is a rule nobody has written. Refusing is
-   * honest and reversible; the referrer's status travels in the message so an operator can see at a
-   * glance whether they are looking at a live blocker or a historical one.
+   * Default: ANY referrer blocks, not just a live one. A resource shared only with tombstones is
+   * still not provably ours -- deciding which tombstone "owns" a shared object is a rule nobody
+   * has written as a silent default (cp#106). Refusing is honest and reversible.
+   *
+   * Escape hatch (cp#106 option C): when `ignoreTombstoneReferrers` is set, tombstone-only
+   * referrers do not block. Live referrers still always refuse. The operator must have named this
+   * row via `i_own` on the route; that decision is audited at the route, not invented here.
    */
   const guarded = (resource: TenantResourceKind): boolean => {
     const hits = blocked.get(resource);
     if (!hits?.length) return false;
     const who = hits.map((h) => `${h.tenant_id} (${h.slug}, status=${h.status})`).join(", ");
     const live = hits.some((h) => h.status !== "deleted");
+    if (!live && opts.ignoreTombstoneReferrers) {
+      deps.log("teardown.tombstone_referrers_overridden", {
+        tenant: tenant.id,
+        resource,
+        referrers: hits.length,
+      });
+      return false;
+    }
     const error =
       `refused: ${resource} is still referenced by ${hits.length} other tenant row(s): ${who}` +
-      (live ? " -- AT LEAST ONE IS NOT DELETED, this resource is in use" : "");
+      (live
+        ? " -- AT LEAST ONE IS NOT DELETED, this resource is in use"
+        : ` -- all referrers are tombstones; re-run with i_own: "${tenant.id}" after verifying ownership (cp#106 option C)`);
     failures.push({ resource, error });
     deps.log("teardown.refused", { tenant: tenant.id, resource, referrers: hits.length, live });
     return true;
