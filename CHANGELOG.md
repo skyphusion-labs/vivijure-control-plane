@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### fix(provision): backend plan label no longer promises cast LoRA training (cp#303)
 
 `PROVISION_PLAN`'s backend entry was labelled "Render (keyframes, video, cast LoRA training)".
