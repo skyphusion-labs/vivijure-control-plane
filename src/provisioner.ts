@@ -1907,7 +1907,7 @@ export interface TeardownOutcome {
 export async function teardownTenant(
   deps: ProvisionDeps,
   tenant: Tenant,
-  opts: { deleteData: boolean },
+  opts: { deleteData: boolean; ignoreTombstoneReferrers?: boolean },
 ): Promise<TeardownOutcome> {
   const failures: { resource: string; error: string }[] = [];
   // ALREADY GONE is not a failure, and it is not a reap either (cp#110). It gets its own list so
@@ -2010,22 +2010,78 @@ export async function teardownTenant(
   /**
    * Refuse a resource another row still points at, and say who.
    *
-   * ANY referrer blocks, not just a live one. A resource shared only with tombstones is still not
-   * provably ours -- the tombstone is the row that would tell us what happened -- and deciding
-   * which of several tombstones "owns" a shared object is a rule nobody has written. Refusing is
-   * honest and reversible; the referrer's status travels in the message so an operator can see at a
-   * glance whether they are looking at a live blocker or a historical one.
+   * Default: ANY referrer blocks, not just a live one. Without provenance, a resource shared only
+   * with tombstones is still not provably ours -- refusing is honest and reversible (cp#106).
+   *
+   * Option D: when `tenant_resource_ownership` records THIS tenant as the owner and no referrer is
+   * live, tombstone-only aliases do not block. Written at provision; not silent last-referrer-wins.
+   * Legacy rows with no ownership row keep the refuse-all-referrers default (use operator `i_own`
+   * from cp#334 once merged, or re-provision to record ownership).
    */
-  const guarded = (resource: TenantResourceKind): boolean => {
+  const resourceKeyFor = (r: TenantResourceKind): string | null => {
+    if (r === "d1") return tenant.d1_database_id;
+    if (r === "r2_bucket") return tenant.r2_bucket_name;
+    if (r === "r2_token") return tenant.r2_token_id;
+    if (r === "worker") return tenant.script_name;
+    return null;
+  };
+
+  const guarded = async (resource: TenantResourceKind): Promise<boolean> => {
     const hits = blocked.get(resource);
     if (!hits?.length) return false;
     const who = hits.map((h) => `${h.tenant_id} (${h.slug}, status=${h.status})`).join(", ");
     const live = hits.some((h) => h.status !== "deleted");
+    const key = resourceKeyFor(resource);
+    let recordedOwner: string | null = null;
+    if (key) {
+      try {
+        recordedOwner = await deps.store.getResourceOwner(resource, key);
+      } catch (e) {
+        deps.log("teardown.ownership_lookup_failed", {
+          tenant: tenant.id,
+          resource,
+          error: e instanceof Error ? e.message : "lookup failed",
+        });
+      }
+    }
+    // D: recorded owner + tombstone-only referrers -> allow
+    if (recordedOwner === tenant.id && !live) {
+      deps.log("teardown.ownership_allows", {
+        tenant: tenant.id,
+        resource,
+        referrers: hits.length,
+      });
+      return false;
+    }
+    // C (operator i_own): only for LEGACY rows with no ownership claim. A recorded owner that is
+    // not this tenant always wins over i_own -- otherwise the hatch would undo option D.
+    if (
+      !live &&
+      !recordedOwner &&
+      (opts as { ignoreTombstoneReferrers?: boolean }).ignoreTombstoneReferrers
+    ) {
+      deps.log("teardown.tombstone_referrers_overridden", {
+        tenant: tenant.id,
+        resource,
+        referrers: hits.length,
+      });
+      return false;
+    }
     const error =
       `refused: ${resource} is still referenced by ${hits.length} other tenant row(s): ${who}` +
-      (live ? " -- AT LEAST ONE IS NOT DELETED, this resource is in use" : "");
+      (live
+        ? " -- AT LEAST ONE IS NOT DELETED, this resource is in use"
+        : recordedOwner && recordedOwner !== tenant.id
+          ? ` -- recorded owner is ${recordedOwner}, not this tenant (i_own cannot override a recorded owner)`
+          : " -- all referrers are tombstones; recorded owner unknown (legacy) -- re-run with i_own or re-provision to record ownership (cp#106)");
     failures.push({ resource, error });
-    deps.log("teardown.refused", { tenant: tenant.id, resource, referrers: hits.length, live });
+    deps.log("teardown.refused", {
+      tenant: tenant.id,
+      resource,
+      referrers: hits.length,
+      live,
+      owner: recordedOwner,
+    });
     return true;
   };
 
@@ -2138,7 +2194,7 @@ export async function teardownTenant(
   // Latent today (both derive from the same immutable slug), which is exactly why it is worth fixing
   // before something makes it live. Caught by Strummer during the reclaim-lease seam review.
   const scriptToDelete = tenant.script_name ?? deps.tenantScriptName(tenant.slug);
-  if (!guarded("worker")) {
+  if (!(await guarded("worker"))) {
     // cp#110: a not-found on THIS delete is success-equivalent. Before it, the guarded sweep that
     // met two already-gone tenant scripts recorded each as a retryable failure, so the column kept
     // claiming a worker that does not exist, teardown_failures kept a permanent entry no re-run
@@ -2164,7 +2220,7 @@ export async function teardownTenant(
   // failed (the unpersisted-id class and the "id on a row we are about to blank" class).
   const tokenName = tenantR2TokenName(tenant.slug);
   let revokedById = false;
-  const tokenGuarded = guarded("r2_token");
+  const tokenGuarded = await guarded("r2_token");
   if (tenant.r2_token_id && !tokenGuarded) {
     try {
       await deps.tokenMinter.revoke(tenant.r2_token_id);
@@ -2226,7 +2282,7 @@ export async function teardownTenant(
     // complete harvest of nothing. That is the normal state for a provision that died before its
     // migrations ran, which is exactly the population rollbackFailedProvision tears down -- so
     // treating an absent table as an error would make every failed provision unreapable.
-    if (tenant.d1_database_id && !guarded("d1")) {
+    if (tenant.d1_database_id && !(await guarded("d1"))) {
       try {
         const harvest = await harvestTenantJobLog(deps.cf, tenant.d1_database_id);
         if (!harvest.complete) {
@@ -2256,7 +2312,7 @@ export async function teardownTenant(
     // harvest failure also stops the delete, instead of a new failure mode quietly bypassing the
     // one interlock that protects the mapping.
     const harvestFailed = failures.some((f) => f.resource === "job_index_harvest");
-    if (tenant.d1_database_id && !guarded("d1") && !harvestFailed) {
+    if (tenant.d1_database_id && !(await guarded("d1")) && !harvestFailed) {
       await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!), "d1");
     }
     // EMPTY-THEN-DELETE (cf#72), wired here by this issue caller work.
@@ -2272,7 +2328,7 @@ export async function teardownTenant(
     // succeeds), and slug reuse IS resource reuse, so a bucket another row still references must
     // never be OPENED at all, rather than opened and then spared. The refusal short-circuits while
     // no credential exists.
-    if (tenant.r2_bucket_name && !guarded("r2_bucket")) {
+    if (tenant.r2_bucket_name && !(await guarded("r2_bucket"))) {
       await attempt("r2_bucket", () => emptyThenDeleteBucket(tenant.r2_bucket_name!), "r2_bucket");
     }
   }

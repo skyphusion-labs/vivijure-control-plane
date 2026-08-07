@@ -732,8 +732,24 @@ export interface ControlPlaneStore {
    * Per-resource rather than all-at-once because teardown is best-effort: it can reap the worker and
    * fail on the bucket, and a row that blanked both would then claim the bucket is gone when it is
    * still there holding a customer's films.
+   *
+   * Also releases `tenant_resource_ownership` for that key when this tenant is the recorded owner
+   * (cp#106 option D).
    */
   clearTenantResource(id: string, resource: TenantResourceKind): Promise<void>;
+
+  /**
+   * Record who provisioned a physical resource (cp#106 option D). INSERT OR REPLACE so a re-provision
+   * of the same name updates the owner rather than stranding a stale claim.
+   */
+  claimResourceOwnership(
+    kind: TenantResourceKind,
+    resourceKey: string,
+    ownerTenantId: string,
+  ): Promise<void>;
+
+  /** Owner tenant id for a physical resource, or null when no provenance row exists (legacy). */
+  getResourceOwner(kind: TenantResourceKind, resourceKey: string): Promise<string | null>;
 
   /** Stamp a programmatic-token rotation on the tenant row (cf#94). */
   setApiTokenRotatedAt(id: string): Promise<void>;

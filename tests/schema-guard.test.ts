@@ -100,6 +100,9 @@ const R2_OBJECT_KEY_COLUMNS = new Set([
   // token, which this worker never stores in plaintext and never hands out.
   "bundle_key",
   "artifact_key",
+  // cp#106 D. Physical resource identifier (D1 uuid, bucket name, script name, R2 token *id* for
+  // revoke). Not a secret value -- the R2 secret never lands in this table.
+  "resource_key",
 ]);
 
 function credentialShapedColumns(sql: string): string[] {
