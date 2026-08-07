@@ -325,6 +325,14 @@ export interface RunpodProxyDeps {
 
 /** The callback URL for one job. The token is the LAST path segment so a proxy or log that truncates
  *  a query string cannot silently strip the credential. */
+
+/** Strip trailing ASCII slashes without a regex (CodeQL js/polynomial-redos). */
+function trimTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47 /* / */) end--;
+  return end === s.length ? s : s.slice(0, end);
+}
+
 export function callbackUrlFor(base: string, token: string): string {
-  return base.replace(/\/+$/, "") + "/" + token;
+  return trimTrailingSlashes(base) + "/" + token;
 }
