@@ -7,6 +7,7 @@ is a separate product on a separate cadence).
 ## Unreleased
 
 ### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 - **RunPod terms / metered-resale research (cp#287).** Landed Ernst's public-document read at
   `docs/legal/runpod-terms-resale.md` (not legal advice). Consent tripwire, DPA, AUP items for tenants.
 
