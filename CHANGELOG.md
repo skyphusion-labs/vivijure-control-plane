@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### feat(teardown): record resource ownership at provision (cp#106 option D)
 
 Physical D1 / R2 bucket / R2 token / studio script ids are now claimed in `tenant_resource_ownership`

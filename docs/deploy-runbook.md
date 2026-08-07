@@ -1,3 +1,7 @@
+> **Note (docs audit 2026-08-05):** this runbook historically mixed studio-panel wording.
+> **This repository deploys the control plane** from a `v*` tag (`package.json` / `CONTROL_PLANE_VERSION`).
+> Studio panel deploys live in `vivijure-cf`. Prefer `docs/deploy.md` for the plane path.
+
 # Production Deploy Runbook -- vivijure-studio (feature-complete cut)
 
 Owner: Strummer (infra), and the deploy executor on Conrad's go (post-QA). This document is a
