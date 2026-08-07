@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### fix(ci): gate commit messages against issue-linking auto-close keywords (cp#265)
 
 The PR-body guard (#263) covers the surface a human reads. On squash merge the squash body is the
