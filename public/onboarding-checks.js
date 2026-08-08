@@ -64,7 +64,8 @@
   // rows read, so the two render identically.
   const REPRESENTATIVE_PLAN = {
     endpoints: [
-      { key: "backend", label: "backend", purpose: "The main render: keyframes, video, and cast LoRA training", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "H200 / B200" },
+      // cp#303: purpose matches PROVISION_PLAN -- training is not on this endpoint.
+      { key: "backend", label: "backend", purpose: "The main render: keyframes and video", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "H200 / B200" },
       { key: "upscale", label: "upscale", purpose: "Makes finished video sharper", image: "ghcr.io/skyphusion-labs/vivijure-upscale", max_workers: 1, gpu: "RTX 6000 Pro" },
       { key: "lipsync", label: "lipsync", purpose: "Matches mouth movement to dialogue", image: "ghcr.io/skyphusion-labs/vivijure-musetalk", max_workers: 1, gpu: "RTX 6000 Pro" },
       { key: "audio-upscale", label: "audio-upscale", purpose: "Cleans up and sharpens audio", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", max_workers: 1, gpu: "RTX 6000 Pro" },

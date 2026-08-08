@@ -6,9 +6,12 @@
 // ------------------------------------------------------------------------------------------------
 // THE SHAPE IS RUNPOD'S OWN, ON PURPOSE. Every module in the estate builds its RunPod URL as
 // `https://api.runpod.ai/v2/<endpoint>` plus `/run`, `/status/<id>`, `/cancel/<id>` or `/health`
-// (measured at vivijure-cf@d26db49: 23 of 26 modules with a src/index.ts reference the host, and
-// those four suffixes are the complete verb set -- no `runsync`, no `purge-queue`). Mounting the
-// proxy at the same suffixes makes the module-side change a single base-string swap:
+// (measured at vivijure-cf@d26db49 and again at b295309, statement-level: **14 of 26** modules with
+// a src/index.ts reference the host -- of which 8 hard-code a public slug and 6 read
+// RUNPOD_ENDPOINT_ID -- and those four suffixes are the complete verb set -- no `runsync`, no
+// `purge-queue`. The count is pinned by tests/runpod-proxy-census.test.ts so an unreproduced
+// figure cannot re-land as "measured" evidence; cp#298). Mounting the proxy at the same suffixes
+// makes the module-side change a single base-string swap:
 //
 //     const base = env.RUNPOD_PROXY_BASE ?? "https://api.runpod.ai/v2";
 //
