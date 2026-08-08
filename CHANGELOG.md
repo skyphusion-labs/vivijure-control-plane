@@ -9,6 +9,16 @@ is a separate product on a separate cadence).
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+### fix(runpod-sweep): log gated refusals so a no-op is distinguishable from silence (cp#300)
+
+`runRunpodJobSweep` already refused honestly when the pool credential was missing or unreadable
+(`ran:false, reason:credential_unavailable`), but both early returns exited before the only tick
+log line, and the scheduled caller discarded the return value. From outside the Worker a correctly
+gated no-op and a silently broken sweep were identical: no log, no metric, no throw.
+
+Every exit path now emits `runpod_sweep.tick` (including `ran:false`), at error level when the
+sweep refused or left work unresolved. Matches the meter half of the same scheduled tick, which
+already announced its own refusals.
 ### test(runpod-proxy): pin plane-refusal header wire name (cf#403)
 
 `PLANE_REFUSAL_HEADER` is the same string literal in this repo and vivijure-cf with no shared
