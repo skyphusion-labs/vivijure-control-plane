@@ -144,3 +144,7 @@ inside a single D1 batch (usage terminal update + debit append) so a crash canno
 
 Payment processor integration; per-class spend caps beyond the balance itself; usage dashboards
 (admin can query D1); byok<->managed self-serve switching UI (admin-assisted at first).
+
+## Terms posture (research)
+
+Public-document read of RunPod resale / intermediary obligations: [`docs/legal/runpod-terms-resale.md`](./legal/runpod-terms-resale.md) (cp#287; not legal advice).

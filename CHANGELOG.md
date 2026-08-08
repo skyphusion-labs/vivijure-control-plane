@@ -17,6 +17,8 @@ carried the door. No code change -- the catalog and provisioner already ship thi
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 - **Standing WAF watch for OWASP 949110 (cp#14).** `docs/waf-post-enforce-watch.md` -- enforce mode has no pre-block signal; keep 949110 at zero on legitimate surfaces.
+- **RunPod terms / metered-resale research (cp#287).** Landed Ernst's public-document read at
+  `docs/legal/runpod-terms-resale.md` (not legal advice). Consent tripwire, DPA, AUP items for tenants.
 
 - **CI vs deploy guard census (cp#260).** `docs/ci-deploy-guard-census.md` enumerates every executable
   guard asset, where it runs, and the deliberate CI-only residual. Re-measured 2026-08-05 (pins now
