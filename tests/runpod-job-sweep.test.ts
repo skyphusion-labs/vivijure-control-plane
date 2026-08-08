@@ -218,13 +218,39 @@ describe("every failure leaves the row OPEN", () => {
 
   it("REFUSES to run at all without a pool credential, rather than reporting a clean sweep", async () => {
     await openJob("job-1", ANCIENT);
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await runRunpodJobSweep(deps({ runpodApiKey: async () => "" }));
     // ran:false is the whole point: a run that examined nothing because it COULD not must never
     // look like a run that examined nothing because there was nothing to do.
     expect(res).toMatchObject({ ran: false, reason: "credential_unavailable", examined: 0 });
     expect(upstream).toHaveLength(0);
+    // cp#300: the refusal must REACH A LOG. Before this, the result was constructed carefully and
+    // discarded by the caller, so a gated no-op and a silently-broken sweep were identical outside
+    // the process. Same shape the meter half already uses for its own refusals.
+    expect(err).toHaveBeenCalledWith(
+      "runpod_sweep.tick",
+      expect.stringContaining('"ran":false'),
+    );
+    expect(err.mock.calls.some((c) => String(c[1]).includes("credential_unavailable"))).toBe(true);
+    err.mockRestore();
     // CONTROL: with a credential the same row IS examined.
     expect((await runRunpodJobSweep(deps())).examined).toBe(1);
+  });
+
+  it("logs the tick when the credential provider THROWS, not only when it returns empty", async () => {
+    // The catch path is a second early return that used to skip the tick log the same way the
+    // empty-string path did. Both must announce themselves (cp#300).
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await runRunpodJobSweep(
+      deps({ runpodApiKey: async () => { throw new Error("secret store down"); } }),
+    );
+    expect(res).toMatchObject({ ran: false, examined: 0 });
+    expect(String(res.reason)).toMatch(/credential_unavailable/);
+    expect(err).toHaveBeenCalledWith(
+      "runpod_sweep.tick",
+      expect.stringContaining("credential_unavailable"),
+    );
+    err.mockRestore();
   });
 
   it("one bad row does not abandon the rest of the sweep", async () => {
