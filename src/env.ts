@@ -23,6 +23,14 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   // Control-plane D1. PLATFORM data only; never tenant studio data.
   CP_DB: D1Database;
 
+  /**
+   * cp#289: Worker version metadata binding. Unique per deploy (`id` + `timestamp`), so two
+   * deploys of the same release tag are distinguishable on `/api/platform/version`. Optional so
+   * unit tests and a local config that has not declared the binding still typecheck; production
+   * wrangler.toml.example always binds it.
+   */
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
+
   // Tenant studios: the Workers-for-Platforms dispatch namespace (#55). Each tenant is a user
   // Worker in it, named tenant-<slug>-studio. Routing resolves it per request:
   //   env.TENANT_DISPATCH.get(script).fetch(freshRequest(req))
@@ -438,6 +446,8 @@ export const ENV_BINDINGS = [
   "TENANT_MODULE_DISPATCH",
   "STUDIO_RELEASES",
   "CP_RATE_LIMIT",
+  // cp#289: version metadata is a binding table, not a [vars] key.
+  "CF_VERSION_METADATA",
 ] as const satisfies readonly (keyof ControlPlaneEnv)[];
 
 /**

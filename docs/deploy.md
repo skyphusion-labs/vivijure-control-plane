@@ -34,8 +34,18 @@ They used to share one repo and one tag namespace. They do not any more; do not 
 
 ### Promoting the changelog at release time (READ THIS BEFORE CUTTING A TAG)
 
-Renaming `## Unreleased` to `## vX.Y.Z` is the promotion. **Leave a fresh, empty `## Unreleased`
-above it in the same edit.**
+**Run `python3 scripts/changelog-assemble.py vX.Y.Z YYYY-MM-DD`.** (cp#358) This is the promotion:
+it reads every `changelog.d/*.md` fragment (sorted by filename) plus whatever is still sitting
+under `## Unreleased` from a PR that used the direct-edit form, writes a `## vX.Y.Z -- YYYY-MM-DD`
+section, deletes the consumed fragments, and leaves `## Unreleased` empty -- the fresh, empty
+heading below is handled FOR you, not a separate step to remember.
+
+Refuses loudly and writes nothing if `vX.Y.Z` already appears as a heading (running it twice for
+the same version would otherwise duplicate the heading). Commit the result, including the deleted
+fragment files, in the same release-prep commit as the version bump.
+
+Before cp#358, renaming `## Unreleased` to `## vX.Y.Z` by hand was the promotion, and leaving a
+fresh, empty `## Unreleased` above it in the same edit was something a human had to remember.
 
 That is not tidiness. v1.18.0 was promoted without one, and the next three PRs merged with their
 entries having nowhere to land but under a heading that was already released, so `CHANGELOG.md`
