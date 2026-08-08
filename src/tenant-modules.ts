@@ -230,6 +230,35 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
  * Gateway and submits no RunPod job. It is what gives every use of this predicate a real subject
  * rather than a population that happens to be everything.
  */
+/**
+ * Bindings that must NEVER appear on a tenant module worker (cf#361).
+ *
+ * Modules call `reconcileRunpodEndpointWorkersMax` against the RunPod MANAGEMENT API when
+ * `RUNPOD_WORKERS_MAX` is set. That is intentional on operator-hosted modules. On a tenant
+ * namespace it would put management reach one binding away from the paying consumer -- safe today
+ * only because this builder never emits the name. Pin the refusal so omission becomes design.
+ */
+export const TENANT_MODULE_FORBIDDEN_BINDINGS: readonly string[] = [
+  "RUNPOD_WORKERS_MAX",
+];
+
+/** Throw if any forbidden management binding snuck onto a tenant module upload (cf#361). */
+export function assertNoTenantModuleForbiddenBindings(
+  moduleName: string,
+  bindings: readonly { name: string }[],
+): void {
+  const names = new Set(bindings.map((b) => b.name));
+  for (const forbidden of TENANT_MODULE_FORBIDDEN_BINDINGS) {
+    if (names.has(forbidden)) {
+      throw new TenantModuleError(
+        "modules_upload",
+        `module ${moduleName}: binding ${forbidden} is forbidden on tenant modules (cf#361: ` +
+          "management API reach must stay operator-only; refuse rather than upload)",
+      );
+    }
+  }
+}
+
 export const reachesRunpod = (spec: TenantModuleSpec): boolean =>
   Boolean(spec.endpointKey) || Boolean(spec.publicEndpoint);
 
@@ -673,6 +702,8 @@ export async function uploadTenantModules(
         });
       }
     }
+    // cf#361: design, not omission -- refuse management bindings before they reach a tenant script.
+    assertNoTenantModuleForbiddenBindings(spec.module, bindings);
     await deps.cf.uploadUserWorker({
       namespace: deps.moduleNamespace,
       scriptName,

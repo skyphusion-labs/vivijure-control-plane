@@ -307,16 +307,27 @@ export async function handle(
       });
     }
 
-    // What is actually running. src/version.ts was referenced by nothing at runtime, so confirming a
-    // release meant fetching a changed asset and reading the patched line off the wire -- archaeology,
-    // not observability (cf#114d). Its OWN route rather than a field on /api/platform/config: that
-    // route is a POLICY projection the front door renders from, with a UI contract and a different
-    // audience; deploy identity is an operator/CI fact with different cache semantics, and folding it
-    // in is how a config endpoint becomes a junk drawer. Unauthenticated, like the config route: the
-    // version of an AGPL codebase whose tags are public is not a secret, and a version you must hold
-    // a credential to read is useless to the monitoring that needs it most.
+    // RELEASE + BUILD identity (cf#114d, cp#289). `control_plane_version` is the RELEASE (SemVer,
+    // lockstep with package.json / the v* tag). It alone cannot tell two deploys of the same tag
+    // apart -- measured 2026-08-02 when two deploys at v1.20.0 both answered "1.20.0" and the route
+    // was blind to whether pooling was live. `build` carries CF_VERSION_METADATA (unique version id
+    // + upload timestamp per deploy). Absent binding => null fields, never a fake id.
+    //
+    // Its OWN route rather than a field on /api/platform/config: that route is a POLICY projection
+    // the front door renders from, with a UI contract and a different audience; this is an
+    // operator/CI fact with different cache semantics. Unauthenticated: the version of an AGPL
+    // codebase whose tags are public is not a secret, and a version you must hold a credential to
+    // read is useless to the monitoring that needs it most.
     if (request.method === "GET" && path === "/api/platform/version") {
-      return json({ control_plane_version: CONTROL_PLANE_VERSION });
+      const meta = env.CF_VERSION_METADATA;
+      return json({
+        control_plane_version: CONTROL_PLANE_VERSION,
+        build: {
+          id: meta?.id ?? null,
+          timestamp: meta?.timestamp ?? null,
+          tag: meta?.tag ?? null,
+        },
+      });
     }
 
     if (request.method === "GET" && path === "/api/aup/current") {
@@ -1016,9 +1027,13 @@ async function provision(
         failures: reaped.failures,
       });
       return err("reclaim_teardown_failed", 409, {
+        // GENUINELY STUCK (cp#304): the reclaim did not complete, resource columns still name the
+        // pieces that failed to delete, and there is no self-serve move. "Try again" would be a
+        // second false instruction; the customer must contact us.
         message:
-          "some of the old studio pieces could not be removed, so the name has not been freed. " +
-          "Nothing has been lost. Try again in a few minutes.",
+          "some of the old studio pieces could not be removed, so the name has not been freed and " +
+          "nothing has been destroyed. Retrying will not clear this; contact us so we can remove " +
+          "the stuck pieces.",
         failures: reaped.failures,
       });
     }
@@ -1737,6 +1752,20 @@ async function adminRoutes(
 
   if (request.method === "POST" && path === "/api/admin/llm-meter/run") {
     const outcome = await runLlmMeterTick(env, deps);
+    // PLATFORM action, not a tenant read (cp#243). A manual tick advances the ingestion watermark,
+    // which determines which rows land in which billing period, so who forced it and what it reported
+    // must be reconstructable. Same shape as meter.settle_llm below: operator, action name, target
+    // that is not a tenant id, and the outcome the run reported.
+    await deps.store.recordAdminAction(
+      actor,
+      "meter.tick_llm",
+      "llm_meter",
+      JSON.stringify(
+        outcome.ran
+          ? { ran: true }
+          : { ran: false, reason: outcome.reason ?? "unknown" },
+      ),
+    );
     if (!outcome.ran) {
       // 503 and the reason NAMED. Not 200-with-a-null: an operator asking the meter to run and
       // getting a success back has been told the meter ran.

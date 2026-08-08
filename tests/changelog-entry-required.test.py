@@ -5,6 +5,13 @@ situation that produced the false pass on #242.
 
 THE FIXTURE IS THE POINT. If it cannot reproduce the old bug, the fix is unproven, so this asserts
 BOTH directions on the same repository: two-dot passes (the bug) and three-dot refuses (the fix).
+
+cp#358 EXTENSION. `changelog.d/` fragments (one file per PR, assembled into CHANGELOG.md at
+release) are the fix for the PR queue being quadratic on a shared `## Unreleased` anchor -- see
+scripts/changelog-assemble.py. The guard's job barely changes: it must accept a fragment file
+touch exactly as it already accepts a `CHANGELOG.md` touch, during the migration window where
+both forms are legal. These checks watch the pre-fix `verdict()` REFUSE a fragment-only PR before
+the fix lands, so the fix is proven rather than assumed (per the file's own opening paragraph).
 """
 import os
 import subprocess
@@ -82,7 +89,7 @@ with tempfile.TemporaryDirectory() as root:
         "three-dot REFUSES a src-only PR whose base merely happens to carry a changelog change",
         (not ok_three) and "CHANGELOG.md" not in three_dot and "src/a.ts" in three_dot,
     )
-    check("and the refusal explains itself", "CHANGELOG.md is unchanged" in msg)
+    check("and the refusal explains itself", "neither CHANGELOG.md nor a changelog.d/ fragment" in msg)
 
     # A PR that DOES carry its own entry still passes, so the fix is not simply "always refuse".
     git(root, "checkout", "-q", "pr")
@@ -99,6 +106,37 @@ check("the no-changelog label is still a loud escape hatch",
       cer.verdict(["src/a.ts"], ["no-changelog"])[0])
 check("CONTROL: without the label that same PR is refused",
       not cer.verdict(["src/a.ts"])[0])
+
+# ---------------------------------------------------------------------------------------------
+# cp#358: fragment-per-PR is a SECOND way to satisfy the same requirement, not a replacement.
+# ---------------------------------------------------------------------------------------------
+
+# (a) PROOF: the guard FAILS on src/ with neither a CHANGELOG.md edit nor a fragment. This is the
+# same list as the CONTROL two lines up, restated here so the fragment feature's own proof block
+# is self-contained and does not depend on reading the rest of the file.
+ok_neither, msg_neither = cer.verdict(["src/a.ts"])
+check("(a) PROOF: src/ change with NEITHER CHANGELOG.md NOR a changelog.d/ fragment is refused",
+      not ok_neither)
+check("(a) and the refusal names both accepted forms",
+      "changelog.d/" in msg_neither and "CHANGELOG.md" in msg_neither)
+
+# (b) PROOF: a changelog.d/ fragment alone is accepted -- the new form.
+ok_fragment, _ = cer.verdict(["src/a.ts", "changelog.d/358-fragment-format.md"])
+check("(b) PROOF: src/ change with a changelog.d/ fragment ONLY is accepted", ok_fragment)
+
+# (b) PROOF, restated: CHANGELOG.md alone is STILL accepted -- the migration-window form, so the
+# fix is additive and does not break every currently-open PR that already carries an Unreleased
+# edit (cp#358's own stated constraint).
+ok_changelog_only, _ = cer.verdict(["src/a.ts", "CHANGELOG.md"])
+check("(b) PROOF: src/ change with a CHANGELOG.md edit ONLY is still accepted (migration window)",
+      ok_changelog_only)
+
+# Negative control on the fragment form: a file merely inside changelog.d/ that is NOT a markdown
+# fragment (the tracked .gitkeep) must not satisfy the guard -- otherwise the check degenerates to
+# "did you touch this directory at all", which any accidental touch would satisfy.
+ok_gitkeep, _ = cer.verdict(["src/a.ts", "changelog.d/.gitkeep"])
+check("CONTROL: touching changelog.d/.gitkeep alone does NOT satisfy the guard",
+      not ok_gitkeep)
 
 print("")
 print("  %d passed, %d failed" % (len(passes), len(failures)))

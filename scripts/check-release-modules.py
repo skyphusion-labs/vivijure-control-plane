@@ -36,11 +36,13 @@ Reading the release instead is credential-free, which buys the property that mat
 run on EVERY PULL REQUEST, including from forks. The var gap above would have been caught at PR
 time instead of taking the plane down. One download covers every module, every byte and every hash.
 
-WHAT THIS DOES NOT COVER, stated because it is a real gap and not a rounding error: the provisioner
-reads R2, and src/module-bundle-r2.ts has no fallback, so a release that is internally perfect but
-never mirrored still fails at provision. That check needs an R2 read grant and is tracked
-separately. The v1.12.0 mirror was verified complete and hash-matching by hand on 2026-07-27; that
-is a dated point-in-time check, NOT a control.
+THE R2 MIRROR (cp#209, closed as a silent residual by cp#319): the provisioner reads R2 and
+src/module-bundle-r2.ts has no fallback, so a release that is internally perfect but never
+mirrored fails at provision. Pass --mirror-bucket to verify the mirror against the CANONICAL
+release (deploy.yml always does; ci.yml does when STUDIO_RELEASES_R2_TOKEN is available on the
+run). Without --mirror-bucket the summary says out loud that the mirror was NOT checked -- a green
+that looked the same with and without mirror coverage would be the exact silent-gap shape this
+gate exists to prevent.
 
 ORDER OF OPERATIONS, and it matters:
 
