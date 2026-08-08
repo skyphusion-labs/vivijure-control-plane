@@ -93,6 +93,12 @@ tail_consumers = [ { service = "vivijure-tail" } ]
 enabled = true
 head_sampling_rate = 1
 
+# cp#289: Worker version metadata. Unique `id` + `timestamp` per deploy, so GET
+# /api/platform/version can distinguish two deploys of the same release tag. Bound as
+# CF_VERSION_METADATA; mirrored optional on ControlPlaneEnv (absent in unit tests).
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
 # Control-plane D1. PLATFORM data only (accounts, tenants, aup_acceptances, provision_jobs).
 # Tenant studio data lives in each tenant's OWN D1 and never here; the schema-guard test enforces it.
 [[d1_databases]]
