@@ -672,7 +672,8 @@
         p.className = "small muted";
         p.textContent =
           "We never stored your setup key, so we cannot retry this on our own. That is the " +
-          "tradeoff for not holding it. Go back and paste it again to pick up where this left off.";
+          "tradeoff for not holding it. Go back and paste it again to start over: provisioning " +
+          "the same name again destroys the partial environment and rebuilds from scratch.";
         ol.appendChild(p);
       }
     }

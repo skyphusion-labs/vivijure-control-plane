@@ -49,7 +49,7 @@ on GHCR:
 
 | Endpoint | What it does | Image |
 |---|---|---|
-| **backend** | The main render: keyframes, video, and cast LoRA training | `ghcr.io/skyphusion-labs/vivijure-backend` |
+| **backend** | The main render: keyframes and video | `ghcr.io/skyphusion-labs/vivijure-backend` |
 | **upscale** | Makes finished video sharper | `ghcr.io/skyphusion-labs/vivijure-upscale` |
 | **lipsync** | Matches mouth movement to dialogue | `ghcr.io/skyphusion-labs/vivijure-musetalk` |
 | **audio-upscale** | Cleans up and sharpens audio | `ghcr.io/skyphusion-labs/vivijure-audio-upscale` |

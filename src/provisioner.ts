@@ -495,6 +495,18 @@ export class ProvisionFailure extends Error {
 }
 
 /**
+ * Advice appended when a provision cannot resume and the customer re-submits the same slug.
+ *
+ * THE WORD "CONTINUE" IS THE DEFECT (cp#304). Re-provisioning a failed, never-live slug is the
+ * reclaim path: claim -> teardown(deleteData) -> blank columns -> new job. That DESTROYS the partial
+ * environment and starts over; it does not resume. Naming the route and the destroy is what makes
+ * the instruction match what the plane does.
+ */
+export const REPROVISION_DESTROYS =
+  "this cannot be continued. POST /api/tenant/provision with the same name again destroys the " +
+  "partial environment and starts over from scratch";
+
+/**
  * Run a provision job to completion or to an honest failure.
  *
  * runpodApiKey is key A: transient, used once, never stored. Pass null to resume the CF-side steps
@@ -719,7 +731,7 @@ export async function runProvisionJob(
         throw new ProvisionFailure(
           "runpod_endpoints",
           "the endpoints recorded for this tenant cannot be read, although the provision got past " +
-            "the step that writes them; re-provision to continue",
+            `the step that writes them; ${REPROVISION_DESTROYS}`,
         );
       }
     } else if (runpodApiKey) {
@@ -1221,18 +1233,17 @@ export async function continueProvisionJob(
         throw new ProvisionFailure(
           inferStep(done),
           "this provision was started before the plane recorded which RunPod shape it was for, so " +
-            "there is no way to tell whether it can be finished without the original key; start " +
-            "provisioning again to continue",
+            `there is no way to tell whether it can be finished without the original key; ${REPROVISION_DESTROYS}`,
         );
       }
       if (recordedMode === "dedicated") {
-        // UNCHANGED, and it must stay unchanged: for a tenant that brought its own RunPod account
-        // this message is exactly true, and this refusal is permanent by custody. Key A lives in the
-        // request that carried it and nowhere else.
+        // Key A is unrecoverable for a tenant that brought its own RunPod account; the refusal is
+        // permanent by custody. The DESTROY clause (cp#304) is the load-bearing half of the advice:
+        // re-provisioning the same name is reclaim, not resume.
         throw new ProvisionFailure(
           inferStep(done),
           "provisioning was interrupted before the studio was uploaded, and the RunPod key needed to " +
-            "finish it is never stored; start provisioning again to continue",
+            `finish it is never stored; ${REPROVISION_DESTROYS}`,
         );
       }
       if (recordedMode === "shared") {
@@ -1254,7 +1265,7 @@ export async function continueProvisionJob(
             inferStep(done),
             "this provision did not record which release it was building, so resuming it could " +
               "upload a studio that does not match the database schema already created for it; " +
-              "start provisioning again to continue",
+              REPROVISION_DESTROYS,
           );
         }
         // The heartbeat is handed over with the job: runProvisionJob starts its own, and two
@@ -1280,7 +1291,7 @@ export async function continueProvisionJob(
       throw new ProvisionFailure(
         inferStep(done),
         `this provision records an unrecognised RunPod shape (${JSON.stringify(recordedMode)}), so ` +
-          "it cannot be resumed; start provisioning again to continue",
+          `it cannot be resumed; ${REPROVISION_DESTROYS}`,
       );
     }
 
@@ -1289,21 +1300,20 @@ export async function continueProvisionJob(
     // Reaching here means wfp_upload completed AND progress is contiguous, so runpod_endpoints and
     // everything before it completed too. That makes each absence below a WRITE THAT DID NOT LAND or
     // a value that no longer parses -- data corruption -- rather than a phase that has not happened.
-    // The old messages said "re-provision to continue", which reads as the latter and sent a reader
-    // looking for an unfinished step.
+    // Re-provision DESTROYS (cp#304); do not promise a resume.
     const endpoints = readTenantEndpoints(tenant);
     if (!endpoints.length) {
       throw new ProvisionFailure(
         "runpod_endpoints",
         "the endpoints recorded for this tenant cannot be read, although the provision got past the " +
-          "step that writes them; re-provision to continue",
+          `step that writes them; ${REPROVISION_DESTROYS}`,
       );
     }
     if (!tenant.studio_token_enc) {
       throw new ProvisionFailure(
         "wfp_upload",
         "no studio token is recorded for this tenant, although the provision got past the step that " +
-          "writes it, so its studio cannot be reached; re-provision to continue",
+          `writes it, so its studio cannot be reached; ${REPROVISION_DESTROYS}`,
       );
     }
     const studioApiToken = await decryptStudioToken(deps.kek, tenant.studio_token_enc);
@@ -1347,7 +1357,7 @@ export async function continueProvisionJob(
       throw new ProvisionFailure(
         "wfp_upload",
         "no studio release recorded for this tenant, so the modules that pair with its studio " +
-          "cannot be identified; re-provision to continue",
+          `cannot be identified; ${REPROVISION_DESTROYS}`,
       );
     }
 
