@@ -4,8 +4,20 @@ Standing structural fact: which executable guard assets exist in this tree, wher
 runs, and what the CI/deploy divergence actually is. Filed so the measurement does not live only
 in an issue body.
 
-**Measured 2026-08-05** (re-check of the #260 filing after pins and PR-body guard landed). Re-measure
-when workflows change; do not treat this table as eternally true.
+**Measured at `1a08d4df4e04`** (this PR's head), re-derived from the tree rather than carried
+forward. Naming a SHA rather than a date is deliberate: a reader can compute exactly what has landed
+since and how far the table is out, which a calendar date cannot tell them. A date says "this may be
+stale"; a sha says "here is how stale".
+
+Re-measure when workflows change. **The check is one command** -- set-difference the tree against
+this table and confirm the reverse direction is empty:
+
+```sh
+git ls-tree -r --name-only HEAD -- scripts tests | grep -E '\.(py|mjs|sh)$' | sort > /tmp/tree
+grep -oE '(scripts|tests)/[a-zA-Z0-9._-]+\.(py|mjs|sh)' docs/ci-deploy-guard-census.md | sort -u > /tmp/doc
+comm -23 /tmp/tree /tmp/doc   # in tree, missing from census
+comm -13 /tmp/tree /tmp/doc   # listed but absent -- must be empty
+```
 
 ## The question this asks (and does not)
 
@@ -45,12 +57,26 @@ guards:config`), not as top-level workflow steps.
 | `tests/mirror-key-confinement.test.py` | **ci only** |
 | `tests/workflow-guards.test.py` | **ci only** |
 | `tests/pr-body-guard.test.py` | **ci only** |
+| `scripts/changelog-assemble.py` | **ci only** (cp#358 fragment assembler) |
+| `scripts/commit-message-guard.py` | **ci only** (cp#265; reuses `pr-body-guard.py` rather than a second matcher) |
+| `tests/changelog-assemble.test.py` | **ci only** |
+| `tests/changelog-fragment-merge.test.py` | **ci only** |
+| `tests/commit-message-guard.test.py` | **ci only** |
 | `scripts/reconcile-runpod.mjs` | nothing (operator tool, not a guard) |
 
-**CI-only residual (not on deploy):** resolve-guard, pr-body-guard (+ its test), and the four
-guard self-tests (`changelog-entry-required.test`, `check-release-modules.test`,
+**CI-only residual (not on deploy):** resolve-guard, pr-body-guard (+ its test),
+changelog-assemble (+ its test), commit-message-guard (+ its test), changelog-fragment-merge, and the
+four guard self-tests (`changelog-entry-required.test`, `check-release-modules.test`,
 `mirror-key-confinement`, `workflow-guards`). That is the deliberate PR-scoped set plus one
 unclassified heuristic (`resolve-guard`).
+
+**The residual is larger than the first version of this table reported, and the reason is worth
+keeping:** five assets were missing, all CI-only, so the census understated exactly the divergence it
+exists to measure. Three of them (`changelog-assemble`, `commit-message-guard`,
+`changelog-fragment-merge` + tests) reached main on 2026-08-07/08 -- **after this table was written
+and before it merged.** The table was accurate when measured and went stale underneath itself while
+open. That is why the header names a sha: the failure mode here is not carelessness, it is a
+measurement outliving the tree it described.
 
 ## Classification
 
