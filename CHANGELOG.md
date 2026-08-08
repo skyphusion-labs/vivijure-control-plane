@@ -9,6 +9,15 @@ is a separate product on a separate cadence).
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+### test(routes): type the provisioner double as every Wiring member (cp#307)
+
+The route suite's provisioner seam double was a hand-written object of `vi.fn()` members,
+structurally typed. Widening `ProvisionerWiring` (adding `currentRelease` for cp#301) produced
+zero typecheck errors and eight runtime reds saying "currentRelease is not a function".
+
+The double is now built as a `WiringDouble` mapped over `keyof ProvisionerWiring`, so a missing
+member fails `tsc -p tsconfig.tests.json` at the factory with the member name. Same completeness
+gate that production wiring already has; the suite can no longer invent a partial subject.
 ### fix(runpod-sweep): log gated refusals so a no-op is distinguishable from silence (cp#300)
 
 `runRunpodJobSweep` already refused honestly when the pool credential was missing or unreadable
