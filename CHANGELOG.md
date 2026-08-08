@@ -16,6 +16,8 @@ the `reachesRunpod` population rule, the tenant-R2 refuse path, and which studio
 carried the door. No code change -- the catalog and provisioner already ship this on main.
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+- **RunPod terms / metered-resale research (cp#287).** Landed Ernst's public-document read at
+  `docs/legal/runpod-terms-resale.md` (not legal advice). Consent tripwire, DPA, AUP items for tenants.
 
 - **CI vs deploy guard census (cp#260).** `docs/ci-deploy-guard-census.md` enumerates every executable
   guard asset, where it runs, and the deliberate CI-only residual. Re-measured 2026-08-05 (pins now
