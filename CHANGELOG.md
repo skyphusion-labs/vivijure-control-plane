@@ -17,6 +17,11 @@ carried the door. No code change -- the catalog and provisioner already ship thi
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+### chore(onboarding): remove dead scopeVerdict helper (cp#30)
+
+`scopeVerdict()` had no production caller after the cp#20 client fix (PR #29 deleted the only
+reader of a probe payload no route emits). Removed the helper, its types, export, and unit tests.
+Live invoke-key UX stays on reason-code copy (`invokeRejectionCopy` / `REJECTION_COPY`).
 ### fix(admin): module-readiness double-samples /ready after upgrades (cp#254)
 
 `GET /api/admin/tenants/:id/module-readiness` was a single-shot probe. Right after a module upload,
