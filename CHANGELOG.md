@@ -9,6 +9,12 @@ is a separate product on a separate cadence).
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+### fix(admin): project lifecycle so suspended != deleted (cp#281)
+
+`tenantView` projected suspension into a single `status` field, so a deleted tenant with a suspend
+flag looked restorable on the admin list. Keep `status` as the existing suspended-or-lifecycle
+projection for the API contract, and add **`lifecycle`** carrying the stored column verbatim so a
+caller can answer "is this restorable?" without performing a state change.
 ### fix(ci): gate commit messages against issue-linking auto-close keywords (cp#265)
 
 The PR-body guard (#263) covers the surface a human reads. On squash merge the squash body is the
