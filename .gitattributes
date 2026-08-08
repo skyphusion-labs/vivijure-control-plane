@@ -20,13 +20,31 @@
 # merge -- CHANGELOG.md` reports `unspecified`, and the merge conflicts exactly as if this
 # file were not here.
 #
-# The instrument lies about this in two ways, both of which fooled the first pass:
+# THE ONE RULE, which every observation below is just a consequence of:
+#
+#     Every git merge operation resolves a file's merge attribute from the CHECKED-OUT
+#     WORKING TREE, never from the commits being merged. `merge` and `merge-tree` alike.
+#
+# Consequences, each of which fooled a first pass:
 #   - `git check-attr` run AFTER a conflicted merge reports `union`, because the merge
 #     itself pulled this file in from main. It is describing a state that did not exist
 #     when the driver was chosen. Query it on the clean pre-merge checkout or not at all.
 #   - Merging the PR head INTO a main checkout DOES apply union and looks like proof. It is
 #     the opposite direction from a drain: there the tree git consults is main, which
-#     carries the attribute. Direction is the whole variable.
+#     carries the attribute. Direction is not a property of the merge; it is which side you
+#     checked out.
+#   - A CLONE SITTING ON A STALE `main` BEHAVES LIKE A CLONE WITH NO ATTRIBUTE AT ALL. This
+#     one produced a false claim that got as far as a merged comment: `git merge-tree` was
+#     reported here as unable to honour the driver. It honours it. Supplied via
+#     `-c core.attributesFile`, merge-tree on cp#336's two parents returns rc=0 and a tree
+#     byte-identical to the real merge commit's (`01e7da0d`). The earlier test had run from
+#     a working tree parked on a main that predated this file, and `check-attr` printed
+#     `unspecified` in the same output that was read as "the tool ignores it".
+#     Caught by strummer during the cp#336 re-review, by checking rather than accepting.
+#
+# The failure shape worth remembering: an anomaly was explained by inventing a CAPABILITY
+# LIMIT in the tool when the real cause was STATE the operator controlled. Prefer the
+# explanation that implicates your own checkout until it is ruled out.
 #
 # THE RECIPE THAT ACTUALLY WORKS supplies the attribute from OUTSIDE the branch, so it does
 # not care what the PR branch predates. Preferred form, used to drain cp#336 live:
