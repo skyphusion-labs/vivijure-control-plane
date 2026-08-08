@@ -24,6 +24,39 @@ to scanners, not studio/demo/mcp API clients).
 Any non-zero count on a non-scanner path is the signal. Re-query on a schedule (weekly is enough
 while quiet; daily after a client change that lengthens prompts or changes headers).
 
+**QUERY A CONTRIBUTING RULE IN THE SAME PASS. THIS IS NOT OPTIONAL, AND HERE IS WHY.**
+
+The signal above is an ABSENCE, and on its own **it cannot fail**. A healthy zone returns zero
+rows. So does a stale rule id, a rotated ruleset id, the wrong zone, an expired token, or a
+renamed schema field. **Every one of those yields `0`, which this document defines as healthy** --
+there is no state in which the check can report *"I could not look"*.
+
+That is worse here than it would be elsewhere, by this document's own argument: there is no
+"about to block" warning and the next symptom is a user-visible 403. A silently broken query does
+not degrade the early warning, it **removes the only one**, and nothing in the output changes when
+it does.
+
+So query **`920274`** (Invalid character in request headers) alongside it. It is the highest-volume
+contributing rule in the table below and is expected to be busy:
+
+| result | reading |
+|---|---|
+| `920274` in the thousands, `949110` zero | **healthy** -- the zero is a measurement |
+| both zero | **THE INSTRUMENT IS BROKEN**, not the zone quiet. Fix the query before believing anything |
+| `949110` non-zero on a non-scanner path | the signal -- see below |
+
+One extra filter on a query the operator already runs, and it converts an unfalsifiable zero into
+a measured one.
+
+### The three identifiers are Cloudflare's, and they move without telling us
+
+Rule id `6179ae15870a4bb7b2d480d4843b323c`, ruleset `4814384a9e5d4991b9815dcfc25d2f1f` and the
+score threshold **40** are **observed values, not constants we control** -- recorded here as read
+during the cp#14 enforce-flip window (2026-08-05). They are not re-verified by this document and
+nothing notifies us if they change; a rotated id is precisely the failure the contributing-rule
+control above exists to catch. Re-read them from the live zone when the control ever reports both
+zero.
+
 ### Surfaces that score in normal traffic
 
 - `studio.vivijure.com/` and `/api/*`
