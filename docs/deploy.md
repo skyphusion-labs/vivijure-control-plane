@@ -21,6 +21,10 @@ git push origin main --follow-tags
 6. **verify nothing is still pending** -- fails the deploy if it is
 7. **`wrangler deploy`**
 
+Which guards run on CI only vs deploy (and why) is enumerated in
+[`docs/ci-deploy-guard-census.md`](./ci-deploy-guard-census.md) (cp#260). Re-measure when
+workflows change.
+
 ## Tag semantics
 
 Split per repository, deliberately (cf#85):
@@ -34,8 +38,18 @@ They used to share one repo and one tag namespace. They do not any more; do not 
 
 ### Promoting the changelog at release time (READ THIS BEFORE CUTTING A TAG)
 
-Renaming `## Unreleased` to `## vX.Y.Z` is the promotion. **Leave a fresh, empty `## Unreleased`
-above it in the same edit.**
+**Run `python3 scripts/changelog-assemble.py vX.Y.Z YYYY-MM-DD`.** (cp#358) This is the promotion:
+it reads every `changelog.d/*.md` fragment (sorted by filename) plus whatever is still sitting
+under `## Unreleased` from a PR that used the direct-edit form, writes a `## vX.Y.Z -- YYYY-MM-DD`
+section, deletes the consumed fragments, and leaves `## Unreleased` empty -- the fresh, empty
+heading below is handled FOR you, not a separate step to remember.
+
+Refuses loudly and writes nothing if `vX.Y.Z` already appears as a heading (running it twice for
+the same version would otherwise duplicate the heading). Commit the result, including the deleted
+fragment files, in the same release-prep commit as the version bump.
+
+Before cp#358, renaming `## Unreleased` to `## vX.Y.Z` by hand was the promotion, and leaving a
+fresh, empty `## Unreleased` above it in the same edit was something a human had to remember.
 
 That is not tidiness. v1.18.0 was promoted without one, and the next three PRs merged with their
 entries having nowhere to land but under a heading that was already released, so `CHANGELOG.md`
@@ -161,6 +175,20 @@ namespace, which is the exact thing the proxy exists to prevent.
 token can be minted and none can verify, so a misconfigured plane serves nobody rather than
 everybody. If shared-tier submits are 401ing on a plane you believe is configured, check this
 secret first.
+
+**Wire header contract (cf#403).** The header name is `PLANE_REFUSAL_HEADER` in
+`src/runpod-proxy-poll.ts`, currently the literal `x-vivijure-plane-refusal`. The authority for that
+value is **`vivijure-core/src/runpod-route.ts`**; vivijure-cf modules import it through
+`modules/_shared/runpod-route.ts`, which since cp#321 is a pure re-export, so **cf and core cannot
+drift from each other**.
+
+**The pin is one-sided, and the residual is open.** This repo pins the literal in
+`tests/plane-refusal-header-contract.test.ts`, so a rename on the PLANE side fails CI here. There is
+no corresponding cf-side pin. **If core changes the wire value, core stays internally consistent,
+this plane keeps emitting the old name, and no CI anywhere fails** -- every plane refusal then looks
+like a non-refusal to modules (forever-pend; cf#398 / cp#288). Closing that direction needs a
+cf/core-side pin against the plane's value, or a shared package. Do not "fix" it by declaring a
+`const` in `modules/_shared/runpod-route.ts`; that re-creates the duplicate cp#321 removed.
 
 **Rotating it invalidates every tenant's token at once**, deliberately: a stateless token cannot be
 revoked row by row. Per-tenant refusal lives on the SUBMIT path instead, which reads the tenant row

@@ -59,6 +59,31 @@ against the *deployed* database.
   will never run. Write a new one.
 - `wrangler d1 migrations list CP_DB --remote` shows what production is actually missing
 
+## Changelog entries: fragment files, not `## Unreleased` directly (cp#358)
+
+**Preferred: add a file under `changelog.d/`, not an edit to `CHANGELOG.md`.** Every entry used
+to land at the same `## Unreleased` heading, so the moment ANY PR merged, main's `## Unreleased`
+moved and re-conflicted every other open PR touching it -- measured 2026-08-07: 20 mechanical
+conflicts resolved, one PR merged, and the queue was back to 5 DIRTY with 16 more recomputing
+within seconds. Two PRs adding two DIFFERENT fragment files never touch the same file, so the
+conflict class disappears rather than being made cheaper.
+
+**Filename:** `<issue>-<short-slug>.md` (e.g. `321-proxy-branch.md`), issue number first so a
+directory listing sorts by issue. No issue number: `pr<N>-<slug>.md`.
+
+**Content:** exactly the `### ...` block that would have gone under `## Unreleased` today. No new
+syntax, no front matter, no type taxonomy -- move the same prose to a different file.
+
+**`scripts/changelog-entry-required.py` accepts EITHER form during the migration window**: a
+`changelog.d/` fragment or a direct `CHANGELOG.md` edit. Fragments are preferred for every new PR;
+a direct edit still passes the guard so this does not break PRs already open when the fragment
+convention landed. Tightening to fragment-only once the queue drains is a deliberate follow-up
+(cp#358), not the current state.
+
+At release time `scripts/changelog-assemble.py <version> <date>` reads every fragment (plus
+whatever is still sitting under `## Unreleased` from a direct-edit PR), writes the `##
+<version> -- <date>` section, and deletes the consumed fragments. See docs/deploy.md.
+
 ## Deploy configuration
 
 Adding a value to `wrangler.toml.example` means adding it to `REQUIRED_VARS` in
