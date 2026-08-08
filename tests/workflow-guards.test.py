@@ -165,8 +165,16 @@ check("ci pin check carries a --mirror-bucket path (cp#319)",
 check("ci pin check uses the R2 read token secret (same grant as deploy)",
       "STUDIO_RELEASES_R2_TOKEN" in str(ci_wf),
       "without the token the --mirror-bucket path is dead code")
+# ANCHOR ON THE EMITTED STRING, NOT ON ITS VOCABULARY. The first version of this assertion
+# asked only that "mirror" and "notice" each appear somewhere in ci_text -- and both are
+# supplied by UNRELATED text: "mirror" by the `--mirror-bucket` flag that assertion (2)
+# already covers, "notice" by the fork-PR STUDIO_RELEASE notice. Measured: deleting the
+# executable R2-mirror notice left the suite fully green, so the one assertion whose job is
+# "a green without mirror coverage must say so out loud" could not fail. The exact line is
+# emitted once and appears in no comment, so anchoring on it is precise.
+MIRROR_ABSENT_NOTICE = "::notice::R2 mirror credentials not available"
 check("ci pin check names the residual when mirror credentials are absent",
-      "mirror" in ci_text.lower() and ("notice" in ci_text.lower() or "::notice::" in ci_text),
+      MIRROR_ABSENT_NOTICE in ci_text,
       "a green without mirror coverage must say so out loud")
 
 print("")
