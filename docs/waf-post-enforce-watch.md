@@ -27,8 +27,10 @@ while quiet; daily after a client change that lengthens prompts or changes heade
 **QUERY A CONTRIBUTING RULE IN THE SAME PASS. THIS IS NOT OPTIONAL, AND HERE IS WHY.**
 
 The signal above is an ABSENCE, and on its own **it cannot fail**. A healthy zone returns zero
-rows. So does a stale rule id, a rotated ruleset id, the wrong zone, an expired token, or a
-renamed schema field. **Every one of those yields `0`, which this document defines as healthy** --
+rows. So does a stale rule id, the wrong zone, an expired token, a wrong time window, or a
+renamed schema field. (Deliberately NOT a rotated ruleset id: the filter at line 23 is on `ruleId`
+alone and never mentions the ruleset, so a ruleset rotation affects these queries only if it also
+rotates the member rule ids -- an assumption about Cloudflare this document does not establish.) **Every one of those yields `0`, which this document defines as healthy** --
 there is no state in which the check can report *"I could not look"*.
 
 That is worse here than it would be elsewhere, by this document's own argument: there is no
@@ -51,7 +53,7 @@ a measured one.
 **AND THE SIBLING CONTROL IS NOT SUFFICIENT ON ITS OWN. Read this before trusting it.**
 
 It detects every failure that drives BOTH queries to zero -- wrong zone, expired token, renamed
-schema field, wrong time window, rotated ruleset id. **It cannot detect a rotation of
+schema field, wrong time window. **It cannot detect a rotation of
 `6179ae15870a4bb7b2d480d4843b323c` itself**, which is the one identifier the entire signal rests on:
 that filter would match nothing and return zero while `920274` stayed in the thousands, which is
 row 1 of the table above -- *"healthy, the zero is a measurement"*. **Not caught, and actively
@@ -64,12 +66,24 @@ queries SHARE and cannot test the field that DISTINGUISHES them.** The threshold
 **So the sibling control is necessary and not sufficient. Pair it with a POSITIVE EXISTENCE PROBE,
 on the same schedule:**
 
-> assert that rule id `6179ae15870a4bb7b2d480d4843b323c` still resolves inside ruleset
-> `4814384a9e5d4991b9815dcfc25d2f1f`, and that its score threshold is still 40.
+> 1. assert ruleset `4814384a9e5d4991b9815dcfc25d2f1f` resolves **and contains a known sibling**
+>    (`920274`) -- this is the probe's own positive control;
+> 2. then assert `6179ae15870a4bb7b2d480d4843b323c` resolves inside it, and that its score
+>    threshold is still 40.
 
 That probe has a real **not-found** result, which is exactly the *"I could not look"* state this
 document rightly says the raw signal lacks. A volume comparison can never supply it for its own
 identifier.
+
+**Step 1 is not optional, for the reason this whole document is about.** Without it, *"949110 was
+rotated"* and *"I could not reach the ruleset at all"* both return not-found -- the probe would then
+have the same unfalsifiable shape as the signal it was added to fix, one level up. Step 1 must
+SUCCEED for a step-2 not-found to mean anything.
+
+**Not runnable as written, and stated rather than left implicit.** Unlike the count query, this
+probe names no API or endpoint -- and the paragraph below flags exactly that defect for `920274`.
+Resolve the rulesets API call that lists a managed ruleset's rules, record it here, and only then is
+this a control rather than an intention.
 
 **Runnable form matters here.** The filter above takes a 32-hex `ruleId`; `920274` is an OWASP rule
 NUMBER and this document does not give its id form. Resolve and record `920274`'s `ruleId` before
