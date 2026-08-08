@@ -9,6 +9,15 @@ is a separate product on a separate cadence).
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+### Fixed
+
+- **test(aig): credential-boundary guards derive their population from `TENANT_MODULE_CATALOG`
+  (cp#314).** `tenant-aig-token.test.ts` looped a hardcoded list of endpoint-backed modules when
+  asserting the AI Gateway trio never leaks. When `finish-rife` joined the catalog the guard stayed
+  green and simply never looked -- the silent-gap shape, not a red stale assertion. Same doctrine
+  the proxy suite already uses: derive the modules to inspect, keep the expectation about what
+  must be absent. Attribution vars (`TENANT_ID` / `TENANT_SLUG`) now walk every non-gateway module
+  too, not only `keyframe`.
 ### fix(docs): RunPod proxy census comment said 23 of 26 modules; measured 14 (cp#298)
 
 `src/runpod-proxy-route-match.ts` claimed "23 of 26 modules" referenced `api.runpod.ai` at
