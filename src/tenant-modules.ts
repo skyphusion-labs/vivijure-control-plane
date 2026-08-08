@@ -230,6 +230,35 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
  * Gateway and submits no RunPod job. It is what gives every use of this predicate a real subject
  * rather than a population that happens to be everything.
  */
+/**
+ * Bindings that must NEVER appear on a tenant module worker (cf#361).
+ *
+ * Modules call `reconcileRunpodEndpointWorkersMax` against the RunPod MANAGEMENT API when
+ * `RUNPOD_WORKERS_MAX` is set. That is intentional on operator-hosted modules. On a tenant
+ * namespace it would put management reach one binding away from the paying consumer -- safe today
+ * only because this builder never emits the name. Pin the refusal so omission becomes design.
+ */
+export const TENANT_MODULE_FORBIDDEN_BINDINGS: readonly string[] = [
+  "RUNPOD_WORKERS_MAX",
+];
+
+/** Throw if any forbidden management binding snuck onto a tenant module upload (cf#361). */
+export function assertNoTenantModuleForbiddenBindings(
+  moduleName: string,
+  bindings: readonly { name: string }[],
+): void {
+  const names = new Set(bindings.map((b) => b.name));
+  for (const forbidden of TENANT_MODULE_FORBIDDEN_BINDINGS) {
+    if (names.has(forbidden)) {
+      throw new TenantModuleError(
+        "modules_upload",
+        `module ${moduleName}: binding ${forbidden} is forbidden on tenant modules (cf#361: ` +
+          "management API reach must stay operator-only; refuse rather than upload)",
+      );
+    }
+  }
+}
+
 export const reachesRunpod = (spec: TenantModuleSpec): boolean =>
   Boolean(spec.endpointKey) || Boolean(spec.publicEndpoint);
 
@@ -673,6 +702,8 @@ export async function uploadTenantModules(
         });
       }
     }
+    // cf#361: design, not omission -- refuse management bindings before they reach a tenant script.
+    assertNoTenantModuleForbiddenBindings(spec.module, bindings);
     await deps.cf.uploadUserWorker({
       namespace: deps.moduleNamespace,
       scriptName,
@@ -1026,13 +1057,16 @@ export interface TenantModuleObservation {
 }
 
 /**
- * Probe every catalog module for one tenant, once, and report what each said.
+ * Short pause between the two /ready samples on the operator module-readiness path (cp#254).
  *
- * READ-ONLY and free: /ready costs no GPU, spends nothing, and needs no tenant credential. No retry
- * and no deadline -- this is an operator asking a question, not a gate deciding a promotion, and a
- * retry loop here would blur "answered slowly" into "answered".
+ * Right after a module upload, GET /ready can be answered by a stale isolate still serving the
+ * previous version; a single sample is then indistinguishable from a settled answer. Two samples
+ * with a brief gap reduce that race without turning this into the multi-second key-install wait.
+ * Kept short so the route stays a cheap question.
  */
-export async function probeTenantModuleReadiness(
+export const MODULE_READINESS_PROBE_GAP_MS = 250;
+
+async function observeTenantModulesOnce(
   deps: TenantModuleDeps,
   tenantId: string,
 ): Promise<TenantModuleObservation[]> {
@@ -1078,6 +1112,26 @@ export async function probeTenantModuleReadiness(
       };
     }),
   );
+}
+
+/**
+ * Probe every catalog module for one tenant and report what each said.
+ *
+ * READ-ONLY and free: /ready costs no GPU, spends nothing, and needs no tenant credential. This is
+ * an operator asking a question, not a gate deciding a promotion -- so it is NOT the multi-second
+ * wait that `awaitTenantModulesReady` runs. It does sample TWICE with a short gap (cp#254), because
+ * a single sample taken right after an upgrade can be a stale isolate; the second sample is the
+ * answer we report. Injectable `timing` keeps the gap testable without burning real wall clock.
+ */
+export async function probeTenantModuleReadiness(
+  deps: TenantModuleDeps,
+  tenantId: string,
+  timing: ProbeTiming = realTiming,
+  gapMs: number = MODULE_READINESS_PROBE_GAP_MS,
+): Promise<TenantModuleObservation[]> {
+  await observeTenantModulesOnce(deps, tenantId);
+  await timing.sleep(gapMs);
+  return await observeTenantModulesOnce(deps, tenantId);
 }
 
 /**
