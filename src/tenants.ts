@@ -1,6 +1,6 @@
 // Tenant identity rules (#52). The provisioner itself is #53; this owns slugs and the status machine.
 
-import type { Tenant, TenantStatus } from "./store";
+import type { Tenant, TenantLifecycle, TenantStatus } from "./store";
 
 /**
  * A slug is BOTH a DNS label (<slug>.studio.vivijure.com) and a Workers-for-Platforms script name,
@@ -60,14 +60,14 @@ export interface TenantView {
    * set, otherwise the stored lifecycle. Callers that need the real lifecycle must read `lifecycle`
    * (cp#281) -- this field alone cannot answer "is this restorable?".
    */
-  status: TenantStatus | "suspended";
+  status: TenantStatus;
   /**
    * The stored lifecycle column verbatim (`pending` … `deleted`), never overwritten by suspension
    * (cp#281). Suspension stays on the orthogonal flag; projecting it into `status` alone made a
    * deleted-but-suspended tenant look restorable. A consumer can answer "is this restorable?" from
    * the response: suspended AND lifecycle is a live-ish state vs suspended over deleted.
    */
-  lifecycle: TenantStatus;
+  lifecycle: TenantLifecycle;
   url: string | null;
   studio_release: string | null;
   /**
