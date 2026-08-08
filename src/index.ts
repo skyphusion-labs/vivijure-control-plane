@@ -1027,9 +1027,13 @@ async function provision(
         failures: reaped.failures,
       });
       return err("reclaim_teardown_failed", 409, {
+        // GENUINELY STUCK (cp#304): the reclaim did not complete, resource columns still name the
+        // pieces that failed to delete, and there is no self-serve move. "Try again" would be a
+        // second false instruction; the customer must contact us.
         message:
-          "some of the old studio pieces could not be removed, so the name has not been freed. " +
-          "Nothing has been lost. Try again in a few minutes.",
+          "some of the old studio pieces could not be removed, so the name has not been freed and " +
+          "nothing has been destroyed. Retrying will not clear this; contact us so we can remove " +
+          "the stuck pieces.",
         failures: reaped.failures,
       });
     }
@@ -1748,6 +1752,20 @@ async function adminRoutes(
 
   if (request.method === "POST" && path === "/api/admin/llm-meter/run") {
     const outcome = await runLlmMeterTick(env, deps);
+    // PLATFORM action, not a tenant read (cp#243). A manual tick advances the ingestion watermark,
+    // which determines which rows land in which billing period, so who forced it and what it reported
+    // must be reconstructable. Same shape as meter.settle_llm below: operator, action name, target
+    // that is not a tenant id, and the outcome the run reported.
+    await deps.store.recordAdminAction(
+      actor,
+      "meter.tick_llm",
+      "llm_meter",
+      JSON.stringify(
+        outcome.ran
+          ? { ran: true }
+          : { ran: false, reason: outcome.reason ?? "unknown" },
+      ),
+    );
     if (!outcome.ran) {
       // 503 and the reason NAMED. Not 200-with-a-null: an operator asking the meter to run and
       // getting a success back has been told the meter ran.
@@ -2089,9 +2107,9 @@ async function adminRoutes(
   // RunPod job is unrecoverable the moment it ends: RunPod cannot enumerate jobs, so there is no
   // backfill and no second chance to look.
   //
-  // ONE PASS, NO RETRY. This is a question, not a promotion gate; the key-install probe is the one
-  // that waits, and it waits on credentials rather than on telemetry. Blurring the two would let a
-  // module that answered late read exactly like one that answered.
+  // TWO SHORT SAMPLES, NOT A WAIT (cp#254). This is still a question, not a promotion gate; the
+  // key-install probe is the one that waits on credentials. The double sample only buys a brief gap
+  // so a post-upgrade stale isolate is less likely to be the only reading.
   const moduleReadiness = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/module-readiness$/.exec(path);
   if (request.method === "GET" && moduleReadiness) {
     if (!deps.provisioner) return err("provisioner_unconfigured", 503);

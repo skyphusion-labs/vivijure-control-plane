@@ -190,9 +190,10 @@ jobs:
       # STUDIO_RELEASES binding. It refused every deploy without being able to say why, and a gate
       # that always refuses is a gate somebody disables.
       #
-      # NOT covered here: that the R2 MIRROR is present and matching. The provisioner reads R2 and
-      # module-bundle-r2.ts has no fallback, so that gap is real; it needs an R2 read grant and is
-      # tracked separately.
+      # THE R2 MIRROR is covered here via --mirror-bucket (cp#209). As of cp#319 the same path also
+      # runs on same-repo PR CI when STUDIO_RELEASES_R2_TOKEN is available, so a missing mirror is
+      # no longer only catchable at the most expensive point. Deploy remains the hard fail for an
+      # empty pin and for any tag that never saw a PR.
       #
       # In PREFLIGHT deliberately: a dry run exercises it, and `release` (which needs: preflight)
       # cannot run on a bad pin. A failed download reports CANNOT VERIFY with the underlying error
