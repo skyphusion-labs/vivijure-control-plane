@@ -12,6 +12,7 @@ import {
   tenantD1Name,
   tenantR2TokenName,
   tenantAigTokenName,
+  tenantStudioAigTokenName,
   type ProvisionDeps,
 } from "../src/provisioner";
 import { CfApiError } from "../src/cf-api";
@@ -891,6 +892,13 @@ describe("teardownTenant", () => {
     const d = deps();
     await teardownTenant(d, await provisioned(), { deleteData: true });
     expect(d.tokenMinter.revokeByName).toHaveBeenCalledWith(tenantAigTokenName("hero"));
+    // cf#98: the STUDIO grant is a second billable credential on the same teardown path. Asserted
+    // separately because a stranded live grant bills to us, and this block sits in a function that
+    // cp#334 and cp#335 both restructure -- if either drops or reorders it, this is what goes red.
+    expect(d.tokenMinter.revokeByName).toHaveBeenCalledWith(tenantStudioAigTokenName("hero"));
+    // The two grants must stay DISTINCT. Without this, collapsing them back to one shared token
+    // still satisfies both assertions above and silently re-shares a credential across doors.
+    expect(tenantStudioAigTokenName("hero")).not.toBe(tenantAigTokenName("hero"));
   });
 
   it("mints the AI Gateway token at provision, under the deterministic name", async () => {

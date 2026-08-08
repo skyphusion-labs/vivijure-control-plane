@@ -21,6 +21,16 @@ const ENDPOINTS = [
   { key: "audio-upscale", label: "Audio", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
 ];
 
+// POPULATION derived from the catalog (cp#314). A hardcoded list is the silent-gap shape: when
+// finish-rife joined the catalog this guard stayed green and simply never looked. The proxy suite
+// already derives ENDPOINT_BACKED the same way. Derive the set of modules to INSPECT, never the
+// EXPECTATION of what their bindings should be (that would invert the assertion into a tautology).
+const ENDPOINT_BACKED = TENANT_MODULE_CATALOG.filter((s) => s.endpointKey).map((s) => s.module);
+const NOT_GATEWAY_BACKED = TENANT_MODULE_CATALOG.filter((s) => !s.needsAiGateway).map((s) => s.module);
+// The credential-boundary names that must never land on a non-gateway module.
+const AIG_CREDENTIAL_NAMES = ["AI", "GATEWAY_ID", "CF_AIG_TOKEN"] as const;
+const AIG_ATTRIBUTION_NAMES = ["TENANT_ID", "TENANT_SLUG"] as const;
+
 type Upload = { scriptName: string; bindings: WorkerBinding[] };
 
 function deps(over: Partial<TenantModuleDeps> = {}): { d: TenantModuleDeps; uploads: Upload[]; logs: string[] } {
@@ -96,18 +106,28 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
     expect(names(forModule(uploads, "plan-enhance"))).not.toContain("RUNPOD_ENDPOINT_ID");
   });
 
-  it("does NOT leak the trio onto endpoint-backed modules", async () => {
+  it("does NOT leak the AI Gateway credential names onto any non-gateway module", async () => {
     const { d, uploads } = deps();
     await uploadTenantModules(d, "v1.0.0", "ten_1", "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "dedicated", undefined, "AIG_SECRET_VALUE");
-    for (const m of ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale", "finish-rife"]) {
-      // TELEMETRY_DB is expected here (cp#248): these six modules submit RunPod jobs and record
-      // them. The exact-set shape is the point -- the AI Gateway trio must still not appear.
-      //
-      // finish-rife was added by cp#284 and this loop did NOT fail without it -- the test simply
-      // never looked. A coverage gap, not a regression, and exactly the shape a new catalog row
-      // opens: every per-module loop written against a hardcoded list silently stops covering the
-      // catalog the moment the catalog grows.
-      expect(names(forModule(uploads, m)), m).toEqual(["RUNPOD_ENDPOINT_ID", "TELEMETRY_DB"]);
+    // Denominator: an empty filter (catalog of only gateway modules, or a filter bug) must not
+    // pass. Same shape as module-proxy-binding.test.ts's ENDPOINT_BACKED.length guard.
+    expect(NOT_GATEWAY_BACKED.length).toBeGreaterThan(0);
+    for (const m of NOT_GATEWAY_BACKED) {
+      const n = names(forModule(uploads, m));
+      // POSITIVE CONTROL first: the module was uploaded and carries at least one of its own
+      // bindings, so the absences below are real absences and not an empty upload record.
+      expect(forModule(uploads, m), m).toBeDefined();
+      expect(n.length, m).toBeGreaterThan(0);
+      for (const name of AIG_CREDENTIAL_NAMES) {
+        expect(n, `${m} must not carry ${name}`).not.toContain(name);
+      }
+    }
+    // Endpoint-backed subset still gets RUNPOD_ENDPOINT_ID (positive control that these are the
+    // modules that used to be hand-listed). Not an exact-set: cost-door rows and future writers
+    // carry different extras, and that is not this guard's claim.
+    expect(ENDPOINT_BACKED.length).toBeGreaterThan(0);
+    for (const m of ENDPOINT_BACKED) {
+      expect(names(forModule(uploads, m)), m).toContain("RUNPOD_ENDPOINT_ID");
     }
   });
 
@@ -210,15 +230,22 @@ describe("uploadTenantModules -- per-tenant attribution vars (cp#185)", () => {
 
   // Scoped to gateway-backed modules. A RunPod-backed module makes no gateway call, so binding a
   // tenant id onto it would be noise that implies a meter that does not exist for it.
+  //
+  // POPULATION FROM THE CATALOG (cp#314). This used to inspect only `keyframe`. A single named
+  // sample is the same silent-gap shape as the hardcoded endpoint-backed list: a new non-gateway
+  // row that accidentally picked up TENANT_ID would not turn this red.
   it("does NOT bind them on modules that are not gateway-backed", async () => {
     const { d, uploads } = deps();
     await uploadTenantModules(d, "v1.0.0", "ten_1", "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "dedicated", undefined, "AIG_SECRET_VALUE");
-    const kf = forModule(uploads, "keyframe");
-    // POSITIVE CONTROL: keyframe really was uploaded and really does carry its own binding, so the
-    // absences below are real absences and not an empty upload record.
-    expect(kf).toBeDefined();
-    expect(byName(kf, "RUNPOD_ENDPOINT_ID")).toBeDefined();
-    expect(names(kf)).not.toContain("TENANT_ID");
-    expect(names(kf)).not.toContain("TENANT_SLUG");
+    expect(NOT_GATEWAY_BACKED.length).toBeGreaterThan(0);
+    for (const m of NOT_GATEWAY_BACKED) {
+      const u = forModule(uploads, m);
+      expect(u, m).toBeDefined();
+      // POSITIVE CONTROL: something of this module's own is present so the absences are real.
+      expect(names(u).length, m).toBeGreaterThan(0);
+      for (const name of AIG_ATTRIBUTION_NAMES) {
+        expect(names(u), `${m} must not carry ${name}`).not.toContain(name);
+      }
+    }
   });
 });

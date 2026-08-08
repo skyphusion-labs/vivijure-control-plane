@@ -1,6 +1,6 @@
 # Managed compute: metering + prepaid credits (Lane B2 design)
 
-Status: DESIGN, ruled by Conrad 2026-07-25 (vivijure-cf#224 comments). The architecture below is
+Status: DESIGN for full managed prepaid BYOK|managed product; ledger + ManualRail + holds are SHIPPED but creditsApplyToTenant stays false (surface dark), ruled by Conrad 2026-07-25 (vivijure-cf#224 comments). The architecture below is
 current and load-bearing. **Conrad opened the build lane on 2026-07-27 and made further rulings that
 supersede two points of this document; both are marked SUPERSEDED inline.** Implementation is
 decomposed on cp#173 (issues cp#189 through cp#195), and the money schema of record is cp#189, not
