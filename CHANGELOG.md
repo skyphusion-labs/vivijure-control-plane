@@ -15,6 +15,46 @@ is a separate product on a separate cadence).
 flag looked restorable on the admin list. Keep `status` as the existing suspended-or-lifecycle
 projection for the API contract, and add **`lifecycle`** carrying the stored column verbatim so a
 caller can answer "is this restorable?" without performing a state change.
+### fix(ci): gate commit messages against issue-linking auto-close keywords (cp#265)
+
+The PR-body guard (#263) covers the surface a human reads. On squash merge the squash body is the
+**commit message**, not the PR body, and that is what GitHub auto-closes from. Enumerate every
+commit on the PR and run the same matcher (`scripts/pr-body-guard.py`) over each message. Zero
+commits in range is exit 2, never a vacuous pass. Self-test pins the caller.
+### fix(provision): backend plan label no longer promises cast LoRA training (cp#303)
+
+`PROVISION_PLAN`'s backend entry was labelled "Render (keyframes, video, cast LoRA training)".
+Training does not run on that endpoint and cannot fall back to it: cast LoRA training is
+fail-closed on its own satellite (`vivijure-wan-train` / `RUNPOD_WAN_TRAIN_ENDPOINT_ID`). The
+label is tenant-visible (onboarding renders from the plan), so the clause was a product lie and
+invited the inference that the shared pool already covers training because it covers `backend`.
+
+Dropped the training clause on the plan label, the onboarding representative plan purpose strings,
+and the hosted-tier docs table. A unit test pins the backend label so the promise cannot return.
+### fix(provision): tell the truth when re-provision DESTROYS (cp#304)
+
+A provision interrupted before the studio upload used to say *"start provisioning again to
+continue"*. The retry works, but the word **continue** was a lie: the same slug hits the reclaim
+path (`claim -> teardown(deleteData) -> blank -> new job`), which **destroys** the partial
+environment and starts over. A promise that succeeds while doing something else is worse than one
+that fails.
+
+- Refusal messages (dedicated key-A, pre-mode rows, missing release pin, unrecognised mode, and the
+  past-boundary corruption guards) now say this cannot be continued, name `POST /api/tenant/provision`,
+  and state that re-provisioning the same name destroys and starts from scratch.
+- `reclaim_teardown_failed` (the genuinely stuck population) no longer says "try again"; it says
+  contact us, because there is no self-serve move while resource columns still name undeleted pieces.
+- Onboarding copy that told the tenant to "pick up where this left off" now matches the destroy.
+
+Destroy/reclaim behaviour is unchanged; only the contract text is fixed.
+### feat(platform): `/api/platform/version` surfaces build identity, not only release (cp#289)
+
+The route answered `{ control_plane_version }` only -- which release, not which build. Two deploys
+at one tag (measured at v1.20.0) read identically, and the route was blind to whether a merge
+between those deploys was live. Bound `CF_VERSION_METADATA` (Worker version id + upload timestamp)
+and return it as `build.{id,timestamp,tag}` alongside the release. Null when unbound so tests and
+older local configs stay honest. Comments and docs no longer claim the release field alone is
+deploy identity.
 
 ## v1.22.0 -- 2026-08-03
 
