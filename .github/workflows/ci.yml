@@ -127,6 +127,21 @@ jobs:
       - name: Changelog-entry guard, and the control that reproduces its old false pass
         run: python3 tests/changelog-entry-required.test.py
 
+      # cp#358: the shared `## Unreleased` anchor made the PR queue quadratic -- every merge
+      # re-conflicted every other open PR touching it. changelog.d/ fragments remove the shared
+      # anchor; these two prove the fix rather than assume it. changelog-assemble.test.py drives
+      # scripts/changelog-assemble.py byte-for-byte against fixtures, including the migration case
+      # where a fragment and a hand-edited Unreleased body are both populated, and re-confirms
+      # scripts/changelog-released-immutable.py still passes on the assembled + tagged result.
+      # changelog-fragment-merge.test.py drives a REAL git merge: two PRs adding different
+      # fragments merge clean, and the CONTROL -- the same two PRs editing Unreleased the old way
+      # -- conflicts, so the claim is proven against the exact problem it exists to fix.
+      - name: Changelog fragment assembler, byte-correct against fixtures
+        run: python3 tests/changelog-assemble.test.py
+
+      - name: Changelog fragment merge proof (the actual claim, plus its control)
+        run: python3 tests/changelog-fragment-merge.test.py
+
       # Structural guards on deploy.yml. The dry run was once a STEP calling `exit 0`, which ends
       # the step and NOT the job, so a dry_run dispatch ran on into migrate + deploy. No code test
       # would have caught it -- the defect lived in the workflow shape. These assert every write to
