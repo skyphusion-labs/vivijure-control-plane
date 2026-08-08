@@ -69,12 +69,41 @@
 # Verified bidirectionally on cp#336, same commits both arms, attribute the only variable:
 # with it `rc=0` and zero conflict markers; with it removed `rc=1` and one marker.
 #
+# THE FLAG IS FOR THE DRAIN, NOT FOR VERIFYING. Two different checkouts, two answers:
+#   - DRAIN: working tree is the LEGACY PR BRANCH, which by definition predates this file.
+#     The attribute is absent exactly when it must apply, so it MUST be supplied. Measured
+#     on cp#336, same commits both arms: supplied -> rc=0, 0 markers; removed -> rc=1, 1
+#     marker. (`git checkout origin/main -- .gitattributes` first does not work: it leaves a
+#     staged change and `git merge` refuses to start.)
+#   - VERIFYING afterwards: run from current main or any post-2026-08-07 branch and the file
+#     is simply THERE. Supplying the flag is noise, and worse, it teaches the next reader
+#     that the tool needs an incantation -- the same capability story retracted above, one
+#     layer down. (strummer, cp#336 review: it verified with no flag at all.)
+#
 # UNION IS A DUMB DRIVER -- rc=0 IS NOT THE CHECK. It keeps both sides unconditionally and
 # cannot tell a correct append from a structural mistake, so a conflict-free result can still
 # be wrong. After any union merge of this file, verify: exactly one `## Unreleased` anchor, no
 # conflict markers, no entry the MERGE duplicated (pre-existing duplicates are not yours), and
 # nothing dropped from either side. On cp#336 the honest check was arithmetic: 2872 + 8 = 2880
 # lines, and `git diff HEAD^1 HEAD -- CHANGELOG.md` showed exactly main's one new entry.
+#
+# STRONGEST AVAILABLE PROOF that a drain merge was purely MECHANICAL (nothing hand-added,
+# hand-resolved or dropped) -- compare the merge commit's tree against a recomputed merge:
+#
+#     git merge-tree --write-tree <merge>^1 <merge>^2     # rc AND first line both matter
+#
+# ASSERT BOTH `rc == 0` AND `tree == $(git rev-parse <merge>^{tree})`, as SEPARATE assertions.
+# **A CONFLICTED merge-tree STILL PRINTS A TREE SHA ON LINE 1**, so a check written as "grab
+# the first line and compare" reads a real conflict as an ordinary mismatch -- and on a path
+# you were not watching, that misreads as a tool problem instead of "this merge was hand
+# resolved". (strummer caught this before it went into a spawn prompt.)
+#
+# Keep the reversed-parent negative control (`merge-tree ^2 ^1` -> a DIFFERENT tree). Without
+# it, equality could be trivial rather than evidence that merge-tree actually merged.
+#
+# Both failure directions of this check are LOUD, which is why it is safe to standardise: a
+# stale verifying checkout gives rc=1, and a hand-resolved merge gives a mismatch that
+# correctly indicts the merge. There is no silent-pass state.
 #
 # DRAIN LOCALLY RATHER THAN `gh pr update-branch`, EVEN WHERE UPDATE-BRANCH WOULD SUCCEED.
 # Measured on cp#336: pushing a real merge commit left both prior approvals STALE, which is
