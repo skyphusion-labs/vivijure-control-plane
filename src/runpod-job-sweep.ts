@@ -149,6 +149,27 @@ async function probeJob(deps: JobSweepDeps, key: string, job: OpenProxyJob): Pro
 }
 
 /**
+ * Emit the one tick line every exit path must produce, then return the same result.
+ *
+ * ALWAYS LOGGED, including a clean run and a gated refusal (cp#300). The early credential
+ * returns used to skip this line entirely, so from outside the Worker a correctly-gated no-op
+ * and a silently-broken sweep were byte-identical: no log either way. `ran:false` is never
+ * "clean" -- a plane that could not ask must not log at the same level as one that had nothing
+ * to do. Error level when anything was left unresolved or the sweep refused, so an operator's
+ * log filter is the only place a rising `unknown` count, a permanently deferred backlog, or a
+ * missing pool credential becomes visible.
+ */
+function emitTick(result: JobSweepResult): JobSweepResult {
+  const clean =
+    result.ran &&
+    result.errors === 0 &&
+    result.unknown === 0 &&
+    result.eligible === result.examined;
+  (clean ? console.log : console.error)("runpod_sweep.tick", JSON.stringify(result));
+  return result;
+}
+
+/**
  * One sweep.
  *
  * THE DIRECTION OF EVERY FAILURE IS THE SAME: leave the row OPEN. An open row says "nobody knows"
@@ -164,12 +185,13 @@ export async function runRunpodJobSweep(deps: JobSweepDeps): Promise<JobSweepRes
   try {
     key = await deps.runpodApiKey();
   } catch (e) {
-    return { ran: false, reason: "credential_unavailable: " + String(e), ...empty };
+    // LOGGED HERE, not only constructed: the return type alone is not an observer (cp#300).
+    return emitTick({ ran: false, reason: "credential_unavailable: " + String(e), ...empty });
   }
   // REFUSES rather than reports a clean sweep. A plane with no pool credential cannot ask RunPod
   // anything, and a run that examined nothing because it COULD not must never look like a run that
-  // examined nothing because there was nothing to do.
-  if (!key) return { ran: false, reason: "credential_unavailable", ...empty };
+  // examined nothing because there was nothing to do. The tick log is on this path too (cp#300).
+  if (!key) return emitTick({ ran: false, reason: "credential_unavailable", ...empty });
 
   const now = deps.now();
   // Never race a working push: a row younger than the adopt delay may still have a callback in
@@ -248,10 +270,5 @@ export async function runRunpodJobSweep(deps: JobSweepDeps): Promise<JobSweepRes
     );
   }
 
-  // ALWAYS LOGGED, including a clean run, and at error level when anything was left unresolved --
-  // an operator's log filter is the only place a rising `unknown` count or a permanently deferred
-  // backlog becomes visible.
-  const clean = result.errors === 0 && result.unknown === 0 && result.eligible === result.examined;
-  (clean ? console.log : console.error)("runpod_sweep.tick", JSON.stringify(result));
-  return result;
+  return emitTick(result);
 }
