@@ -196,7 +196,7 @@ The provisioner closes it the SAME way self-host does (Phase-3 dynamic dispatch)
 safe because module conformance is envelope+degrade only (async GPU modules return pending/degrade;
 the gate never triggers real GPU work), and every module answers the conformance probe with a
 well-formed `{ ok:false }` envelope before it reads any RunPod credential (live-verified across all
-five modules with no key B bound). Key B lands on the studio AND every module script in
+catalogued modules with no key B bound). Key B lands on the studio AND every module script in
 `installInvokeKey`, in place (a secret PUT, no re-upload) -- the module can then render.
 
 **The job-log binding (cp#248).** Every module that submits a RunPod job also carries the tenant
@@ -813,7 +813,7 @@ Still elsewhere: routing/domains #55, quotas #56, AUP text #57, onboarding UX #5
 
 ### The window this closes
 
-`installInvokeKey` writes key B to the tenant studio and to all five tenant module scripts, then the
+`installInvokeKey` writes key B to the tenant studio and to every tenant module script in the catalog, then the
 route flips the tenant to `live`. A `200` from the secrets PUT means the secret is stored; it does
 NOT mean the version the edge is serving can read it. In the cf#99 finale a tenant that had just
 reported `live` failed its first render citing a credential that was demonstrably present, and the
@@ -826,7 +826,7 @@ to be a module endpoint, which is what `GET /ready` (vivijure-cf#114) is.
 ### The probe
 
 `awaitTenantModulesReady` (`src/tenant-modules.ts`) runs after the key-B fan-out and BEFORE
-`setTenantStatus(..., "live")`. It probes `GET /ready` on all five tenant module scripts over the
+`setTenantStatus(..., "live")`. It probes `GET /ready` on every tenant module script in the catalog over the
 `TENANT_MODULE_DISPATCH` binding, unauthenticated (the endpoint carries booleans, never values, and
 the plane must be able to ask before the tenant has a working credential to authenticate with).
 
@@ -970,17 +970,24 @@ recording modules including `finish-rife`.
 
 ### `GET /api/platform/version`
 
-Returns `{ "control_plane_version": "<semver>" }` from `src/version.ts`, which the existing lockstep
-test keeps equal to `package.json`. Before this, `CONTROL_PLANE_VERSION` was referenced by nothing at
-runtime: confirming which release the plane served meant fetching a changed asset and reading the
-patched line off the wire. That works, but it is archaeology, not observability.
+Returns release **and** build identity (cp#289):
 
-It is its OWN route rather than a field on `/api/platform/config` deliberately. That route is a
-policy projection the front door renders from -- it has a UI contract and a UI audience. Deploy
-identity is an operator/CI fact with a different audience and different cache semantics, and folding
-it in is how a config endpoint turns into a junk drawer. Unauthenticated, like the config route: the
-version of an AGPL codebase whose tags are public is not a secret, and a version you need a
-credential to read is useless to the monitoring that needs it most.
+```json
+{
+  "control_plane_version": "<semver>",
+  "build": { "id": "<worker-version-id|null>", "timestamp": "<iso|null>", "tag": "<string|null>" }
+}
+```
+
+- `control_plane_version` is the **release** from `src/version.ts` (lockstep with `package.json` /
+  the `v*` tag). Two deploys of the same tag share this string.
+- `build` is CF Worker version metadata (`CF_VERSION_METADATA` binding): unique `id` and upload
+  `timestamp` **per deploy**, so two redeploys at one tag are distinguishable. Fields are `null`
+  when the binding is absent (unit tests, older local config).
+
+Before cf#114d, `CONTROL_PLANE_VERSION` was referenced by nothing at runtime. Before cp#289 the
+route answered release only and invited being read as "which build". Unauthenticated, like the
+config route: the version of an AGPL codebase whose tags are public is not a secret.
 
 ## Watching a hosted tenant actually render (cp#45)
 

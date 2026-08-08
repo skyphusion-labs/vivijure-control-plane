@@ -6,6 +6,97 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
+### fix(docs): RunPod proxy census comment said 23 of 26 modules; measured 14 (cp#298)
+
+`src/runpod-proxy-route-match.ts` claimed "23 of 26 modules" referenced `api.runpod.ai` at
+vivijure-cf@d26db49. Re-measurement at that sha (and at b295309) is **14**, matching the census
+already written in `src/runpod-proxy.ts` (8 public slug + 6 `RUNPOD_ENDPOINT_ID`). The count is
+not load-bearing for routing, but a wrong measured figure in a source comment becomes scoping
+evidence. Comment corrected; `tests/runpod-proxy-census.test.ts` pins the two comments to the
+reproducible split so 23 cannot re-land.
+### test(routes): type the provisioner double as every Wiring member (cp#307)
+
+The route suite's provisioner seam double was a hand-written object of `vi.fn()` members,
+structurally typed. Widening `ProvisionerWiring` (adding `currentRelease` for cp#301) produced
+zero typecheck errors and eight runtime reds saying "currentRelease is not a function".
+
+The double is now built as a `WiringDouble` mapped over `keyof ProvisionerWiring`, so a missing
+member fails `tsc -p tsconfig.tests.json` at the factory with the member name. Same completeness
+gate that production wiring already has; the suite can no longer invent a partial subject.
+### fix(runpod-sweep): log gated refusals so a no-op is distinguishable from silence (cp#300)
+
+`runRunpodJobSweep` already refused honestly when the pool credential was missing or unreadable
+(`ran:false, reason:credential_unavailable`), but both early returns exited before the only tick
+log line, and the scheduled caller discarded the return value. From outside the Worker a correctly
+gated no-op and a silently broken sweep were identical: no log, no metric, no throw.
+
+Every exit path now emits `runpod_sweep.tick` (including `ran:false`), at error level when the
+sweep refused or left work unresolved. Matches the meter half of the same scheduled tick, which
+already announced its own refusals.
+### test(runpod-proxy): pin plane-refusal header wire name (cf#403)
+
+`PLANE_REFUSAL_HEADER` is the same string literal in this repo and vivijure-cf with no shared
+package. Both sides now pin `"x-vivijure-plane-refusal"` in
+`tests/plane-refusal-header-contract.test.ts` so a one-sided rename fails CI before it restores the
+forever-pend cf#398 / cp#288 closed. Docs: `docs/deploy.md`.
+### feat(provision): bind AI + GATEWAY_ID on the tenant studio (cf#98)
+
+Hosted planner / chat / enhance need `env.AI` and a resolvable `GATEWAY_ID` on the **studio** worker,
+not only on plan-enhance modules. New provisions bind `AI` always (Workers AI local path when no
+gateway is configured), and bind `GATEWAY_ID` + `CF_AIG_TOKEN` (both-or-neither) when
+`TENANT_AI_GATEWAY_ID` is set. The studio Run token is a **separate** grant from the module token
+(`…-aig-studio` vs `…-aig`) so compromise of one surface does not expose the other; teardown revokes
+both by name.
+### fix(admin): project lifecycle so suspended != deleted (cp#281)
+
+`tenantView` projected suspension into a single `status` field, so a deleted tenant with a suspend
+flag looked restorable on the admin list. Keep `status` as the existing suspended-or-lifecycle
+projection for the API contract, and add **`lifecycle`** carrying the stored column verbatim so a
+caller can answer "is this restorable?" without performing a state change.
+### fix(ci): gate commit messages against issue-linking auto-close keywords (cp#265)
+
+The PR-body guard (#263) covers the surface a human reads. On squash merge the squash body is the
+**commit message**, not the PR body, and that is what GitHub auto-closes from. Enumerate every
+commit on the PR and run the same matcher (`scripts/pr-body-guard.py`) over each message. Zero
+commits in range is exit 2, never a vacuous pass. Self-test pins the caller.
+### fix(provision): backend plan label no longer promises cast LoRA training (cp#303)
+
+`PROVISION_PLAN`'s backend entry was labelled "Render (keyframes, video, cast LoRA training)".
+Training does not run on that endpoint and cannot fall back to it: cast LoRA training is
+fail-closed on its own satellite (`vivijure-wan-train` / `RUNPOD_WAN_TRAIN_ENDPOINT_ID`). The
+label is tenant-visible (onboarding renders from the plan), so the clause was a product lie and
+invited the inference that the shared pool already covers training because it covers `backend`.
+
+Dropped the training clause on the plan label, the onboarding representative plan purpose strings,
+and the hosted-tier docs table. A unit test pins the backend label so the promise cannot return.
+### fix(provision): tell the truth when re-provision DESTROYS (cp#304)
+
+A provision interrupted before the studio upload used to say *"start provisioning again to
+continue"*. The retry works, but the word **continue** was a lie: the same slug hits the reclaim
+path (`claim -> teardown(deleteData) -> blank -> new job`), which **destroys** the partial
+environment and starts over. A promise that succeeds while doing something else is worse than one
+that fails.
+
+- Refusal messages (dedicated key-A, pre-mode rows, missing release pin, unrecognised mode, and the
+  past-boundary corruption guards) now say this cannot be continued, name `POST /api/tenant/provision`,
+  and state that re-provisioning the same name destroys and starts from scratch.
+- `reclaim_teardown_failed` (the genuinely stuck population) no longer says "try again"; it says
+  contact us, because there is no self-serve move while resource columns still name undeleted pieces.
+- Onboarding copy that told the tenant to "pick up where this left off" now matches the destroy.
+
+Destroy/reclaim behaviour is unchanged; only the contract text is fixed.
+### feat(platform): `/api/platform/version` surfaces build identity, not only release (cp#289)
+
+The route answered `{ control_plane_version }` only -- which release, not which build. Two deploys
+at one tag (measured at v1.20.0) read identically, and the route was blind to whether a merge
+between those deploys was live. Bound `CF_VERSION_METADATA` (Worker version id + upload timestamp)
+and return it as `build.{id,timestamp,tag}` alongside the release. Null when unbound so tests and
+older local configs stay honest. Comments and docs no longer claim the release field alone is
+deploy identity.
+
 ## v1.22.0 -- 2026-08-03
 
 ### chore(release): v1.22.0 -- what this tag actually deploys

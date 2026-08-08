@@ -1,18 +1,21 @@
 # The hosted studio: what it is, what it costs, and how to leave
 
-**Status: in build (sprint #40). This page documents the hosted tier as specced and ruled. It goes
-live with the tier; nothing here describes a running service yet.**
+**Status: control plane is shipped and tag-deployed (`v*` on this repo); the public hosted product
+surface continues to expand.** This page is the tenant-facing story of the hosted tier as ruled.
+Where the provisioner or payment rail is still dark, the code says so (e.g. `creditsApplyToTenant`
+stays false).
 
 Vivijure is free software you can install yourself, and always will be. The hosted studio exists for
-one reason: installing takes work, and some people would rather skip that part. You sign up, paste
-one RunPod key, and a few minutes later you have your own studio that can write a storyboard and
-render it to video.
+one reason: installing takes work, and some people would rather skip that part. You sign up, mint
+**two** RunPod keys in the setup flow (provision then invoke; see below), and a few minutes later
+you have your own studio that can write a storyboard and render it to video.
 
 You still own the GPUs. You still own your films. The only thing we do is run the control panel for
 you, so you never have to set one up.
 
-Want to install it yourself instead? That path is first-class and fully supported. Start at
-[quickstart.md](quickstart.md).
+Want to install it yourself instead? That path is first-class and fully supported. Start at the
+studio host docs: [vivijure-cf DEPLOYMENT](https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/DEPLOYMENT.md)
+and this plane's [deploy.md](./deploy.md).
 
 ---
 
@@ -46,7 +49,7 @@ on GHCR:
 
 | Endpoint | What it does | Image |
 |---|---|---|
-| **backend** | The main render: keyframes, video, and cast LoRA training | `ghcr.io/skyphusion-labs/vivijure-backend` |
+| **backend** | The main render: keyframes and video | `ghcr.io/skyphusion-labs/vivijure-backend` |
 | **upscale** | Makes finished video sharper | `ghcr.io/skyphusion-labs/vivijure-upscale` |
 | **lipsync** | Matches mouth movement to dialogue | `ghcr.io/skyphusion-labs/vivijure-musetalk` |
 | **audio-upscale** | Cleans up and sharpens audio | `ghcr.io/skyphusion-labs/vivijure-audio-upscale` |

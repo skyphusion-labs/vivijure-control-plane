@@ -1,6 +1,6 @@
 // Tenant identity rules (#52). The provisioner itself is #53; this owns slugs and the status machine.
 
-import type { Tenant, TenantStatus } from "./store";
+import type { Tenant, TenantLifecycle, TenantStatus } from "./store";
 
 /**
  * A slug is BOTH a DNS label (<slug>.studio.vivijure.com) and a Workers-for-Platforms script name,
@@ -55,7 +55,19 @@ export function slugRejectionMessage(reason: SlugRejection): string {
 export interface TenantView {
   id: string;
   slug: string;
+  /**
+   * Projected availability for the existing API contract: `"suspended"` when the suspend flag is
+   * set, otherwise the stored lifecycle. Callers that need the real lifecycle must read `lifecycle`
+   * (cp#281) -- this field alone cannot answer "is this restorable?".
+   */
   status: TenantStatus;
+  /**
+   * The stored lifecycle column verbatim (`pending` … `deleted`), never overwritten by suspension
+   * (cp#281). Suspension stays on the orthogonal flag; projecting it into `status` alone made a
+   * deleted-but-suspended tenant look restorable. A consumer can answer "is this restorable?" from
+   * the response: suspended AND lifecycle is a live-ish state vs suspended over deleted.
+   */
+  lifecycle: TenantLifecycle;
   url: string | null;
   studio_release: string | null;
   /**
@@ -73,14 +85,16 @@ export interface TenantView {
 }
 
 export function tenantView(tenant: Tenant, domainSuffix: string): TenantView {
-  // Suspension is projected OVER the lifecycle, never stored in it. The API contract Joan builds
-  // against is unchanged (status may read "suspended"), while the tenant's real lifecycle survives
-  // underneath, so resume restores exactly where it left off.
+  // Suspension is projected OVER the lifecycle into `status`, never stored in the lifecycle column.
+  // The API contract Joan builds against is unchanged (status may read "suspended"), while
+  // `lifecycle` carries the real column so a deleted-but-suspended row is not mistaken for
+  // restorable (cp#281).
   const suspended = tenant.suspended_at !== null;
   return {
     id: tenant.id,
     slug: tenant.slug,
     status: suspended ? "suspended" : tenant.status,
+    lifecycle: tenant.status,
     // A URL is shown only once there is something behind it; a link that 5xx's is not honest. A
     // suspended tenant gets no URL either, whatever its lifecycle says.
     url: tenant.status === "live" && !suspended ? `https://${tenant.slug}${domainSuffix}` : null,
