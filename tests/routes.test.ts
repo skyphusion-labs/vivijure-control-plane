@@ -3466,6 +3466,42 @@ describe("LLM meter admin surfaces", () => {
     expect(await res.json()).toEqual({ ran: true });
   });
 
+  // PLATFORM action (cp#243), not a tenant read: a manual tick advances the watermark that later
+  // statements are built from. Exact action name so a renamed or hollowed call fails the test.
+  it("AUDITS a successful tick: who, and that it ran", async () => {
+    store.audit.length = 0;
+    const d = meterDeps(null, {
+      gatewayLogs: {
+        async list() {
+          return { rows: [], totalCount: 0 };
+        },
+        async probe() {
+          return { total: 0, oldest: null };
+        },
+      },
+    });
+    const res = await handle(req("/api/admin/llm-meter/run", { method: "POST", headers: admin() }), env(), ctx, d);
+    expect(res.status).toBe(200);
+    const actions = store.audit.map((a: { action: string }) => a.action);
+    expect(actions).toContain("meter.tick_llm");
+    expect(actions.some((a) => a.startsWith("tenant.read."))).toBe(false);
+    const row = store.audit.find((a: { action: string }) => a.action === "meter.tick_llm")!;
+    expect(row.target).toBe("llm_meter");
+    expect(JSON.parse(row.detail as string)).toEqual({ ran: true });
+  });
+
+  // The refusal is the outcome too: an operator who forced a tick that could not run leaves a row
+  // with the reason, not a hole that looks like they never asked.
+  it("AUDITS a refused tick with the reason, so a missing row is a real gap", async () => {
+    store.audit.length = 0;
+    const d = meterDeps(null, { gatewayLogs: undefined });
+    const res = await handle(req("/api/admin/llm-meter/run", { method: "POST", headers: admin() }), env(), ctx, d);
+    expect(res.status).toBe(503);
+    const row = store.audit.find((a: { action: string }) => a.action === "meter.tick_llm");
+    expect(row, "removing the audit call must turn this red").toBeDefined();
+    expect(JSON.parse(row!.detail as string)).toEqual({ ran: false, reason: "no_gateway_reader" });
+  });
+
   it("read REFUSES a missing tenant or bound rather than answering a partial query", async () => {
     const d = meterDeps({});
     for (const q of ["", "tenant=ten_abc", "tenant=ten_abc&start=2026-07-28T00:00:00Z"]) {
