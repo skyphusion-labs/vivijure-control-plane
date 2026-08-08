@@ -6,6 +6,9 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### Docs
+- **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+
 ### docs(modules): control-plane.md matches the shipped 15-entry catalog (cp#284)
 
 `docs/control-plane.md` still described the tenant module bridge as six endpoint-backed workers and
