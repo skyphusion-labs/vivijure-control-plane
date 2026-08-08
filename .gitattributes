@@ -69,6 +69,20 @@
 # Verified bidirectionally on cp#336, same commits both arms, attribute the only variable:
 # with it `rc=0` and zero conflict markers; with it removed `rc=1` and one marker.
 #
+# ASSERT THE ATTRIBUTE IS ARMED BEFORE MERGING. This supersedes reasoning about which class
+# a branch is in -- do not decide whether the flag is needed, MEASURE whether it took:
+#
+#     git check-attr merge -- CHANGELOG.md      # must print `union`. Refuse to merge if not.
+#
+# Run it on the CLEAN PRE-MERGE checkout (see the check-attr trap above; after a conflicted
+# merge it reports `union` about a state that did not exist when the driver was chosen).
+#
+# WHY THIS AND NOT "the flag is always required": it closes a SILENT-PASS state the flag has
+# on its own. A typo'd path in the flag file arms nothing, the merge runs with `unspecified`,
+# and it hands back a conflict **indistinguishable from a genuine one** -- which the operator
+# then hand-resolves, believing it. One command removes that entire failure mode, works
+# whatever the attribute's source, and fails loudly. (strummer, cp#340 review.)
+#
 # THE FLAG IS FOR THE DRAIN, NOT FOR VERIFYING. Two different checkouts, two answers:
 #   - DRAIN: working tree is the LEGACY PR BRANCH, which by definition predates this file.
 #     The attribute is absent exactly when it must apply, so it MUST be supplied. Measured
