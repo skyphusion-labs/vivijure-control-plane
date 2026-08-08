@@ -17,6 +17,9 @@ carried the door. No code change -- the catalog and provisioner already ship thi
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+- **CI vs deploy guard census (cp#260).** `docs/ci-deploy-guard-census.md` enumerates every executable
+  guard asset, where it runs, and the deliberate CI-only residual. Re-measured 2026-08-05 (pins now
+  on both paths; `pr-body-guard` added).
 ### chore(onboarding): remove dead scopeVerdict helper (cp#30)
 
 `scopeVerdict()` had no production caller after the cp#20 client fix (PR #29 deleted the only
