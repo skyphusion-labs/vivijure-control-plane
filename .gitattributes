@@ -3,10 +3,13 @@
 # disagreeing about the same line. Union keeps both sides instead of stopping the merge.
 #
 # GITHUB DOES NOT HONOUR THIS. It affects LOCAL merges only. Measured 2026-08-08 on this
-# repo, after the attribute was on main: 0 of 19 CONFLICTING PRs flipped to MERGEABLE, and
-# `gh pr update-branch` refused cp#332 and cp#350 with conflicts, both of which merge CLEAN
-# locally under this attribute. Positive control, same token and session: the same command
-# succeeded on cp#353, so the refusals are the server's answer and not a broken tool.
+# repo, after the attribute was on main: 0 of 19 CONFLICTING PRs flipped to MERGEABLE,
+# across TWO settled trigger-and-read cycles (GitHub computes mergeability lazily, so one
+# unchanged reading is indistinguishable from a stale one and was not trusted alone). The
+# real server-side merge agrees with the flag: `gh pr update-branch` refused cp#332 AND
+# cp#350, 2 of 2, both of which merge CLEAN locally under this attribute. Positive control,
+# same token and session: the same command SUCCEEDED on cp#353 and advanced its branch, so
+# the refusals are the server's answer and not a broken tool.
 #
 # WHY IT IS HERE ANYWAY. It is the drain mechanism for the legacy queue. Emptying those PRs
 # means `git fetch && git merge origin/main` in a clone and a push, and with this committed
@@ -18,6 +21,6 @@
 # covers only the backlog authored before them.
 #
 # REMOVE THIS ONCE THE LEGACY QUEUE IS DRAINED. After that nothing should be touching
-# CHANGELOG.md directly, so the attribute would silently change local merge behaviour for
-# no remaining reason.
+# CHANGELOG.md directly, so the attribute is pure hazard: it would silently change local
+# merge behaviour for no remaining reason.
 CHANGELOG.md merge=union
