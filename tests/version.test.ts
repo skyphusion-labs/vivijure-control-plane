@@ -96,43 +96,62 @@ describe("package-lock.json agrees with package.json (cp#252, ported from viviju
   });
 });
 
-// cf#114 (d): the version is only useful if something outside the deploy can READ it. Before this,
-// confirming which release the plane served meant fetching a changed asset and reading the patched
-// line off the wire, which is archaeology, not observability.
+// cf#114 (d) + cp#289: release is only useful if something outside the deploy can READ it, and
+// two deploys at one tag must still be distinguishable. Before cf#114, confirming which release
+// the plane served meant fetching a changed asset; before cp#289 the route answered release only.
 describe("GET /api/platform/version", () => {
-  it("serves CONTROL_PLANE_VERSION, unauthenticated", async () => {
+  const baseEnv = {
+    ASSETS: { fetch: async () => new Response("ui") },
+    CP_DB: {},
+    AUP_VERSION: "1",
+    AUP_URL: "https://example.com/aup",
+    CONTROL_PLANE_HOST: "studio.vivijure.com",
+  };
+
+  it("serves CONTROL_PLANE_VERSION unauthenticated, with null build when metadata is unbound", async () => {
     const { default: worker } = await import("../src/index.js");
     const res = await worker.fetch(
       new Request("https://studio.vivijure.com/api/platform/version"),
-      {
-        ASSETS: { fetch: async () => new Response("ui") },
-        CP_DB: {},
-        AUP_VERSION: "1",
-        AUP_URL: "https://example.com/aup",
-        CONTROL_PLANE_HOST: "studio.vivijure.com",
-      } as never,
+      baseEnv as never,
       { waitUntil: () => {}, passThroughOnException: () => {} } as never,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ control_plane_version: CONTROL_PLANE_VERSION });
+    expect(await res.json()).toEqual({
+      control_plane_version: CONTROL_PLANE_VERSION,
+      build: { id: null, timestamp: null, tag: null },
+    });
   });
 
-  it("reports the SAME version the lockstep gate pins, so it cannot drift from the tag", async () => {
+  it("reports the SAME release the lockstep gate pins, so it cannot drift from the tag", async () => {
     // A route that reported a hardcoded or separately-maintained string would be worse than no
     // route: it would answer "what is running" with a confident lie.
     const { default: worker } = await import("../src/index.js");
     const res = await worker.fetch(
       new Request("https://studio.vivijure.com/api/platform/version"),
-      {
-        ASSETS: { fetch: async () => new Response("ui") },
-        CP_DB: {},
-        AUP_VERSION: "1",
-        AUP_URL: "https://example.com/aup",
-        CONTROL_PLANE_HOST: "studio.vivijure.com",
-      } as never,
+      baseEnv as never,
       { waitUntil: () => {}, passThroughOnException: () => {} } as never,
     );
     const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
     expect(((await res.json()) as { control_plane_version: string }).control_plane_version).toBe(pkg.version);
+  });
+
+  // cp#289: the whole point of build is that two deploys at one release are distinguishable.
+  it("surfaces CF_VERSION_METADATA so two deploys at one tag differ (cp#289)", async () => {
+    const { default: worker } = await import("../src/index.js");
+    const meta = {
+      id: "ver_deploy_a",
+      timestamp: "2026-08-01T01:35:00.000Z",
+      tag: "v1.20.0",
+    };
+    const res = await worker.fetch(
+      new Request("https://studio.vivijure.com/api/platform/version"),
+      { ...baseEnv, CF_VERSION_METADATA: meta } as never,
+      { waitUntil: () => {}, passThroughOnException: () => {} } as never,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      control_plane_version: CONTROL_PLANE_VERSION,
+      build: { id: meta.id, timestamp: meta.timestamp, tag: meta.tag },
+    });
   });
 });
