@@ -28,17 +28,43 @@
 #     the opposite direction from a drain: there the tree git consults is main, which
 #     carries the attribute. Direction is the whole variable.
 #
-# THE RECIPE THAT ACTUALLY WORKS is repo-local and branch-independent, so it does not care
-# what the PR branch predates:
+# THE RECIPE THAT ACTUALLY WORKS supplies the attribute from OUTSIDE the branch, so it does
+# not care what the PR branch predates. Preferred form, used to drain cp#336 live:
+#
+#     printf 'CHANGELOG.md merge=union\n' > /tmp/drain-attrs
+#     git -c core.attributesFile=/tmp/drain-attrs merge origin/main
+#
+# This is per-invocation and mutates NO shared state. Prefer it: a clone here is a singleton
+# shared across parallel contexts, so appending to its `.git/info/attributes` changes merge
+# behaviour for every other session using that clone, and leaves residue if you forget to
+# restore it.
+#
+# The repo-local form also works and is fine in a clone you own alone:
 #
 #     echo 'CHANGELOG.md merge=union' >> "$(git rev-parse --git-common-dir)/info/attributes"
-#     git merge origin/main
+#
+# Use --git-common-dir, NOT --git-dir: inside a linked worktree --git-dir resolves to
+# .git/worktrees/<name>, whose info/attributes git does not consult, and the attribute
+# silently fails to arm (that failure is what made the first negative control meaningless --
+# both arms conflicted because the positive arm had never armed).
 #
 # Verified bidirectionally on cp#336, same commits both arms, attribute the only variable:
-# with it `rc=0` and zero conflict markers; with it removed `rc=1` and one marker. Use
-# --git-common-dir, not --git-dir: inside a linked worktree --git-dir resolves to
-# .git/worktrees/<name>, whose info/attributes git does not consult, and the attribute
-# silently fails to arm (that failure is what made the first negative control meaningless).
+# with it `rc=0` and zero conflict markers; with it removed `rc=1` and one marker.
+#
+# UNION IS A DUMB DRIVER -- rc=0 IS NOT THE CHECK. It keeps both sides unconditionally and
+# cannot tell a correct append from a structural mistake, so a conflict-free result can still
+# be wrong. After any union merge of this file, verify: exactly one `## Unreleased` anchor, no
+# conflict markers, no entry the MERGE duplicated (pre-existing duplicates are not yours), and
+# nothing dropped from either side. On cp#336 the honest check was arithmetic: 2872 + 8 = 2880
+# lines, and `git diff HEAD^1 HEAD -- CHANGELOG.md` showed exactly main's one new entry.
+#
+# DRAIN LOCALLY RATHER THAN `gh pr update-branch`, EVEN WHERE UPDATE-BRANCH WOULD SUCCEED.
+# Measured on cp#336: pushing a real merge commit left both prior approvals STALE, which is
+# honest and forces a fresh review. `gh pr update-branch` instead CARRIES the existing review's
+# commit_id forward onto the new merge commit, so the PR reports approved-at-head for a merge
+# no reviewer ever saw (that is how vivijure-local#305 came to look landable). A commit_id
+# comparison cannot detect it: the equality it tests is exactly what the carry-forward produces.
+# Compare the review's submitted_at against the head commit's creation time instead.
 #
 # SO WHY IS THIS FILE STILL HERE. One narrow live effect: cp#358's changelog-entry check
 # accepts EITHER a CHANGELOG.md touch OR a changelog.d/ fragment during the migration
