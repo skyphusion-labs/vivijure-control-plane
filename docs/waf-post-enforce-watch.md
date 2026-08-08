@@ -48,14 +48,43 @@ contributing rule in the table below and is expected to be busy:
 One extra filter on a query the operator already runs, and it converts an unfalsifiable zero into
 a measured one.
 
+**AND THE SIBLING CONTROL IS NOT SUFFICIENT ON ITS OWN. Read this before trusting it.**
+
+It detects every failure that drives BOTH queries to zero -- wrong zone, expired token, renamed
+schema field, wrong time window, rotated ruleset id. **It cannot detect a rotation of
+`6179ae15870a4bb7b2d480d4843b323c` itself**, which is the one identifier the entire signal rests on:
+that filter would match nothing and return zero while `920274` stayed in the thousands, which is
+row 1 of the table above -- *"healthy, the zero is a measurement"*. **Not caught, and actively
+mis-reported as healthy.**
+
+The reason is general and worth stating: **a sibling-volume comparison tests everything the two
+queries SHARE and cannot test the field that DISTINGUISHES them.** The threshold has the same hole
+-- a raise above 40 also reads healthy.
+
+**So the sibling control is necessary and not sufficient. Pair it with a POSITIVE EXISTENCE PROBE,
+on the same schedule:**
+
+> assert that rule id `6179ae15870a4bb7b2d480d4843b323c` still resolves inside ruleset
+> `4814384a9e5d4991b9815dcfc25d2f1f`, and that its score threshold is still 40.
+
+That probe has a real **not-found** result, which is exactly the *"I could not look"* state this
+document rightly says the raw signal lacks. A volume comparison can never supply it for its own
+identifier.
+
+**Runnable form matters here.** The filter above takes a 32-hex `ruleId`; `920274` is an OWASP rule
+NUMBER and this document does not give its id form. Resolve and record `920274`'s `ruleId` before
+relying on the control -- **an improvised filter that matches nothing returns zero, which the table
+reads as instrument-broken, so the control fails closed on its own under-specification.** That is
+the safe direction and still needs fixing.
+
 ### The three identifiers are Cloudflare's, and they move without telling us
 
 Rule id `6179ae15870a4bb7b2d480d4843b323c`, ruleset `4814384a9e5d4991b9815dcfc25d2f1f` and the
 score threshold **40** are **observed values, not constants we control** -- recorded here as read
 during the cp#14 enforce-flip window (2026-08-05). They are not re-verified by this document and
-nothing notifies us if they change; a rotated id is precisely the failure the contributing-rule
-control above exists to catch. Re-read them from the live zone when the control ever reports both
-zero.
+nothing notifies us if they change. **Do not read the contributing-rule control as covering a
+rotation of the 949110 id itself -- it does not, per the section above; the existence probe is what
+covers that.** Re-read all three from the live zone when either control fires.
 
 ### Surfaces that score in normal traffic
 
