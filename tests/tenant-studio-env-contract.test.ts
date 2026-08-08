@@ -68,9 +68,12 @@ function recordingDeps() {
     runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),
+      mintAigToken: vi.fn(async () => ({ id: "aig-1", value: "AIG_SECRET" })),
       revoke: vi.fn(async () => undefined),
       revokeByName: vi.fn(async () => false),
     },
+    // Default: no gateway named (cf#98). Tests that want the studio GATEWAY_ID pair set this.
+    aiGatewayId: null as string | null,
     bundle: {
       fetch: vi.fn(async () => ({
         mainModule: "i.js",
@@ -187,6 +190,46 @@ describe("the tenant studio platform-env contract (#116)", () => {
 
   it("constructs the S3 endpoint from the account id rather than minting or storing one", () => {
     expect(r2S3Endpoint("abc123")).toBe("https://abc123.r2.cloudflarestorage.com");
+  });
+
+  // cf#98: planner/chat need env.AI on the STUDIO, not only on plan-enhance modules.
+  it("binds Workers AI onto the studio so planner/chat are not a 500 (cf#98)", async () => {
+    const bindings = await provisionAndCaptureStudioBindings();
+    const ai = bindings.find((b) => b.name === "AI");
+    expect(ai, "studio missing AI binding -- cf#98").toBeTruthy();
+    expect(ai!.type).toBe("ai");
+  });
+
+  it("binds GATEWAY_ID + CF_AIG_TOKEN on the studio when the plane names a gateway (cf#98)", async () => {
+    const { deps, store, uploads } = recordingDeps();
+    (deps as { aiGatewayId: string | null }).aiGatewayId = "vivijure-hosted";
+    await store.createAccount("acct_1", "a@b.com");
+    const tenant = await store.createTenant("ten_1", "hero", "acct_1", "pending");
+    const job = await store.createProvisionJob("job_1", tenant.id, "provision", TEST_PROVISION_FACTS);
+    const res = await runProvisionJob(deps, job.id, tenant, "rpa_keyA");
+    expect(res).toMatchObject({ ok: true });
+    const studio = uploads.find((u) => u.scriptName === "tenant-hero-studio");
+    expect(studio).toBeTruthy();
+    const names = new Set(studio!.bindings.map((b) => b.name));
+    expect(names.has("AI")).toBe(true);
+    expect(names.has("GATEWAY_ID")).toBe(true);
+    expect(names.has("CF_AIG_TOKEN")).toBe(true);
+    expect(studio!.bindings.find((b) => b.name === "GATEWAY_ID")).toMatchObject({
+      type: "plain_text",
+      text: "vivijure-hosted",
+    });
+    // Credential must not land as plain_text (dashboard/CLI readable).
+    expect(studio!.bindings.find((b) => b.name === "CF_AIG_TOKEN")).toMatchObject({
+      type: "secret_text",
+    });
+  });
+
+  it("does NOT half-bind the gateway pair when the plane names no gateway", async () => {
+    // both-or-neither: AI alone is fine (Workers AI local); GATEWAY_ID without a token is a trap.
+    const names = new Set((await provisionAndCaptureStudioBindings()).map((b) => b.name));
+    expect(names.has("AI")).toBe(true);
+    expect(names.has("GATEWAY_ID")).toBe(false);
+    expect(names.has("CF_AIG_TOKEN")).toBe(false);
   });
 });
 
