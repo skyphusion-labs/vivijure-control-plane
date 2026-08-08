@@ -162,32 +162,125 @@ const AUP_TEXT = "No CSAM. Ever. This is the acceptable use policy text.";
 let store: MemoryStore;
 let sent: { to: string; subject: string; text: string }[];
 let deps: ControlPlaneDeps;
-let wiring: {
-  start: ReturnType<typeof vi.fn>;
-  installInvokeKey: ReturnType<typeof vi.fn>;
-  teardown: ReturnType<typeof vi.fn>;
-  preflightUpgrade: ReturnType<typeof vi.fn>;
-  upgradeModules: ReturnType<typeof vi.fn>;
-  refreshStudioBindings: ReturnType<typeof vi.fn>;
-  setVideoFinishTierState: ReturnType<typeof vi.fn>;
-  setAbuseReportUrl: ReturnType<typeof vi.fn>;
-  setStorageQuota: ReturnType<typeof vi.fn>;
-  detachStudioBinding: ReturnType<typeof vi.fn>;
-  preflightReprovisionRunPod: ReturnType<typeof vi.fn>;
-  reprovisionRunPod: ReturnType<typeof vi.fn>;
-  preflightStudioUpgrade: ReturnType<typeof vi.fn>;
-  upgradeStudio: ReturnType<typeof vi.fn>;
-  // cp#270. Declared on the TYPE, not only assigned in the literal, for the reason the comment
-  // at the assignment already gives about the other pair: a member that exists only in a test
-  // body is invisible to the compiler at every other call site.
-  offersSharedTier: ReturnType<typeof vi.fn>;
-  sharedPoolInvokeKey: ReturnType<typeof vi.fn>;
-  // cp#301, declared here for the same reason as the pair above: this double is a hand-written
-  // shape rather than a ProvisionerWiring, so widening the real interface cannot break it at the
-  // gate. Adding currentRelease to the seam took 8 route tests red at RUNTIME with
-  // "currentRelease is not a function", which is the compiler's job arriving as a test failure.
-  currentRelease: ReturnType<typeof vi.fn>;
+
+/**
+ * Full provisioner double for route tests (cp#307).
+ *
+ * Mapped over `keyof ProvisionerWiring` so widening the real interface fails HERE at typecheck,
+ * with the member name, instead of as N runtime reds saying "X is not a function" across unrelated
+ * test names. The previous hand-written object of `vi.fn()` members was structurally typed, so
+ * adding `currentRelease` to the seam produced zero tsc errors and eight route failures at runtime.
+ *
+ * Method members are `ReturnType<typeof vi.fn>` rather than the precise ProvisionerWiring signatures
+ * so per-test reassignment (`wiring.teardown = vi.fn(...)`) and mock.calls casts keep working.
+ * Completeness is the gate this type enforces; call-shape fidelity lives in the defaults below and
+ * in the production wiring test (tests/provisioner-wiring.test.ts).
+ */
+type MockFn = ReturnType<typeof vi.fn>;
+type WiringDouble = {
+  [K in keyof ProvisionerWiring]: ProvisionerWiring[K] extends (...args: never[]) => unknown
+    ? MockFn
+    : {
+        [P in keyof ProvisionerWiring[K]]: ProvisionerWiring[K][P] extends (...args: never[]) => unknown
+          ? MockFn
+          : ProvisionerWiring[K][P];
+      };
 };
+
+function makeWiring(): WiringDouble {
+  // Assign through a local typed as WiringDouble so a missing key fails at this return, not later.
+  const double: WiringDouble = {
+    start: vi.fn(async () => {}),
+    // A queued provision job IS driven by the poll route; without resume the route TypeErrors.
+    resume: vi.fn(async () => {}),
+    installInvokeKey: vi.fn(async () => ({
+      verified: ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale"],
+      unverified: [],
+      unconfirmed: [],
+      notProbed: [],
+      attempts: 1,
+      elapsedMs: 12,
+    })),
+    // cp#270: default plane offers NO shared tier, so pre-pooling cases keep their meaning
+    // (notably "a provision with no RunPod key is refused 400"). Pooled cases override both.
+    offersSharedTier: vi.fn(() => false),
+    sharedPoolInvokeKey: vi.fn(() => null),
+    // cp#301: pin a provision job records at creation. Matches TEST_PROVISION_FACTS.toRelease.
+    currentRelease: vi.fn(() => "v1.0.0"),
+    moduleReadiness: vi.fn(async () => []),
+    apiToken: {
+      read: vi.fn(async () => ({
+        configured: false,
+        name: null,
+        created_at: null,
+        last_rotated_at: null,
+      })),
+      issue: vi.fn(async () => ({ token: "unused", name: "unused", created_at: "unused" })),
+      revoke: vi.fn(async () => {}),
+    },
+    r2Usage: vi.fn(async () => ({ payloadBytes: 0, objectCount: 0 })),
+    // Reclaim reaps through this. Default is a clean teardown; failure cases override it.
+    teardown: vi.fn(async () => ({ ok: true, failures: [], absent: [] })),
+    // cp#112: default is a clean binding refresh; refusal / short-readback cases override.
+    refreshStudioBindings: vi.fn(async () => ({ ok: true, result: CLEAN_REFRESH })),
+    // cp#139: studio bytes move. On the type so a stub assigned only in a test body cannot hide.
+    preflightStudioUpgrade: vi.fn(async () => ({
+      ok: true,
+      context: {
+        script: "tenant-hero-studio",
+        release: "v1.9.0",
+        fromRelease: "v1.6.0",
+        bundle: {},
+        studioApiToken: "tok",
+        hostBefore: null,
+      },
+    })),
+    upgradeStudio: vi.fn(async () => ({ ok: true, result: {} })),
+    // cf#103: upgrade route preflights through the seam, then hands context to the runner.
+    preflightUpgrade: vi.fn(async () => ({
+      ok: true,
+      context: {
+        script: "tenant-hero-studio",
+        endpoints: [],
+        studioApiToken: "tok",
+        release: "v1.1.0",
+        bundles: new Map(),
+      },
+    })),
+    upgradeModules: vi.fn(async () => {}),
+    // cp#137: RunPod rebuild. Default is a passing preflight and a clean rebuild.
+    preflightReprovisionRunPod: vi.fn(async () => ({
+      ok: true,
+      context: {
+        script: "tenant-hero-studio",
+        studioApiToken: "tok",
+        bucket: "vivijure-tenant-hero",
+        modulesRelease: "v1.6.0",
+        bundles: new Map(),
+        recorded: [],
+      },
+    })),
+    reprovisionRunPod: vi.fn(async () => CLEAN_REBUILD),
+    // cp#136 / cp#164 / cp#183: clean defaults; refusal cases override per test.
+    setVideoFinishTierState: vi.fn(async () => ({ ok: true, result: CLEAN_TIER_STATE })),
+    setAbuseReportUrl: vi.fn(async () => ({ ok: true, result: CLEAN_ABUSE_URL })),
+    setStorageQuota: vi.fn(async () => ({ ok: true, result: CLEAN_STORAGE_QUOTA })),
+    detachStudioBinding: vi.fn(async () => ({ ok: true, result: CLEAN_DETACH })),
+    smokeClient: {
+      putCanonicalBundle: vi.fn(async () => ({ status: 200, text: "{}" })),
+      submitKeyframeRender: vi.fn(async () => ({ status: 200, text: "{}" })),
+      pollRender: vi.fn(async () => ({ status: 200, text: "{}" })),
+      fetchArtifact: vi.fn(async () => ({
+        status: 200,
+        bytes: null,
+        contentType: "application/octet-stream",
+      })),
+    },
+  };
+  return double;
+}
+
+let wiring: WiringDouble;
 
 const env = (over: Partial<ControlPlaneEnv> = {}): ControlPlaneEnv =>
   ({
@@ -222,89 +315,15 @@ beforeEach(() => {
   pending = [];
   // The wiring STUB records the handoff; it never executes a job. What the routes prove is that
   // the runner is LAUNCHED with the right job/tenant/key; the step machine itself is
-  // provisioner.test.ts + the live e2e.
-  // installInvokeKey now returns the cf#114 module-readiness outcome; the route reads it, so a
-  // stub that returns undefined is not a valid stand-in for the production contract.
-  wiring = {
-    start: vi.fn(async () => {}),
-    installInvokeKey: vi.fn(async () => ({
-      verified: ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale"],
-      unverified: [],
-      unconfirmed: [],
-      attempts: 1,
-      elapsedMs: 12,
-    })),
-    // Reclaim reaps through this. Default is a clean teardown; the failure cases override it.
-    teardown: vi.fn(async () => ({ ok: true, failures: [], absent: [] })),
-    // cp#112: default is a clean binding refresh; the refusal and short-readback cases override it.
-    refreshStudioBindings: vi.fn(async () => ({ ok: true, result: CLEAN_REFRESH })),
-    // cp#139: the studio bytes move. Declared here rather than only inside its describe block so
-    // the wiring literal's TYPE carries both members -- a stub assigned only in a test body
-    // type-checks against an object that never had the property, which is a tests-tsconfig error
-    // that `vitest run` alone would never surface.
-    preflightStudioUpgrade: vi.fn(async () => ({
-      ok: true,
-      context: {
-        script: "tenant-hero-studio",
-        release: "v1.9.0",
-        fromRelease: "v1.6.0",
-        bundle: {},
-        studioApiToken: "tok",
-        hostBefore: null,
-      },
-    })),
-    upgradeStudio: vi.fn(async () => ({ ok: true, result: {} })),
-    // cf#103: the upgrade route preflights through the seam, then hands the context to the runner.
-    // Default is a PASSING preflight; the refusal cases override it.
-    preflightUpgrade: vi.fn(async () => ({
-      ok: true,
-      context: {
-        script: "tenant-hero-studio",
-        endpoints: [],
-        studioApiToken: "tok",
-        release: "v1.1.0",
-        bundles: new Map(),
-      },
-    })),
-    upgradeModules: vi.fn(async () => {}),
-    // cp#137: the RunPod rebuild. Default is a PASSING preflight and a clean rebuild; the refusal
-    // and failure cases override them.
-    preflightReprovisionRunPod: vi.fn(async () => ({
-      ok: true,
-      context: {
-        script: "tenant-hero-studio",
-        studioApiToken: "tok",
-        bucket: "vivijure-tenant-hero",
-        modulesRelease: "v1.6.0",
-        bundles: new Map(),
-        recorded: [],
-      },
-    })),
-    reprovisionRunPod: vi.fn(async () => CLEAN_REBUILD),
-    // cp#136: default is a clean declaration; the refusal and short-readback cases override it.
-    setVideoFinishTierState: vi.fn(async () => ({ ok: true, result: CLEAN_TIER_STATE })),
-    // cp#164: default is a clean converge; the refusal and reader-floor cases override it.
-    setAbuseReportUrl: vi.fn(async () => ({ ok: true, result: CLEAN_ABUSE_URL })),
-    // cp#183: default is a clean converge that the STUDIO confirmed; the 202 and strand cases override.
-    setStorageQuota: vi.fn(async () => ({ ok: true, result: CLEAN_STORAGE_QUOTA })),
-    // cp#136 criterion 3: default is a clean detach; the refusal and short-readback cases override.
-    detachStudioBinding: vi.fn(async () => ({ ok: true, result: CLEAN_DETACH })),
-    // cp#270: the DEFAULT plane offers NO shared tier, which keeps every pre-existing route case
-    // meaning exactly what it meant before pooling -- notably "a provision with no RunPod key is
-    // refused 400". The pooled cases override both of these, and a test that forgets to is
-    // asserting the dedicated behaviour, which is the safe direction to default in.
-    offersSharedTier: vi.fn(() => false),
-    sharedPoolInvokeKey: vi.fn(() => null),
-    // cp#301: the pin a provision job records at creation. Matches TEST_PROVISION_FACTS.toRelease so
-    // a route-created job and a hand-created one describe the same plane.
-    currentRelease: vi.fn(() => "v1.0.0"),
-  };
+  // provisioner.test.ts + the live e2e. Built via makeWiring so a seam widen fails typecheck (cp#307).
+  wiring = makeWiring();
   deps = {
     store,
     mailer: { send: async (to, subject, text) => void sent.push({ to, subject, text }) },
     // The AUP gate now fetches and hashes the SERVED bytes, so the fake serves them.
     fetch: vi.fn(async () => new Response(AUP_TEXT)) as unknown as typeof fetch,
     now: () => 1_750_000_000_000,
+    // Cast is only the mock-vs-signature gap; completeness is enforced by WiringDouble (cp#307).
     provisioner: wiring as unknown as ProvisionerWiring,
   };
 });
@@ -941,6 +960,9 @@ describe("POST /api/tenant/provision", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("reclaim_teardown_failed");
     expect(body.failures).toEqual([{ resource: "r2_bucket", error: "bucket is not empty" }]);
+    // GENUINELY STUCK (cp#304): no self-serve move, so the sentence must say contact us, not try again.
+    expect(String(body.message)).toMatch(/contact us/i);
+    expect(String(body.message)).not.toMatch(/try again/i);
     // THE ASSERTION THIS TEST EXISTS FOR: reclaimSlug blanks the resource columns, so completing
     // here would erase the only record of what we failed to delete. The row keeps its ids.
     const after = await store.getTenantById("ten_halfbuilt");
@@ -1028,9 +1050,7 @@ describe("POST /api/tenant/provision", () => {
       // release than the schema it migrated. from_release stays NULL: a provision does not move a
       // tenant FROM anything, so there is no earlier release to record.
       const s = await accepted();
-      // A queued provision job IS driven by this poll, and the wiring stub has no resume, so arm it
-      // or the route 500s on a TypeError instead of answering.
-      (wiring as unknown as { resume: unknown }).resume = vi.fn(async () => {});
+      // resume lives on the typed double (cp#307); default is a no-op so the poll can answer.
       await store.createTenant("ten_dd0001", "other", s.account.id, "provisioning");
       await store.createProvisionJob("job_p1", "ten_dd0001", "provision", TEST_PROVISION_FACTS);
 
@@ -1067,8 +1087,9 @@ describe("POST /api/tenant/provision", () => {
 // exactly this reason; the poll reached around it.
 describe("GET /api/tenant/:id/job -- drives PROVISION jobs only", () => {
   const armResume = () => {
+    // resume is already on the typed double; re-arm with a fresh mock so call counts are local.
     const resume = vi.fn(async () => {});
-    (wiring as unknown as { resume: unknown }).resume = resume;
+    wiring.resume = resume;
     return resume;
   };
 
