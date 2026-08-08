@@ -61,7 +61,11 @@ const pinned = (key: SatelliteKey) => ({
 export const PROVISION_PLAN: PlannedEndpoint[] = [
   {
     ...pinned("backend"),
-    label: "Render (keyframes, video, cast LoRA training)",
+    // cp#303: cast LoRA training does NOT run on this endpoint. Training is fail-closed on its
+    // own satellite (`vivijure-wan-train` / RUNPOD_WAN_TRAIN_ENDPOINT_ID) and never falls back
+    // here. A training clause in this label was a tenant-visible lie and invited the wrong
+    // inference that the shared pool already covers training because it covers `backend`.
+    label: "Render (keyframes, video)",
     maxWorkers: 2,
     gpuTypeIds: BACKEND_GPUS,
     endpointVar: "RUNPOD_ENDPOINT_ID",

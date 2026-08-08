@@ -635,11 +635,15 @@ describe("continueProvisionJob", () => {
 
     // EACH REFUSAL NAMES ITS OWN CAUSE. Before this change all four states below produced ONE
     // message, which named a RunPod key regardless of whether the tenant ever had one.
-    it("E4 dedicated: the key-A message, VERBATIM and unchanged", async () => {
+    //
+    // THE DESTROY CLAUSE (cp#304) is the load-bearing half: re-provisioning the same name is
+    // reclaim (teardown + blank), not a resume. The old word "continue" was the lie.
+    it("E4 dedicated: key-A + destroy, VERBATIM (cp#304)", async () => {
       const { message } = await resume(E.E4, "dedicated");
       expect(message).toBe(
         "provisioning was interrupted before the studio was uploaded, and the RunPod key needed to " +
-          "finish it is never stored; start provisioning again to continue",
+          "finish it is never stored; this cannot be continued. POST /api/tenant/provision with " +
+          "the same name again destroys the partial environment and starts over from scratch",
       );
     });
 
@@ -887,7 +891,9 @@ describe("continueProvisionJob", () => {
     const res = await continueProvisionJob(deps(store), job.id, t, stepsDone, fakeClock(0), 15_000);
 
     expect(res).toMatchObject({ ok: false });
-    expect((res as { message: string }).message).toMatch(/start provisioning again/);
+    // DESTROY, not resume (cp#304): the instruction must not promise a continue.
+    expect((res as { message: string }).message).toMatch(/destroys the partial environment/);
+    expect((res as { message: string }).message).not.toMatch(/to continue/);
     expect(store.jobs.get("job_1")!.status).toBe("failed");
   });
 
