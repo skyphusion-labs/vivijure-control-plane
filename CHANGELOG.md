@@ -9,6 +9,14 @@ is a separate product on a separate cadence).
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+### fix(docs): RunPod proxy census comment said 23 of 26 modules; measured 14 (cp#298)
+
+`src/runpod-proxy-route-match.ts` claimed "23 of 26 modules" referenced `api.runpod.ai` at
+vivijure-cf@d26db49. Re-measurement at that sha (and at b295309) is **14**, matching the census
+already written in `src/runpod-proxy.ts` (8 public slug + 6 `RUNPOD_ENDPOINT_ID`). The count is
+not load-bearing for routing, but a wrong measured figure in a source comment becomes scoping
+evidence. Comment corrected; `tests/runpod-proxy-census.test.ts` pins the two comments to the
+reproducible split so 23 cannot re-land.
 ### test(routes): type the provisioner double as every Wiring member (cp#307)
 
 The route suite's provisioner seam double was a hand-written object of `vi.fn()` members,
