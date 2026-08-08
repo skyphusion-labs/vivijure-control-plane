@@ -984,6 +984,11 @@ credentials and would have to be re-run to see anything.
 Per module it reports `status`, `ok`, `credentials`, `records_runpod_jobs`, and `job_log`, plus the
 tenant `modules_release` so a whole-fleet absence reads as the stale release pin it usually is.
 
+**Two samples, short gap (cp#254).** Right after a module upload, `/ready` can be served by a stale
+isolate still on the previous version. The route probes twice (~250ms apart) and reports the second
+sample. That is not the multi-second key-install wait; it only reduces the post-upgrade race. A
+reading taken within a couple of minutes of an upgrade can still be mid-convergence across isolates.
+
 `job_log` has THREE values and collapsing them re-creates the defect:
 
 | value | meaning |

@@ -1057,13 +1057,16 @@ export interface TenantModuleObservation {
 }
 
 /**
- * Probe every catalog module for one tenant, once, and report what each said.
+ * Short pause between the two /ready samples on the operator module-readiness path (cp#254).
  *
- * READ-ONLY and free: /ready costs no GPU, spends nothing, and needs no tenant credential. No retry
- * and no deadline -- this is an operator asking a question, not a gate deciding a promotion, and a
- * retry loop here would blur "answered slowly" into "answered".
+ * Right after a module upload, GET /ready can be answered by a stale isolate still serving the
+ * previous version; a single sample is then indistinguishable from a settled answer. Two samples
+ * with a brief gap reduce that race without turning this into the multi-second key-install wait.
+ * Kept short so the route stays a cheap question.
  */
-export async function probeTenantModuleReadiness(
+export const MODULE_READINESS_PROBE_GAP_MS = 250;
+
+async function observeTenantModulesOnce(
   deps: TenantModuleDeps,
   tenantId: string,
 ): Promise<TenantModuleObservation[]> {
@@ -1109,6 +1112,26 @@ export async function probeTenantModuleReadiness(
       };
     }),
   );
+}
+
+/**
+ * Probe every catalog module for one tenant and report what each said.
+ *
+ * READ-ONLY and free: /ready costs no GPU, spends nothing, and needs no tenant credential. This is
+ * an operator asking a question, not a gate deciding a promotion -- so it is NOT the multi-second
+ * wait that `awaitTenantModulesReady` runs. It does sample TWICE with a short gap (cp#254), because
+ * a single sample taken right after an upgrade can be a stale isolate; the second sample is the
+ * answer we report. Injectable `timing` keeps the gap testable without burning real wall clock.
+ */
+export async function probeTenantModuleReadiness(
+  deps: TenantModuleDeps,
+  tenantId: string,
+  timing: ProbeTiming = realTiming,
+  gapMs: number = MODULE_READINESS_PROBE_GAP_MS,
+): Promise<TenantModuleObservation[]> {
+  await observeTenantModulesOnce(deps, tenantId);
+  await timing.sleep(gapMs);
+  return await observeTenantModulesOnce(deps, tenantId);
 }
 
 /**

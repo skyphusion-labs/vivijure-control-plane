@@ -17,6 +17,13 @@ carried the door. No code change -- the catalog and provisioner already ship thi
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+### fix(admin): module-readiness double-samples /ready after upgrades (cp#254)
+
+`GET /api/admin/tenants/:id/module-readiness` was a single-shot probe. Right after a module upload,
+`/ready` can be answered by a stale isolate, so one sample is not evidence either way.
+`probeTenantModuleReadiness` now samples twice with a short (~250ms) gap and reports the second
+sample. Not the multi-second key-install wait; only a cheap second look. Injectable timing keeps the
+gap testable.
 ### fix(meter): audit the manual tick (and keep settlement audited) (cp#243)
 
 `POST /api/admin/llm-meter/run` was gated `meter:operate` but wrote no `admin_audit` row. A forced

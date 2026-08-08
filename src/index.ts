@@ -2107,9 +2107,9 @@ async function adminRoutes(
   // RunPod job is unrecoverable the moment it ends: RunPod cannot enumerate jobs, so there is no
   // backfill and no second chance to look.
   //
-  // ONE PASS, NO RETRY. This is a question, not a promotion gate; the key-install probe is the one
-  // that waits, and it waits on credentials rather than on telemetry. Blurring the two would let a
-  // module that answered late read exactly like one that answered.
+  // TWO SHORT SAMPLES, NOT A WAIT (cp#254). This is still a question, not a promotion gate; the
+  // key-install probe is the one that waits on credentials. The double sample only buys a brief gap
+  // so a post-upgrade stale isolate is less likely to be the only reading.
   const moduleReadiness = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/module-readiness$/.exec(path);
   if (request.method === "GET" && moduleReadiness) {
     if (!deps.provisioner) return err("provisioner_unconfigured", 503);
