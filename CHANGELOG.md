@@ -9,6 +9,12 @@ is a separate product on a separate cadence).
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+### fix(ci): gate commit messages against issue-linking auto-close keywords (cp#265)
+
+The PR-body guard (#263) covers the surface a human reads. On squash merge the squash body is the
+**commit message**, not the PR body, and that is what GitHub auto-closes from. Enumerate every
+commit on the PR and run the same matcher (`scripts/pr-body-guard.py`) over each message. Zero
+commits in range is exit 2, never a vacuous pass. Self-test pins the caller.
 ### fix(provision): backend plan label no longer promises cast LoRA training (cp#303)
 
 `PROVISION_PLAN`'s backend entry was labelled "Render (keyframes, video, cast LoRA training)".
