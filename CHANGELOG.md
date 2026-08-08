@@ -11,6 +11,14 @@ is a separate product on a separate cadence).
 
 ### Fixed
 
+- **ci(release): PR CI validates the R2 mirror the provisioner reads, not only the GitHub release
+  (cp#319).** `check-release-modules.py` against the GitHub release ran on every PR; the R2 mirror
+  path (the one `module-bundle-r2.ts` actually fetches, with no fallback) ran only at deploy. A
+  release that was perfect on GitHub but never mirrored therefore passed PR CI and failed at the
+  most expensive point. Same-repo PRs now pass `--mirror-bucket` with the same
+  `STUDIO_RELEASES_R2_TOKEN` deploy uses; forks keep the credential-free GitHub half and a
+  `::notice::` names that the mirror was not checked. `workflow-guards.test.py` pins the shape so
+  the two sources cannot diverge again without a structural red.
 - **test(aig): credential-boundary guards derive their population from `TENANT_MODULE_CATALOG`
   (cp#314).** `tenant-aig-token.test.ts` looped a hardcoded list of endpoint-backed modules when
   asserting the AI Gateway trio never leaks. When `finish-rife` joined the catalog the guard stayed
