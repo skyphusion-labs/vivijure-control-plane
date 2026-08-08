@@ -19,6 +19,9 @@ carried the door. No code change -- the catalog and provisioner already ship thi
 - **RunPod terms / metered-resale research (cp#287).** Landed Ernst's public-document read at
   `docs/legal/runpod-terms-resale.md` (not legal advice). Consent tripwire, DPA, AUP items for tenants.
 
+- **CI vs deploy guard census (cp#260).** `docs/ci-deploy-guard-census.md` enumerates every executable
+  guard asset, where it runs, and the deliberate CI-only residual. Re-measured 2026-08-05 (pins now
+  on both paths; `pr-body-guard` added).
 ### chore(onboarding): remove dead scopeVerdict helper (cp#30)
 
 `scopeVerdict()` had no production caller after the cp#20 client fix (PR #29 deleted the only
