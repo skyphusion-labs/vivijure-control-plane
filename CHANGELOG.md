@@ -9,6 +9,12 @@ is a separate product on a separate cadence).
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+### test(runpod-proxy): pin plane-refusal header wire name (cf#403)
+
+`PLANE_REFUSAL_HEADER` is the same string literal in this repo and vivijure-cf with no shared
+package. Both sides now pin `"x-vivijure-plane-refusal"` in
+`tests/plane-refusal-header-contract.test.ts` so a one-sided rename fails CI before it restores the
+forever-pend cf#398 / cp#288 closed. Docs: `docs/deploy.md`.
 ### feat(provision): bind AI + GATEWAY_ID on the tenant studio (cf#98)
 
 Hosted planner / chat / enhance need `env.AI` and a resolvable `GATEWAY_ID` on the **studio** worker,
