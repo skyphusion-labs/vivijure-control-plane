@@ -85,7 +85,8 @@
 #
 # THE FLAG IS FOR THE DRAIN, NOT FOR VERIFYING. Two different checkouts, two answers:
 #   - DRAIN: working tree is the LEGACY PR BRANCH, which by definition predates this file.
-#     The attribute is absent exactly when it must apply, so it MUST be supplied. Measured
+#     The attribute is absent exactly when it must apply, so it MUST be supplied. MEASURED,
+#     not reasoned -- see the assertion above; do not conclude it from the branch's age. Measured
 #     on cp#336, same commits both arms: supplied -> rc=0, 0 markers; removed -> rc=1, 1
 #     marker. (`git checkout origin/main -- .gitattributes` first does not work: it leaves a
 #     staged change and `git merge` refuses to start.)
@@ -127,11 +128,17 @@
 # comparison cannot detect it: the equality it tests is exactly what the carry-forward produces.
 # Compare the review's submitted_at against the head commit's creation time instead.
 #
-# SO WHY IS THIS FILE STILL HERE. One narrow live effect: cp#358's changelog-entry check
-# accepts EITHER a CHANGELOG.md touch OR a changelog.d/ fragment during the migration
-# window, so a branch cut from main AFTER 2026-08-07 may still edit CHANGELOG.md directly.
-# Those branches DO carry this attribute, so union applies to them. That population is the
-# only thing it serves.
+# SO WHY IS THIS FILE STILL HERE. The population it actually serves is RE-DRAINS, which is
+# not the one this comment first named. Measured on the open queue: 6 of 8 PRs still edit
+# CHANGELOG.md directly, and every one carrying this attribute carries it FROM A PRIOR
+# DRAIN -- not from having been cut after 2026-08-07. Once a branch is drained it carries
+# the file, so its SECOND drain gets union with no flag. This queue hit that case twice
+# (cp#347 ^1 c06b5232 and cp#332 ^1 9d80fa5b both carry it; the un-drained cp#351 and
+# cp#355 do not).
+#
+# The first version of this paragraph named "branches cut after 2026-08-07" instead. That
+# was TRUE and about the wrong population -- which is precisely the defect class this file
+# exists to correct, committed inside the correction. Found by strummer reviewing it.
 #
 # NOT THE REAL FIX. cp#358's changelog.d/ fragments are. They cover every NEW PR; this
 # covers neither the backlog nor anything past the migration window.
