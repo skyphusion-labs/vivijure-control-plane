@@ -1,0 +1,6 @@
+# CHANGELOG.md is APPEND-ONLY: every PR adds its own `### ...` entry under the shared
+# `## Unreleased` anchor, so a conflict here is two PRs both appending, never two PRs
+# disagreeing about the same line. Union keeps both sides instead of stopping the merge.
+# Drains the queue already open under the old regime; cp#358's changelog.d/ fragments are
+# what stops NEW PRs touching this file at all.
+CHANGELOG.md merge=union
