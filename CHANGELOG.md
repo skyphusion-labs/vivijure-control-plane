@@ -9,6 +9,22 @@ is a separate product on a separate cadence).
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
 
+### fix(provision): tell the truth when re-provision DESTROYS (cp#304)
+
+A provision interrupted before the studio upload used to say *"start provisioning again to
+continue"*. The retry works, but the word **continue** was a lie: the same slug hits the reclaim
+path (`claim -> teardown(deleteData) -> blank -> new job`), which **destroys** the partial
+environment and starts over. A promise that succeeds while doing something else is worse than one
+that fails.
+
+- Refusal messages (dedicated key-A, pre-mode rows, missing release pin, unrecognised mode, and the
+  past-boundary corruption guards) now say this cannot be continued, name `POST /api/tenant/provision`,
+  and state that re-provisioning the same name destroys and starts from scratch.
+- `reclaim_teardown_failed` (the genuinely stuck population) no longer says "try again"; it says
+  contact us, because there is no self-serve move while resource columns still name undeleted pieces.
+- Onboarding copy that told the tenant to "pick up where this left off" now matches the destroy.
+
+Destroy/reclaim behaviour is unchanged; only the contract text is fixed.
 ### feat(platform): `/api/platform/version` surfaces build identity, not only release (cp#289)
 
 The route answered `{ control_plane_version }` only -- which release, not which build. Two deploys

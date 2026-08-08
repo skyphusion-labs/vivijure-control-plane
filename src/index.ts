@@ -1027,9 +1027,13 @@ async function provision(
         failures: reaped.failures,
       });
       return err("reclaim_teardown_failed", 409, {
+        // GENUINELY STUCK (cp#304): the reclaim did not complete, resource columns still name the
+        // pieces that failed to delete, and there is no self-serve move. "Try again" would be a
+        // second false instruction; the customer must contact us.
         message:
-          "some of the old studio pieces could not be removed, so the name has not been freed. " +
-          "Nothing has been lost. Try again in a few minutes.",
+          "some of the old studio pieces could not be removed, so the name has not been freed and " +
+          "nothing has been destroyed. Retrying will not clear this; contact us so we can remove " +
+          "the stuck pieces.",
         failures: reaped.failures,
       });
     }
