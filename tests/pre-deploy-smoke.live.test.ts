@@ -12,6 +12,13 @@
 // actually RESOLVED in the RUNNING worker, as reported by the version the edge serves. Not that the
 // API accepted a binding; that the worker can see it.
 //
+// WHY IT MIGRATES ITS THROWAWAY D1 (cp#379). The module answers job_log from probeRunpodJobLog,
+// which returns "unavailable" for TWO different situations: no binding at all, and a binding that
+// resolves onto a database with no runpod_job_log table. This suite used to build the SECOND state
+// and read it as the first, so the positive leg and the negative control both settled on
+// "unavailable" for different reasons and the gate could not give a verdict in either direction.
+// The setup now runs the studio migrations exactly as the provisioner's d1_migrate step does.
+//
 // WHY A LIVE SUITE AND NOT A UNIT TEST. tests/module-telemetry-binding.test.ts already proves the
 // uploader ASKS for the binding, which is the decision path. It cannot prove the platform HONOURED
 // the ask, and the two are different claims: the first cp#248 attempt failed on
@@ -86,8 +93,10 @@ import {
   type TenantModuleDeps,
 } from "../src/tenant-modules";
 import type { TenantEndpoint } from "../src/provisioner";
+import { applyStudioMigrations } from "../src/migrate";
 import { deployHarnessDispatcher, type HarnessDispatcher } from "./e2e-harness-dispatcher";
 import { localModuleBundleSource } from "./module-bundle-local";
+import { localStudioBundleSource } from "./studio-bundle-local";
 import { fetchStudioRelease, type FetchedStudioRelease } from "./studio-release-fetch";
 import {
   NO_ANSWER,
@@ -453,6 +462,68 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
     }
     say("precondition: the throwaway D1 is bindable (probe script accepted the binding).");
     await cf.deleteUserWorker(NAMESPACE, D1_PROBE_SCRIPT).catch(() => undefined);
+
+    // ---- THE STUDIO SCHEMA. WITHOUT IT THE POSITIVE LEG CANNOT MEASURE ITS SUBJECT (cp#379) -----
+    //
+    // This suite used to create the throwaway D1 above and upload modules bound to it with NOTHING
+    // in between, so the database it bound carried no runpod_job_log table. probeRunpodJobLog
+    // answers "unavailable" both when there is no binding AND when a binding resolves onto a
+    // database with no table to write through; the positive assertion read the second as the first.
+    // Worse than a wrong verdict: the negative control settles on that same "unavailable" by a
+    // different route, so before this step the two legs were indistinguishable and a green and a red
+    // meant the same thing. Run 31717873421 is the measured instance -- four recording modules,
+    // three stable reads each, all "unavailable", all of them correct.
+    //
+    // A REAL PROVISION DOES THIS AS d1_migrate, the step immediately after d1_create in
+    // src/provisioner.ts. So this is the harness catching up with the shipping path, not a new idea.
+    // BOTH HALVES ARE THE SHIPPED ONES ON PURPOSE: the schema comes from the pinned release artifact
+    // through the same localStudioBundleSource the provision e2e uses, and it is applied by the same
+    // applyStudioMigrations the provisioner calls. A schema written by hand into this file would
+    // make the gate agree with itself by construction, and it would drift silently the day cf lands
+    // its next migration. tests/smoke-d1-migration.test.ts pins both properties.
+    //
+    // WHY HERE RATHER THAN IMMEDIATELY AFTER createD1, which is where a real provision does it: the
+    // bindability wait above is this suite's own measured evidence that a D1 seconds old is not yet
+    // fully usable. Keeping the whole D1 precondition contiguous costs nothing, and the only
+    // ordering the assertions depend on is migrate-before-upload, which holds either way.
+    const built = await localStudioBundleSource(state.release!.dir).fetch(env!.studioRelease);
+    const migrated = await applyStudioMigrations(cf, db.uuid, built.migrations);
+    say(
+      `studio migrations applied to the throwaway D1: ${migrated.applied.length} applied, ` +
+        `${migrated.seeded.length} seeded, of ${built.migrations.length} carried by ${state.release!.tag}.`,
+    );
+
+    // THE PRECONDITION CONTROL, IN THE SAME BLOCK AS THE CLAIM AND AHEAD OF ANYTHING THAT DEPENDS
+    // ON IT. A migration runner reporting success while the table is absent is exactly how this
+    // suite spent three runs measuring nothing, so the state is READ BACK rather than assumed, using
+    // the module's own probe query. A name the schema does not carry is read in the same breath: a
+    // probe that matches everything cannot then pass for a probe that found the table. The names are
+    // literals in this file, never input, so the inline quoting is a readability choice.
+    const tableRows = async (name: string): Promise<number> => {
+      const raw = await cf.queryD1(
+        state.d1!,
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${name}';`,
+      );
+      if (!Array.isArray(raw)) return 0;
+      let rows = 0;
+      for (const entry of raw) {
+        const results = (entry as { results?: unknown } | null)?.results;
+        if (Array.isArray(results)) rows += results.length;
+      }
+      return rows;
+    };
+    const jobLogRows = await tableRows("runpod_job_log");
+    const controlRows = await tableRows("no_such_table_anywhere");
+    say(`schema read back: runpod_job_log rows=${jobLogRows}, known-absent control rows=${controlRows}.`);
+    if (jobLogRows !== 1 || controlRows !== 0) {
+      throw new Error(
+        `the throwaway D1 does not carry the studio schema after the migration step ` +
+          `(runpod_job_log=${jobLogRows}, known-absent control=${controlRows}). The positive leg ` +
+          `cannot measure its subject in this state: every recording module would answer ` +
+          `job_log="unavailable" because there is no table to write through, and this suite would ` +
+          `read that as a missing binding. Fix the setup; do not re-run for a green.`,
+      );
+    }
 
     // ---- the dispatch door. Both namespace bindings point at THIS RUN's throwaway namespace, so
     // this worker cannot reach a production tenant script even if its bearer leaked. ------------
