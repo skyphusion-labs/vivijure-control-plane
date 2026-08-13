@@ -13,6 +13,7 @@ import { describe, it, expect } from "vitest";
 import {
   MEASURED_NEGATIVE_CONTROL_RUNS,
   NO_ANSWER,
+  UNRECOGNISED,
   reached,
   render,
   settledValue,
@@ -78,9 +79,54 @@ describe("the REPLACE criterion: reach the value, never accept the ambiguous one
   });
 });
 
+describe("the criterion is value-agnostic, so the string contract reuses it (cp#378)", () => {
+  // The measured runs above are pre-815c9ff0 BOOLEAN readings and are kept verbatim. These cases
+  // are the same sequence SHAPES in the string vocabulary the modules emit today, which is what
+  // the live smoke now feeds these functions. If the criterion had been written about booleans
+  // rather than about shapes, every one of these would need a second implementation.
+  it("REFUSES a stably-positive replace read, exactly as it refuses run 3", () => {
+    // The string-contract twin of run 3: a stale isolate answering "ok" forever.
+    expect(reached(["ok", "ok", "ok"], "unavailable", NEED)).toBe(false);
+    const foreverOk: Reading[] = Array.from({ length: 200 }, () => "ok");
+    expect(reached(foreverOk, "unavailable", NEED)).toBe(false);
+  });
+
+  it("accepts a converged unavailable, including after a mid-flap sighting", () => {
+    expect(reached(["ok", "unavailable", "ok"], "unavailable", NEED)).toBe(false);
+    expect(reached(["ok", "unavailable", "unavailable", "unavailable"], "unavailable", NEED)).toBe(true);
+  });
+
+  it("neither unknown nor null nor an unrecognised value satisfies a wait for unavailable", () => {
+    // FOUR STATES, FOUR MEANINGS. "unknown" is the worker saying it probed and could not tell;
+    // null is no field at all; UNRECOGNISED is the cf contract having moved. None of them is the
+    // worker saying it cannot record, and the negative control must not accept any as if it were.
+    expect(reached(["unknown", "unknown", "unknown"], "unavailable", NEED)).toBe(false);
+    expect(reached([null, null, null], "unavailable", NEED)).toBe(false);
+    expect(reached([UNRECOGNISED, UNRECOGNISED, UNRECOGNISED], "unavailable", NEED)).toBe(false);
+  });
+
+  it("a positive leg settles on ok, and settles on unrecognised rather than hiding it", () => {
+    expect(settledValue(["ok", "ok", "ok"], NEED)).toEqual({ settled: true, value: "ok" });
+    // An unrecognised value is a STABLE OBSERVATION, not a transport failure, so it settles and
+    // the caller gets to report it. Resetting the streak here would hide a rename behind a
+    // deadline and the failure would read as a timeout.
+    expect(settledValue([UNRECOGNISED, UNRECOGNISED, UNRECOGNISED], NEED)).toEqual({
+      settled: true,
+      value: UNRECOGNISED,
+    });
+  });
+
+  it("a transport failure still resets the streak under the string contract", () => {
+    expect(reached(["unavailable", "unavailable", NO_ANSWER, "unavailable"], "unavailable", NEED)).toBe(false);
+    expect(reached(["unavailable", NO_ANSWER, "unavailable", "unavailable", "unavailable"], "unavailable", NEED)).toBe(true);
+  });
+});
+
 describe("render, so a sequence in a log is readable", () => {
   it("prints each reading as one character", () => {
     expect(render([true, false, null, NO_ANSWER])).toBe("TFnx");
+    // One character per state, and all six distinguishable in a log line.
+    expect(render(["ok", "unavailable", "unknown", null, NO_ANSWER, UNRECOGNISED])).toBe("ou?nx!");
     expect(render(MEASURED_NEGATIVE_CONTROL_RUNS[0].seq)).toBe("TFTFFF");
     expect(render(MEASURED_NEGATIVE_CONTROL_RUNS[1].seq)).toBe("FTFFF");
     expect(render(MEASURED_NEGATIVE_CONTROL_RUNS[2].seq)).toBe("TTT");

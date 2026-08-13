@@ -568,8 +568,12 @@ describe("scoped operator credentials (cp#219)", () => {
         ...deps,
         provisioner: {
           moduleReadiness: async () => [
-            { module: "keyframe", script: "ten-x-keyframe", status: 200, ok: true, credentials: null, job_log: true, records_runpod_jobs: true },
-            { module: "own-gpu", script: "ten-x-own-gpu", status: 200, ok: true, credentials: null, job_log: false, records_runpod_jobs: true },
+            // PRODUCIBLE VALUES ONLY (cp#378). These rows used to carry booleans, which the shipped
+            // parser can no longer emit -- a fixture asserting a shape production cannot create is
+            // green about a state that does not exist.
+            { module: "keyframe", script: "ten-x-keyframe", status: 200, ok: true, credentials: null, job_log: "ok", records_runpod_jobs: true },
+            { module: "own-gpu", script: "ten-x-own-gpu", status: 200, ok: true, credentials: null, job_log: "unavailable", records_runpod_jobs: true },
+            { module: "finish-rife", script: "ten-x-finish-rife", status: 200, ok: true, credentials: null, job_log: "unknown", records_runpod_jobs: true },
             { module: "finish-upscale", script: "ten-x-finish-upscale", status: 200, ok: true, credentials: null, job_log: null, records_runpod_jobs: true },
             { module: "plan-enhance", script: "ten-x-plan-enhance", status: 404, ok: null, credentials: null, job_log: null, records_runpod_jobs: false },
           ],
@@ -584,10 +588,12 @@ describe("scoped operator credentials (cp#219)", () => {
       );
       expect(res.status).toBe(200);
       const body = (await res.json()) as { records_unproven: string[]; modules: unknown[] };
-      // BOTH the explicit no and the silent unknown, and NOT the module that never records: a
-      // summary that omitted the null would report a stale module image as fine.
-      expect(body.records_unproven).toEqual(["own-gpu", "finish-upscale"]);
-      expect(body.modules).toHaveLength(4);
+      // EVERY non-"ok" state, and NOT the module that never records. A summary that omitted any of
+      // these would report an unprovable module as fine: "unavailable" is an explicit no, "unknown"
+      // is a worker that could not tell, null is an image too old to say. Three causes, three
+      // remedies, one consequence -- rows nobody will get.
+      expect(body.records_unproven).toEqual(["own-gpu", "finish-rife", "finish-upscale"]);
+      expect(body.modules).toHaveLength(5);
 
       const rows = await store.listAdminAudit({ target: TEN, limit: 20 });
       expect(rows.some((r) => r.action === "tenant.read.module_readiness" && r.actor === "operator:reader")).toBe(true);

@@ -982,20 +982,46 @@ route the only code that read a module `/ready` was the key-install probe, which
 credentials and would have to be re-run to see anything.
 
 Per module it reports `status`, `ok`, `credentials`, `records_runpod_jobs`, and `job_log`, plus the
-tenant `modules_release` so a whole-fleet absence reads as the stale release pin it usually is.
+tenant `modules_release`.
+
+**Read a whole-fleet `null` as a PARSE failure first, not as a stale pin.** This sentence used to
+say the opposite and it cost a real diagnosis (cp#378): from 2026-08-01 to 2026-08-13 every module
+on every tenant reported `null`, because the modules had moved to a tri-state string and this
+plane still accepted only a boolean. The pin was independently stale at the time, so checking the
+pin produced a confirmed-looking wrong answer. A pin problem VARIES WITH THE PIN; a parse problem
+is uniform across every tenant and every module, which is the cheap thing to check first.
 
 **Two samples, short gap (cp#254).** Right after a module upload, `/ready` can be served by a stale
 isolate still on the previous version. The route probes twice (~250ms apart) and reports the second
 sample. That is not the multi-second key-install wait; it only reduces the post-upgrade race. A
 reading taken within a couple of minutes of an upgrade can still be mid-convergence across isolates.
 
-`job_log` has THREE values and collapsing them re-creates the defect:
+`job_log` has FOUR values and collapsing any two of them re-creates the defect. The three non-null
+values are the vivijure-cf `JobLogReadiness` union, carried through verbatim rather than mapped:
 
-| value | meaning |
-| --- | --- |
-| `true` | the running worker resolved the binding |
-| `false` | the running worker answered that it did NOT |
-| `null` | the worker reported no such field (an image predating the upstream change), or nothing answered. NOT a no |
+| value | meaning | remedy |
+| --- | --- | --- |
+| `"ok"` | the running worker resolved the binding and read the job-log table | none, this is the only pass |
+| `"unavailable"` | the worker answered that it CANNOT record: no binding, or no table | fix the tenant provisioning |
+| `"unknown"` | the worker PROBED and could not answer (the read threw, or outran its 1500ms bound) | look at the tenant database |
+| `null` | the worker reported no such field (an image predating the upstream change), or nothing answered. NOT a no | move `modules_release` forward |
+
+**Why `"unknown"` is not mapped to `null`.** They are one collapse apart and it is tempting, since
+both mean "we cannot prove this module records". They have DIFFERENT REMEDIES: `null` is fixed by
+moving the pin, `"unknown"` is fixed by looking at the database of a module that answered. One
+`null` carrying both would send an operator to whichever cause the prose named, which is exactly
+the failure this route's own documentation committed above.
+
+**Legacy booleans are still accepted** and are not a compatibility nicety. vivijure-cf `v1.13.0`
+was a published studio release whose five recording modules emitted `Boolean(env.TELEMETRY_DB)`
+(measured: 5 boolean emissions at `v1.13.0`, 0 at `v1.23.0`). A tenant pinned there records
+perfectly well, so `true` reads as `"ok"` and `false` as `"unavailable"`. Dropping those tenants
+to `null` would report a WORKING binding as unprovable.
+
+**A value this plane does not recognise reads `null` AND names itself in `detail`.** That is the
+only signal available if the cf-side union is ever renamed: absent-field and unrecognised-value
+both parse to `null`, and without the raw string beside it an operator cannot tell "the pin is
+old" from "the contract moved".
 
 `records_unproven` lists the modules that submit RunPod jobs and did not answer `true`. Both `false`
 and `null` are in it on purpose: "the binding is missing" and "this image is too old to say" are

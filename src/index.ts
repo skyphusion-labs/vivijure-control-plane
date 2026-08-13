@@ -2353,16 +2353,42 @@ async function adminRoutes(
     const modules = await deps.provisioner.moduleReadiness(tenant);
     return json({
       tenant_id: tenant.id,
-      // WHICH BYTES answered. A job_log field that is absent everywhere is a stale release pin far
-      // more often than it is a missing binding, and the two look identical without this.
+      // WHICH BYTES answered.
+      //
+      // THIS COMMENT USED TO NAME THE WRONG CAUSE, and it cost a real diagnosis (cp#378). It said a
+      // job_log absent everywhere is a stale release pin more often than a missing binding. Both
+      // readings were wrong for twelve days: the actual cause of null-on-every-module was that THIS
+      // PLANE could not parse the field. Modules have emitted a tri-state string since vivijure-cf
+      // 815c9ff0 (2026-08-01) and the parser accepted only a boolean, so every module coerced to
+      // null. A reader who trusted this comment went and checked the pin, found it genuinely stale,
+      // and had a confirmed-looking wrong answer -- the pin WAS stale and the pinned release
+      // reported the field correctly, so the two facts were independent and one of them was a decoy.
+      //
+      // SO READ null-EVERYWHERE IN THIS ORDER, cheapest and most recently guilty first:
+      //   1. A PARSER THAT CANNOT READ THE SHAPE. Check what a module actually puts on the wire
+      //      before checking anything about this tenant. Uniform null across every module of every
+      //      tenant is this, not a per-tenant fault -- a pin problem varies with the pin.
+      //   2. An unrecognised value, which each observation reports in `detail`. That is the same
+      //      defect as 1, caught rather than silent.
+      //   3. THEN the release pin below, which is a real cause and the one to suspect when nulls
+      //      track modules_release instead of being uniform.
       modules_release: tenant.modules_release,
       modules,
       // The one summary worth precomputing, named for what it MEANS rather than for a verdict it
       // does not have: these modules submit RunPod jobs and did NOT answer that they can record one.
-      // false and null are both in here on purpose -- "the binding is missing" and "this image is
-      // too old to say" are different problems with the same consequence (rows nobody will get).
+      //
+      // "ok" IS THE ONLY PASS, and the test is written as `!== "ok"` rather than as a list of the
+      // failing values ON PURPOSE. A list has to be maintained against a contract in another repo,
+      // and the day it falls behind, the new value it has never heard of falls through as PROVEN.
+      // Inverting it means an unrecognised state is unproven by default -- the safe direction, and
+      // the one that stays safe without anyone remembering to update this line.
+      //
+      // "unavailable", "unknown" and null are ALL in here on purpose: "the binding is missing",
+      // "the worker could not tell" and "this image is too old to say" are three different problems
+      // with one consequence (rows nobody will get). They are distinguishable per module in the
+      // `modules` array above; this summary deliberately does not try to rank them.
       records_unproven: modules
-        .filter((m) => m.records_runpod_jobs && m.job_log !== true)
+        .filter((m) => m.records_runpod_jobs && m.job_log !== "ok")
         .map((m) => m.module),
     });
   }

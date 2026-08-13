@@ -184,21 +184,74 @@ function readyDeps(answer: (module: string) => { status: number; text: string })
 const instantTiming: ProbeTiming = { now: () => 0, sleep: async () => {} };
 
 describe("probeTenantModuleReadiness", () => {
-  it("reports job_log TRUE when the worker resolved the binding", async () => {
-    const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m, { telemetry: { job_log: true } }) }));
+  // THE THREE WIRE SHAPES, PINNED (cp#378). A suite that exercised only the current string would
+  // let the twelve-day regression back in from the other direction: the parser was `boolean`-only
+  // for twelve days while modules emitted strings, and a string-only suite would be exactly as
+  // blind to a tenant still pinned to the boolean release. All three are measured at the artifact
+  // in vivijure-cf: 15 modules emit the string at v1.23.0, 5 emitted the boolean at v1.13.0, and
+  // 12 of 27 modules emit no telemetry key at all.
+
+  it("reports \"ok\" when the worker resolved the binding (current contract)", async () => {
+    const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m, { telemetry: { job_log: "ok" } }) }));
     const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
-    for (const o of obs.filter((x) => x.records_runpod_jobs)) expect(o.job_log, o.module).toBe(true);
+    for (const o of obs.filter((x) => x.records_runpod_jobs)) expect(o.job_log, o.module).toBe("ok");
   });
 
-  it("reports job_log FALSE when the worker answered that it cannot record", async () => {
+  it("reports \"unavailable\" when the worker answered that it cannot record", async () => {
     // THE CASE THAT MATTERS: ok is still true, credentials are still true, the module still renders.
     // Only this field distinguishes a tenant whose jobs are being recorded from one whose are not.
-    const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m, { telemetry: { job_log: false } }) }));
+    const { d } = readyDeps((m) => ({
+      status: 200,
+      text: readyBody(m, { telemetry: { job_log: "unavailable" } }),
+    }));
     const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
     const keyframe = obs.find((o) => o.module === "keyframe")!;
     expect(keyframe.ok).toBe(true);
     expect(keyframe.credentials).toEqual({ runpod_api_key: true, runpod_endpoint_id: true });
-    expect(keyframe.job_log).toBe(false);
+    expect(keyframe.job_log).toBe("unavailable");
+  });
+
+  it("reports \"unknown\" as ITSELF, never as null", async () => {
+    // "unknown" is the worker saying it PROBED and could not answer. Mapping it to null would say
+    // "this image is too old to report", which sends an operator to bump modules_release for a
+    // module that answered. Different fact, different remedy, so it must survive the parse.
+    const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m, { telemetry: { job_log: "unknown" } }) }));
+    const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
+    for (const o of obs.filter((x) => x.records_runpod_jobs)) expect(o.job_log, o.module).toBe("unknown");
+  });
+
+  it("LEGACY: accepts boolean true from a pre-815c9ff0 image and reads it as \"ok\"", async () => {
+    // NOT hypothetical. vivijure-cf v1.13.0 was a published studio release whose five recording
+    // modules emitted `Boolean(env.TELEMETRY_DB)`. A tenant pinned there records perfectly well,
+    // and dropping it to null would report a WORKING binding as unprovable -- the same false alarm
+    // as the bug this fixes, pointed the other way.
+    const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m, { telemetry: { job_log: true } }) }));
+    const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
+    for (const o of obs.filter((x) => x.records_runpod_jobs)) expect(o.job_log, o.module).toBe("ok");
+  });
+
+  it("LEGACY: accepts boolean false and reads it as \"unavailable\"", async () => {
+    const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m, { telemetry: { job_log: false } }) }));
+    const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
+    const keyframe = obs.find((o) => o.module === "keyframe")!;
+    expect(keyframe.job_log).toBe("unavailable");
+    // and it must still count as unproven on the route summary, exactly like the string form.
+    expect(keyframe.job_log === "ok").toBe(false);
+  });
+
+  it("an UNRECOGNISED value reads null AND names itself in detail", async () => {
+    // A cf-side rename. It parses to null like an absent field does, because this plane genuinely
+    // has no usable answer -- but absent and unrecognised have different remedies, so the raw value
+    // is carried in `detail` and the two are never indistinguishable.
+    const { d } = readyDeps((m) => ({
+      status: 200,
+      text: readyBody(m, { telemetry: { job_log: "recordable" } }),
+    }));
+    const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
+    for (const o of obs.filter((x) => x.records_runpod_jobs)) {
+      expect(o.job_log, o.module).toBeNull();
+      expect(o.detail, o.module).toContain("recordable");
+    }
   });
 
   it("reports NULL, not false, when the worker never mentioned the field", async () => {
@@ -208,6 +261,9 @@ describe("probeTenantModuleReadiness", () => {
     const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m) }));
     const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
     for (const o of obs) expect(o.job_log, o.module).toBeNull();
+    // ABSENT IS NOT UNRECOGNISED. A module that never mentioned the field gets no detail string;
+    // that is the only thing separating "the pin is old" from "the contract moved" at a glance.
+    for (const o of obs) expect(o.detail, o.module).toBeUndefined();
   });
 
   it("reports NULL and the raw response when nothing answered", async () => {
@@ -224,7 +280,7 @@ describe("probeTenantModuleReadiness", () => {
   it("refuses to read a WRONG-SCRIPT answer as this module answering", async () => {
     // Script names are tenant-prefixed and derived. A neighbouring module answering healthily must
     // never be recorded as proof about this one.
-    const { d } = readyDeps(() => ({ status: 200, text: readyBody("some-other-module", { telemetry: { job_log: true } }) }));
+    const { d } = readyDeps(() => ({ status: 200, text: readyBody("some-other-module", { telemetry: { job_log: "ok" } }) }));
     const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
     for (const o of obs) {
       expect(o.job_log, o.module).toBeNull();
@@ -233,7 +289,7 @@ describe("probeTenantModuleReadiness", () => {
   });
 
   it("marks plan-enhance as a module that is NOT expected to record", async () => {
-    const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m, { telemetry: { job_log: true } }) }));
+    const { d } = readyDeps((m) => ({ status: 200, text: readyBody(m, { telemetry: { job_log: "ok" } }) }));
     const obs = await probeTenantModuleReadiness(d, TENANT, instantTiming);
     expect(obs.find((o) => o.module === "plan-enhance")!.records_runpod_jobs).toBe(false);
     for (const m of RECORDING) expect(obs.find((o) => o.module === m)!.records_runpod_jobs, m).toBe(true);
@@ -256,7 +312,7 @@ describe("probeTenantModuleReadiness", () => {
       callTenantModule: vi.fn(async (scriptName: string, path: string) => {
         seen.push(scriptName + " " + path);
         const spec = TENANT_MODULE_CATALOG.find((s) => scriptName === tenantModuleScriptName(TENANT, s.module));
-        // First pass: job_log false (stale). After the gap: true (converged). Report must be true.
+        // First pass: job_log "unavailable" (stale). After the gap: "ok" (converged). Report "ok".
         const jobLog = afterGap;
         if (spec) {
           return {
@@ -272,7 +328,7 @@ describe("probeTenantModuleReadiness", () => {
     const once = TENANT_MODULE_CATALOG.map((s) => tenantModuleScriptName(TENANT, s.module) + " /ready");
     expect(seen.sort()).toEqual([...once, ...once].sort());
     for (const o of obs.filter((x) => x.records_runpod_jobs)) {
-      expect(o.job_log, o.module).toBe(true);
+      expect(o.job_log, o.module).toBe("ok");
     }
   });
 });
