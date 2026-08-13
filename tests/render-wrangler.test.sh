@@ -189,6 +189,16 @@ assert_toml "the ASSETS binding is named" "d.get('assets',{}).get('binding')" "A
 assert_toml "run_worker_first survives the render" "d.get('assets',{}).get('run_worker_first')" "True"
 assert_toml "no stray assets key under [observability]" "'assets' in d.get('observability',{})" "False"
 
+# cp#48 SELFHOST-SKIP: default strip (self-host safe); KEEP_FLEET_ONLY=1 keeps tail_consumers.
+set_full_env
+unset KEEP_FLEET_ONLY
+"$render" "$tmp/out.toml" >"$tmp/log" 2>&1 || { echo "  FAIL selfhost-skip default render failed"; fail=$((fail + 1)); }
+assert_toml "default render STRIPS fleet tail_consumers (self-host safe)" "'tail_consumers' in d" "False"
+set_full_env
+export KEEP_FLEET_ONLY=1
+"$render" "$tmp/out-fleet.toml" >"$tmp/log" 2>&1 || { echo "  FAIL fleet-only render failed"; fail=$((fail + 1)); }
+assert_toml "KEEP_FLEET_ONLY keeps tail_consumers" "bool(d.get('tail_consumers'))" "True" "$tmp/out-fleet.toml"
+
 # cp#285: rendering is not enough, the pool JSON has to SURVIVE the round trip. A quoting choice
 # that silently mangled it would render green and hand the Worker a string parseSharedPool refuses
 # at runtime -- the same silent-inert class, one layer further along. Placed here rather than with
