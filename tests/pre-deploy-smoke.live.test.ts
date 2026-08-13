@@ -25,8 +25,8 @@
 // wrong shape for a standing gate, because next release there is no interesting older tree to
 // compare against. A standing gate needs a control it can watch FAIL in the same run:
 //
-//   POSITIVE  the catalog uploaded by this tree      -> every recording module settles job_log TRUE
-//   NEGATIVE  ONE module re-uploaded WITHOUT the D1  -> that module settles job_log FALSE
+//   POSITIVE  the catalog uploaded by this tree      -> every recording module settles job_log "ok"
+//   NEGATIVE  ONE module re-uploaded WITHOUT the D1  -> that module settles job_log "unavailable"
 //   CONTROL   uploadTenantModules with a null D1 id  -> REFUSES, writing nothing
 //
 // Without the negative, a green proves only that something answered true, which a hardcoded `true`
@@ -81,6 +81,8 @@ import {
   tenantModuleScriptName,
   tenantModuleScriptPrefix,
   uploadTenantModules,
+  parseJobLogReadiness,
+  isUnrecognisedJobLog,
   type TenantModuleDeps,
 } from "../src/tenant-modules";
 import type { TenantEndpoint } from "../src/provisioner";
@@ -89,6 +91,7 @@ import { localModuleBundleSource } from "./module-bundle-local";
 import { fetchStudioRelease, type FetchedStudioRelease } from "./studio-release-fetch";
 import {
   NO_ANSWER,
+  UNRECOGNISED,
   reached,
   render,
   settledValue,
@@ -201,12 +204,39 @@ async function callModule(script: string, path: string): Promise<{ status: numbe
  * caller must treat that as a FAILURE and not as the last value seen: an unsettled read is not
  * evidence in either direction, which is the entire finding.
  */
+/**
+ * Turn one /ready body into a Reading, THROUGH THE SHIPPED PARSER (cp#378).
+ *
+ * This file used to carry its own `typeof job_log === "boolean"` test, twice, while its header
+ * said the tested logic is the shipped logic rather than a copy of it. That was true of the
+ * settle CRITERION and false of the PARSE, and the parse is the half that broke: the plane and
+ * the modules disagreed for twelve days and this gate could not see it, because the gate agreed
+ * with the plane by construction. A suite that defines its own half of a contract tests that
+ * half against itself.
+ *
+ * So the parse is imported. The one thing this adds on top is the rename tripwire: a value the
+ * shipped parser refuses is reported as UNRECOGNISED rather than as null, because the live smoke
+ * is the ONLY instrument in this repo that ever sees a real module and is therefore the only
+ * place a cf-side rename can be caught.
+ */
+function readJobLog(text: string): Reading {
+  let body: { telemetry?: { job_log?: unknown } } = {};
+  try {
+    body = JSON.parse(text) as typeof body;
+  } catch {
+    return null;
+  }
+  const raw = body.telemetry?.job_log;
+  if (isUnrecognisedJobLog(raw)) return UNRECOGNISED;
+  return parseJobLogReadiness(raw);
+}
+
 async function settle(
   script: string,
   need = 3,
   gapMs = 10_000,
   deadlineMs = 240_000,
-): Promise<{ value: boolean | null; seq: Reading[]; ms: number; settled: boolean }> {
+): Promise<{ value: Exclude<Reading, typeof NO_ANSWER> | null; seq: Reading[]; ms: number; settled: boolean }> {
   const seq: Reading[] = [];
   const start = Date.now();
   while (Date.now() - start < deadlineMs) {
@@ -217,13 +247,7 @@ async function settle(
     if (r === null) {
       v = NO_ANSWER;
     } else {
-      let body: { telemetry?: { job_log?: unknown } } = {};
-      try {
-        body = JSON.parse(r.text) as typeof body;
-      } catch {
-        body = {};
-      }
-      v = typeof body.telemetry?.job_log === "boolean" ? body.telemetry.job_log : null;
+      v = readJobLog(r.text);
     }
     seq.push(v);
     // Decided by the SHARED criterion, not by a copy of it. settledValue is unit-tested against the
@@ -273,7 +297,7 @@ async function settle(
  */
 async function awaitReading(
   script: string,
-  want: boolean,
+  want: Reading,
   need = 3,
   gapMs = 10_000,
   deadlineMs = 300_000,
@@ -286,13 +310,7 @@ async function awaitReading(
     if (r === null) {
       v = NO_ANSWER;
     } else {
-      let body: { telemetry?: { job_log?: unknown } } = {};
-      try {
-        body = JSON.parse(r.text) as typeof body;
-      } catch {
-        body = {};
-      }
-      v = typeof body.telemetry?.job_log === "boolean" ? body.telemetry.job_log : null;
+      v = readJobLog(r.text);
     }
     seq.push(v);
     // Same shared criterion, same reason.
@@ -302,10 +320,12 @@ async function awaitReading(
   return { reached: false, seq, ms: Date.now() - start };
 }
 
-async function readyReport(phase: string): Promise<Map<string, { value: boolean | null; settled: boolean }>> {
+type SettledRow = { value: Exclude<Reading, typeof NO_ANSWER> | null; settled: boolean };
+
+async function readyReport(phase: string): Promise<Map<string, SettledRow>> {
   say("");
   say(`=== GET /ready  [${phase}] ===`);
-  const out = new Map<string, { value: boolean | null; settled: boolean }>();
+  const out = new Map<string, SettledRow>();
   for (const spec of TENANT_MODULE_CATALOG) {
     const script = tenantModuleScriptName(TENANT_ID, spec.module);
     const s = await settle(script);
@@ -513,20 +533,49 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
     const unsettled = [...rows.entries()].filter(([, r]) => !r.settled).map(([m]) => m);
     expect(unsettled, "these modules never settled; their reads are not evidence in either direction").toEqual([]);
 
-    // THREE VALUES, AND THEY GET THREE VERDICTS. Collapsing them re-creates the exact defect the
-    // TenantModuleObservation contract exists to prevent, and it is not hypothetical here:
+    // FIVE VALUES, AND THEY GET FIVE VERDICTS (cp#378 widened this from three). Collapsing any two
+    // of them re-creates the exact defect the TenantModuleObservation contract exists to prevent,
+    // and none of these is hypothetical:
     //
-    //   true   the binding resolved in the running worker. This is the only PASS.
-    //   false  the binding did not resolve on a module that CAN report. A real defect in the plane.
-    //   null   the module image reports no telemetry field at all, because it predates
-    //          vivijure-cf#279. That is NOT a no, and it is NOT a pass. It means THIS GATE CANNOT
-    //          MEASURE THE PROPERTY ON THIS PIN, which is a condition someone has to act on rather
-    //          than a state to normalise. Reporting green here would be the decoration cp#255 was
-    //          filed to end.
+    //   "ok"           the binding resolved in the running worker. This is the only PASS.
+    //   "unavailable"  the worker answered that it CANNOT record: no binding, or no table. A real
+    //                  defect in the plane, and a measurement.
+    //   "unknown"      the worker PROBED and could not answer (the read threw, or outran the
+    //                  1500ms bound in cf `runpod-job-log.ts`). ALSO a measurement, and NOT the
+    //                  same fact as null -- this one is fixed by looking at the database, null is
+    //                  fixed by moving the pin. Asserted separately for exactly that reason.
+    //   null           the module image reports no telemetry field at all, because it predates
+    //                  vivijure-cf#279. That is NOT a no, and it is NOT a pass. It means THIS GATE
+    //                  CANNOT MEASURE THE PROPERTY ON THIS PIN, which is a condition someone has to
+    //                  act on rather than a state to normalise. Reporting green here would be the
+    //                  decoration cp#255 was filed to end.
+    //   UNRECOGNISED   the module sent a job_log value this plane does not know. The cf-side
+    //                  contract has moved and this repo cannot see that any other way.
     //
     // MEASURED 2026-08-01, and it is why this branch is written rather than left as theory: the
     // pinned STUDIO_RELEASE was v1.12.0, whose seven module bundles contain ZERO occurrences of
     // `job_log` (v1.13.0's five recording modules contain two each, same matcher, same layout).
+    //
+    // THE ORDER OF THESE ASSERTIONS IS DELIBERATE: contract-moved first, because if the vocabulary
+    // has changed then every verdict below it is being read through the wrong dictionary and its
+    // message would name a cause that is not there.
+    const reportedUnrecognised = RECORDING.filter((m) => rows.get(m)?.value === UNRECOGNISED);
+    expect(
+      reportedUnrecognised,
+      `these modules sent a telemetry.job_log value this plane does not recognise. The cf-side ` +
+        `JobLogReadiness union has changed and src/tenant-modules.ts has not followed it. Do NOT ` +
+        `read this as a stale pin and do NOT read it as a missing binding: the module answered, ` +
+        `and the plane could not understand the answer. Reads above show the raw sequence.`,
+    ).toEqual([]);
+
+    const reportedUnknown = RECORDING.filter((m) => rows.get(m)?.value === "unknown");
+    expect(
+      reportedUnknown,
+      `these modules PROBED their job log and could not answer ("unknown"): the read threw or ` +
+        `outran the probe timeout. This is not a missing binding and not a stale image -- the ` +
+        `worker tried. Look at the tenant database, not at modules_release.`,
+    ).toEqual([]);
+
     const reportedNull = RECORDING.filter((m) => rows.get(m)?.value === null);
     expect(
       reportedNull,
@@ -535,8 +584,14 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
         `not a pass and not a plane defect; it means the pin cannot answer the question.`,
     ).toEqual([]);
 
-    const reportedFalse = RECORDING.filter((m) => rows.get(m)?.value === false);
-    expect(reportedFalse, "recording modules whose running worker could NOT resolve TELEMETRY_DB").toEqual([]);
+    // Accepts the legacy boolean too: a tenant pinned to v1.13.0 emits `false` for this state and
+    // its modules are just as broken as one emitting "unavailable". Measured at the artifact: 5
+    // boolean emissions at cf v1.13.0, 0 at v1.23.0.
+    const reportedUnavailable = RECORDING.filter((m) => {
+      const v = rows.get(m)?.value;
+      return v === "unavailable" || v === false;
+    });
+    expect(reportedUnavailable, "recording modules whose running worker could NOT resolve TELEMETRY_DB").toEqual([]);
 
     // plan-enhance submits no RunPod job and has no /ready route, so null is its correct answer.
     // Asserted separately so a 404 there never reads as a gap.
@@ -551,7 +606,9 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
     for (const o of obs) {
       say(`   ${o.module.padEnd(16)} records=${String(o.records_runpod_jobs)} job_log=${String(o.job_log)} status=${o.status}`);
     }
-    const unproven = obs.filter((o) => o.records_runpod_jobs && o.job_log !== true).map((o) => o.module);
+    // The SHIPPED predicate, character for character (src/index.ts records_unproven). If this line
+    // and that one ever diverge, this gate stops testing the route it exists to test.
+    const unproven = obs.filter((o) => o.records_runpod_jobs && o.job_log !== "ok").map((o) => o.module);
     expect(unproven, "modules the admin route cannot prove will record").toEqual([]);
   }, 300_000);
 
@@ -587,18 +644,21 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
     const bindings = await cf.getScriptBindings(NAMESPACE, script);
     expect(bindings.map((b) => `${b.type}:${b.name}`)).not.toContain("d1:TELEMETRY_DB");
 
-    // WAIT FOR false, never accept a settled true. See awaitReading for the three measured
-    // sequences that forced this and for why stability was the wrong property.
+    // WAIT FOR the negative value, never accept a settled positive. See awaitReading for the three
+    // measured sequences that forced this and for why stability was the wrong property.
     //
     // The old code called settle() here and took whatever stabilised. On one run in three that was
-    // a stale isolate answering `true` consistently for the whole window, and the gate reported the
+    // a stale isolate answering positively for the whole window, and the gate reported the
     // regression it exists to catch as the expected answer.
-    const s = await awaitReading(script, false);
+    // WAIT FOR "unavailable". The asymmetry argument is unchanged by the contract change: the
+    // version being replaced HAD the binding, so it could never say "unavailable", so seeing it is
+    // proof the new bytes are being served. "ok" stays ambiguous and still never terminates.
+    const s = await awaitReading(script, "unavailable");
     say("");
     say(`=== NEGATIVE CONTROL [${NEGATIVE_MODULE}, no database] ===`);
     say(
       `   ${NEGATIVE_MODULE.padEnd(16)} ` +
-        `${s.reached ? "REACHED false" : "NEVER REACHED false"} after ${Math.round(s.ms / 1000)}s, ` +
+        `${s.reached ? 'REACHED "unavailable"' : 'NEVER REACHED "unavailable"'} after ${Math.round(s.ms / 1000)}s, ` +
         `reads: ${render(s.seq)}`,
     );
     // ONE assertion, not two. "reached false" is the entire claim: the running worker, with no
@@ -607,7 +667,7 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
     // what the module says, we know the measurement did not converge.
     expect(
       s.reached,
-      `the negative control never observed job_log=false in ${Math.round(s.ms / 1000)}s ` +
+      `the negative control never observed job_log="unavailable" in ${Math.round(s.ms / 1000)}s ` +
         `(reads: ${render(s.seq)}). UNCONVERGED: a stale isolate serving the previous version and a ` +
         `genuinely broken module are indistinguishable from here, so this is not evidence the module ` +
         `is wrong, and it is certainly not evidence it is right. Do not re-run for a green.`,
