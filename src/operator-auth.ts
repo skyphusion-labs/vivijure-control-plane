@@ -52,6 +52,35 @@ export const OPERATOR_SCOPES = [
     id: "tenants:destroy",
     summary: "Tear a tenant down. Irreversible, so it is its own scope and never folded into tenants:write.",
   },
+  // cp#376. THE ONLY OPERATOR CAPABILITY THAT CREATES AN ACCOUNT HOLDER, which is why it is its own
+  // scope rather than a verb folded into one of its neighbours. Three separate reasons, and the
+  // third one is on its own sufficient:
+  //
+  //   - EVERY other scope here acts on a tenant whose owner already exists and already consented.
+  //     tenants:write changes a tenant's state, tenants:destroy ends it, studio:operate runs it --
+  //     all of them operate on an account that came into being through a person's own verified
+  //     email round-trip. This one asserts "this address is now an account holder" on an operator's
+  //     say-so, which is a different act with a different blast radius.
+  //   - It is the only admin route that SPENDS provisioning resources on someone else's behalf: a
+  //     D1, a bucket, a token, a Worker, and a place on the shared RunPod pool we pay for. Every
+  //     other spending route (smoke-render) spends against a tenant that already exists.
+  //   - IT ROUTES AROUND ANOTHER SCOPE'S CONTROL. Account creation is exactly what signups_enabled
+  //     gates, and that switch is held by platform:settings. Folding this capability into
+  //     tenants:write or studio:operate would hand every holder of THOSE a way to create accounts
+  //     with signups off, without holding platform:settings and without the platform switch ever
+  //     moving. A capability that bypasses another scope's control must never be implied by a
+  //     third; that alone settles the question, independently of the two reasons above.
+  //
+  // What it deliberately does NOT grant: promoting the tenant to live. That is unreachable from
+  // here by construction rather than by a check -- see operatorProvision in index.ts.
+  {
+    id: "tenants:provision",
+    summary:
+      "Create an ACCOUNT for a named email address and provision a studio for it on our shared render " +
+      "capacity. This is the only capability that brings an account holder into existence, and it creates " +
+      "accounts even when public signups are switched off. It does NOT accept the AUP for that person and " +
+      "cannot make the studio usable: the studio stays unreachable until the owner signs in and accepts.",
+  },
   {
     id: "studio:operate",
     summary:
