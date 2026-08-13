@@ -67,6 +67,14 @@ workers_dev = false
 # Worker wants the default `/` -> index.html behavior.
 assets = { directory = "./public", binding = "ASSETS", run_worker_first = true }
 
+# >>> SELFHOST-SKIP: tail-consumer -- OUR-fleet Loki path via vivijure-tail
+# TOP-LEVEL bare key (same class as assets): must sit ABOVE the first table header or TOML nests it.
+# Stripped by scripts/render-wrangler.sh unless KEEP_FLEET_ONLY=1 (cp#48).
+# Self-hosters: leave stripped; a dangling tail_consumers name fails `wrangler deploy` outright.
+# Skyphusion fleet deploy sets KEEP_FLEET_ONLY=1 so this block survives into the rendered toml.
+tail_consumers = [ { service = "vivijure-tail" } ]
+# <<< SELFHOST-SKIP: tail-consumer
+
 # --- Observability (Workers Logs) ---
 #
 # Turns on Workers Logs for this Worker: invocation summaries, status, timings, and console output,
@@ -80,13 +88,7 @@ assets = { directory = "./public", binding = "ASSETS", run_worker_first = true }
 # (see docs/observability.md in vivijure-cf), so full-rate capture here costs nothing and sampling
 # would buy nothing.
 #
-# SCOPE NOTE: this block is the CF-side surface only. It does NOT ship logs to the self-hosted
-# Loki/Grafana; that path is a tail consumer (tail_consumers -> vivijure-tail -> LOKI_VPC), and it is
-# deliberately NOT wired here. A tail_consumers entry naming OUR vivijure-tail Worker would be a
-# DANGLING BINDING for any other operator -- `wrangler deploy` FAILS outright on a tail consumer that
-# does not exist, and unlike vivijure-cf (whose deploy.sh strips SELFHOST-SKIP blocks) this repo
-# renders its config with scripts/render-wrangler.sh, which has no such stripping seam. Wiring the
-# Loki leg here therefore needs that seam built first; tracked separately.
+# Dashboard logs only. Loki is the SELFHOST-SKIP tail_consumers block above (cp#48).
 [observability]
 enabled = true
 head_sampling_rate = 1
