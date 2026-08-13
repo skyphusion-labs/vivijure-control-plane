@@ -131,7 +131,20 @@ const MODULE_SCRIPT_PREFIX = tenantModuleScriptPrefix(TENANT_ID);
 // instead of the upload path it exists to prove.
 const SMOKE_BUCKET = "vivijure";
 const HARNESS_NAME = `${RUN_PREFIX}-dispatcher`;
-const D1_PROBE_SCRIPT = `${RUN_PREFIX}-d1probe`;
+// THE PROBE SCRIPT NAME IS LOAD-BEARING AND THE HYPHEN IS ITS WHOLE POINT (cp#379).
+//
+// This was `${RUN_PREFIX}-d1probe`, which starts with MODULE_SCRIPT_PREFIX (`cpsmoke-<run>-`),
+// because both derive from RUN_PREFIX. So a script the HARNESS creates sat inside the population
+// the CONTROL test filters when it asserts the uploader wrote nothing -- and it is deleted one
+// line before, by a call whose failure was swallowed. A failed or eventually-consistent delete
+// would have failed that assertion with a message blaming the shipped cp#248 refusal guard, which
+// had written nothing at all.
+//
+// Dropping the hyphen puts it outside the module prefix while keeping it inside SMOKE_PREFIX, so
+// the leftover census and reap-by-prefix still see it. The wiring test below asserts both
+// properties in every `npm test`, live or not, because a name is exactly the kind of thing a later
+// edit tidies back.
+const D1_PROBE_SCRIPT = `${SMOKE_PREFIX}${RUN}d1probe`;
 // The module the negative control re-uploads without a database. Any recording module would do.
 const NEGATIVE_MODULE = "keyframe";
 
@@ -397,6 +410,23 @@ describe("pre-deploy smoke wiring", () => {
     }
     expect(missing, `SMOKE_REQUIRED=1 but the smoke cannot run; absent: ${missing.join(", ")}`).toEqual([]);
   });
+
+  it("the D1 probe script sits OUTSIDE the module script prefix, and is still reapable", () => {
+    // cp#379. The CONTROL test asserts the uploader wrote NO script matching MODULE_SCRIPT_PREFIX.
+    // A harness-created script inside that prefix makes the assertion fail for a reason that has
+    // nothing to do with the uploader, and its message would name the uploader. This is a real
+    // assertion rather than a comment because the two names are one hyphen apart and derive from
+    // the same constant, so the collision comes back the moment someone regularises them.
+    expect(
+      D1_PROBE_SCRIPT.startsWith(MODULE_SCRIPT_PREFIX),
+      "the D1 probe script is inside the module script prefix; the CONTROL test will blame the uploader for it",
+    ).toBe(false);
+    // The control that stops the line above passing vacuously: a REAL module script name must be
+    // inside that prefix, or the assertion is about a prefix nothing matches.
+    expect(tenantModuleScriptName(TENANT_ID, "keyframe").startsWith(MODULE_SCRIPT_PREFIX)).toBe(true);
+    // ...and it must stay reapable by the leftover census, which sweeps by SMOKE_PREFIX.
+    expect(D1_PROBE_SCRIPT.startsWith(SMOKE_PREFIX)).toBe(true);
+  });
 });
 
 describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () => {
@@ -449,6 +479,11 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
           compatibilityDate: "2026-06-01",
           bindings: [{ type: "d1", name: "TELEMETRY_DB", id: db.uuid }],
         });
+        // Recorded BEFORE the break: teardown reaps `state.uploaded` by exact name, so a script
+        // that exists and is not in this list is a script only the namespace delete can remove --
+        // and that delete fails while any script survives. This is the backstop for the delete
+        // below, not a duplicate of it.
+        state.uploaded.push(D1_PROBE_SCRIPT);
         bindable = true;
         break;
       } catch (e) {
@@ -461,7 +496,12 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
       throw new Error(`throwaway D1 ${db.uuid} never became bindable within 300s: ${lastErr}`);
     }
     say("precondition: the throwaway D1 is bindable (probe script accepted the binding).");
-    await cf.deleteUserWorker(NAMESPACE, D1_PROBE_SCRIPT).catch(() => undefined);
+    // NAMED rather than swallowed. This was `.catch(() => undefined)`, the one step in this file
+    // whose failure was neither reported nor censused; teardown reaps the script either way, but a
+    // silent failure here is a fact about the account nobody would ever see.
+    await cf.deleteUserWorker(NAMESPACE, D1_PROBE_SCRIPT).catch((e: unknown) => {
+      say(`LEFTOVER probe script ${D1_PROBE_SCRIPT}: ${String(e).slice(0, 160)} (teardown will reap it)`);
+    });
 
     // ---- THE STUDIO SCHEMA. WITHOUT IT THE POSITIVE LEG CANNOT MEASURE ITS SUBJECT (cp#379) -----
     //
@@ -664,8 +704,16 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
     });
     expect(reportedUnavailable, "recording modules whose running worker could NOT resolve TELEMETRY_DB").toEqual([]);
 
-    // plan-enhance submits no RunPod job and has no /ready route, so null is its correct answer.
-    // Asserted separately so a 404 there never reads as a gap.
+    // plan-enhance submits no RunPod job, so null is its correct answer, and it is asserted
+    // separately so its null never reads as a gap in the population above.
+    //
+    // WHY NOT "it has no /ready route", which is what this comment used to say: measured in the
+    // v1.20.0 artifact, modules/plan-enhance/worker.js DOES serve /ready. It answers 200 with
+    // `ok`, `module` and `credentials` and carries no `telemetry` field at all (0 occurrences of
+    // `telemetry` and of `job_log` in that bundle, against 3 each in keyframe's). So this null is
+    // produced by an absent FIELD, not by a 404, and at least three states produce it -- absent
+    // route, present route without telemetry, unparseable body. Stated because a comment naming a
+    // cause the artifact does not have is the same defect as an assertion that cannot fail.
     expect(rows.get("plan-enhance")?.value, "plan-enhance is not endpoint-backed and must report null").toBe(null);
   }, 1_800_000);
 
