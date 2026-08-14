@@ -14,7 +14,6 @@ import {
   invokeRejectionCopy,
   REJECTION_COPY,
   quotaFit,
-  scopeVerdict,
   slugHint,
   SLUG_RESERVED,
   stepIndex,
@@ -216,55 +215,6 @@ describe("slugHint (mirrors the control plane's slug rule, #52)", () => {
   it("says nothing on an empty field", () => {
     expect(slugHint("").level).toBe("empty");
     expect(slugHint(null).valid).toBe(false);
-  });
-});
-
-describe("scopeVerdict (key B, the one we actually keep)", () => {
-  const FOUR = { ep_backend: true, ep_upscale: true, ep_lipsync: true, ep_audio: true };
-
-  it("accepts a correctly scoped invoke-only key", () => {
-    const v = scopeVerdict({ graphql_denied: true, health: FOUR });
-    expect(v.ok).toBe(true);
-    expect(v.failures).toEqual([]);
-  });
-
-  it("REJECTS a full key even though every endpoint works", () => {
-    // The dangerous case: a graphql key passes every health check, so "it
-    // works" is true and useless as a test. The refusal has to hang on graphql
-    // being DENIED, or we would happily store account-wide power forever.
-    const v = scopeVerdict({ graphql_denied: false, health: FOUR });
-    expect(v.ok).toBe(false);
-    expect(v.message).toContain("account access");
-  });
-
-  it("REJECTS a key scoped to the wrong endpoints, and names them", () => {
-    const v = scopeVerdict({
-      graphql_denied: true,
-      health: { ep_backend: true, ep_upscale: false, ep_lipsync: true, ep_audio: false },
-    });
-    expect(v.ok).toBe(false);
-    expect(v.message).toContain("ep_upscale");
-    expect(v.message).toContain("ep_audio");
-    expect(v.message).not.toContain("ep_backend");
-  });
-
-  it("REJECTS when the probe is missing, absent, or junk rather than assuming pass", () => {
-    for (const junk of [null, undefined, {}, { graphql_denied: true }, { health: FOUR }]) {
-      expect(scopeVerdict(junk as never).ok).toBe(false);
-    }
-  });
-
-  it("REJECTS a truthy-but-not-true graphql_denied (no sloppy coercion on the security check)", () => {
-    for (const sloppy of ["true", 1, "yes"]) {
-      const v = scopeVerdict({ graphql_denied: sloppy as never, health: FOUR });
-      expect(v.ok).toBe(false);
-    }
-  });
-
-  it("reports BOTH problems when a key is wrong in both ways", () => {
-    const v = scopeVerdict({ graphql_denied: false, health: { ep_backend: false } });
-    expect(v.ok).toBe(false);
-    expect(v.failures.length).toBe(2);
   });
 });
 

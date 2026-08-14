@@ -300,12 +300,19 @@ export const tenantD1Name = (slug: string) => `vivijure-tenant-${slug}`;
 export const tenantBucketName = (slug: string) => `vivijure-tenant-${slug}`;
 export const tenantR2TokenName = (slug: string) => `vivijure-tenant-${slug}-r2`;
 /**
- * This tenant AI Gateway Run token (cf#56). DETERMINISTIC from the slug, like the R2 token name and
- * for the same reason: the value is never stored, so a token whose id we lost can still be revoked
- * by name (the cf#91 census path). No new column is needed -- unlike the R2 credential, whose id
- * doubles as the S3 access key id, this token id is only ever needed to revoke.
+ * This tenant AI Gateway Run token for MODULE workers (cf#56). DETERMINISTIC from the slug, like
+ * the R2 token name and for the same reason: the value is never stored, so a token whose id we lost
+ * can still be revoked by name (the cf#91 census path). No new column is needed -- unlike the R2
+ * credential, whose id doubles as the S3 access key id, this token id is only ever needed to revoke.
+ *
+ * Studio planner/chat uses a SEPARATE grant (`tenantStudioAigTokenName`): sharing one Run token
+ * between the studio script and every module would mean a compromise of either surface bills and
+ * revokes the other (cf#98 audit).
  */
 export const tenantAigTokenName = (slug: string) => `vivijure-tenant-${slug}-aig`;
+
+/** Studio-only AI Gateway Run token (cf#98). Distinct from the module grant above. */
+export const tenantStudioAigTokenName = (slug: string) => `vivijure-tenant-${slug}-aig-studio`;
 
 /**
  * The credential a TEARDOWN cycle mints for itself to empty a bucket (cf#72). Deliberately a
@@ -486,6 +493,18 @@ export class ProvisionFailure extends Error {
     this.name = "ProvisionFailure";
   }
 }
+
+/**
+ * Advice appended when a provision cannot resume and the customer re-submits the same slug.
+ *
+ * THE WORD "CONTINUE" IS THE DEFECT (cp#304). Re-provisioning a failed, never-live slug is the
+ * reclaim path: claim -> teardown(deleteData) -> blank columns -> new job. That DESTROYS the partial
+ * environment and starts over; it does not resume. Naming the route and the destroy is what makes
+ * the instruction match what the plane does.
+ */
+export const REPROVISION_DESTROYS =
+  "this cannot be continued. POST /api/tenant/provision with the same name again destroys the " +
+  "partial environment and starts over from scratch";
 
 /**
  * Run a provision job to completion or to an honest failure.
@@ -712,7 +731,7 @@ export async function runProvisionJob(
         throw new ProvisionFailure(
           "runpod_endpoints",
           "the endpoints recorded for this tenant cannot be read, although the provision got past " +
-            "the step that writes them; re-provision to continue",
+            `the step that writes them; ${REPROVISION_DESTROYS}`,
         );
       }
     } else if (runpodApiKey) {
@@ -762,6 +781,20 @@ export async function runProvisionJob(
     // the dispatcher injects it for the owner's browser (auth ruling 2026-07-18). It is the one
     // credential stored as a VALUE; token-crypto encrypts it under STUDIO_TOKEN_KEK before D1.
     const studioApiToken = randomToken();
+
+    // cf#98: mint a STUDIO-scoped AI Gateway Run token BEFORE the studio upload so planner/chat can
+    // bind GATEWAY_ID + CF_AIG_TOKEN (both-or-neither). Distinct name from the module grant minted
+    // below -- one surface's compromise must not expose the other's credential.
+    let studioAigTokenValue: string | null = null;
+    if (deps.aiGatewayId) {
+      try {
+        await deps.tokenMinter.revokeByName(tenantStudioAigTokenName(tenant.slug));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "revoke failed";
+        deps.log("aig_token.studio_revoke_failed", { tenant: tenant.id, error: msg });
+      }
+      studioAigTokenValue = (await deps.tokenMinter.mintAigToken(tenantStudioAigTokenName(tenant.slug))).value;
+    }
 
     // Each created endpoint carries the studio env var its id belongs in (spec.endpointVar); the
     // studio cannot dispatch a render without these. The mapping is DATA from the provision plan, so
@@ -864,6 +897,18 @@ export async function runProvisionJob(
         // a self-hoster installs -- their unset var renders nothing, which is correct because we
         // cannot act on their content. Absent when the plane cannot name its own page.
         ...abuseReportUrlBindings(deps.abuseReportUrl),
+        // cf#98: planner / chat / enhance on the STUDIO (not only plan-enhance modules) need env.AI
+        // and a resolvable GATEWAY_ID. AI is bound unconditionally so a plane with no gateway still
+        // has a working Workers AI local path; GATEWAY_ID + CF_AIG_TOKEN are both-or-neither when
+        // TENANT_AI_GATEWAY_ID is configured (same rule as modules). CF_AIG_TOKEN is secret_text only.
+        { type: "ai", name: "AI" },
+        ...(deps.aiGatewayId && studioAigTokenValue
+          ? [
+              { type: "plain_text" as const, name: "GATEWAY_ID", text: deps.aiGatewayId },
+              // secret_text only -- never plain_text (credential must not appear in script metadata).
+              { type: "secret_text" as const, name: "CF_AIG_TOKEN", text: studioAigTokenValue },
+            ]
+          : []),
       ],
     });
     await deps.store.setTenantScript(tenant.id, deps.tenantScriptName(tenant.slug), release);
@@ -897,17 +942,14 @@ export async function runProvisionJob(
     //    its endpoint id. Key B is NOT bound yet -- it lands in installInvokeKey, alongside the
     //    studio. The studio (with its MODULE_DISPATCH binding) is already up, so the install pass
     //    below can reach these. Idempotent-by-name (adopt-on-exists), like every other step.
-    // cf#56: this tenant AI Gateway Run token, minted fresh. Revoke-then-mint by NAME, the same
-    // shape as the R2 credential above and for the same reason: we never stored the value, so a
-    // retry cannot reuse the old one and must not leave a trail of live grants behind it. A failed
-    // revoke is logged loudly rather than fatal -- it is a live credential we did not clean up, but
-    // stranding the tenant over it would be worse.
+    // cf#56: module AI Gateway Run token (separate grant from the studio token minted above).
     let aigTokenValue: string | null = null;
     if (deps.aiGatewayId) {
       try {
         await deps.tokenMinter.revokeByName(tenantAigTokenName(tenant.slug));
       } catch (e) {
-        deps.log("aig_token.revoke_failed", { tenant: tenant.id, error: String(e) });
+        const msg = e instanceof Error ? e.message : "revoke failed";
+        deps.log("aig_token.revoke_failed", { tenant: tenant.id, error: msg });
       }
       aigTokenValue = (await deps.tokenMinter.mintAigToken(tenantAigTokenName(tenant.slug))).value;
     }
@@ -1191,18 +1233,17 @@ export async function continueProvisionJob(
         throw new ProvisionFailure(
           inferStep(done),
           "this provision was started before the plane recorded which RunPod shape it was for, so " +
-            "there is no way to tell whether it can be finished without the original key; start " +
-            "provisioning again to continue",
+            `there is no way to tell whether it can be finished without the original key; ${REPROVISION_DESTROYS}`,
         );
       }
       if (recordedMode === "dedicated") {
-        // UNCHANGED, and it must stay unchanged: for a tenant that brought its own RunPod account
-        // this message is exactly true, and this refusal is permanent by custody. Key A lives in the
-        // request that carried it and nowhere else.
+        // Key A is unrecoverable for a tenant that brought its own RunPod account; the refusal is
+        // permanent by custody. The DESTROY clause (cp#304) is the load-bearing half of the advice:
+        // re-provisioning the same name is reclaim, not resume.
         throw new ProvisionFailure(
           inferStep(done),
           "provisioning was interrupted before the studio was uploaded, and the RunPod key needed to " +
-            "finish it is never stored; start provisioning again to continue",
+            `finish it is never stored; ${REPROVISION_DESTROYS}`,
         );
       }
       if (recordedMode === "shared") {
@@ -1224,7 +1265,7 @@ export async function continueProvisionJob(
             inferStep(done),
             "this provision did not record which release it was building, so resuming it could " +
               "upload a studio that does not match the database schema already created for it; " +
-              "start provisioning again to continue",
+              REPROVISION_DESTROYS,
           );
         }
         // The heartbeat is handed over with the job: runProvisionJob starts its own, and two
@@ -1250,7 +1291,7 @@ export async function continueProvisionJob(
       throw new ProvisionFailure(
         inferStep(done),
         `this provision records an unrecognised RunPod shape (${JSON.stringify(recordedMode)}), so ` +
-          "it cannot be resumed; start provisioning again to continue",
+          `it cannot be resumed; ${REPROVISION_DESTROYS}`,
       );
     }
 
@@ -1259,21 +1300,20 @@ export async function continueProvisionJob(
     // Reaching here means wfp_upload completed AND progress is contiguous, so runpod_endpoints and
     // everything before it completed too. That makes each absence below a WRITE THAT DID NOT LAND or
     // a value that no longer parses -- data corruption -- rather than a phase that has not happened.
-    // The old messages said "re-provision to continue", which reads as the latter and sent a reader
-    // looking for an unfinished step.
+    // Re-provision DESTROYS (cp#304); do not promise a resume.
     const endpoints = readTenantEndpoints(tenant);
     if (!endpoints.length) {
       throw new ProvisionFailure(
         "runpod_endpoints",
         "the endpoints recorded for this tenant cannot be read, although the provision got past the " +
-          "step that writes them; re-provision to continue",
+          `step that writes them; ${REPROVISION_DESTROYS}`,
       );
     }
     if (!tenant.studio_token_enc) {
       throw new ProvisionFailure(
         "wfp_upload",
         "no studio token is recorded for this tenant, although the provision got past the step that " +
-          "writes it, so its studio cannot be reached; re-provision to continue",
+          `writes it, so its studio cannot be reached; ${REPROVISION_DESTROYS}`,
       );
     }
     const studioApiToken = await decryptStudioToken(deps.kek, tenant.studio_token_enc);
@@ -1317,7 +1357,7 @@ export async function continueProvisionJob(
       throw new ProvisionFailure(
         "wfp_upload",
         "no studio release recorded for this tenant, so the modules that pair with its studio " +
-          "cannot be identified; re-provision to continue",
+          `cannot be identified; ${REPROVISION_DESTROYS}`,
       );
     }
 
@@ -2243,11 +2283,10 @@ export async function teardownTenant(
     });
   }
 
-  // cf#56: the per-tenant AI Gateway Run token. BY NAME ONLY, because its id is deliberately not
-  // persisted: unlike the R2 credential (whose id doubles as the S3 access key id) this token is
-  // only ever needed in order to revoke it, so the deterministic name IS the handle. Revoked here,
-  // alongside the R2 grant and for the same reason -- a stranded live grant is the worst leftover
-  // this path can produce, and this one bills to US.
+  // cf#56 / cf#98: per-tenant AI Gateway Run tokens (module + studio). BY NAME ONLY, because their
+  // ids are deliberately not persisted: unlike the R2 credential (whose id doubles as the S3 access
+  // key id) these tokens are only ever needed in order to revoke them, so the deterministic name IS
+  // the handle. Revoked here, alongside the R2 grant -- a stranded live grant bills to US.
   //
   // Guarded on the SAME r2_token guard, deliberately: both names derive from the SLUG, so if slug
   // reuse means another live row owns these credentials, neither may be revoked out from under it.
@@ -2257,6 +2296,15 @@ export async function teardownTenant(
       if (!hit) {
         // Never minted (a plane with no gateway configured) or already gone. Not a failure.
         deps.log("teardown.aig_token_absent", { tenant: tenant.id, name: tenantAigTokenName(tenant.slug) });
+      }
+    });
+    await attempt("aig_studio_token_by_name", async () => {
+      const hit = await deps.tokenMinter.revokeByName(tenantStudioAigTokenName(tenant.slug));
+      if (!hit) {
+        deps.log("teardown.aig_studio_token_absent", {
+          tenant: tenant.id,
+          name: tenantStudioAigTokenName(tenant.slug),
+        });
       }
     });
   }

@@ -63,6 +63,15 @@ describe("the provisioning plan", () => {
   it("never uses the frozen python default tag (0.4.4 footgun stays in the script)", () => {
     expect(PROVISION_PLAN.find((e) => e.key === "backend")?.tag).not.toBe("0.4.4");
   });
+
+  // cp#303: the backend endpoint never trains cast LoRAs (that is vivijure-wan-train, fail-closed
+  // on its own binding). The label is tenant-visible via onboarding, so a training clause here is
+  // a product lie, not decoration.
+  it("backend label does not promise cast LoRA training (cp#303)", () => {
+    const backend = PROVISION_PLAN.find((e) => e.key === "backend");
+    expect(backend?.label).toBe("Render (keyframes, video)");
+    expect(backend?.label).not.toMatch(/lora|train/i);
+  });
 });
 
 describe("templateEnv", () => {

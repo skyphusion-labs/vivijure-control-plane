@@ -94,6 +94,24 @@ for v in $REQUIRED_VARS $ALLOW_EMPTY; do
 done
 envsubst "$subst_list" < "$tpl" > "$out"
 
+# --------------------------------------------------------------------------------------------
+# SELFHOST-SKIP blocks (cp#48). Same markers as vivijure-cf deploy.sh.
+#
+# OUR-fleet-only lines (e.g. tail_consumers -> vivijure-tail) must not land in a self-hoster's
+# rendered toml: wrangler deploy FAILS on a missing tail consumer. Default: STRIP those blocks.
+# Skyphusion fleet deploy sets KEEP_FLEET_ONLY=1 so the blocks stay and Loki gets the stream.
+# --------------------------------------------------------------------------------------------
+if [ "${KEEP_FLEET_ONLY:-}" != "1" ]; then
+  stripped="$out.selfhost-stripped"
+  awk '
+    /^# >>> SELFHOST-SKIP:/ { skip=1; next }
+    /^# <<< SELFHOST-SKIP:/ { skip=0; next }
+    skip { next }
+    { print }
+  ' "$out" > "$stripped"
+  mv "$stripped" "$out"
+fi
+
 # Post-render: an unsubstituted placeholder means a name in the template that this script does not
 # know about -- a template edit that never reached REQUIRED_VARS/ALLOW_EMPTY.
 if grep -v "^[[:space:]]*#" "$out" | grep -qF "\${"; then

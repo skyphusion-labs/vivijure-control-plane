@@ -1,0 +1,149 @@
+# CHANGELOG.md is APPEND-ONLY: every PR adds its own `### ...` entry under the shared
+# `## Unreleased` anchor, so a conflict here is two PRs both appending, never two PRs
+# disagreeing about the same line. Union keeps both sides instead of stopping the merge.
+#
+# GITHUB DOES NOT HONOUR THIS. It affects LOCAL merges only. Measured 2026-08-08 on this
+# repo, after the attribute was on main: 0 of 19 CONFLICTING PRs flipped to MERGEABLE,
+# across TWO settled trigger-and-read cycles (GitHub computes mergeability lazily, so one
+# unchanged reading is indistinguishable from a stale one and was not trusted alone). The
+# real server-side merge agrees with the flag: `gh pr update-branch` refused cp#332 AND
+# cp#350, 2 of 2, both of which merge CLEAN locally under this attribute. Positive control,
+# same token and session: the same command SUCCEEDED on cp#353 and advanced its branch, so
+# the refusals are the server's answer and not a broken tool.
+#
+# THIS FILE DOES NOT DRAIN THE LEGACY QUEUE. An earlier version of this comment claimed it
+# did, and that claim was wrong. Measured 2026-08-08 on cp#336: git reads a file's merge
+# attribute from the PRE-MERGE working tree. Draining means checking out the PR branch and
+# merging main into it, so the tree git consults is the PR BRANCH, and every legacy PR was
+# authored before this file existed (`git cat-file -e cae0bd9e:.gitattributes` -> missing).
+# The attribute is therefore absent at the moment it would have to apply, `git check-attr
+# merge -- CHANGELOG.md` reports `unspecified`, and the merge conflicts exactly as if this
+# file were not here.
+#
+# THE ONE RULE, which every observation below is just a consequence of:
+#
+#     Every git merge operation resolves a file's merge attribute from the CHECKED-OUT
+#     WORKING TREE, never from the commits being merged. `merge` and `merge-tree` alike.
+#
+# Consequences, each of which fooled a first pass:
+#   - `git check-attr` run AFTER a conflicted merge reports `union`, because the merge
+#     itself pulled this file in from main. It is describing a state that did not exist
+#     when the driver was chosen. Query it on the clean pre-merge checkout or not at all.
+#   - Merging the PR head INTO a main checkout DOES apply union and looks like proof. It is
+#     the opposite direction from a drain: there the tree git consults is main, which
+#     carries the attribute. Direction is not a property of the merge; it is which side you
+#     checked out.
+#   - A CLONE SITTING ON A STALE `main` BEHAVES LIKE A CLONE WITH NO ATTRIBUTE AT ALL. This
+#     one produced a false claim that got as far as a merged comment: `git merge-tree` was
+#     reported here as unable to honour the driver. It honours it. Supplied via
+#     `-c core.attributesFile`, merge-tree on cp#336's two parents returns rc=0 and a tree
+#     byte-identical to the real merge commit's (`01e7da0d`). The earlier test had run from
+#     a working tree parked on a main that predated this file, and `check-attr` printed
+#     `unspecified` in the same output that was read as "the tool ignores it".
+#     Caught by strummer during the cp#336 re-review, by checking rather than accepting.
+#
+# The failure shape worth remembering: an anomaly was explained by inventing a CAPABILITY
+# LIMIT in the tool when the real cause was STATE the operator controlled. Prefer the
+# explanation that implicates your own checkout until it is ruled out.
+#
+# THE RECIPE THAT ACTUALLY WORKS supplies the attribute from OUTSIDE the branch, so it does
+# not care what the PR branch predates. Preferred form, used to drain cp#336 live:
+#
+#     printf 'CHANGELOG.md merge=union\n' > /tmp/drain-attrs
+#     git -c core.attributesFile=/tmp/drain-attrs merge origin/main
+#
+# This is per-invocation and mutates NO shared state. Prefer it: a clone here is a singleton
+# shared across parallel contexts, so appending to its `.git/info/attributes` changes merge
+# behaviour for every other session using that clone, and leaves residue if you forget to
+# restore it.
+#
+# The repo-local form also works and is fine in a clone you own alone:
+#
+#     echo 'CHANGELOG.md merge=union' >> "$(git rev-parse --git-common-dir)/info/attributes"
+#
+# Use --git-common-dir, NOT --git-dir: inside a linked worktree --git-dir resolves to
+# .git/worktrees/<name>, whose info/attributes git does not consult, and the attribute
+# silently fails to arm (that failure is what made the first negative control meaningless --
+# both arms conflicted because the positive arm had never armed).
+#
+# Verified bidirectionally on cp#336, same commits both arms, attribute the only variable:
+# with it `rc=0` and zero conflict markers; with it removed `rc=1` and one marker.
+#
+# ASSERT THE ATTRIBUTE IS ARMED BEFORE MERGING. This supersedes reasoning about which class
+# a branch is in -- do not decide whether the flag is needed, MEASURE whether it took:
+#
+#     git check-attr merge -- CHANGELOG.md      # must print `union`. Refuse to merge if not.
+#
+# Run it on the CLEAN PRE-MERGE checkout (see the check-attr trap above; after a conflicted
+# merge it reports `union` about a state that did not exist when the driver was chosen).
+#
+# WHY THIS AND NOT "the flag is always required": it closes a SILENT-PASS state the flag has
+# on its own. A typo'd path in the flag file arms nothing, the merge runs with `unspecified`,
+# and it hands back a conflict **indistinguishable from a genuine one** -- which the operator
+# then hand-resolves, believing it. One command removes that entire failure mode, works
+# whatever the attribute's source, and fails loudly. (strummer, cp#340 review.)
+#
+# THE FLAG IS FOR THE DRAIN, NOT FOR VERIFYING. Two different checkouts, two answers:
+#   - DRAIN: working tree is the LEGACY PR BRANCH, which by definition predates this file.
+#     The attribute is absent exactly when it must apply, so it MUST be supplied. MEASURED,
+#     not reasoned -- see the assertion above; do not conclude it from the branch's age. Measured
+#     on cp#336, same commits both arms: supplied -> rc=0, 0 markers; removed -> rc=1, 1
+#     marker. (`git checkout origin/main -- .gitattributes` first does not work: it leaves a
+#     staged change and `git merge` refuses to start.)
+#   - VERIFYING afterwards: run from current main or any post-2026-08-07 branch and the file
+#     is simply THERE. Supplying the flag is noise, and worse, it teaches the next reader
+#     that the tool needs an incantation -- the same capability story retracted above, one
+#     layer down. (strummer, cp#336 review: it verified with no flag at all.)
+#
+# UNION IS A DUMB DRIVER -- rc=0 IS NOT THE CHECK. It keeps both sides unconditionally and
+# cannot tell a correct append from a structural mistake, so a conflict-free result can still
+# be wrong. After any union merge of this file, verify: exactly one `## Unreleased` anchor, no
+# conflict markers, no entry the MERGE duplicated (pre-existing duplicates are not yours), and
+# nothing dropped from either side. On cp#336 the honest check was arithmetic: 2872 + 8 = 2880
+# lines, and `git diff HEAD^1 HEAD -- CHANGELOG.md` showed exactly main's one new entry.
+#
+# STRONGEST AVAILABLE PROOF that a drain merge was purely MECHANICAL (nothing hand-added,
+# hand-resolved or dropped) -- compare the merge commit's tree against a recomputed merge:
+#
+#     git merge-tree --write-tree <merge>^1 <merge>^2     # rc AND first line both matter
+#
+# ASSERT BOTH `rc == 0` AND `tree == $(git rev-parse <merge>^{tree})`, as SEPARATE assertions.
+# **A CONFLICTED merge-tree STILL PRINTS A TREE SHA ON LINE 1**, so a check written as "grab
+# the first line and compare" reads a real conflict as an ordinary mismatch -- and on a path
+# you were not watching, that misreads as a tool problem instead of "this merge was hand
+# resolved". (strummer caught this before it went into a spawn prompt.)
+#
+# Keep the reversed-parent negative control (`merge-tree ^2 ^1` -> a DIFFERENT tree). Without
+# it, equality could be trivial rather than evidence that merge-tree actually merged.
+#
+# Both failure directions of this check are LOUD, which is why it is safe to standardise: a
+# stale verifying checkout gives rc=1, and a hand-resolved merge gives a mismatch that
+# correctly indicts the merge. There is no silent-pass state.
+#
+# DRAIN LOCALLY RATHER THAN `gh pr update-branch`, EVEN WHERE UPDATE-BRANCH WOULD SUCCEED.
+# Measured on cp#336: pushing a real merge commit left both prior approvals STALE, which is
+# honest and forces a fresh review. `gh pr update-branch` instead CARRIES the existing review's
+# commit_id forward onto the new merge commit, so the PR reports approved-at-head for a merge
+# no reviewer ever saw (that is how vivijure-local#305 came to look landable). A commit_id
+# comparison cannot detect it: the equality it tests is exactly what the carry-forward produces.
+# Compare the review's submitted_at against the head commit's creation time instead.
+#
+# SO WHY IS THIS FILE STILL HERE. The population it actually serves is RE-DRAINS, which is
+# not the one this comment first named. Measured on the open queue: 6 of 8 PRs still edit
+# CHANGELOG.md directly, and every one carrying this attribute carries it FROM A PRIOR
+# DRAIN -- not from having been cut after 2026-08-07. Once a branch is drained it carries
+# the file, so its SECOND drain gets union with no flag. This queue hit that case twice
+# (cp#347 ^1 c06b5232 and cp#332 ^1 9d80fa5b both carry it; the un-drained cp#351 and
+# cp#355 do not).
+#
+# The first version of this paragraph named "branches cut after 2026-08-07" instead. That
+# was TRUE and about the wrong population -- which is precisely the defect class this file
+# exists to correct, committed inside the correction. Found by strummer reviewing it.
+#
+# NOT THE REAL FIX. cp#358's changelog.d/ fragments are. They cover every NEW PR; this
+# covers neither the backlog nor anything past the migration window.
+#
+# REMOVE THIS once the migration window closes and the legacy queue is drained. After that
+# nothing should be touching CHANGELOG.md directly, so the attribute is pure hazard: it
+# would silently change local merge behaviour for no remaining reason.
+CHANGELOG.md merge=union
