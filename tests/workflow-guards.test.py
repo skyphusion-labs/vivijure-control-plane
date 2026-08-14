@@ -230,6 +230,14 @@ for name, text in (("deploy.yml", str(wf)), ("studio-pin-drift.yml", drift_text)
     check("no workflow redirects the pin checker's endpoints (" + name + ")",
           "CHECK_STUDIO_PIN_GH_API" not in text and "CHECK_STUDIO_PIN_CF_API" not in text,
           "a redirected run is not a measurement of the live estate")
+    # cp#393 added a third test-only override, CHECK_STUDIO_PIN_TIMEOUT_MS, so the abort path is
+    # testable in milliseconds. It belongs under the SAME absence assertion for the same reason: a
+    # deletion is protected by asserting the duplicate is ABSENT, never by sync-checking what
+    # remains. Its failure direction is closed -- a short timeout can only produce a REFUSAL, never
+    # a pass -- but a workflow setting it would still be shortening a live measurement silently.
+    check("no workflow shortens the pin checker's timeout (" + name + ")",
+          "CHECK_STUDIO_PIN_TIMEOUT_MS" not in text,
+          "an abbreviated timeout is not a measurement of the live estate")
 
 # Anchored on the EMITTED string, for the reason recorded above the mirror-notice assertion: a
 # vocabulary match is supplied by unrelated text. A skip here would be an absence reading as OK,

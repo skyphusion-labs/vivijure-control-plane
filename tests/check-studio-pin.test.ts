@@ -170,6 +170,59 @@ describe("check-studio-pin -- RELEASE mode", () => {
     expect(out).toContain("failed: HTTP 503");
     expect(code).toBe(2);
   });
+
+  // THE TRANSPORT CASES. The header lists `network` FIRST among the could-not-perform causes, and
+  // until cp#393 it was the one cause with no handler: every fetch rejection reached the top level
+  // unhandled, so Node exited 1 -- the DRIFT band -- with a raw stack. The eleven refusal tests above
+  // could not catch it, because the closest one drives a SERVED error response, which fail(2, ...)
+  // already handles. A connection failure and an abort never reach that code at all.
+  //
+  // These two differ from the HTTP-error case along exactly one axis: whether a response was ever
+  // produced. That is the axis the defect lived on.
+
+  it("REFUSES (2) when the connection is refused rather than reporting drift", async () => {
+    // Bind a port, learn it, then close it: a closed port on loopback is refused immediately and
+    // deterministically, with no dependence on an address nobody happens to be listening on.
+    const base = await serve({});
+    await new Promise<void>((r) => live!.close(() => r()));
+    live = undefined;
+    const { code, out } = await run([], { CHECK_STUDIO_PIN_GH_API: base, STUDIO_RELEASE: "v1.26.0" });
+    expect(out).toContain("could not be performed");
+    expect(out).toContain("transport layer");
+    expect(out).not.toContain("release(s) behind");
+    expect(code).toBe(2);
+  });
+
+  it("REFUSES (2) when a request exceeds the timeout rather than reporting drift", async () => {
+    // A server that accepts and never answers. The abort is the script's OWN timeout firing, which
+    // is the sharper half of the finding: the timeout exists SPECIFICALLY for could-not-perform, and
+    // before the fix its AbortError produced the drift code.
+    live = createServer(() => {
+      /* deliberately never responds */
+    });
+    await new Promise<void>((r) => live!.listen(0, "127.0.0.1", () => r()));
+    const base = `http://127.0.0.1:${(live!.address() as AddressInfo).port}`;
+    const { code, out } = await run([], {
+      CHECK_STUDIO_PIN_GH_API: base,
+      CHECK_STUDIO_PIN_TIMEOUT_MS: "250",
+      STUDIO_RELEASE: "v1.26.0",
+    });
+    expect(out).toContain("exceeded the 250ms timeout");
+    expect(out).toContain("could not be performed");
+    expect(out).not.toContain("release(s) behind");
+    expect(code).toBe(2);
+  });
+
+  it("announces an abbreviated timeout so a shortened run cannot pass as a live measurement", async () => {
+    const base = await serve(releaseRoutes());
+    const { code, out } = await run([], {
+      CHECK_STUDIO_PIN_GH_API: base,
+      CHECK_STUDIO_PIN_TIMEOUT_MS: "5000",
+      STUDIO_RELEASE: "v1.26.0",
+    });
+    expect(out).toContain("this run is NOT a live measurement");
+    expect(code).toBe(0);
+  });
 });
 
 describe("check-studio-pin -- DEPLOYED mode", () => {

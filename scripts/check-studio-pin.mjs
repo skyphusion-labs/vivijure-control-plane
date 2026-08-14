@@ -45,9 +45,16 @@ const CP_WORKER = "vivijure-control-plane"; // the deployed Worker whose binding
 // measured). Nothing in .github/workflows sets these, and tests/workflow-guards.test.py asserts so.
 const GH_API = process.env.CHECK_STUDIO_PIN_GH_API || "https://api.github.com";
 const CF_API = process.env.CHECK_STUDIO_PIN_CF_API || "https://api.cloudflare.com/client/v4";
-const REDIRECTED = Boolean(process.env.CHECK_STUDIO_PIN_GH_API || process.env.CHECK_STUDIO_PIN_CF_API);
+const REDIRECTED = Boolean(
+  process.env.CHECK_STUDIO_PIN_GH_API || process.env.CHECK_STUDIO_PIN_CF_API || process.env.CHECK_STUDIO_PIN_TIMEOUT_MS,
+);
 
-const TIMEOUT_MS = 20_000;
+// Overridable ONLY so the abort path is testable in milliseconds instead of twenty seconds, under
+// the same rule as the endpoint bases above: it is PRINTED on every overridden run, and
+// tests/workflow-guards.test.py asserts no workflow sets it. This is NOT the tolerance knob the
+// header forbids -- that one would widen what counts as CURRENT. This one can only ever turn a
+// slow read into a REFUSAL (exit 2), never a drift into a pass, so its failure direction is closed.
+const TIMEOUT_MS = Number(process.env.CHECK_STUDIO_PIN_TIMEOUT_MS) || 20_000;
 const PER_PAGE = 100;
 const MAX_PAGES = 20; // 2000 releases; hitting this is a refusal, never a silent truncation.
 const TAG_RE = /^v\d+\.\d+\.\d+$/;
@@ -62,6 +69,26 @@ const withTimeout = async (url, init = {}) => {
   const t = setTimeout(() => ac.abort(), TIMEOUT_MS);
   try {
     return await fetch(url, { ...init, signal: ac.signal });
+  } catch (e) {
+    // NETWORK IS THE FIRST CAUSE THIS FILE'S EXIT CONTRACT LISTS, and until cp#393 it was the only
+    // one with no handler: the rejection reached the top level unhandled, Node exited 1 -- the DRIFT
+    // band -- and printed a raw stack. "The API was unreachable" then read as "the pin is stale", on
+    // a step that gates a tag-gated release, so an operator following the printed remedy would
+    // advance a pin that was fine. The abort case is the sharper half: TIMEOUT_MS exists SPECIFICALLY
+    // for could-not-perform, and its own AbortError was producing the drift code.
+    //
+    // Only the ORIGIN is reported, never the full URL: the Cloudflare paths carry the account id.
+    let origin = "the endpoint";
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      /* a malformed base is already refused elsewhere; do not let reporting throw */
+    }
+    if (e && e.name === "AbortError") {
+      fail(2, `request to ${origin} exceeded the ${TIMEOUT_MS}ms timeout -- the check could not be performed`);
+    }
+    const code = (e && (e.cause?.code || e.code || e.name)) || "unknown";
+    fail(2, `request to ${origin} failed at the transport layer (${code}) -- the check could not be performed`);
   } finally {
     clearTimeout(t);
   }
