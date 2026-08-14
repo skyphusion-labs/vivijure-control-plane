@@ -1,0 +1,95 @@
+name: Studio pin drift
+
+# Is the studio pin CURRENT, at the surface that decides what a tenant actually receives? (cf#372)
+#
+# THE DEFECT THIS EXISTS FOR. `STUDIO_RELEASE` is the single value deciding which studio code a
+# hosted tenant runs. Self-host pulls the same tag straight from the vivijure-cf release. When the
+# pin trails, hosted and self-host run DIFFERENT code from the same nominal tag, which the absolute
+# hosted/self-host parity invariant forbids. It has gone stale three times; twice it was "fixed" by
+# bumping the value, and twice it came back. Nothing anywhere compared the two numbers -- measured
+# 2026-08-14 across 1026 tracked files in both repos, with a positive control that returned
+# non-zero on the same matcher. So the parity gate read green at the TAG while being violated at
+# the RUNTIME.
+#
+# TWO SURFACES, AND THE DIFFERENCE IS THE WHOLE POINT. The Actions variable is a PROPOSAL:
+# render-wrangler.sh interpolates it into [vars] at DEPLOY time, and deploy.yml fires on a v* tag
+# only, never on a merge. So between setting the variable and cutting a tag, the variable reads NEW
+# and the deployed binding reads OLD, with nothing reporting the disagreement. Measured
+# 2026-08-14T17:00Z: variable v1.26.0, latest published release v1.26.0, deployed binding v1.20.0.
+# A check on the variable alone would have been GREEN with hosted six releases behind.
+#
+# WHY A SCHEDULE AND NOT ONLY A DEPLOY GATE. deploy.yml preflight already refuses to deploy a
+# trailing pin (cf#372), which makes advancing it a precondition of a control-plane release. But
+# nothing forces a control-plane release after a cf release, so the window between them is exactly
+# where the defect lives and it is invisible to any deploy-triggered check. A cadence is the only
+# thing that can observe a gap in which, by definition, nothing runs.
+#
+# RED IS THE POINT, AND IT IS NOT NOISE. This going red means a tenant provisioned right now gets
+# older studio bytes than a self-hoster pulling the same tag. If it is red for a long stretch, that
+# is a parity violation persisting, not a check needing tuning. Do not add a tolerance knob; a
+# deliberate lag is a reviewed change to scripts/check-studio-pin.mjs carrying its reason.
+#
+# Runner: ubuntu-latest. Both repos are PUBLIC and the runner doctrine makes GitHub-hosted the
+# default for public repos; neither repo is a Plane C image-bake repo, and an absent rule for the
+# schedule trigger is not a grant.
+#
+# NOT A CI GATE. This never gates a PR or a merge: it reports on the live estate, which a PR cannot
+# change. The deploy-path gate in deploy.yml is the blocking half.
+
+on:
+  schedule:
+    # Daily, well clear of the CodeQL slot. cf cut six releases in eleven days, so a daily cadence
+    # bounds the undetected window at roughly one release.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-pin-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # Presence-check only, and the compliant form is the whole form: ${var:+SET} has no else
+      # branch, because any `:-` variant expands to the VALUE in exactly the case being tested.
+      #
+      # This job never runs from a fork (schedule and workflow_dispatch both run in this repo), so
+      # an absent secret here is a real defect rather than an expected fork condition, and it
+      # REFUSES instead of skipping. A step that silently skips when its credential is missing is a
+      # control that cannot fire, and it looks identical to one that ran and found nothing.
+      - name: Preflight -- credentials for the deployed read (presence-check only)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -eu
+          test -n "${CLOUDFLARE_API_TOKEN:+SET}" || { echo "::error::CLOUDFLARE_API_TOKEN is unset -- the deployed-binding read cannot be performed, and an unperformed check is not a pass."; exit 1; }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:+SET}" || { echo "::error::CLOUDFLARE_ACCOUNT_ID is unset -- the deployed-binding read cannot be performed."; exit 1; }
+          echo "both credentials for the deployed read are present"
+
+      # Runs unpiped and as its own step, so the exit status judged is the script's own: `cmd | tee`
+      # reports tee's status, and a gate evaluated in the same command as anything else is not a
+      # gate. Exit 2 (could not be performed) fails this job by design.
+      - name: Studio pin drift -- variable, deployed binding, latest published release
+        env:
+          STUDIO_RELEASE: ${{ vars.STUDIO_RELEASE }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npm run check:studio-pin:deployed
