@@ -2073,10 +2073,19 @@ export async function teardownTenant(
     const live = hits.some((h) => h.status !== "deleted");
     const key = resourceKeyFor(resource);
     let recordedOwner: string | null = null;
+    // NULL IS TWO DIFFERENT ANSWERS AND ONLY ONE OF THEM MAY OPEN THE HATCH.
+    //
+    // `recordedOwner === null` means EITHER "the lookup succeeded and this is a legacy row with no
+    // ownership claim" -- which is exactly the population option C exists for -- OR "the lookup
+    // threw and we do not know". Collapsing those lets a transient D1 failure during an `i_own`
+    // teardown silently downgrade D back to C, on the one path where all three cp#106 rulings chose
+    // the recoverable direction. Could-not-determine must not render as a determination.
+    let ownerLookupFailed = false;
     if (key) {
       try {
         recordedOwner = await deps.store.getResourceOwner(resource, key);
       } catch (e) {
+        ownerLookupFailed = true;
         deps.log("teardown.ownership_lookup_failed", {
           tenant: tenant.id,
           resource,
@@ -2098,6 +2107,7 @@ export async function teardownTenant(
     if (
       !live &&
       !recordedOwner &&
+      !ownerLookupFailed &&
       (opts as { ignoreTombstoneReferrers?: boolean }).ignoreTombstoneReferrers
     ) {
       deps.log("teardown.tombstone_referrers_overridden", {
@@ -2113,7 +2123,9 @@ export async function teardownTenant(
         ? " -- AT LEAST ONE IS NOT DELETED, this resource is in use"
         : recordedOwner && recordedOwner !== tenant.id
           ? ` -- recorded owner is ${recordedOwner}, not this tenant (i_own cannot override a recorded owner)`
-          : " -- all referrers are tombstones; recorded owner unknown (legacy) -- re-run with i_own or re-provision to record ownership (cp#106)");
+          : ownerLookupFailed
+            ? " -- all referrers are tombstones, but the ownership lookup FAILED, so whether this tenant owns the resource is UNKNOWN. i_own is refused on an unknown, not on a legacy row. Retry once the store is reachable (cp#106)"
+            : " -- all referrers are tombstones; recorded owner unknown (legacy) -- re-run with i_own or re-provision to record ownership (cp#106)");
     failures.push({ resource, error });
     deps.log("teardown.refused", {
       tenant: tenant.id,
@@ -2121,6 +2133,9 @@ export async function teardownTenant(
       referrers: hits.length,
       live,
       owner: recordedOwner,
+      // cp#106: distinguishes "no owner recorded" from "we could not find out". Without it the log
+      // row for a store outage is byte-identical to the row for a legacy resource.
+      owner_lookup_failed: ownerLookupFailed,
     });
     return true;
   };

@@ -260,6 +260,66 @@ describe("teardown referential guard", () => {
     expect(log.deleteD1).toEqual([]);
   });
 
+  // cp#106: `recordedOwner === null` is TWO answers -- "the lookup succeeded and this is a legacy
+  // row" and "the lookup threw and we do not know". Only the first may open the i_own hatch.
+  //
+  // The pair below is the point. Both drive the SAME legacy row through the SAME i_own teardown;
+  // the only difference is whether the ownership lookup works. A single test asserting the refusal
+  // would pass against a build that refuses everything.
+  it("cp#106 C: i_own DOES open the hatch on a genuine legacy row (control)", async () => {
+    await store.createTenant("ten_ghost", "ghost-slug", "acct_1", "failed");
+    await store.setTenantStatus("ten_ghost", "deleted");
+    await own("ten_ghost", { d1: D1_ID });
+
+    await store.createTenant("ten_legacy", "legacy-slug", "acct_1", "failed");
+    await own("ten_legacy", { d1: D1_ID });
+    // No claimResourceOwnership call anywhere: this is the legacy population, owner genuinely unset.
+
+    const legacy = (await store.getTenantById("ten_legacy"))!;
+    const res = await teardownTenant(deps, legacy, {
+      deleteData: true,
+      ignoreTombstoneReferrers: true,
+    });
+    expect(
+      res.failures.find((f) => f.resource === "d1"),
+      "the hatch must OPEN on a legacy row, or the refusal test below proves nothing",
+    ).toBeUndefined();
+    expect(log.deleteD1).toContain(D1_ID);
+  });
+
+  it("cp#106 C: a FAILED ownership lookup refuses i_own -- unknown is not legacy", async () => {
+    await store.createTenant("ten_ghost2", "ghost2-slug", "acct_1", "failed");
+    await store.setTenantStatus("ten_ghost2", "deleted");
+    await own("ten_ghost2", { d1: D1_ID });
+
+    await store.createTenant("ten_unknown", "unknown-slug", "acct_1", "failed");
+    await own("ten_unknown", { d1: D1_ID });
+    const unknown = (await store.getTenantById("ten_unknown"))!;
+
+    // Stub ONLY getResourceOwner. A blunt throw from the whole store also breaks
+    // claimResourceOwnership and the fixtures above, which is why this could not be isolated by
+    // failing the store wholesale -- the setup would die before the branch under test was reached.
+    const realGetOwner = store.getResourceOwner.bind(store);
+    (store as unknown as { getResourceOwner: () => Promise<string | null> }).getResourceOwner =
+      async () => {
+        throw new Error("D1_ERROR: network");
+      };
+    try {
+      const res = await teardownTenant(deps, unknown, {
+        deleteData: true,
+        ignoreTombstoneReferrers: true,
+      });
+      const d1Failure = res.failures.find((f) => f.resource === "d1");
+      expect(d1Failure, "an UNKNOWN owner must refuse, not fall through to the legacy hatch").toBeDefined();
+      expect(d1Failure!.error).toMatch(/ownership lookup FAILED/);
+      expect(d1Failure!.error).toMatch(/UNKNOWN/);
+      // The load-bearing assertion: the resource was NOT deleted on a could-not-determine.
+      expect(log.deleteD1).not.toContain(D1_ID);
+    } finally {
+      (store as unknown as { getResourceOwner: typeof realGetOwner }).getResourceOwner = realGetOwner;
+    }
+  });
+
   it("blanks a column ONLY on that resource's successful deletion", async () => {
     await store.createTenant("ten_mix", "mixed", "acct_1", "failed");
     await own("ten_mix", { d1: "db-mix", bucket: "bkt-mix", script: "scr-mix" });
