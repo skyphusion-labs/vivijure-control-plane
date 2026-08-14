@@ -162,6 +162,28 @@ export function tenantRefusal(tenant: Tenant): Response | null {
     case "deleting":
     case "deleted":
       return refusal(404, "No studio at this address.");
+    default:
+      // FAIL CLOSED. `null` from this function MEANS DISPATCH, so a fall-through would have
+      // returned undefined, been falsy at `if (refused)`, and served a tenant whose lifecycle we
+      // do not model -- the most successful-looking outcome available, with no error and no log.
+      //
+      // `TenantLifecycle` is a COMPILE-TIME claim about a string D1 hands back. typecheck catches
+      // someone adding a state (TS2366 fires on this very function, verified), but it cannot catch
+      // a value that arrives at RUNTIME: `tenants.status` is TEXT NOT NULL with no CHECK, unlike
+      // `credit_holds.status` and `llm_spend_rollup.status` which both carry one. A hand-run
+      // migration, a manual UPDATE, or version skew between a deploy that knows a new state and one
+      // that does not, all reach here.
+      //
+      // Direction matches `routingStatusFor()` in tenant-resolver.ts, which projects the SAME
+      // column and already documents fail-closed as "the correct direction for a mistake to fall".
+      // Two projections of one column falling opposite ways was the defect; this is cp#390.
+      console.error(JSON.stringify({
+        ev: "routing.lifecycle_unmodelled",
+        tenant: tenant.id,
+        status: String((tenant as { status: unknown }).status),
+        msg: "tenant status outside TenantLifecycle -- refusing. Loud in the log, generic on the wire.",
+      }));
+      return refusal(404, "No studio at this address.");
   }
 }
 
