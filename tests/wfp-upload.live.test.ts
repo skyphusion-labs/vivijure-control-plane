@@ -23,6 +23,16 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { CfApi } from "../src/cf-api";
 
+// `@cloudflare/workers-types` declares a GLOBAL `Buffer` whose `toString()` takes no arguments, and
+// it wins over @types/node's in this project's global scope. So `someNodeBuffer.toString("utf8")`
+// stopped type-checking (TS2554 "Expected 0 arguments, but got 1") purely from a types bump -- the
+// runtime behaviour never changed and these are Node buffers in Node-only test helpers.
+//
+// Importing Buffer explicitly from "node:buffer" and routing through `Buffer.from(...)` names which
+// Buffer is meant, rather than casting the error away. A cast would silence the same message for a
+// value that genuinely IS the Workers type, which is the case worth keeping loud.
+import { Buffer } from "node:buffer";
+
 declare const process: { env: Record<string, string | undefined> };
 
 const TOKEN = process.env.CF_PROVISIONER_TOKEN;
@@ -99,7 +109,7 @@ describe.skipIf(!LIVE)("wfp_upload with the REAL studio bundle", () => {
         const a = byHash.get(h)!;
         return {
           hash: h,
-          base64: readFileSync(join(DIR!, "assets", h)).toString("base64"),
+          base64: Buffer.from(readFileSync(join(DIR!, "assets", h))).toString("base64"),
           contentType: a.content_type,
         };
       });
