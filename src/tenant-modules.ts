@@ -230,6 +230,35 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
  * Gateway and submits no RunPod job. It is what gives every use of this predicate a real subject
  * rather than a population that happens to be everything.
  */
+/**
+ * Bindings that must NEVER appear on a tenant module worker (cf#361).
+ *
+ * Modules call `reconcileRunpodEndpointWorkersMax` against the RunPod MANAGEMENT API when
+ * `RUNPOD_WORKERS_MAX` is set. That is intentional on operator-hosted modules. On a tenant
+ * namespace it would put management reach one binding away from the paying consumer -- safe today
+ * only because this builder never emits the name. Pin the refusal so omission becomes design.
+ */
+export const TENANT_MODULE_FORBIDDEN_BINDINGS: readonly string[] = [
+  "RUNPOD_WORKERS_MAX",
+];
+
+/** Throw if any forbidden management binding snuck onto a tenant module upload (cf#361). */
+export function assertNoTenantModuleForbiddenBindings(
+  moduleName: string,
+  bindings: readonly { name: string }[],
+): void {
+  const names = new Set(bindings.map((b) => b.name));
+  for (const forbidden of TENANT_MODULE_FORBIDDEN_BINDINGS) {
+    if (names.has(forbidden)) {
+      throw new TenantModuleError(
+        "modules_upload",
+        `module ${moduleName}: binding ${forbidden} is forbidden on tenant modules (cf#361: ` +
+          "management API reach must stay operator-only; refuse rather than upload)",
+      );
+    }
+  }
+}
+
 export const reachesRunpod = (spec: TenantModuleSpec): boolean =>
   Boolean(spec.endpointKey) || Boolean(spec.publicEndpoint);
 
@@ -673,6 +702,8 @@ export async function uploadTenantModules(
         });
       }
     }
+    // cf#361: design, not omission -- refuse management bindings before they reach a tenant script.
+    assertNoTenantModuleForbiddenBindings(spec.module, bindings);
     await deps.cf.uploadUserWorker({
       namespace: deps.moduleNamespace,
       scriptName,
@@ -922,7 +953,12 @@ export async function teardownTenantModules(
 export const MODULE_READY_PROBE_DEADLINE_MS = 10_000;
 const MODULE_READY_BACKOFF_MS = [250, 500, 1000, 2000] as const;
 
-/** The /ready envelope, as the module contract defines it (vivijure-cf#114). Booleans only. */
+/**
+ * The /ready envelope, as the module contract defines it (vivijure-cf#114).
+ *
+ * NOT booleans only, and that line is what this file used to say. `telemetry.job_log` is a
+ * tri-state STRING as of vivijure-cf 815c9ff0 (cp#378); the rest of the envelope is booleans.
+ */
 interface ModuleReadyBody {
   ok?: boolean;
   module?: string;
@@ -932,10 +968,18 @@ interface ModuleReadyBody {
    * part of the module ok flag (telemetry must never gate a render), which is exactly why nothing
    * waits on it and it has to be LOOKED at -- see probeTenantModuleReadiness.
    *
+   * TYPED `unknown` ON PURPOSE, and this is the defect cp#378 fixes. This field was declared
+   * `boolean` while the modules had emitted a tri-state STRING since vivijure-cf 815c9ff0
+   * (2026-08-01). A `typeof === "boolean"` test does not throw on a string, it just answers no,
+   * so every module read `null` for twelve days and the readiness route could prove nothing.
+   * Declaring the WIRE type as what it is (unparsed input) and refusing in ONE audited place is
+   * what stops the next shape change from being silent -- a narrower declaration here would only
+   * move the lie from the parser to the type.
+   *
    * Optional because a module image published before cf#279 does not report it. An absent field is
-   * unknown, never false.
+   * unknown, never false. See parseJobLogReadiness for every shape this accepts.
    */
-  telemetry?: { job_log?: boolean };
+  telemetry?: { job_log?: unknown };
 }
 
 /**
@@ -991,6 +1035,61 @@ export function classifyReadyResponse(status: number, text: string, expectedModu
 }
 
 /**
+ * What a module says about its ability to RECORD a RunPod job (vivijure-cf `JobLogReadiness`).
+ *
+ * THIS IS ONE HALF OF A CROSS-REPO CONTRACT. The other half is `modules/_shared/runpod-job-log.ts`
+ * in vivijure-cf, and nothing in THIS repo can keep the two in step -- a rename there is invisible
+ * here until something reads a real module. That is not a gap this file can close; it is closed by
+ * the live pre-deploy smoke, which drives real modules and REFUSES a value it does not recognise
+ * rather than coercing it (tests/pre-deploy-smoke.live.test.ts). Asserting these literals against
+ * each other inside this repo would be a self-consistency check wearing an integration test's
+ * clothes.
+ */
+export type JobLogReadiness = "ok" | "unavailable" | "unknown";
+
+/** The union, enumerable, so a matcher over it prints a denominator instead of hardcoding three. */
+export const JOB_LOG_READINESS_VALUES: readonly JobLogReadiness[] = ["ok", "unavailable", "unknown"];
+
+/**
+ * Read `telemetry.job_log` off a /ready body. THE ONE PLACE this shape is interpreted.
+ *
+ * TOTAL, and deliberately so -- every input lands somewhere named, and NOTHING lands on "ok"
+ * except an explicit yes. The mapping:
+ *
+ *   "ok" | "unavailable" | "unknown"   the current contract, carried through verbatim.
+ *   true                               LEGACY (pre-815c9ff0) yes  -> "ok".
+ *   false                              LEGACY no                  -> "unavailable".
+ *   absent / undefined                 -> null. The image predates cf#279 and cannot say.
+ *   anything else                      -> null, and the caller records the raw value.
+ *
+ * WHY LEGACY BOOLEANS ARE STILL ACCEPTED. A tenant pinned to a `modules_release` older than
+ * 815c9ff0 still emits booleans, and its modules still record perfectly well. Dropping those
+ * tenants to `null` would report a WORKING telemetry binding as unprovable, which is the same
+ * class of false alarm cp#378 exists to end, pointed the other way. Backward compatibility here
+ * is not politeness, it is the difference between a correct answer and a manufactured incident.
+ *
+ * WHY AN UNRECOGNISED STRING IS NOT "unknown". "unknown" is a module SAYING it could not tell.
+ * An unrecognised value means the two repos' contracts have diverged, which is a code defect with
+ * a different remedy, so it must not be laundered into a state the module can legitimately report.
+ * It returns null (this plane got no usable answer) and the raw value is surfaced in `detail`.
+ */
+export function parseJobLogReadiness(raw: unknown): JobLogReadiness | null {
+  if (typeof raw === "boolean") return raw ? "ok" : "unavailable";
+  if (typeof raw === "string" && (JOB_LOG_READINESS_VALUES as readonly string[]).includes(raw)) {
+    return raw as JobLogReadiness;
+  }
+  return null;
+}
+
+/**
+ * True when the module sent a job_log value this plane does not understand, as opposed to sending
+ * nothing. Both parse to null; only this one means the contract moved.
+ */
+export function isUnrecognisedJobLog(raw: unknown): boolean {
+  return raw !== undefined && parseJobLogReadiness(raw) === null;
+}
+
+/**
  * ONE module observation from a SINGLE unauthenticated GET /ready: what the running worker says
  * about itself, verbatim and unjudged.
  *
@@ -1009,30 +1108,48 @@ export interface TenantModuleObservation {
   ok: boolean | null;
   credentials: { runpod_api_key: boolean; runpod_endpoint_id: boolean } | null;
   /**
-   * Whether the RUNNING worker resolved TELEMETRY_DB (vivijure-cf#279).
+   * Whether the RUNNING worker resolved TELEMETRY_DB (vivijure-cf#279), as the module said it.
    *
-   * THREE VALUES, and collapsing them re-creates the defect this exists to end. true and false are
-   * the worker own answer. null is "this worker reported no such field", which is a module image
-   * predating cf#279, or a module that did not answer at all -- NOT a no. Reporting an absent field
-   * as false would say the binding is missing when what is missing is the report.
+   * FOUR VALUES, AND THE FOURTH IS THE WHOLE REASON THIS IS NOT A BOOLEAN (cp#378):
+   *
+   *   "ok"           the binding resolved in the running worker. The ONLY value that proves it.
+   *   "unavailable"  the worker answered that it CANNOT record. A real defect, and a measurement.
+   *   "unknown"      the worker PROBED and could not tell. Also a measurement, and not the same
+   *                  fact as the one below.
+   *   null           this worker reported no such field, or nothing answered as this module. The
+   *                  image predates cf#279. NOT a no, and NOT the module saying "unknown".
+   *
+   * THE LAST TWO ARE WHY THIS FIELD DID NOT BECOME `boolean | null` WITH "unknown" MAPPED TO null.
+   * That mapping is lossy in the one direction an operator acts on: "unknown" is fixed by looking
+   * at the telemetry binding, null is fixed by moving `modules_release` forward. Collapsed, one
+   * null would carry both remedies and the reader would be sent to whichever the prose named --
+   * which is exactly how the comment on the readiness route sent a reader to a stale pin while THIS
+   * bug was the cause. A field cannot be allowed to repeat the defect its own route was reported for.
    */
-  job_log: boolean | null;
+  job_log: JobLogReadiness | null;
   /** Whether this module records RunPod jobs at all. A module that submits no job is EXPECTED to
    *  report no job_log and must not read as a gap. */
   records_runpod_jobs: boolean;
   /** Bounded response head, present when nothing usable was parsed. The 404 disjunction (stale
-   *  image / absent script / control plane cannot dispatch) is diagnosable only from what came back. */
+   *  image / absent script / control plane cannot dispatch) is diagnosable only from what came back.
+   *
+   *  ALSO set when the body parsed fine but `telemetry.job_log` carried a value this plane does not
+   *  recognise. Absent-field and unrecognised-value both read `job_log: null`, and without the raw
+   *  value beside it an operator cannot tell "the pin is old" from "the contract moved". */
   detail?: string;
 }
 
 /**
- * Probe every catalog module for one tenant, once, and report what each said.
+ * Short pause between the two /ready samples on the operator module-readiness path (cp#254).
  *
- * READ-ONLY and free: /ready costs no GPU, spends nothing, and needs no tenant credential. No retry
- * and no deadline -- this is an operator asking a question, not a gate deciding a promotion, and a
- * retry loop here would blur "answered slowly" into "answered".
+ * Right after a module upload, GET /ready can be answered by a stale isolate still serving the
+ * previous version; a single sample is then indistinguishable from a settled answer. Two samples
+ * with a brief gap reduce that race without turning this into the multi-second key-install wait.
+ * Kept short so the route stays a cheap question.
  */
-export async function probeTenantModuleReadiness(
+export const MODULE_READINESS_PROBE_GAP_MS = 250;
+
+async function observeTenantModulesOnce(
   deps: TenantModuleDeps,
   tenantId: string,
 ): Promise<TenantModuleObservation[]> {
@@ -1067,6 +1184,7 @@ export async function probeTenantModuleReadiness(
         };
       }
       const creds = body.credentials;
+      const rawJobLog = body.telemetry?.job_log;
       return {
         ...base,
         ok: typeof body.ok === "boolean" ? body.ok : null,
@@ -1074,10 +1192,35 @@ export async function probeTenantModuleReadiness(
           creds && typeof creds.runpod_api_key === "boolean" && typeof creds.runpod_endpoint_id === "boolean"
             ? { runpod_api_key: creds.runpod_api_key, runpod_endpoint_id: creds.runpod_endpoint_id }
             : null,
-        job_log: typeof body.telemetry?.job_log === "boolean" ? body.telemetry.job_log : null,
+        job_log: parseJobLogReadiness(rawJobLog),
+        // A value we do not recognise is reported, never swallowed. It reads null like an absent
+        // field does, and only this string separates "the pin is old" from "the contract moved".
+        ...(isUnrecognisedJobLog(rawJobLog)
+          ? { detail: `unrecognised telemetry.job_log: ${JSON.stringify(rawJobLog).slice(0, 100)}` }
+          : {}),
       };
     }),
   );
+}
+
+/**
+ * Probe every catalog module for one tenant and report what each said.
+ *
+ * READ-ONLY and free: /ready costs no GPU, spends nothing, and needs no tenant credential. This is
+ * an operator asking a question, not a gate deciding a promotion -- so it is NOT the multi-second
+ * wait that `awaitTenantModulesReady` runs. It does sample TWICE with a short gap (cp#254), because
+ * a single sample taken right after an upgrade can be a stale isolate; the second sample is the
+ * answer we report. Injectable `timing` keeps the gap testable without burning real wall clock.
+ */
+export async function probeTenantModuleReadiness(
+  deps: TenantModuleDeps,
+  tenantId: string,
+  timing: ProbeTiming = realTiming,
+  gapMs: number = MODULE_READINESS_PROBE_GAP_MS,
+): Promise<TenantModuleObservation[]> {
+  await observeTenantModulesOnce(deps, tenantId);
+  await timing.sleep(gapMs);
+  return await observeTenantModulesOnce(deps, tenantId);
 }
 
 /**

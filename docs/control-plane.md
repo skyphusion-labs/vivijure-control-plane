@@ -173,14 +173,22 @@ but not through.
 
 The provisioner closes it the SAME way self-host does (Phase-3 dynamic dispatch), per tenant:
 
-1. **Module scripts.** Tenant-configured copies of the module workers (`keyframe`, `own-gpu`,
-   `finish-upscale`, `finish-lipsync`, `speech-upscale`, `finish-rife`) upload into ONE shared
-   dispatch namespace
+1. **Module scripts.** Tenant-configured copies of every module in `TENANT_MODULE_CATALOG`
+   (`src/tenant-modules.ts`, currently fifteen) upload into ONE shared dispatch namespace
    (`TENANT_MODULE_NAMESPACE`, e.g. `vivijure-tenant-modules`), script names prefixed with the
-   TENANT ID (stable across renames; teardown is a prefix sweep). Each carries only its own
-   endpoint id (`RUNPOD_ENDPOINT_ID`, plain_text). The catalog (`src/tenant-modules.ts`,
-   `TENANT_MODULE_CATALOG`) maps module -> endpoint as DATA; extending the tier is a row there plus
-   the matching endpoint in `runpod.ts` (bare-skeleton doctrine).
+   TENANT ID (stable across renames; teardown is a prefix sweep). The catalog is DATA; extending
+   the tier is a row there (plus a matching endpoint in `runpod.ts` only when the module is
+   endpoint-backed). Two binding shapes coexist:
+
+   | shape | who | bindings of note |
+   |---|---|---|
+   | endpoint-backed | `keyframe`, `own-gpu`, the four finish/speech satellites | `RUNPOD_ENDPOINT_ID` -> a tenant endpoint key; on shared tenants, the cp#288 proxy pair |
+   | public-slug cost door (cp#284 wave 1) | the eight cloud i2v/audio modules | no `endpointKey`; `publicEndpoint` slug asserted against `PUBLIC_ENDPOINT_ALLOWLIST`; `R2_RENDERS` on the **tenant** bucket; proxy pair via `reachesRunpod` |
+   | AI Gateway only | `plan-enhance` | no RunPod; AI + gateway token trio |
+
+   Derive the RunPod-reaching population from `reachesRunpod(spec)` (`endpointKey` OR
+   `publicEndpoint`), never from either field alone -- the three wrong proxies for that question
+   are documented on the predicate.
 2. **`MODULE_DISPATCH` on the studio.** The tenant studio's WfP upload carries a
    `dispatch_namespace` binding -> the modules namespace. This is UPLOAD METADATA, not studio code,
    so the studio bundle stays byte-identical to self-host (parity). That a WfP user worker can
@@ -196,15 +204,28 @@ The provisioner closes it the SAME way self-host does (Phase-3 dynamic dispatch)
 safe because module conformance is envelope+degrade only (async GPU modules return pending/degrade;
 the gate never triggers real GPU work), and every module answers the conformance probe with a
 well-formed `{ ok:false }` envelope before it reads any RunPod credential (live-verified across all
-catalogued modules with no key B bound). Key B lands on the studio AND every module script in
-`installInvokeKey`, in place (a secret PUT, no re-upload) -- the module can then render.
+catalogued modules with no key B bound). Key B ALWAYS lands on the studio, in place (a secret PUT,
+no re-upload). Where it goes next depends on the shape:
+
+- **Proxied** (shared tier): it stops at the studio. Module scripts carry the proxy pair and no
+  direct `RUNPOD_API_KEY` -- `installInvokeKey` skips the module loop entirely and logs
+  `modules_invoke_key_retired`. A proxied module reaching RunPod on its `RUNPOD_PROXY_TOKEN` while
+  also holding the direct key would be a consumer holding a RunPod credential on our account
+  (cp#290 / plane v1.22.0).
+- **Non-proxied** (dedicated, BYO, self-host): the key lands on every module script in the catalog
+  via `installInvokeKey`, and the module can then render.
+
+The studio copy is installed on EVERY tier including shared, which is a known gap rather than the
+intended end state: the studio genuinely submits RunPod work (cast-LoRA training through
+vivijure-core, which has no proxy branch), so removing it before core learns the proxy would break
+that path. Tracked separately; retiring the module copies did not depend on it.
 
 **The job-log binding (cp#248).** Every module that submits a RunPod job also carries the tenant
 STUDIO database as `TELEMETRY_DB` (`{ type: "d1", name: "TELEMETRY_DB", id: <tenant d1 uuid> }`),
-attached at upload beside the endpoint id. The module writes one row per job (at submit, and again
-at the terminal state) into `runpod_job_log`, the table vivijure-cf migration `0014` creates in that
-same database. It is the tenant studio database and not a second one precisely because the migration
-rides the studio release; a separate telemetry database would be a table nothing migrates.
+attached at upload. The module writes one row per job (at submit, and again at the terminal state)
+into `runpod_job_log`, the table vivijure-cf migration `0014` creates in that same database. It is
+the tenant studio database and not a second one precisely because the migration rides the studio
+release; a separate telemetry database would be a table nothing migrates.
 
 Three things about it are load-bearing:
 
@@ -222,13 +243,21 @@ Three things about it are load-bearing:
 
 An upload REPLACES a script binding set, so every path that re-uploads module scripts (provision,
 resume, module upgrade, RunPod reprovision) restates this binding; `uploadTenantModules` REFUSES on
-a tenant with no recorded database rather than uploading modules that would record nothing.
+a tenant with no recorded database rather than uploading modules that would record nothing. A
+cost-door writer with no tenant R2 bucket is the same hard refuse: its self-host wrangler names the
+operator bucket, so an unbound upload would write tenant renders into ours and report success.
 
-**Every recording module is now here** (cp#284). Six module workers record RunPod jobs upstream and
-all six are in `TENANT_MODULE_CATALOG`. `finish-rife` was the odd one out: published as a tenant
-bundle by the studio release and uploaded by nothing, so on the hosted door its jobs did not exist
-rather than go unrecorded. It needed a catalog row and nothing else -- no operator-only binding, no
-tenant-R2 envelope, and its bundle was already in every release this plane pins.
+**Catalog population (cp#284, both waves).** Fifteen modules. Fourteen reach RunPod and record
+jobs; `plan-enhance` is the only non-RunPod entry.
+
+- **Wave 0:** `finish-rife` joined the endpoint-backed set (shared backend endpoint, `TELEMETRY_DB`).
+  It was published as a tenant bundle and provisioned by nothing until its catalog row landed.
+- **Wave 1 (the GPUless cost door):** `alibaba-wan`, `alibaba-wan-lora`, `google-veo`, `kling`,
+  `minimax-hailuo`, `narration-gen`, `seedance`, `vidu-q3`. Each carries a `publicEndpoint` slug,
+  `recordsRunpodJobs`, and `writesTenantRenders`. Bundles ship from studio `v1.20.0+`
+  (`scripts/tenant-release-modules.txt` in vivijure-cf); the plane pin at plane v1.21.0+ is studio
+  `v1.20.0`. Proxy pair binding keys on `reachesRunpod`, not `endpointKey` -- under the old
+  predicate all eight would have reached RunPod on a direct key (CLAUDE.md forbids that).
 
 **Bundles.** Module workers cannot be built at provision time (the control plane is a Worker), the
 same constraint the studio bundle has. They ship in the SAME release artifact under
@@ -490,12 +519,14 @@ A partial failure can leave some modules at the new release and some at the old.
 safe is a question about the CATALOG, not about the conformance gate (which is per-module and says
 nothing about pairs):
 
-- The six RunPod catalog modules serve four hooks: `keyframe` (keyframe), `own-gpu`
+- The endpoint-backed RunPod catalog modules serve four hooks: `keyframe` (keyframe), `own-gpu`
   (motion.backend), `speech-upscale` (speech), and `finish-upscale` + `finish-lipsync` +
-  `finish-rife` (all three `finish`). **cp#284 made `finish` a chain of THREE, not a pair** --
-  measured at vivijure-cf `origin/main`, all three manifests declare `hooks: ["finish"]`. What a
+  `finish-rife` (all three `finish`). **cp#284 wave 0 made `finish` a chain of THREE, not a pair**
+  -- measured at vivijure-cf `origin/main`, all three manifests declare `hooks: ["finish"]`. What a
   three-long chain does to the mixed-state analysis below is NOT re-derived here; the pair argument
-  is stated for two and has not been re-run for three.
+  is stated for two and has not been re-run for three. The eight public-slug cost-door modules
+  (wave 1) are motion/audio doors on separate hooks from this finish chain; a mixed state across
+  those and the finish set is not an incompatibility either.
 - Modules on **different** hooks never see each other output, so a mixed state across those is not
   expressible as an incompatibility.
 - The one coupled pair is the two `finish` modules, which **chain**: each takes
@@ -813,7 +844,7 @@ Still elsewhere: routing/domains #55, quotas #56, AUP text #57, onboarding UX #5
 
 ### The window this closes
 
-`installInvokeKey` writes key B to the tenant studio and to every tenant module script in the catalog, then the
+`installInvokeKey` writes key B to the tenant studio, and to every tenant module script in the catalog ONLY when the tenant is not proxied (see above), then the
 route flips the tenant to `live`. A `200` from the secrets PUT means the secret is stored; it does
 NOT mean the version the edge is serving can read it. In the cf#99 finale a tenant that had just
 reported `live` failed its first render citing a credential that was demonstrably present, and the
@@ -951,36 +982,75 @@ route the only code that read a module `/ready` was the key-install probe, which
 credentials and would have to be re-run to see anything.
 
 Per module it reports `status`, `ok`, `credentials`, `records_runpod_jobs`, and `job_log`, plus the
-tenant `modules_release` so a whole-fleet absence reads as the stale release pin it usually is.
+tenant `modules_release`.
 
-`job_log` has THREE values and collapsing them re-creates the defect:
+**Read a whole-fleet `null` as a PARSE failure first, not as a stale pin.** This sentence used to
+say the opposite and it cost a real diagnosis (cp#378): from 2026-08-01 to 2026-08-13 every module
+on every tenant reported `null`, because the modules had moved to a tri-state string and this
+plane still accepted only a boolean. The pin was independently stale at the time, so checking the
+pin produced a confirmed-looking wrong answer. A pin problem VARIES WITH THE PIN; a parse problem
+is uniform across every tenant and every module, which is the cheap thing to check first.
 
-| value | meaning |
-| --- | --- |
-| `true` | the running worker resolved the binding |
-| `false` | the running worker answered that it did NOT |
-| `null` | the worker reported no such field (an image predating the upstream change), or nothing answered. NOT a no |
+**Two samples, short gap (cp#254).** Right after a module upload, `/ready` can be served by a stale
+isolate still on the previous version. The route probes twice (~250ms apart) and reports the second
+sample. That is not the multi-second key-install wait; it only reduces the post-upgrade race. A
+reading taken within a couple of minutes of an upgrade can still be mid-convergence across isolates.
+
+`job_log` has FOUR values and collapsing any two of them re-creates the defect. The three non-null
+values are the vivijure-cf `JobLogReadiness` union, carried through verbatim rather than mapped:
+
+| value | meaning | remedy |
+| --- | --- | --- |
+| `"ok"` | the running worker resolved the binding and read the job-log table | none, this is the only pass |
+| `"unavailable"` | the worker answered that it CANNOT record: no binding, or no table | fix the tenant provisioning |
+| `"unknown"` | the worker PROBED and could not answer (the read threw, or outran its 1500ms bound) | look at the tenant database |
+| `null` | the worker reported no such field (an image predating the upstream change), or nothing answered. NOT a no | move `modules_release` forward |
+
+**Why `"unknown"` is not mapped to `null`.** They are one collapse apart and it is tempting, since
+both mean "we cannot prove this module records". They have DIFFERENT REMEDIES: `null` is fixed by
+moving the pin, `"unknown"` is fixed by looking at the database of a module that answered. One
+`null` carrying both would send an operator to whichever cause the prose named, which is exactly
+the failure this route's own documentation committed above.
+
+**Legacy booleans are still accepted** and are not a compatibility nicety. vivijure-cf `v1.13.0`
+was a published studio release whose five recording modules emitted `Boolean(env.TELEMETRY_DB)`
+(measured: 5 boolean emissions at `v1.13.0`, 0 at `v1.23.0`). A tenant pinned there records
+perfectly well, so `true` reads as `"ok"` and `false` as `"unavailable"`. Dropping those tenants
+to `null` would report a WORKING binding as unprovable.
+
+**A value this plane does not recognise reads `null` AND names itself in `detail`.** That is the
+only signal available if the cf-side union is ever renamed: absent-field and unrecognised-value
+both parse to `null`, and without the raw string beside it an operator cannot tell "the pin is
+old" from "the contract moved".
 
 `records_unproven` lists the modules that submit RunPod jobs and did not answer `true`. Both `false`
 and `null` are in it on purpose: "the binding is missing" and "this image is too old to say" are
 different problems with the same consequence, which is rows nobody will ever get.
 
-The answer covers the modules this plane PROVISIONS, which since cp#284 is all six upstream
-recording modules including `finish-rife`.
+The answer covers the modules this plane PROVISIONS: every catalog entry that `reachesRunpod`
+(fourteen today, including the eight cost-door modules and `finish-rife`). `plan-enhance` is
+excluded from readiness probes for the same reason it is excluded from the proxy pair.
 
 ### `GET /api/platform/version`
 
-Returns `{ "control_plane_version": "<semver>" }` from `src/version.ts`, which the existing lockstep
-test keeps equal to `package.json`. Before this, `CONTROL_PLANE_VERSION` was referenced by nothing at
-runtime: confirming which release the plane served meant fetching a changed asset and reading the
-patched line off the wire. That works, but it is archaeology, not observability.
+Returns release **and** build identity (cp#289):
 
-It is its OWN route rather than a field on `/api/platform/config` deliberately. That route is a
-policy projection the front door renders from -- it has a UI contract and a UI audience. Deploy
-identity is an operator/CI fact with a different audience and different cache semantics, and folding
-it in is how a config endpoint turns into a junk drawer. Unauthenticated, like the config route: the
-version of an AGPL codebase whose tags are public is not a secret, and a version you need a
-credential to read is useless to the monitoring that needs it most.
+```json
+{
+  "control_plane_version": "<semver>",
+  "build": { "id": "<worker-version-id|null>", "timestamp": "<iso|null>", "tag": "<string|null>" }
+}
+```
+
+- `control_plane_version` is the **release** from `src/version.ts` (lockstep with `package.json` /
+  the `v*` tag). Two deploys of the same tag share this string.
+- `build` is CF Worker version metadata (`CF_VERSION_METADATA` binding): unique `id` and upload
+  `timestamp` **per deploy**, so two redeploys at one tag are distinguishable. Fields are `null`
+  when the binding is absent (unit tests, older local config).
+
+Before cf#114d, `CONTROL_PLANE_VERSION` was referenced by nothing at runtime. Before cp#289 the
+route answered release only and invited being read as "which build". Unauthenticated, like the
+config route: the version of an AGPL codebase whose tags are public is not a secret.
 
 ## Watching a hosted tenant actually render (cp#45)
 

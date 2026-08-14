@@ -38,3 +38,7 @@ Preflight uses `${SECRET:+SET}` presence checks only; secret values are never ec
 | 2026-07-24 | K2.7 PR #82 | Path traversal in localModuleBundleSource | Operator-built release dir; sha256 integrity gate; same as studio-bundle-local |
 | 2026-07-24 | K2.7 PR #82 | workersDevSubdomain hostname injection | Operator env `PROVISION_E2E_WORKERS_DEV_SUBDOMAIN`; maintainer live gate only |
 | 2026-07-24 | K2.7 PR #82 | callTenantModule lacks auth | Mirrors prod `deps.ts` cf#114: `/ready` unauthenticated; dispatch namespace is boundary |
+
+## Standing WAF watch
+
+Post-enforce OWASP anomaly score (rule 949110): see [`docs/waf-post-enforce-watch.md`](./waf-post-enforce-watch.md) (cp#14).

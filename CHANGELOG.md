@@ -6,9 +6,236 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.23.0 -- 2026-08-13
+
+### docs(modules): control-plane.md matches the shipped 15-entry catalog (cp#284)
+
+`docs/control-plane.md` still described the tenant module bridge as six endpoint-backed workers and
+"all six" recording modules. That was true after wave 0 (`finish-rife`) and false after wave 1
+(the eight GPUless cost-door rows, plane PR #317 / studio release bundles from cf PR #406). The
+section now states the three binding shapes (endpoint-backed, public-slug cost door, AI Gateway),
+the `reachesRunpod` population rule, the tenant-R2 refuse path, and which studio/plane pins first
+carried the door. No code change -- the catalog and provisioner already ship this on main.
 ### Docs
 - **Docs audit 2026-08-05:** tenant module catalog count; hosted-tier status; managed-compute shipped-vs-design; deploy-runbook plane banner.
+- **Standing WAF watch for OWASP 949110 (cp#14).** `docs/waf-post-enforce-watch.md` -- enforce mode has no pre-block signal; keep 949110 at zero on legitimate surfaces.
+- **RunPod terms / metered-resale research (cp#287).** Landed Ernst's public-document read at
+  `docs/legal/runpod-terms-resale.md` (not legal advice). Consent tripwire, DPA, AUP items for tenants.
 
+- **CI vs deploy guard census (cp#260).** `docs/ci-deploy-guard-census.md` enumerates every executable
+  guard asset, where it runs, and the deliberate CI-only residual. Re-measured 2026-08-05 (pins now
+  on both paths; `pr-body-guard` added).
+### chore(onboarding): remove dead scopeVerdict helper (cp#30)
+
+`scopeVerdict()` had no production caller after the cp#20 client fix (PR #29 deleted the only
+reader of a probe payload no route emits). Removed the helper, its types, export, and unit tests.
+Live invoke-key UX stays on reason-code copy (`invokeRejectionCopy` / `REJECTION_COPY`).
+### fix(admin): module-readiness double-samples /ready after upgrades (cp#254)
+
+`GET /api/admin/tenants/:id/module-readiness` was a single-shot probe. Right after a module upload,
+`/ready` can be answered by a stale isolate, so one sample is not evidence either way.
+`probeTenantModuleReadiness` now samples twice with a short (~250ms) gap and reports the second
+sample. Not the multi-second key-install wait; only a cheap second look. Injectable timing keeps the
+gap testable.
+### fix(meter): audit the manual tick (and keep settlement audited) (cp#243)
+
+`POST /api/admin/llm-meter/run` was gated `meter:operate` but wrote no `admin_audit` row. A forced
+tick advances the ingestion watermark that later statements are built from, so the operator, the
+action, and the outcome (`ran` / refusal reason) now land as `meter.tick_llm` (platform action, not
+`tenant.read.*`). `POST /api/admin/meter-settle` already wrote `meter.settle_llm`; the gap was the
+tick alone. Tests watch both the success and the 503 refusal paths write a row.
+### Fixed
+
+- **ci(release): PR CI validates the R2 mirror the provisioner reads, not only the GitHub release
+  (cp#319).** `check-release-modules.py` against the GitHub release ran on every PR; the R2 mirror
+  path (the one `module-bundle-r2.ts` actually fetches, with no fallback) ran only at deploy. A
+  release that was perfect on GitHub but never mirrored therefore passed PR CI and failed at the
+  most expensive point. Same-repo PRs now pass `--mirror-bucket` with the same
+  `STUDIO_RELEASES_R2_TOKEN` deploy uses; forks keep the credential-free GitHub half and a
+  `::notice::` names that the mirror was not checked. `workflow-guards.test.py` pins the shape so
+  the two sources cannot diverge again without a structural red.
+- **test(aig): credential-boundary guards derive their population from `TENANT_MODULE_CATALOG`
+  (cp#314).** `tenant-aig-token.test.ts` looped a hardcoded list of endpoint-backed modules when
+  asserting the AI Gateway trio never leaks. When `finish-rife` joined the catalog the guard stayed
+  green and simply never looked -- the silent-gap shape, not a red stale assertion. Same doctrine
+  the proxy suite already uses: derive the modules to inspect, keep the expectation about what
+  must be absent. Attribution vars (`TENANT_ID` / `TENANT_SLUG`) now walk every non-gateway module
+  too, not only `keyframe`.
+### fix(docs): RunPod proxy census comment said 23 of 26 modules; measured 14 (cp#298)
+
+`src/runpod-proxy-route-match.ts` claimed "23 of 26 modules" referenced `api.runpod.ai` at
+vivijure-cf@d26db49. Re-measurement at that sha (and at b295309) is **14**, matching the census
+already written in `src/runpod-proxy.ts` (8 public slug + 6 `RUNPOD_ENDPOINT_ID`). The count is
+not load-bearing for routing, but a wrong measured figure in a source comment becomes scoping
+evidence. Comment corrected; `tests/runpod-proxy-census.test.ts` pins the two comments to the
+reproducible split so 23 cannot re-land.
+### test(routes): type the provisioner double as every Wiring member (cp#307)
+
+The route suite's provisioner seam double was a hand-written object of `vi.fn()` members,
+structurally typed. Widening `ProvisionerWiring` (adding `currentRelease` for cp#301) produced
+zero typecheck errors and eight runtime reds saying "currentRelease is not a function".
+
+The double is now built as a `WiringDouble` mapped over `keyof ProvisionerWiring`, so a missing
+member fails `tsc -p tsconfig.tests.json` at the factory with the member name. Same completeness
+gate that production wiring already has; the suite can no longer invent a partial subject.
+### fix(runpod-sweep): log gated refusals so a no-op is distinguishable from silence (cp#300)
+
+`runRunpodJobSweep` already refused honestly when the pool credential was missing or unreadable
+(`ran:false, reason:credential_unavailable`), but both early returns exited before the only tick
+log line, and the scheduled caller discarded the return value. From outside the Worker a correctly
+gated no-op and a silently broken sweep were identical: no log, no metric, no throw.
+
+Every exit path now emits `runpod_sweep.tick` (including `ran:false`), at error level when the
+sweep refused or left work unresolved. Matches the meter half of the same scheduled tick, which
+already announced its own refusals.
+### test(runpod-proxy): pin plane-refusal header wire name (cf#403)
+
+`PLANE_REFUSAL_HEADER` is the same string literal in this repo and vivijure-cf with no shared
+package. Both sides now pin `"x-vivijure-plane-refusal"` in
+`tests/plane-refusal-header-contract.test.ts` so a one-sided rename fails CI before it restores the
+forever-pend cf#398 / cp#288 closed. Docs: `docs/deploy.md`.
+### feat(provision): bind AI + GATEWAY_ID on the tenant studio (cf#98)
+
+Hosted planner / chat / enhance need `env.AI` and a resolvable `GATEWAY_ID` on the **studio** worker,
+not only on plan-enhance modules. New provisions bind `AI` always (Workers AI local path when no
+gateway is configured), and bind `GATEWAY_ID` + `CF_AIG_TOKEN` (both-or-neither) when
+`TENANT_AI_GATEWAY_ID` is set. The studio Run token is a **separate** grant from the module token
+(`…-aig-studio` vs `…-aig`) so compromise of one surface does not expose the other; teardown revokes
+both by name.
+### fix(admin): project lifecycle so suspended != deleted (cp#281)
+
+`tenantView` projected suspension into a single `status` field, so a deleted tenant with a suspend
+flag looked restorable on the admin list. Keep `status` as the existing suspended-or-lifecycle
+projection for the API contract, and add **`lifecycle`** carrying the stored column verbatim so a
+caller can answer "is this restorable?" without performing a state change.
+### fix(ci): gate commit messages against issue-linking auto-close keywords (cp#265)
+
+The PR-body guard (#263) covers the surface a human reads. On squash merge the squash body is the
+**commit message**, not the PR body, and that is what GitHub auto-closes from. Enumerate every
+commit on the PR and run the same matcher (`scripts/pr-body-guard.py`) over each message. Zero
+commits in range is exit 2, never a vacuous pass. Self-test pins the caller.
+### fix(provision): backend plan label no longer promises cast LoRA training (cp#303)
+
+`PROVISION_PLAN`'s backend entry was labelled "Render (keyframes, video, cast LoRA training)".
+Training does not run on that endpoint and cannot fall back to it: cast LoRA training is
+fail-closed on its own satellite (`vivijure-wan-train` / `RUNPOD_WAN_TRAIN_ENDPOINT_ID`). The
+label is tenant-visible (onboarding renders from the plan), so the clause was a product lie and
+invited the inference that the shared pool already covers training because it covers `backend`.
+
+Dropped the training clause on the plan label, the onboarding representative plan purpose strings,
+and the hosted-tier docs table. A unit test pins the backend label so the promise cannot return.
+### fix(provision): tell the truth when re-provision DESTROYS (cp#304)
+
+A provision interrupted before the studio upload used to say *"start provisioning again to
+continue"*. The retry works, but the word **continue** was a lie: the same slug hits the reclaim
+path (`claim -> teardown(deleteData) -> blank -> new job`), which **destroys** the partial
+environment and starts over. A promise that succeeds while doing something else is worse than one
+that fails.
+
+- Refusal messages (dedicated key-A, pre-mode rows, missing release pin, unrecognised mode, and the
+  past-boundary corruption guards) now say this cannot be continued, name `POST /api/tenant/provision`,
+  and state that re-provisioning the same name destroys and starts from scratch.
+- `reclaim_teardown_failed` (the genuinely stuck population) no longer says "try again"; it says
+  contact us, because there is no self-serve move while resource columns still name undeleted pieces.
+- Onboarding copy that told the tenant to "pick up where this left off" now matches the destroy.
+
+Destroy/reclaim behaviour is unchanged; only the contract text is fixed.
+### feat(platform): `/api/platform/version` surfaces build identity, not only release (cp#289)
+
+The route answered `{ control_plane_version }` only -- which release, not which build. Two deploys
+at one tag (measured at v1.20.0) read identically, and the route was blind to whether a merge
+between those deploys was live. Bound `CF_VERSION_METADATA` (Worker version id + upload timestamp)
+and return it as `build.{id,timestamp,tag}` alongside the release. Null when unbound so tests and
+older local configs stay honest. Comments and docs no longer claim the release field alone is
+deploy identity.
+
+### Fixed
+
+- `.gitattributes`: corrected the comment's claim that the committed `CHANGELOG.md
+  merge=union` attribute drains the legacy PR queue. It does not. Git reads a file's merge
+  attribute from the pre-merge working tree, which during a drain is the PR branch, and
+  every legacy PR predates the attribute -- so it is absent at the moment it would apply.
+  Documented the recipe that does work (`git -c core.attributesFile=...`, which mutates no
+  shared state), the structural checks a dumb union driver still requires, and why draining
+  locally is preferable to `gh pr update-branch`. Verified bidirectionally on cp#336.
+  Refs cp#358.
+
+### Fixed
+
+- Tenant module uploads now refuse a `RUNPOD_WORKERS_MAX` binding (cf#361). The cap is
+  intentional on operator-hosted modules; on a tenant module it would let a tenant's own
+  spec raise its worker ceiling. The refusal is asserted immediately before the upload,
+  and a source-level pin keeps the call site from being deleted silently.
+
+### Added
+
+- `POST /api/admin/tenants/provision` creates an account for a named email address and
+  provisions a studio for it on the shared tier (cp#376). This is what the launch gate's
+  "a studio I provision" step needed: provisioning gates on session plus accepted AUP, so
+  it needs an account, and account creation is the only thing `signups_enabled` gates, so
+  until now the only way to reach a first tenant was to open public registration, which
+  the ruling puts last.
+- New operator scope `tenants:provision`, deliberately not folded into `tenants:write` or
+  `studio:operate`. It is the only capability that brings an account holder into existence,
+  and account creation is exactly what `platform:settings` gates through `signups_enabled`;
+  a capability that routes around another scope's control must not be implied by a third.
+
+The route accepts no `runpod_api_key` and refuses a body carrying one, so an
+operator-provisioned tenant always lands on the shared pool and never receives a RunPod key
+on our account. It records no AUP acceptance and asserts none on the owner's behalf: the
+tenant stops at `awaiting_invoke_key` and can only be promoted through the owner's own
+AUP-gated request. Every use writes two `admin_audit` rows naming the authenticated
+operator, and the request row is written before anything is created, so a failed audit
+write fails the operation.
+
+### Fixed
+
+- The module readiness route reports `telemetry.job_log` again (cp#378). Modules have emitted a
+  tri-state string (`"ok" | "unavailable" | "unknown"`) since vivijure-cf 815c9ff0 on 2026-08-01;
+  this plane accepted only a boolean, so every one of the 14 recording modules coerced to `null`
+  for twelve days and `GET /api/admin/tenants/:id/module-readiness` could not prove any module
+  would record. The plane now learns the string rather than the modules reverting to a boolean,
+  which would undo cf#284 and re-create the conflation between "a binding is attached" and "it can
+  actually record".
+
+  `job_log` carries FOUR states rather than being mapped onto `boolean | null`. `"unknown"` (the
+  worker probed and could not tell) and `null` (the image predates cf#279 and has no such field)
+  are one collapse apart and have different remedies -- look at the tenant database, versus move
+  `modules_release` forward. Merging them would leave one `null` carrying both, which is exactly
+  how this route's own comment sent a reader to a stale release pin while this bug was the cause.
+
+  Legacy booleans are still accepted: `true` reads as `"ok"`, `false` as `"unavailable"`.
+  vivijure-cf v1.13.0 was a published studio release emitting `Boolean(env.TELEMETRY_DB)` in five
+  recording modules, and a tenant pinned there records perfectly well. Dropping it to `null` would
+  report a working binding as unprovable.
+
+- The comment on the readiness route named the wrong cause. It said a `job_log` absent everywhere
+  is a stale release pin more often than a missing binding; null-everywhere is the exact symptom
+  the parser defect produced, and the pin was independently stale, so checking it returned a
+  confirmed-looking wrong answer. It now names this failure mode and orders the readings by which
+  cause to check first: a parse problem is uniform across every tenant, a pin problem varies with
+  the pin.
+
+- The pre-deploy smoke parsed `job_log` with its own copy of the predicate, in two places, while
+  its header said the tested logic is the shipped logic rather than a copy of it. That was true of
+  the settle criterion and false of the parse, and the parse is the half that broke: the gate
+  agreed with the plane by construction and could not observe the plane and the modules
+  disagreeing. It now imports the shipped parser.
+
+  Its negative control waited for boolean `false` and could never converge against a string. It
+  now waits for `"unavailable"`, which preserves the asymmetry argument exactly: the version being
+  replaced HAD the binding and could never say it, so seeing it proves the new bytes are served,
+  while the positive value stays ambiguous between a stale isolate and a broken module and still
+  never terminates the wait. An unconverged read remains a FAILURE, never a value.
+
+### Added
+
+- A rename tripwire on the cross-repo contract. `JobLogReadiness` is defined in vivijure-cf and
+  nothing in this repo can notice it being renamed, so a value the shipped parser refuses is
+  reported by the smoke as UNRECOGNISED rather than as `null`, and asserted before every other
+  verdict -- if the vocabulary has moved, every reading below it is being interpreted through the
+  wrong dictionary. The parser also surfaces the raw value in the observation's `detail`, so an
+  absent field and an unrecognised one are never indistinguishable.
 ### feat(teardown): operator `i_own` to override tombstone-only referrers (cp#106)
 
 The referential guard correctly refuses resources other rows still claim, including tombstones, so
