@@ -145,6 +145,31 @@ jobs:
           AUP_URL: ${{ vars.AUP_URL }}
         run: bash scripts/check-aup-pin.sh
 
+      # SHARED-POOL INVOKE-KEY SCOPE (cp#396). Refuse the deploy when the pool names an endpoint
+      # the shared key cannot actually submit to.
+      #
+      # SHARED_RUNPOD_ENDPOINTS is a repo VARIABLE and SHARED_RUNPOD_INVOKE_KEY is a SECRET, set
+      # independently and by hand. There is no RunPod API that reports a key permission set, so a
+      # disagreement between the two is invisible to every other check here: the pool parses, every
+      # plan key is present, provisioning succeeds, and the tenant discovers it at their FIRST
+      # RENDER on whichever capability the key does not cover.
+      #
+      # NOT REQUIRED WHEN NO POOL IS DECLARED. An empty SHARED_RUNPOD_ENDPOINTS is a legitimate
+      # value meaning this plane offers no shared tier (see src/env.ts), so forcing the gate on
+      # would fail a correct deploy. It arms itself off the variable instead: declare a pool and
+      # the key must be present and proven, which is exactly when the check has something to say.
+      # The suite ALSO refuses a half-configured plane in every mode, so setting one half and not
+      # the other cannot skip past it.
+      #
+      # BEFORE the render, with the other refusals: a plane that cannot serve the tier it advertises
+      # should be refused rather than rendered and then judged.
+      - name: Shared pool invoke-key scope
+        env:
+          SHARED_POOL_SCOPE_REQUIRED: ${{ vars.SHARED_RUNPOD_ENDPOINTS != '' && '1' || '0' }}
+          SHARED_RUNPOD_ENDPOINTS: ${{ vars.SHARED_RUNPOD_ENDPOINTS }}
+          SHARED_RUNPOD_INVOKE_KEY: ${{ secrets.SHARED_RUNPOD_INVOKE_KEY }}
+        run: npx vitest run tests/shared-pool-key-scope.live.test.ts
+
       - name: Render wrangler.toml
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
