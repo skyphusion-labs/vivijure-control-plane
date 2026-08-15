@@ -26,9 +26,7 @@ const SIGNING_KEY = "cp285-signing-key-not-the-default";
 // silently carried something else would be visible rather than plausible.
 const POOL = JSON.stringify({
   backend: { id: "ep-cp285-backend", name: "pool-backend" },
-  upscale: { id: "ep-cp285-upscale", name: "pool-upscale" },
   lipsync: { id: "ep-cp285-lipsync", name: "pool-lipsync" },
-  "audio-upscale": { id: "ep-cp285-audio", name: "pool-audio" },
 });
 
 const env = (over: Partial<ControlPlaneEnv> = {}): ControlPlaneEnv =>

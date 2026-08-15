@@ -66,19 +66,21 @@ export interface PlannedEndpoint extends PlannedCapabilityBase {
   /** The studio secret that carries this endpoint id. */
   endpointVar: string;
 }
-
 /**
- * A capability served by hardware we own and operate, reached over the fleet rather than through
- * RunPod. No endpoint is provisioned for it on either tier, so it consumes no RunPod quota and
- * appears in no pool config.
+ * A capability served by hardware we own and operate, reached by the tenant studio over a
+ * Workers VPC service binding rather than through RunPod.
+ *
+ * IT IS NOT DROPPED FROM PROVISIONING, it changes TRANSPORT. A shared tenant keeps the full
+ * capability and reaches our iron instead of a RunPod endpoint, so it consumes no RunPod quota,
+ * needs no pool entry, and carries no endpointVar.
  */
-export interface PlannedOwnIron extends PlannedCapabilityBase {
-  backing: "own-iron";
-  /** Operator-facing note on where it actually runs. Never a hostname; this string is tenant-visible. */
-  servedBy: string;
+export interface PlannedVpcCapability extends PlannedCapabilityBase {
+  backing: "vpc";
+  bindingName: string;
+  serviceIdVar: string;
 }
 
-export type PlannedCapability = PlannedEndpoint | PlannedOwnIron;
+export type PlannedCapability = PlannedEndpoint | PlannedVpcCapability;
 
 /**
  * The narrowing every consumer that needs an endpoint id must go through.
@@ -93,8 +95,8 @@ export const endpointBackedPlan = (plan: PlannedCapability[] = PROVISION_PLAN): 
   plan.filter(isEndpointBacked);
 
 /** Only the entries served by our own hardware. Exported so the UI can say so rather than omit them. */
-export const ownIronPlan = (plan: PlannedCapability[] = PROVISION_PLAN): PlannedOwnIron[] =>
-  plan.filter((c): c is PlannedOwnIron => c.backing === "own-iron");
+export const vpcBackedPlan = (plan: PlannedCapability[] = PROVISION_PLAN): PlannedVpcCapability[] =>
+  plan.filter((c): c is PlannedVpcCapability => c.backing === "vpc");
 
 /**
  * THE PROVISIONING PLAN, as DATA.
@@ -131,14 +133,13 @@ export const PROVISION_PLAN: PlannedCapability[] = [
   },
   {
     ...pinned("upscale"),
-    // OWN IRON. Runs as a long-lived serve container on our own GPU boxes, not as a RunPod
-    // endpoint, per Conrad ruling 2026-08-07: own iron needs no meter, because the meter tracks
-    // marginal vendor cost and always-on hardware has none. The shared invoke key encodes the
-    // same ruling by granting NO ACCESS to vivijure-video-upscale, so the plane cannot reach a
-    // RunPod endpoint for this capability even if one were configured.
-    backing: "own-iron",
+    // VPC-BACKED, not dropped. Runs as a serve container on our own GPU boxes and is reached by
+    // the tenant studio over a Workers VPC service binding, following the VIDEO_FINISH_VPC
+    // precedent. A shared tenant keeps the FULL capability; only the TRANSPORT changes.
+    backing: "vpc",
     label: "Video upscale",
-    servedBy: "Skyphusion Labs own GPU hardware",
+    bindingName: "VIDEO_UPSCALE_VPC",
+    serviceIdVar: "VIDEO_UPSCALE_VPC_SERVICE_ID",
   },
   {
     ...pinned("lipsync"),
@@ -151,9 +152,10 @@ export const PROVISION_PLAN: PlannedCapability[] = [
   {
     ...pinned("audio-upscale"),
     // OWN IRON, same ruling and same credential posture as the upscale entry above.
-    backing: "own-iron",
+    backing: "vpc",
     label: "Audio upscale",
-    servedBy: "Skyphusion Labs own GPU hardware",
+    bindingName: "AUDIO_UPSCALE_VPC",
+    serviceIdVar: "AUDIO_UPSCALE_VPC_SERVICE_ID",
   },
 ];
 export const planWorkerTotal = (plan: PlannedEndpoint[] = endpointBackedPlan()): number =>
@@ -677,4 +679,20 @@ export async function convergeTenantTemplateImages(
   }
 
   return converged;
+}
+
+/**
+ * VPC service bindings for the vpc-backed plan capabilities (cp#396).
+ *
+ * Derived from PROVISION_PLAN, so adding a capability is a plan entry plus a deploy var, never an
+ * edit here. A capability whose service id is absent binds NOTHING rather than an empty string: an
+ * empty service_id uploads clean and fails at the tenant FIRST FINISH.
+ */
+export function vpcCapabilityBindings(serviceIds: Record<string, string | null>) {
+  const out: { type: "vpc_service"; name: string; service_id: string }[] = [];
+  for (const c of vpcBackedPlan()) {
+    const id = serviceIds[c.serviceIdVar];
+    if (id) out.push({ type: "vpc_service" as const, name: c.bindingName, service_id: id });
+  }
+  return out;
 }

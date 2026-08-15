@@ -6,7 +6,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   PROVISION_PLAN,
   endpointBackedPlan,
-  ownIronPlan,
+  vpcBackedPlan,
   NO_TRAINING_CLAUSE,
   createTenantEndpoints,
   parseQuotaError,
@@ -61,7 +61,7 @@ describe("the provisioning plan", () => {
     // figure here cannot distinguish a capability being dropped from it moving to own iron.
     expect(PROVISION_PLAN).toHaveLength(4);
     expect(endpointBackedPlan()).toHaveLength(2);
-    expect(ownIronPlan().map((c) => c.key).sort()).toEqual(["audio-upscale", "upscale"]);
+    expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["audio-upscale", "upscale"]);
     expect(planWorkerTotal()).toBe(3);
   });
 

@@ -19,6 +19,7 @@ import { CfApiError, isScriptAbsent } from "./cf-api";
 import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
 import type { TemplateConvergence, TenantR2Creds } from "./runpod";
+import { vpcCapabilityBindings } from "./runpod";
 import type { SharedRunPodPool } from "./runpod-pool";
 import { readRunPodMode, type RunPodMode } from "./runpod-pool";
 import { harvestTenantJobLog, HARVEST_ROW_CAP } from "./runpod-job-index";
@@ -224,6 +225,12 @@ export interface ProvisionDeps {
    * degrades to per-shot clips with the reason stated, which is what tenants get today.
    */
   videoFinishServiceId: string | null;
+  /**
+   * Connectivity Directory service ids for the vpc-backed plan capabilities, keyed by the
+   * serviceIdVar each plan entry names. Absent or empty means the capability is not bound, and
+   * the plan guard reports that rather than shipping a studio that fails at first finish.
+   */
+  vpcServiceIds: Record<string, string | null>;
   /**
    * Clock, sleep and fetch, injected rather than reached for globally (#23 / cf#72).
    *
@@ -883,6 +890,12 @@ export async function runProvisionJob(
         ...(deps.videoFinishServiceId
           ? [{ type: "vpc_service" as const, name: "VIDEO_FINISH_VPC", service_id: deps.videoFinishServiceId }]
           : []),
+        // cp#396: the VPC-backed plan capabilities, same shape as VIDEO_FINISH_VPC above and
+        // derived from the plan rather than listed here, so adding one is a plan entry plus a
+        // deploy var. A capability whose service id is unset binds NOTHING rather than binding an
+        // empty string, matching videoFinishServiceId: an empty binding would upload clean and
+        // fail at the tenant first finish.
+        ...vpcCapabilityBindings(deps.vpcServiceIds),
         // cp#136: the finish-tier STATE, projected from the tenant record rather than decided here.
         // Normally empty -- a tenant being provisioned now is reachable by definition -- but a
         // re-provision or a resumed provision of a DECLARED-unreachable tenant must re-state the var,
@@ -1876,15 +1889,18 @@ async function uploadStudioScript(
   try {
     await deps.scriptUploadCf.uploadUserWorker(args);
   } catch (e) {
-    const attachingVpc = args.bindings.some((b) => b.type === "vpc_service");
+    const vpcNames = args.bindings.filter((b) => b.type === "vpc_service").map((b) => b.name);
+    const attachingVpc = vpcNames.length > 0;
     const vpcRefusal = e instanceof CfApiError && e.cfErrors.some((c) => c.code === CF_VPC_BINDING_UNAUTHORIZED);
     if (attachingVpc && vpcRefusal) {
       throw new ProvisionFailure(
         "wfp_upload",
-        "video-finish binding refused: the plane's SCRIPT UPLOAD credential is not authorized for " +
-          "Workers VPC (needs Connectivity Directory access). The tenant was NOT provisioned without " +
-          "the tier -- fix CF_WORKER_UPLOAD_TOKEN, or clear VIDEO_FINISH_VPC_SERVICE_ID to run this " +
-          "plane without video finishing on purpose.",
+        "VPC binding refused for " +
+          vpcNames.join(", ") +
+          ": the plane SCRIPT UPLOAD credential is not authorized for Workers VPC (needs " +
+          "Connectivity Directory access). The tenant was NOT provisioned without the tier -- fix " +
+          "CF_WORKER_UPLOAD_TOKEN, or clear the matching *_VPC_SERVICE_ID to run this plane " +
+          "without that capability on purpose.",
       );
     }
     throw e;

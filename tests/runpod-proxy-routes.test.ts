@@ -22,9 +22,7 @@ const TENANT_ID = "ten_1";
 
 const POOL_JSON = JSON.stringify({
   backend: { id: "pool-backend", name: "vivijure-prod-backend" },
-  upscale: { id: "pool-upscale", name: "vivijure-prod-upscale" },
   lipsync: { id: "pool-lipsync", name: "vivijure-prod-lipsync" },
-  "audio-upscale": { id: "pool-audio", name: "vivijure-prod-audio-upscale" },
 });
 
 /** A public model slug from the eight-entry cost-door list. Deliberately narration-gen's: it is

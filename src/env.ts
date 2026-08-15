@@ -144,6 +144,13 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    * self-hoster without the container gets.
    */
   VIDEO_FINISH_VPC_SERVICE_ID?: string;
+  /**
+   * cp#396: Connectivity Directory service ids for the vpc-backed plan capabilities. Same shape
+   * and same empty-means-absent rule as VIDEO_FINISH_VPC_SERVICE_ID above; the plan names which
+   * var belongs to which capability, so this list and PROVISION_PLAN cannot drift silently.
+   */
+  VIDEO_UPSCALE_VPC_SERVICE_ID?: string;
+  AUDIO_UPSCALE_VPC_SERVICE_ID?: string;
 
   /**
    * The SHARED RunPod endpoint pool for the hosted shared tier (cp#270), as JSON keyed by
@@ -421,6 +428,8 @@ export const ENV_SECRETS = [
   "CF_PROVISIONER_TOKEN",
   "CF_WORKER_UPLOAD_TOKEN",
   "VIDEO_FINISH_VPC_SERVICE_ID",
+  "VIDEO_UPSCALE_VPC_SERVICE_ID",
+  "AUDIO_UPSCALE_VPC_SERVICE_ID",
   // cp#185, classified from the tracked evidence rather than from the name: docs/deploy.md records
   // it as "worker secret, wrangler secret put" and its owners row says it is not yet installed on
   // the Worker. So the delivery mechanism is out of band, and the census must NOT ask for it in a

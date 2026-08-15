@@ -17,9 +17,7 @@ import type { Tenant, TenantLifecycle } from "../src/store";
 
 const POOL_JSON = JSON.stringify({
   backend: { id: "pool-backend", name: "vivijure-prod-backend" },
-  upscale: { id: "pool-upscale", name: "vivijure-prod-upscale" },
   lipsync: { id: "pool-lipsync", name: "vivijure-prod-lipsync" },
-  "audio-upscale": { id: "pool-audio", name: "vivijure-prod-audio-upscale" },
 });
 
 const pool = () => {

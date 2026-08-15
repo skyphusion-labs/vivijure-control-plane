@@ -95,6 +95,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     store,
     cf,
     videoFinishServiceId: null,
+    vpcServiceIds: {},
     // cp#270: the DEFAULT fixture is a plane with NO shared pool, so every pre-existing case
     // still exercises the dedicated path exactly as it did. The pooled cases override both.
     sharedPool: null,

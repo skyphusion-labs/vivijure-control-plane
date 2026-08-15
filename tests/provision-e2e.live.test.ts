@@ -132,6 +132,7 @@ beforeAll(async () => {
     // not by silently widening what this suite claims to cover.
     scriptUploadCf: cf,
     videoFinishServiceId: null,
+    vpcServiceIds: {},
     tokenMinter: new CfTokenMinter(cf),
     r2Endpoint: `https://${env.cfAccountId}.r2.cloudflarestorage.com`,
     // The live suite takes the REAL three: this is the run that has to prove the emptying loop

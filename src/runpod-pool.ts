@@ -23,7 +23,7 @@
 // provisions green, serves, and then fails on the one render path nobody smoke-tested. So a pool is
 // ALL-OR-NOTHING, and an incomplete one REFUSES rather than resolving the keys it happens to have.
 
-import { endpointBackedPlan, ownIronPlan } from "./runpod";
+import { endpointBackedPlan, vpcBackedPlan } from "./runpod";
 import type { TenantEndpoint } from "./provisioner";
 
 /**
@@ -116,15 +116,15 @@ export function parseSharedPool(raw: string | undefined | null): PoolConfigResul
   // Refused rather than ignored. Silently dropping a key the operator deliberately wrote is the
   // quiet-degrade shape this file exists to refuse, and it would leave them believing the pool
   // covers something it does not.
-  const ownIron = ownIronPlan()
+  const vpcNamed = vpcBackedPlan()
     .map((c) => c.key)
     .filter((k) => k in byKey);
-  if (ownIron.length) {
+  if (vpcNamed.length) {
     return {
       ok: false,
       detail:
         "SHARED_RUNPOD_ENDPOINTS names own-iron capability(ies): " +
-        ownIron.join(", ") +
+        vpcNamed.join(", ") +
         ". These run on hardware we operate, not as RunPod endpoints, so no endpoint id belongs " +
         "here and the shared invoke key has no access to one. Remove the key rather than pointing " +
         "it at an endpoint the plane cannot reach ",

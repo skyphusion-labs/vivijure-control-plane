@@ -36,7 +36,7 @@ import {
   type TeardownOpts,
   type TeardownOutcome,
 } from "./provisioner";
-import { convergeTenantTemplateImages, createTenantEndpoints } from "./runpod";
+import { convergeTenantTemplateImages, createTenantEndpoints, vpcBackedPlan } from "./runpod";
 import { parseSharedPool, readRunPodMode } from "./runpod-pool";
 import type { SharedRunPodPool } from "./runpod-pool";
 import type { ControlPlaneStore, CreditStore, Tenant } from "./store";
@@ -530,6 +530,15 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     // Trimmed, and empty-means-absent: a whitespace-only value is a config typo, and treating it as
     // a service id would attach a binding CF cannot resolve.
     videoFinishServiceId: env.VIDEO_FINISH_VPC_SERVICE_ID?.trim() || null,
+    // cp#396: keyed by the serviceIdVar each vpc-backed plan entry names, so adding a capability
+    // is a plan entry plus a deploy var and never an edit here. Empty means absent, matching
+    // videoFinishServiceId above.
+    vpcServiceIds: Object.fromEntries(
+      vpcBackedPlan().map((c) => [
+        c.serviceIdVar,
+        (env as unknown as Record<string, string | undefined>)[c.serviceIdVar]?.trim() || null,
+      ]),
+    ),
     runpod: {
       createEndpoints: (key, slug, r2) => createTenantEndpoints(key, slug, r2),
       // cp#137: adopt-by-name reuses a template's IMAGE, so a long-lived tenant's templates have to
