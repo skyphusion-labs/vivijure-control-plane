@@ -30,6 +30,10 @@ import { D1Store } from "../src/store-d1";
 import { d1Over, freshMigratedDb as freshDb } from "./sqlite-d1";
 
 const NOW = 1_750_000_000_000;
+/** Read a tenant row straight out of SQL, so an assertion reads committed state. */
+const tenantRow = (db: DatabaseSync, id: string) =>
+  db.prepare("SELECT status FROM tenants WHERE id = ?1").get(id) as { status: string };
+
 
 const rowAt = (atMs: number, ok = true): string =>
   JSON.stringify({
@@ -406,5 +410,82 @@ describe("the summary counts DRIVES, not tenants (cp#436 x cp#442)", () => {
     // And the tenant count did NOT become a drive count in the process.
     expect(summary.tenants_seen).toBe(2);
     expect(summary.drive_errors).toBe(0);
+  });
+});
+
+describe("a drive that never DISPATCHED still counts as an error (cp#436, found by ernst)", () => {
+  let db: DatabaseSync;
+  let store: D1Store;
+
+  const expireLease = (jobId: string) =>
+    db
+      .prepare("UPDATE provision_jobs SET lease_until = datetime(:now, :ago) WHERE id = :id")
+      .run({ now: "now", ago: "-120 seconds", id: jobId });
+
+  beforeEach(async () => {
+    db = freshDb();
+    store = new D1Store(d1Over(db));
+    await store.createAccount("acct_1", "owner@example.com");
+  });
+
+  // WHY THIS EXISTS, AND IT IS THIS PR OWN THESIS FAILING INSIDE ITSELF.
+  //
+  // The loop has TWO catch sites and they are different failures: a drive that NEVER DISPATCHED
+  // (driveJobIfNeeded itself threw) and a dispatch that FAILED (the resume promise rejected).
+  // Every test written before this one throws from resume, so all of them reach the SECOND catch.
+  // The first had no test at all -- ernst deleted its errors += 1 and NOTHING went red.
+  //
+  // So the half whose entire job is that failures cannot go uncounted had a failure path whose
+  // counter could silently vanish. That is cp#436 thesis, one level down from where it was already
+  // caught in the drive loop.
+  //
+  // THE REACHABLE THROW is JSON.parse(job.steps_done) immediately after claimJob: the claim
+  // succeeds, so the job is genuinely taken, and then the parse throws before anything dispatches.
+  // Corrupting the column by raw SQL is how a real row gets there (the cp#431 follow-up corner).
+  it("counts drive_errors WITHOUT counting a drive, and does not take the other tenant down", async () => {
+    // The tenant whose row is corrupt.
+    await store.createTenant("ten_bad", "corrupt", "acct_1", "provisioning");
+    await store.createProvisionJob("job_bad", "ten_bad", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_bad");
+    expireLease("job_bad");
+    // NOT valid JSON. Written by raw SQL because no store method would produce it -- which is the
+    // point: the row is reachable, and the code parses it without asking whether it can.
+    db.prepare("UPDATE provision_jobs SET steps_done = :junk WHERE id = :id").run({ junk: "{not json", id: "job_bad" });
+
+    // A healthy tenant beside it. Its presence is the isolation half of this test.
+    await store.createTenant("ten_ok", "healthy", "acct_1", "provisioning");
+    await store.createProvisionJob("job_ok", "ten_ok", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_ok");
+    expireLease("job_ok");
+
+    const resume = vi.fn(async (jobId: string, tenant: { id: string }) => {
+      await store.finishJob(jobId, "succeeded", null, null);
+      await store.setTenantStatus(tenant.id, "awaiting_invoke_key");
+    });
+    const deps = {
+      store,
+      mailer: { send: async () => {} },
+      fetch: vi.fn(async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
+      now: () => Date.now(),
+      provisioner: { resume } as unknown as ProvisionerWiring,
+    } as unknown as ControlPlaneDeps;
+
+    const summary = await runPendingProvisionDrive(deps);
+
+    // THE ASSERTION ernst DELETION BREAKS: the never-dispatched failure is counted.
+    expect(summary.drive_errors).toBe(1);
+
+    // AND IT COUNTED NO DRIVE. The corrupt tenant contributed ZERO dispatches, so the only drive
+    // in this tick is the healthy tenant one. A failure that incremented drives would report work
+    // that never happened.
+    expect(summary.drives).toBe(1);
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(resume.mock.calls[0][0]).toBe("job_ok");
+
+    // ISOLATION, which nothing else pins on this path: one tenant unreadable row does not stop the
+    // next tenant being driven.
+    expect(tenantRow(db, "ten_ok").status).toBe("awaiting_invoke_key");
+    expect(tenantRow(db, "ten_bad").status).toBe("provisioning");
+    expect(summary.tenants_seen).toBe(2);
   });
 });
