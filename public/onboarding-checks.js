@@ -395,12 +395,57 @@
   // Can the flow advance past `key` given what the user has done so far?
   // Gates are honest: the rules gate is blocking (#57), and the review gate
   // will not open on a capacity check that failed or never ran.
+  // THE SLUG PREVIEW ANSWERS TWO QUESTIONS, AND THE SECOND ONE IS DESTRUCTIVE (cp#435).
+  //
+  // GET /api/tenant/slug-available returns available AND reclaimable, and the second is not
+  // decoration: it means the name is free TO YOU because the row behind it is YOUR OWN unfinished
+  // studio. Provisioning over it does not resume that studio. It runs a full teardown with
+  // deleteData true and rebuilds from scratch.
+  //
+  // This UI read only availability and printed is free, which is how an operator-provisioned owner
+  // could be told his own studio name was available and then destroy it by clicking Continue. The
+  // plane computes the distinction and projects it on purpose; the client dropped it on the floor.
+  // THREE outcomes now, never two.
+  function slugVerdict(res, slug) {
+    const r = res || {};
+    const name = JSON.stringify(String(slug || ""));
+    if (r.available !== true) {
+      return {
+        state: "taken",
+        level: "warn",
+        text: name + " is taken" + (r.reason ? " (" + r.reason + ")" : "") + ". Try another.",
+      };
+    }
+    if (r.reclaimable === true) {
+      return {
+        state: "reclaim",
+        level: "bad",
+        text: name + " is a studio you already have. Continuing DELETES it and builds a new one.",
+      };
+    }
+    return { state: "free", level: "ok", text: name + " is free." };
+  }
+
   function canAdvance(key, state) {
     const s = state || {};
     if (key === "rules") return s.rulesAccepted === true;
     // The server owns slug availability; the UI will not advance on a local
     // regex pass alone.
-    if (key === "name") return !!(s.slugValid === true && s.slugAvailable === true);
+    // cp#435: availability alone is NOT consent. A reclaimable slug is the owner OWN studio, and
+    // advancing over it destroys that studio, so the gate additionally demands an explicit
+    // acknowledgement. Unchanged for the ordinary free-name case, which is what most people hit.
+    if (key === "name") {
+      if (!(s.slugValid === true && s.slugAvailable === true)) return false;
+      if (s.slugReclaimable !== true) return true;
+      // CONSENT NAMES THE STUDIO IT DESTROYS (cp#446 review).
+      //
+      // A boolean would be consent to whatever the box happened to be next to. Recording WHICH
+      // name was acknowledged makes the revocation a property of this function rather than of a
+      // reset running somewhere else: consent for one name cannot open the gate for another, and
+      // deleting the DOM reset cannot silently re-enable a destruction, because the recorded name
+      // still has to equal the one about to be torn down.
+      return typeof s.slug === "string" && s.slug.length > 0 && s.slugReclaimConfirmedFor === s.slug;
+    }
     if (key === "key") return typeof s.keyPresent === "boolean" ? s.keyPresent : false;
     if (key === "capacity") return !!(s.capacity && s.capacity.fits === true);
     if (key === "review") return s.confirmed === true;
@@ -718,6 +763,7 @@
     formatUsd: formatUsd,
     stepIndex: stepIndex,
     canAdvance: canAdvance,
+    slugVerdict: slugVerdict,
     PROVISION_RESUME_BOUNDARY: PROVISION_RESUME_BOUNDARY,
     PROVISION_FIRST_POLL_MS: PROVISION_FIRST_POLL_MS,
     PROVISION_PRE_BOUNDARY_POLL_MS: PROVISION_PRE_BOUNDARY_POLL_MS,

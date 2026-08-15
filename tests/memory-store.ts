@@ -164,6 +164,7 @@ export class MemoryStore implements ControlPlaneStore {
     aup_sha256: string;
     ip_hash: string | null;
     user_agent: string | null;
+    accepted_at: string;
   }[] = [];
   async hasAcceptedAup(account_id: string, version: string) {
     return this.aup.some((r) => r.account_id === account_id && r.aup_version === version);
@@ -182,8 +183,25 @@ export class MemoryStore implements ControlPlaneStore {
     user_agent: string | null,
   ) {
     if (!(await this.hasAcceptedAup(account_id, aup_version))) {
-      this.aup.push({ account_id, aup_version, aup_sha256, ip_hash, user_agent });
+      // SECOND granularity, matching what the real column stores (the SQLite datetime(now)
+      // default). The fake honours the store CONTRACT -- ISO-8601 UTC -- because normalizing the
+      // engine format is D1Store business; a fake that stored the raw SQLite shape would be
+      // asserting on a detail no caller of the interface is entitled to see.
+      const accepted_at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+      this.aup.push({ account_id, aup_version, aup_sha256, ip_hash, user_agent, accepted_at });
     }
+  }
+
+  async getLastAupAcceptance(account_id: string) {
+    // LAST MATCHING ROW, mirroring the real ORDER BY id DESC: the array order IS the insertion
+    // order, so both stores answer "most recent" by the same rule. Sorting on the version label
+    // or on accepted_at here would make the fake disagree with the shipped store on exactly the
+    // case this projection exists for, and the suite would go green on the disagreement.
+    for (let i = this.aup.length - 1; i >= 0; i--) {
+      const r = this.aup[i];
+      if (r.account_id === account_id) return { version: r.aup_version, accepted_at: r.accepted_at };
+    }
+    return null;
   }
 
   async getTenantById(id: string) {
