@@ -436,7 +436,15 @@
     // acknowledgement. Unchanged for the ordinary free-name case, which is what most people hit.
     if (key === "name") {
       if (!(s.slugValid === true && s.slugAvailable === true)) return false;
-      return s.slugReclaimable === true ? s.slugReclaimConfirmed === true : true;
+      if (s.slugReclaimable !== true) return true;
+      // CONSENT NAMES THE STUDIO IT DESTROYS (cp#446 review).
+      //
+      // A boolean would be consent to whatever the box happened to be next to. Recording WHICH
+      // name was acknowledged makes the revocation a property of this function rather than of a
+      // reset running somewhere else: consent for one name cannot open the gate for another, and
+      // deleting the DOM reset cannot silently re-enable a destruction, because the recorded name
+      // still has to equal the one about to be torn down.
+      return typeof s.slug === "string" && s.slug.length > 0 && s.slugReclaimConfirmedFor === s.slug;
     }
     if (key === "key") return typeof s.keyPresent === "boolean" ? s.keyPresent : false;
     if (key === "capacity") return !!(s.capacity && s.capacity.fits === true);

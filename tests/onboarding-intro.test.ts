@@ -185,3 +185,44 @@ describe("the reclaim warning ships in onboarding.html (cp#435)", () => {
     expect(page).toMatch(/does not carry on where it left off/i);
   });
 });
+
+// cp#446 review: THE RESET IS WIRED, and both halves of that are asserted against the shipped file.
+//
+// The gate itself no longer depends on the reset -- consent names its studio, so a carried tick
+// cannot open a different name (tests/onboarding-checks.test.ts). But the DOM reset is still what
+// stops a stale TICK sitting there next to a name it no longer applies to, and ernst caught that
+// nothing failed if it were deleted. These read public/onboarding.js because the function lives
+// inside the page IIFE and is not importable; the house pattern for that is to assert the shipped
+// bytes, exactly as the abuse-report and front-door surfaces do.
+describe("the reclaim acknowledgement is revoked, and revoked in the right ORDER (cp#446)", () => {
+  const js = readFileSync(join(HERE, "..", "public", "onboarding.js"), "utf8");
+
+  it("CONTROL: the script is really there and still checks the slug", () => {
+    expect(js.length).toBeGreaterThan(2000);
+    expect(js).toContain("async function checkSlug()");
+  });
+
+  it("clears BOTH the recorded consent and the box itself", () => {
+    const start = js.indexOf("function resetReclaimAck()");
+    expect(start).toBeGreaterThan(-1);
+    const body = js.slice(start, js.indexOf("async function checkSlug()", start));
+    // The flag the projection reads...
+    expect(body).toContain("state.slugReclaimable = false");
+    // ...the consent the GATE reads, which is the one that matters...
+    expect(body).toContain("state.slugReclaimConfirmedFor = null");
+    // ...and the control the PERSON reads, so the screen cannot disagree with the gate.
+    expect(body).toMatch(/ack\.checked = false/);
+  });
+
+  it("resets BEFORE the request, so a late answer cannot leave a stale tick standing", () => {
+    const start = js.indexOf("async function checkSlug()");
+    const body = js.slice(start, start + 1200);
+    const reset = body.indexOf("resetReclaimAck()");
+    const fetched = body.indexOf("PlatformApi.slugAvailable");
+    expect(reset).toBeGreaterThan(-1);
+    expect(fetched).toBeGreaterThan(-1);
+    // Order is the assertion. Resetting after the await would leave the old tick on screen for the
+    // whole round trip, which is exactly the window somebody clicks Continue in.
+    expect(reset).toBeLessThan(fetched);
+  });
+});

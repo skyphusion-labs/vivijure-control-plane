@@ -69,7 +69,7 @@
     // cp#435: available and reclaimable are DIFFERENT answers. The second means the name is free
     // to this account because it is that account own unfinished studio, and taking it destroys it.
     slugReclaimable: false,
-    slugReclaimConfirmed: false,
+    slugReclaimConfirmedFor: null,
     tenantDomainSuffix: ".studio.vivijure.com",
   };
 
@@ -469,7 +469,7 @@
   // is consent to something they were never shown.
   function resetReclaimAck() {
     state.slugReclaimable = false;
-    state.slugReclaimConfirmed = false;
+    state.slugReclaimConfirmedFor = null;
     const box = $("#slug-reclaim");
     const ack = $("#slug-reclaim-ack");
     if (ack) ack.checked = false;
@@ -784,7 +784,8 @@
     const reclaimAck = $("#slug-reclaim-ack");
     if (reclaimAck) {
       reclaimAck.addEventListener("change", function () {
-        state.slugReclaimConfirmed = reclaimAck.checked;
+        // Record WHICH name was acknowledged, not merely that a box was ticked.
+        state.slugReclaimConfirmedFor = reclaimAck.checked ? state.slug : null;
         refreshGates();
       });
     }

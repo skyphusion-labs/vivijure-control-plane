@@ -660,11 +660,39 @@ describe("slugVerdict / the reclaim gate (cp#435)", () => {
   it("REFUSES to advance over the account own studio without an explicit acknowledgement", () => {
     const s = { slugValid: true, slugAvailable: true, slugReclaimable: true };
     expect(canAdvance("name", s)).toBe(false);
-    expect(canAdvance("name", { ...s, slugReclaimConfirmed: true })).toBe(true);
+    expect(canAdvance("name", { ...s, slug: "conrad", slugReclaimConfirmedFor: "conrad" })).toBe(true);
   });
 
   it("does not accept a truthy accident as consent to destroy a studio", () => {
-    const s = { slugValid: true, slugAvailable: true, slugReclaimable: true, slugReclaimConfirmed: 1 as unknown as boolean };
+    const s = {
+      slugValid: true,
+      slugAvailable: true,
+      slugReclaimable: true,
+      slug: "conrad",
+      slugReclaimConfirmedFor: 1 as unknown as string,
+    };
     expect(canAdvance("name", s)).toBe(false);
+  });
+
+  // CONSENT DOES NOT CARRY (cp#446 review). Ernst caught that the revocation was claimed,
+  // implemented and UNTESTED: resetReclaimAck existed, checkSlug called it, and deleting it broke
+  // nothing red. A behaviour only the prose asserts is one the next refactor removes in silence.
+  //
+  // So the revocation stopped being a side effect and became a PROPERTY: consent records WHICH
+  // name it was given for, and the gate compares that to the name about to be destroyed. Now the
+  // guard holds even if every DOM reset in the file is deleted, and it is testable without a DOM.
+  it("NEVER lets consent for one studio open the gate for a different one", () => {
+    const s = { slugValid: true, slugAvailable: true, slugReclaimable: true, slugReclaimConfirmedFor: "alpha" };
+    // Acknowledged alpha, now standing on beta: this is the edit-away case, and it must refuse.
+    expect(canAdvance("name", { ...s, slug: "beta" })).toBe(false);
+    // Same consent, back on the name it was actually given for.
+    expect(canAdvance("name", { ...s, slug: "alpha" })).toBe(true);
+  });
+
+  it("treats an empty or missing slug as nothing to consent to", () => {
+    // Guards the degenerate pair: a blank recorded name must not match a blank current one and
+    // wave the destruction through on two absences agreeing with each other.
+    expect(canAdvance("name", { slugValid: true, slugAvailable: true, slugReclaimable: true, slug: "", slugReclaimConfirmedFor: "" })).toBe(false);
+    expect(canAdvance("name", { slugValid: true, slugAvailable: true, slugReclaimable: true })).toBe(false);
   });
 });

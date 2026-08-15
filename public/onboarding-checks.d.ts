@@ -48,11 +48,14 @@ export interface OnboardingState {
   capacity?: QuotaFit | null;
   confirmed?: boolean;
   invokeVerified?: boolean;
+  /** The name currently in the field. The gate compares consent against THIS. */
+  slug?: string;
   slugValid?: boolean;
   slugAvailable?: boolean;
   // cp#435: available and reclaimable are different answers; the second is destructive to act on.
   slugReclaimable?: boolean;
-  slugReclaimConfirmed?: boolean;
+  /** The slug the destruction was acknowledged FOR. Consent names its studio, so it cannot carry. */
+  slugReclaimConfirmedFor?: string | null;
 }
 
 export const STEPS: OnboardingStep[];

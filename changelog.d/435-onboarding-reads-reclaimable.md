@@ -34,3 +34,24 @@ with no acknowledgement. Then driven in a REAL BROWSER against the shipped asset
 non-default value (reclaimable true): warning shown, Continue disabled; acknowledge, Continue
 enabled; retype the name, acknowledgement revoked and Continue disabled again. The ordinary
 free-name path was re-checked in the same session and is byte-for-byte the old behaviour.
+
+**Review follow-up (ernst): the revocation was claimed, implemented and UNTESTED.** resetReclaimAck
+existed and checkSlug called it, and deleting it broke nothing red. A behaviour only the prose
+asserts is one the next refactor removes in silence.
+
+So the revocation stopped being a side effect and became a PROPERTY: **consent records WHICH name it
+was given for**, and the gate compares that against the name about to be destroyed. A boolean was
+consent to whatever the box happened to sit next to. Now consent for one studio cannot open the gate
+for another, the guard survives every DOM reset in the file being deleted, and it is testable
+without a DOM.
+
+The reset still runs, because it is what stops a stale TICK sitting on screen next to a name it no
+longer applies to, and both halves of its wiring are now asserted against the shipped file: it
+clears the flag, the recorded consent and the checkbox, and it runs BEFORE the request rather than
+after, so a slow answer cannot leave an old tick standing through the whole round trip.
+
+**Each new test was probed by breaking what it guards**, not by reading it: dropping the consent
+clear turns the wiring test red, moving the reset after the fetch turns the order test red, and
+reverting the gate to a plain boolean turns all three behavioural tests red. Then re-driven in a
+browser, including the exact residual review named: acknowledge alpha, edit to beta, come BACK to
+alpha without re-ticking. Continue stays disabled.
