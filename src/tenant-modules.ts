@@ -1130,6 +1130,39 @@ export interface TenantModuleObservation {
   /** Whether this module records RunPod jobs at all. A module that submits no job is EXPECTED to
    *  report no job_log and must not read as a gap. */
   records_runpod_jobs: boolean;
+  /**
+   * WHAT EVERY SAMPLE SAID, in order (cp#254).
+   *
+   * The route reports `job_log` from the LAST sample. That value is a reading, not a conclusion,
+   * and this array is what lets a caller tell those apart: `["unavailable","ok"]` and
+   * `["ok","ok"]` produce the same `job_log` and mean completely different things. The first is a
+   * module mid-convergence whose answer will change again; the second is a module that said the
+   * same thing twice.
+   *
+   * WHY THE READS ARE REPORTED RATHER THAN RESOLVED. cp#254 considered settling inside the route by
+   * retrying until the answer stops changing, and ruled against it for a reason that has not
+   * changed: the case that needs settling is exactly the case where the answer keeps changing, so a
+   * bounded retry there either returns an arbitrary value or has to fail. This route is a cheap
+   * question an operator asks, not a promotion gate; it says what it saw and how many times, and
+   * the caller decides.
+   */
+  readings: ModuleReadingState[];
+  /** The denominator, so a reader does not have to count `readings` to know what `settled` rests on. */
+  reads: number;
+  /**
+   * Every sample agreed. NOT "converged", and the difference is load-bearing.
+   *
+   * The measured convergence window on the replace path is 40 to 50 seconds (cp#254) and the gap
+   * between samples is 250ms, so two samples that agree can still be two reads of the same
+   * transient. `settled: true` therefore means only this: nothing in this probe contradicted the
+   * reported value. `settled: false` is the strong direction -- it is positive proof the reading is
+   * mid-convergence and must not be acted on.
+   *
+   * FALSE WHEN FEWER THAN TWO SAMPLES WERE TAKEN, deliberately. A single sample agrees with itself,
+   * so deriving `settled` from one read would produce a flag that can never be false: a green that
+   * cannot go red, which is the exact defect class this field exists inside.
+   */
+  settled: boolean;
   /** Bounded response head, present when nothing usable was parsed. The 404 disjunction (stale
    *  image / absent script / control plane cannot dispatch) is diagnosable only from what came back.
    *
@@ -1140,19 +1173,60 @@ export interface TenantModuleObservation {
 }
 
 /**
- * Short pause between the two /ready samples on the operator module-readiness path (cp#254).
+ * Short pause between the /ready samples on the operator module-readiness path (cp#254).
  *
- * Right after a module upload, GET /ready can be answered by a stale isolate still serving the
- * previous version; a single sample is then indistinguishable from a settled answer. Two samples
- * with a brief gap reduce that race without turning this into the multi-second key-install wait.
- * Kept short so the route stays a cheap question.
+ * WHAT THIS GAP IS FOR, AND WHAT IT IS NOT FOR. It is NOT an attempt to outrun the convergence
+ * window. The window was MEASURED in the cp#254 thread at 40 to 50 seconds on the replace path
+ * (sequences TFTFFF and FTFFF), so 250ms sits entirely inside it and no gap this route could afford
+ * would sit outside it. The gap exists so that two adjacent samples can DISAGREE, which is the only
+ * thing this route can honestly detect. Agreement across a 250ms gap is weak evidence and is
+ * reported as exactly that; disagreement is proof the reading is mid-convergence.
+ *
+ * The earlier reading of this constant (#349) was that the second sample is the better answer. It
+ * is not: two reads inside one transient are two reads of the same transient, and returning the
+ * later one launders it, because a second agreeing read reads as corroboration. See
+ * probeTenantModuleReadiness.
  */
 export const MODULE_READINESS_PROBE_GAP_MS = 250;
+
+/**
+ * How many /ready samples the operator readiness probe takes per module (cp#254).
+ *
+ * TWO IS THE FLOOR, NOT A TUNING CHOICE. `settled` below is "every sample agreed", and a single
+ * sample agrees with itself by construction -- a one-sample probe could only ever report
+ * `settled: true`, which is a flag that cannot go red. Dropping this to 1 does not weaken the
+ * signal, it deletes it, and the suite says so rather than passing quietly.
+ */
+export const MODULE_READINESS_SAMPLES = 2;
+
+/**
+ * What ONE /ready sample said about a module ability to record, as a single named state (cp#254).
+ *
+ * THE FOURTH AND FIFTH STATES ARE THE POINT. `job_log` alone cannot carry them: an unreachable
+ * probe and a module that answered without the field both read `null` there, and the #255 smoke had
+ * to invent a separate `x` glyph for the first because they have completely different causes (the
+ * control plane cannot dispatch, versus the tenant module image is old). Keeping them apart per
+ * sample is what makes a sequence like `x x ok` legible instead of looking like a flap.
+ *
+ *   "ok" | "unavailable" | "unknown"  what the module said, verbatim (see JobLogReadiness).
+ *   "absent"                          the module answered AS ITSELF but carried no usable job_log:
+ *                                     the field was missing, or the value is one this plane does
+ *                                     not recognise. `detail` on the observation separates those.
+ *   "unreachable"                     nothing answered as this module: a non-200, an unparseable
+ *                                     body, or an answer echoing a DIFFERENT module name. This is
+ *                                     not a statement about the module at all.
+ */
+export type ModuleReadingState = JobLogReadiness | "absent" | "unreachable";
+
+/** One sample, before the samples of a run are folded into an observation. */
+type ModuleSample = Omit<TenantModuleObservation, "readings" | "reads" | "settled"> & {
+  reading: ModuleReadingState;
+};
 
 async function observeTenantModulesOnce(
   deps: TenantModuleDeps,
   tenantId: string,
-): Promise<TenantModuleObservation[]> {
+): Promise<ModuleSample[]> {
   return await Promise.all(
     TENANT_MODULE_CATALOG.map(async (spec) => {
       const script = tenantModuleScriptName(tenantId, spec.module);
@@ -1180,19 +1254,25 @@ async function observeTenantModulesOnce(
           ok: null,
           credentials: null,
           job_log: null,
+          // NOT "absent". Nothing answered as this module, so this sample says nothing about the
+          // module at all -- collapsing it into "the module reported no field" would put a control
+          // plane dispatch failure and a stale tenant image under one word.
+          reading: "unreachable" as const,
           detail: res.text.slice(0, 200) || "(empty)",
         };
       }
       const creds = body.credentials;
       const rawJobLog = body.telemetry?.job_log;
+      const jobLog = parseJobLogReadiness(rawJobLog);
       return {
         ...base,
+        reading: jobLog ?? ("absent" as const),
         ok: typeof body.ok === "boolean" ? body.ok : null,
         credentials:
           creds && typeof creds.runpod_api_key === "boolean" && typeof creds.runpod_endpoint_id === "boolean"
             ? { runpod_api_key: creds.runpod_api_key, runpod_endpoint_id: creds.runpod_endpoint_id }
             : null,
-        job_log: parseJobLogReadiness(rawJobLog),
+        job_log: jobLog,
         // A value we do not recognise is reported, never swallowed. It reads null like an absent
         // field does, and only this string separates "the pin is old" from "the contract moved".
         ...(isUnrecognisedJobLog(rawJobLog)
@@ -1204,23 +1284,115 @@ async function observeTenantModulesOnce(
 }
 
 /**
- * Probe every catalog module for one tenant and report what each said.
+ * Probe every catalog module for one tenant and report what each said, AND how sure that is.
  *
  * READ-ONLY and free: /ready costs no GPU, spends nothing, and needs no tenant credential. This is
  * an operator asking a question, not a gate deciding a promotion -- so it is NOT the multi-second
- * wait that `awaitTenantModulesReady` runs. It does sample TWICE with a short gap (cp#254), because
- * a single sample taken right after an upgrade can be a stale isolate; the second sample is the
- * answer we report. Injectable `timing` keeps the gap testable without burning real wall clock.
+ * wait that `awaitTenantModulesReady` runs.
+ *
+ * IT SAMPLES TWICE AND DISCARDS NOTHING (cp#254). #349 (`bf35182be2`) sampled twice and returned
+ * the SECOND read, discarding the first. That is the option cp#254 ruled against, and against the
+ * measured data it is worse than one sample rather than better: the convergence window is 40 to 50
+ * seconds, the gap is 250ms, so both samples land inside one transient. On the reproduced FTFFF
+ * sequence, taking the second read reports "ok" for a worker with no database bound -- and it now
+ * looks corroborated, because two reads were taken.
+ *
+ * So both reads are KEPT. `job_log` is still the last sample, because a route has to report
+ * something and the newest read is the least stale one; `readings`, `reads` and `settled` are what
+ * say whether that value can be acted on. An operator who needs a settled answer re-asks after the
+ * window, which is the thing this route is cheap enough to allow.
+ *
+ * Injectable `timing` keeps the gap testable without burning real wall clock; injectable `samples`
+ * exists so the one-sample floor is a path a test can DRIVE rather than a claim in a comment.
  */
 export async function probeTenantModuleReadiness(
   deps: TenantModuleDeps,
   tenantId: string,
   timing: ProbeTiming = realTiming,
   gapMs: number = MODULE_READINESS_PROBE_GAP_MS,
+  samples: number = MODULE_READINESS_SAMPLES,
 ): Promise<TenantModuleObservation[]> {
-  await observeTenantModulesOnce(deps, tenantId);
-  await timing.sleep(gapMs);
-  return await observeTenantModulesOnce(deps, tenantId);
+  const rounds: ModuleSample[][] = [];
+  for (let i = 0; i < Math.max(1, samples); i += 1) {
+    if (i > 0) await timing.sleep(gapMs);
+    rounds.push(await observeTenantModulesOnce(deps, tenantId));
+  }
+  return foldModuleSamples(rounds);
+}
+
+/**
+ * Fold the per-round samples into one observation per module.
+ *
+ * Keyed by MODULE NAME rather than by array position. Both rounds walk the same catalog so the
+ * positions do line up today, but a positional fold would attach one module readings to another
+ * module observation the moment that stopped being true, and it would do it silently -- the same
+ * wrong-script hazard the echo check upstream exists to refuse, moved into the merge.
+ */
+function foldModuleSamples(rounds: ModuleSample[][]): TenantModuleObservation[] {
+  const last = rounds[rounds.length - 1];
+  return last.map((sample) => {
+    const readings = rounds
+      .map((round) => round.find((s) => s.module === sample.module))
+      .filter((s): s is ModuleSample => s !== undefined)
+      .map((s) => s.reading);
+    const { reading: _dropped, ...rest } = sample;
+    return {
+      ...rest,
+      readings,
+      reads: readings.length,
+      // TWO CONDITIONS, and the length one is not defensive padding: with one read the `every` below
+      // is vacuously true, so without it this flag could never be false. See the field doc.
+      settled: readings.length >= 2 && readings.every((r) => r === readings[0]),
+    };
+  });
+}
+
+/**
+ * The two summaries the readiness route publishes beside the raw observations (cp#254).
+ *
+ * A NAMED FUNCTION RATHER THAN INLINE ROUTE CODE so the probe and the summary can be driven as one
+ * chain in a test with nothing stubbed between them. The defect this replaces was invisible at the
+ * probe (which returned a plausible value) and invisible at the route (which faithfully summarised
+ * it); it was only visible in the pair.
+ */
+export interface ModuleReadinessSummary {
+  /**
+   * Modules that submit RunPod jobs and were NOT SHOWN to be able to record one.
+   *
+   * "ok" IS THE ONLY PASS, and it must be an "ok" every sample agreed on. The test is written as
+   * `!(ok && settled)` rather than as a list of failing values ON PURPOSE: a list has to be
+   * maintained against a contract in another repo, and the day it falls behind, the new value it
+   * has never heard of falls through as PROVEN. Inverting it means an unrecognised state, and an
+   * unsettled one, are unproven by default -- the safe direction, and the one that stays safe
+   * without anyone remembering to update this line.
+   *
+   * "unavailable", "unknown", null and unsettled are ALL in here on purpose: "the binding is
+   * missing", "the worker could not tell", "this image is too old to say" and "the reading is still
+   * moving" are four different problems with one consequence for an operator about to act (rows
+   * nobody will get, or a decision resting on a value that will change). They stay distinguishable
+   * per module in the observations; this summary deliberately does not rank them.
+   */
+  records_unproven: string[];
+  /**
+   * Modules whose samples DISAGREED, so their reported value is mid-convergence.
+   *
+   * NOT filtered to the recording modules, unlike the field above. This is a statement about the
+   * quality of the reading, not about telemetry: a module flapping between unreachable and
+   * answering tells an operator the probe itself is not settled, and that is worth seeing whether
+   * or not that module records anything.
+   */
+  unsettled: string[];
+}
+
+export function summariseModuleReadiness(
+  modules: readonly TenantModuleObservation[],
+): ModuleReadinessSummary {
+  return {
+    records_unproven: modules
+      .filter((m) => m.records_runpod_jobs && !(m.job_log === "ok" && m.settled))
+      .map((m) => m.module),
+    unsettled: modules.filter((m) => !m.settled).map((m) => m.module),
+  };
 }
 
 /**

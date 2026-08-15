@@ -295,9 +295,13 @@ describe("probeTenantModuleReadiness", () => {
     for (const m of RECORDING) expect(obs.find((o) => o.module === m)!.records_runpod_jobs, m).toBe(true);
   });
 
-  // cp#254: two samples with a gap, second wins. A single pass after an upgrade can be a stale
-  // isolate; the second sample is the reported answer.
-  it("probes every catalog module TWICE and reports the second sample", async () => {
+  // cp#254: two samples with a gap, BOTH REPORTED. This test used to assert that the second sample
+  // wins and the first is discarded, which is the option the cp#254 thread ruled against: two reads
+  // 250ms apart both land inside the measured 40-to-50-second convergence window, so the later one
+  // is not the better one, it is just the one that looks corroborated. The reported value is still
+  // the newest read; what changed is that the route now says how many reads it took and whether
+  // they agreed. The sequence-level assertions live in tests/module-readiness-settling.test.ts.
+  it("probes every catalog module TWICE and reports BOTH reads with the newest value", async () => {
     const seen: string[] = [];
     let afterGap = false;
     const slept: number[] = [];
@@ -328,7 +332,13 @@ describe("probeTenantModuleReadiness", () => {
     const once = TENANT_MODULE_CATALOG.map((s) => tenantModuleScriptName(TENANT, s.module) + " /ready");
     expect(seen.sort()).toEqual([...once, ...once].sort());
     for (const o of obs.filter((x) => x.records_runpod_jobs)) {
+      // The newest read, reported as the value.
       expect(o.job_log, o.module).toBe("ok");
+      // AND the read it replaced, which is what stops that "ok" from reading as settled. Before
+      // cp#254 reopened this, the first sample was thrown away here and the assertion above was the
+      // whole test -- a module mid-convergence and a module that answered twice were identical.
+      expect(o.readings, o.module).toEqual(["unavailable", "ok"]);
+      expect(o.settled, o.module).toBe(false);
     }
   });
 });

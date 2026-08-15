@@ -1944,10 +1944,20 @@ export interface TeardownOutcome {
   absent: { resource: string; detail: string }[];
 }
 
+export interface TeardownOpts {
+  deleteData: boolean;
+  /**
+   * cp#106 option C: when true, referrers that are ALL status=`deleted` do not block. Live
+   * referrers still always refuse. Only set after the operator has named this row as owner via
+   * `i_own` on the admin teardown route; the decision is audited there, not here.
+   */
+  ignoreTombstoneReferrers?: boolean;
+}
+
 export async function teardownTenant(
   deps: ProvisionDeps,
   tenant: Tenant,
-  opts: { deleteData: boolean; ignoreTombstoneReferrers?: boolean },
+  opts: TeardownOpts,
 ): Promise<TeardownOutcome> {
   const failures: { resource: string; error: string }[] = [];
   // ALREADY GONE is not a failure, and it is not a reap either (cp#110). It gets its own list so
@@ -2055,8 +2065,13 @@ export async function teardownTenant(
    *
    * Option D: when `tenant_resource_ownership` records THIS tenant as the owner and no referrer is
    * live, tombstone-only aliases do not block. Written at provision; not silent last-referrer-wins.
-   * Legacy rows with no ownership row keep the refuse-all-referrers default (use operator `i_own`
-   * from cp#334 once merged, or re-provision to record ownership).
+   *
+   * Option C, the operator hatch (cp#334): a LEGACY row, meaning one with no ownership claim at
+   * all, reaps past tombstone-only referrers when the operator asserts `ignoreTombstoneReferrers`.
+   * Three things still refuse, and they are what keeps C from undoing D: a live referrer, a
+   * recorded owner that is not this tenant, and an ownership lookup that FAILED (unknown is not
+   * legacy). The operator must have named this row via `i_own` on the admin route; that decision is
+   * audited there, not invented here.
    */
   const resourceKeyFor = (r: TenantResourceKind): string | null => {
     if (r === "d1") return tenant.d1_database_id;
@@ -2104,12 +2119,7 @@ export async function teardownTenant(
     }
     // C (operator i_own): only for LEGACY rows with no ownership claim. A recorded owner that is
     // not this tenant always wins over i_own -- otherwise the hatch would undo option D.
-    if (
-      !live &&
-      !recordedOwner &&
-      !ownerLookupFailed &&
-      (opts as { ignoreTombstoneReferrers?: boolean }).ignoreTombstoneReferrers
-    ) {
+    if (!live && !recordedOwner && !ownerLookupFailed && opts.ignoreTombstoneReferrers) {
       deps.log("teardown.tombstone_referrers_overridden", {
         tenant: tenant.id,
         resource,
@@ -2125,7 +2135,7 @@ export async function teardownTenant(
           ? ` -- recorded owner is ${recordedOwner}, not this tenant (i_own cannot override a recorded owner)`
           : ownerLookupFailed
             ? " -- all referrers are tombstones, but the ownership lookup FAILED, so whether this tenant owns the resource is UNKNOWN. i_own is refused on an unknown, not on a legacy row. Retry once the store is reachable (cp#106)"
-            : " -- all referrers are tombstones; recorded owner unknown (legacy) -- re-run with i_own or re-provision to record ownership (cp#106)");
+            : ` -- all referrers are tombstones and NO owner is recorded (legacy); re-run with i_own: "${tenant.id}" after verifying ownership, or re-provision to record ownership (cp#106)`);
     failures.push({ resource, error });
     deps.log("teardown.refused", {
       tenant: tenant.id,
