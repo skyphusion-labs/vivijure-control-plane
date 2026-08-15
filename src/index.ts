@@ -45,6 +45,15 @@ import {
 } from "./auth";
 import { bearerFrom, newId, randomToken, sha256Hex as sha256HexOfString } from "./crypto";
 import {
+  CRON_HEARTBEAT_ACTOR,
+  CRON_HEARTBEAT_KEY,
+  TICK_HALVES,
+  summarizeCronLiveness,
+  type TickHalfName,
+  type TickHalfRecord,
+  type TickHeartbeat,
+} from "./cron-heartbeat";
+import {
   ALL_SCOPES,
   OPERATOR_SCOPES,
   canonicaliseScopes,
@@ -194,30 +203,110 @@ export default {
  * Exported so a test drives the SAME body the cron drives, rather than a re-derivation of it.
  */
 export async function runScheduledTick(env: ControlPlaneEnv, deps: ControlPlaneDeps): Promise<void> {
+  // Built up as the halves run, then written ONCE at the end. Seeded with a not-ok default per
+  // half so a half that throws before it can report leaves a red mark rather than no mark: the
+  // record must never be able to omit a half and read complete.
+  const halves: Record<TickHalfName, TickHalfRecord> = {
+    llm_meter: { ok: false, detail: "did not report" },
+    runpod_sweep: { ok: false, detail: "did not report" },
+    provision_drive: { ok: false, detail: "did not report" },
+  };
+
   try {
-    await runLlmMeterTick(env, deps);
+    const meter = await runLlmMeterTick(env, deps);
+    // ran:false is a REFUSAL (no gateway reader, no spend store), not a quiet success. Recording it
+    // as ok would let an unconfigured meter read healthy forever.
+    halves.llm_meter = meter.ran ? { ok: true } : { ok: false, detail: meter.reason ?? "refused" };
   } catch (e) {
     // runLlmMeterTick catches internally today. This is here for the day it does not, because the
     // coupling it would create is invisible: the sweep below would simply never run.
     console.error("scheduled.llm_meter_threw", String(e));
+    halves.llm_meter = { ok: false, detail: "threw: " + String(e) };
   }
   try {
-    await runRunpodJobSweep({
+    const sweep = await runRunpodJobSweep({
       fetchImpl: deps.fetch,
       runpodApiKey: async () => env.SHARED_RUNPOD_INVOKE_KEY ?? "",
       store: deps.store,
       now: deps.now,
     });
+    // Same predicate the sweep already uses for its own tick log, minus the parts that are about
+    // its workload rather than its health: a sweep that refused, or that hit probe errors, is not
+    // a healthy half however many rows it left alone.
+    halves.runpod_sweep = sweep.ran
+      ? sweep.errors === 0
+        ? { ok: true }
+        : { ok: false, detail: String(sweep.errors) + " probe errors" }
+      : { ok: false, detail: sweep.reason ?? "refused" };
   } catch (e) {
     console.error("scheduled.runpod_sweep_threw", String(e));
+    halves.runpod_sweep = { ok: false, detail: "threw: " + String(e) };
   }
   try {
     // THE THIRD HALF (cp#429). Isolated like the other two: a throw here must not take the meter
     // or the sweep with it, and the symptom of that coupling would be an absence.
-    await runPendingProvisionDrive(deps);
+    const drive = await runPendingProvisionDrive(deps);
+    // THE OUTER CATCH ALONE WOULD BE A DECORATION HERE. runPendingProvisionDrive catches PER
+    // TENANT, so it returns normally even when every drive it attempted failed, and a half marked
+    // ok on absence-of-throw would stay green through a total outage of the thing it measures.
+    // The error COUNT is what carries the information, so that is what is read.
+    halves.provision_drive =
+      drive.drive_errors === 0
+        ? { ok: true }
+        : {
+            ok: false,
+            // NAMED FIELDS, NEVER AN X-of-Y PHRASE (ernst). A ratio phrase ASSERTS a shared unit,
+            // so pairing a drive count with a tenant count is wrong even when both numbers are
+            // right. This read N of M candidates threw, which was true only while each tenant got
+            // exactly one drive.
+            //
+            // The absurd rendering was the LUCKY one: 3-of-2 announces itself, 2-of-3 does not and
+            // is equally wrong. Every number here stands beside its own denominator name, so the
+            // unlucky version cannot be WRITTEN rather than having to be noticed.
+            detail:
+              "drive_errors=" +
+              String(drive.drive_errors) +
+              " drives=" +
+              String(drive.drives) +
+              " tenants_seen=" +
+              String(drive.tenants_seen),
+          };
   } catch (e) {
     console.error("scheduled.provision_drive_threw", String(e));
+    halves.provision_drive = { ok: false, detail: "threw: " + String(e) };
   }
+
+  await recordTickHeartbeat(deps, halves);
+}
+
+/**
+ * Stamp the liveness row (cp#436).
+ *
+ * UNCONDITIONAL, and outside every half is try. A heartbeat that is skipped when the work fails
+ * would make a totally broken tick indistinguishable from a cron that never fired, which is the
+ * exact false negative this whole mechanism exists to remove. The tick ran; that fact is recorded
+ * whatever the halves did, and WHAT they did is recorded beside it.
+ *
+ * ITS OWN try/catch, and it swallows. This is an instrument, and an instrument that can take down
+ * the engine it measures is a worse defect than the blindness it fixes. The cost is that a failing
+ * heartbeat write is itself invisible except in the log, which is accepted deliberately: the
+ * alternative trades a monitoring gap for an outage.
+ */
+async function recordTickHeartbeat(
+  deps: ControlPlaneDeps,
+  halves: Record<TickHalfName, TickHalfRecord>,
+): Promise<void> {
+  const row: TickHeartbeat = {
+    at: new Date(deps.now()).toISOString(),
+    ok: TICK_HALVES.every((h) => halves[h].ok),
+    halves,
+  };
+  try {
+    await deps.store.setSetting(CRON_HEARTBEAT_KEY, JSON.stringify(row), CRON_HEARTBEAT_ACTOR);
+  } catch (e) {
+    console.error("scheduled.heartbeat_write_threw", String(e));
+  }
+  (row.ok ? console.log : console.error)("scheduled.tick", JSON.stringify(row));
 }
 
 /**
@@ -1059,8 +1148,52 @@ export const PROVISION_DRIVE_TENANT_SLICE_MS = 60_000;
  * single winner. A cron drive racing a live tenant poll is exactly the concurrency claimJob was
  * written for, so the two cannot double-mint.
  */
-export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<void> {
-  if (!deps.provisioner) return;
+/**
+ * WHAT THE RETURN IS FOR (cp#436): the caller needs to know whether this half was HEALTHY, and it
+ * cannot learn that from a thrown error, because the per-tenant catch below means this function
+ * returns NORMALLY even when every drive it attempted failed. The error count is the only honest
+ * signal the half can give, so it is reported rather than left to the log.
+ */
+export interface ProvisionDriveSummary {
+  /**
+   * EVERY NUMBER CARRIES ITS OWN DENOMINATOR IN ITS NAME, and that is the whole design of this
+   * type rather than a naming preference (ernst, cp#436 x cp#442).
+   *
+   * These were once `candidates`, `driven`, `deferred`, `errors`, back when each tenant got exactly
+   * ONE drive and every field was secretly the same unit. The in-tick loop split them apart, and
+   * counting correctly is NOT sufficient: an \"X of Y\" phrase ASSERTS a shared unit, so any report
+   * pairing a drive count with a tenant count is wrong even when both numbers are right.
+   *
+   * \"3 of 2 tenants threw\" was the LUCKY version of that bug -- it announces itself. \"2 of 3\" is
+   * equally wrong and reads fine. Naming the fields for their units is what makes the unlucky
+   * version impossible to WRITE, instead of something a careful reader has to keep noticing.
+   */
+
+  /** Tenants CONSIDERED this tick. A tenant count. */
+  tenants_seen: number;
+  /** Tenants the tick budget never reached. A tenant count. */
+  tenants_deferred: number;
+  /**
+   * DISPATCHES across all tenants. NOT a tenant count: the in-tick loop drives one tenant
+   * repeatedly until it stops yielding, so this can exceed `tenants_seen` and routinely will.
+   */
+  drives: number;
+  /**
+   * Per-DRIVE failures. NOT per-tenant breaks; one tenant can contribute several.
+   *
+   * This is the field the cp#436 heartbeat judges the half on, and the reason the half returns
+   * anything at all: runPendingProvisionDrive catches per drive and returns NORMALLY when every
+   * drive it attempted failed, so absence-of-throw says nothing about whether it worked.
+   */
+  drive_errors: number;
+}
+
+export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<ProvisionDriveSummary> {
+  const empty: ProvisionDriveSummary = { tenants_seen: 0, tenants_deferred: 0, drives: 0, drive_errors: 0 };
+  // No provisioner is a REFUSAL, and it returns zeroes rather than throwing. The heartbeat reads
+  // errors, so a plane with no provisioner reports a clean half -- correct, because there is no
+  // work it failed to do; cp#436 records configuration gaps at the meter half, which owns that.
+  if (!deps.provisioner) return empty;
 
   // The two lifecycle states an unfinished provision can be sitting in: both routes CREATE the
   // tenant "pending", and the first driver moves it to "provisioning". Everything later has a
@@ -1080,6 +1213,7 @@ export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<
   const tickSpent = () => deps.now() - tickStartedAt;
 
   let drives = 0;
+  let errors = 0;
   let deferred = 0;
   let budgetExhausted = false;
 
@@ -1124,6 +1258,11 @@ export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<
       } catch (e) {
         // One tenant cannot take the sweep down with it, for the same reason the tick isolates
         // its halves (cp#290): the symptom would be an absence in every OTHER tenant.
+        //
+        // COUNTED (cp#436): a drive that never dispatched is still a drive that failed, and the
+        // heartbeat judges this half on its error count. Breaking without counting is how a
+        // half that failed on every tenant reports itself healthy.
+        errors += 1;
         console.error("scheduled.provision_drive_threw", JSON.stringify({ tenant: tenant.id, error: String(e) }));
         break;
       }
@@ -1148,6 +1287,10 @@ export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<
       try {
         await Promise.all(work);
       } catch (e) {
+        // Counted for the same reason as the sibling above. This one ALREADY incremented
+        // drives, so a failed dispatch appears in both numbers -- correctly: it was dispatched
+        // and it failed.
+        errors += 1;
         console.error("scheduled.provision_drive_threw", JSON.stringify({ tenant: tenant.id, error: String(e) }));
         break;
       }
@@ -1169,11 +1312,26 @@ export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<
     JSON.stringify({
       outcome: budgetExhausted ? "budget_spent" : "drained",
       drives,
+      errors,
       tenants_seen: candidates.length,
       tenants_deferred: deferred,
       budget_ms: PROVISION_DRIVE_TICK_BUDGET_MS,
     }),
   );
+
+  // THE COUNTERS ARE BUILT HERE AND THEIR UNITS ARE NOT THE SAME (cp#436 x cp#442).
+  //
+  // Before the in-tick loop, each tenant got exactly ONE drive, so drives and tenants were the
+  // same number and it did not matter which a caller read. They are now different quantities:
+  //
+  //   drives      dispatches across ALL tenants -- one tenant can contribute several
+  //   errors      per-DRIVE failures, NOT per-tenant breaks
+  //   candidates  tenant count, unchanged
+  //
+  // Reporting one against the other would produce sentences like "3 of 2 candidates threw", and
+  // the version that does NOT print an obvious absurdity is the dangerous one: it reads plausibly
+  // and means something other than it says.
+  return { tenants_seen: candidates.length, tenants_deferred: deferred, drives, drive_errors: errors };
 }
 
 async function provision(
@@ -1818,6 +1976,10 @@ export const ADMIN_REQUIREMENTS: ReadonlyArray<{ method: string; pattern: RegExp
   { method: "GET", pattern: /^\/api\/admin\/settings$/, requires: "tenants:read" },
   { method: "POST", pattern: /^\/api\/admin\/settings$/, requires: "platform:settings" },
   { method: "GET", pattern: /^\/api\/admin\/r2-usage$/, requires: "tenants:read" },
+  // cp#436: the cron liveness read. Platform health, not tenant material, so it sits with the other
+  // inventory reads and is deliberately NOT audited -- the rule the audit helper states is that
+  // reaching into ONE tenant leaves a record, and this reaches into none.
+  { method: "GET", pattern: /^\/api\/admin\/cron$/, requires: "tenants:read" },
   // POST that only reads (the operator brings a RunPod snapshot in the body), so it is gated as the
   // read it is. The verb is about where the payload travels, never about what the route does.
   { method: "POST", pattern: /^\/api\/admin\/reconcile\/runpod$/, requires: "tenants:read" },
@@ -2151,6 +2313,19 @@ async function adminRoutes(
 
   if (request.method === "GET" && path === "/api/admin/settings") {
     return json({ signups_enabled: (await deps.store.getSetting("signups_enabled")) !== "false" });
+  }
+
+  // cp#436: IS THE CRON ALIVE. The three scheduled halves report to console only, so before this
+  // route existed the handler failure was undetectable from outside the Worker: every symptom was
+  // an absence, and an absence looks exactly like an idle plane. Since cp#429 the cron is the only
+  // engine that drives an operator-provisioned tenant to a studio, so that blindness had moved from
+  // billing-is-late to the-product-silently-does-not-work.
+  if (request.method === "GET" && path === "/api/admin/cron") {
+    const raw = await deps.store.getSetting(CRON_HEARTBEAT_KEY);
+    // The threshold belongs to the READER, not the writer: the stored row is a plain fact about when
+    // a tick happened, and how long is too long is a judgement that belongs where it can be changed
+    // without a deploy touching the write path.
+    return json(summarizeCronLiveness(raw, deps.now()));
   }
 
   if (request.method === "POST" && path === "/api/admin/settings") {
