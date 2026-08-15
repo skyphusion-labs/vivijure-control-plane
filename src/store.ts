@@ -1025,8 +1025,14 @@ export interface ControlPlaneStore {
    * already failed by a poll would otherwise overwrite step / steps_done on the terminal record and
    * re-arm its lease, leaving a failed job that reads as live and progressing.
    */
-  /** Close a job. Returns whether a row actually changed: a terminal job is a closed record and   *  refuses, so a caller pairing this with a tenant-status write MUST branch on the result   *  (cp#438, cp#443). */
   updateJobProgress(id: string, step: string, stepsDoneJson: string): Promise<void>;
+  /**
+   * Close a job. Returns whether a row ACTUALLY CHANGED: a terminal job is a closed record and
+   * refuses (cp#438), so a caller pairing this with a tenant-status write MUST BRANCH ON THE
+   * RESULT (cp#443). Writing the tenant unconditionally after a refused close is what turns a
+   * losing race from wrong-but-consistent into inconsistent: the job keeps its real outcome while
+   * the tenant takes the LOSING driver outcome.
+   */
   finishJob(id: string, status: "succeeded" | "failed", errorStep: string | null, errorMessage: string | null): Promise<boolean>;
 
   // ---- invoke-key handoffs (cp#169) ----
