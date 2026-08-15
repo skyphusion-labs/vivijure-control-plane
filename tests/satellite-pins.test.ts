@@ -32,10 +32,7 @@ describe("satellite pins (cp#126)", () => {
     expect(plan).not.toMatch(/tag:\s*"/);
     expect(plan).not.toMatch(/imageRepo:\s*"/);
     expect(RUNPOD_TS).not.toContain("ghcr.io");
-    // The live gate provisions real endpoints; a literal there would let it pass while the plane
-    // builds tenants on something else.
-    const liveTs = readFileSync(join(HERE, "runpod.live.test.ts"), "utf8");
-    expect(liveTs).not.toContain("ghcr.io");
+    // cp#396: the live gate that provisioned real endpoints is gone with the dedicated path, so    // there is no second file to check. The plan literal check above is now the whole guard, which    // is correct: PROVISION_PLAN is the only place an image reference could reach a tenant.
   });
 
   it("pins bare release tags only", () => {

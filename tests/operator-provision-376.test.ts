@@ -227,7 +227,7 @@ describe("operator-provisioned tenant (cp#376)", () => {
   // ---- SHARED TIER, NO KEY, EVER ----------------------------------------------------------------
 
   describe("shared tier", () => {
-    it("hands the provisioner a NULL key and records the job as shared", async () => {
+    it("hands the provisioner NO key argument and records the job as shared", async () => {
       const res = await ok(ROOT_TOKEN);
       expect(res.status).toBe(202);
       const body = (await res.json()) as { tenant_id: string; job_id: string; runpod_mode: string };
@@ -237,10 +237,12 @@ describe("operator-provisioned tenant (cp#376)", () => {
       // The strongest available evidence that no RunPod key was issued on our account: the value
       // the runner was actually handed.
       expect(wire.start).toHaveBeenCalledTimes(1);
-      const [jobId, tenant, key] = wire.start.mock.calls[0] as unknown as [string, { id: string }, string | null];
+      const call = wire.start.mock.calls[0] as unknown[];
+      const [jobId, tenant] = call as [string, { id: string }];
       expect(jobId).toBe(body.job_id);
       expect(tenant.id).toBe(body.tenant_id);
-      expect(key).toBe(null);
+      // cp#396: stronger than null. The parameter is gone, so no key can be handed over at all.
+      expect(call).toHaveLength(2);
 
       // And the durable record agrees with what was handed over.
       const job = await store.getLatestJobForTenant(body.tenant_id);

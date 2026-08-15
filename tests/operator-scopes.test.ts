@@ -819,8 +819,6 @@ describe("every route that reaches into ONE tenant leaves a record (the merged p
     "POST /api/admin/tenants/ten_x/video-finish-tier-state",
     "POST /api/admin/tenants/ten_x/abuse-report-url",
     "POST /api/admin/tenants/ten_x/storage-quota",
-    "POST /api/admin/tenants/ten_x/invoke-key-handoff",
-    "POST /api/admin/tenants/ten_x/reprovision-runpod",
     "POST /api/admin/tenants/ten_x/smoke-render",
   ];
 

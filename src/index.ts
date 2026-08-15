@@ -77,16 +77,8 @@ import { handleProxyPoll } from "./runpod-proxy-poll-routes";
 import { runRunpodJobSweep } from "./runpod-job-sweep";
 import { ABUSE_REPORT_URL_VAR } from "./tenant-abuse-report";
 import type { StorageQuotaIntent } from "./tenant-storage-quota";
-import {
-  HANDOFF_TOKEN_PARAM,
-  burnInvokeKeyHandoff,
-  mintInvokeKeyHandoff,
-  resolveInvokeKeyHandoff,
-  type HandoffDeps,
-} from "./invoke-key-handoff";
 import { JOB_LEASE_SECONDS, RECLAIM_LEASE_SECONDS, jobAwaitsFirstDriver, jobHasLiveDriver } from "./store";
 import { StudioBindingError } from "./tenant-studio-bindings";
-import { ReprovisionError } from "./tenant-runpod-reprovision";
 import type { PreservationHoldKind } from "./store";
 import type { Account, Tenant, ProvisionJob, ProvisionJobFacts, SmokeRender } from "./store";
 import {
@@ -389,25 +381,6 @@ export async function handle(
     if (request.method === "POST" && path === "/api/auth/logout") {
       await endSession(deps.store, request, deps.now());
       return new Response(null, { status: 204, headers: { "set-cookie": clearedSessionCookie(sessionCookieDomain(env.CONTROL_PLANE_HOST)) } });
-    }
-
-    // ---- cp#169: the owner-completed invoke-key handoff (unauthenticated by design) ----
-    //
-    // WHY IT SITS ABOVE THE SESSION GATE. The whole point of the ruling is that the owner does not
-    // have to sign in: an operator repaired their studio and handed them a link. Requiring a session
-    // here would put the flow back exactly where cp#169 found it. What replaces the session is not
-    // "nothing" -- it is a one-time 256-bit token bound to ONE tenant and ONE set of endpoint ids,
-    // and a key that still has to pass verifyInvokeKeyScope against endpoints living in the
-    // customer's own RunPod account. Holding the link without a credential to that account installs
-    // nothing.
-    //
-    // THE TOKEN TRAVELS IN THE BODY ON THE WRITE, and in the query only on the read the page cannot
-    // avoid (it arrives as a URL). Same shape as the magic link, and the write is where a token in a
-    // query string would otherwise end up in an access log next to a credential.
-    if (path === "/api/handoff/invoke-key") {
-      if (request.method === "GET") return await handoffContext(request, deps, url);
-      if (request.method === "POST") return await handoffInstall(request, deps);
-      return err("not_found", 404);
     }
 
     // ---- cp#290: the plane-side RunPod proxy (bearer, not session) ----
@@ -1129,7 +1102,7 @@ async function provision(
   deps: ControlPlaneDeps,
   account: Account,
 ): Promise<Response> {
-  const body = (await readJson(request)) as { slug?: string; runpod_api_key?: string } | null;
+  const body = (await readJson(request)) as { slug?: string } | null;
   const slug = String(body?.slug ?? "").toLowerCase();
 
   const valid = validateSlug(slug);
@@ -1146,45 +1119,29 @@ async function provision(
   const claim = await deps.store.checkSlugAvailability(slug, account.id);
   if (!claim.available) return err("slug_taken", 409, { message: claim.reason });
 
-  // EVERY CHEAP REFUSAL HAPPENS BEFORE ANYTHING DESTRUCTIVE. These two used to sit below, which was
-  // harmless while provision only ever CREATED. The reclaim path below DELETES a customer half-built
-  // studio, so discovering a missing key or an unconfigured provisioner after the teardown would
-  // leave them strictly worse off than before they asked: resources gone, nothing provisioned, and
-  // the refusal they should have got for free up front. Order is load-bearing, not stylistic.
-  // cp#270: a RunPod key is required ONLY when this plane cannot put the tenant on the shared
-  // pool. Order matters and is why the provisioner check moved ABOVE this one: whether a key is
-  // needed is a question about the PLANE's configuration, so it cannot be answered before we know
-  // the plane is configured at all.
-  //
-  // A key that IS supplied is still honoured on a plane with a pool: that is the BYO power-user
-  // path, it keeps dedicated endpoints because the tenant brings the account, and it is correct.
-  // Only the ABSENCE of a key changes meaning here.
+  // cp#396: this plane has ONE tier. A tenant rides the shared pool or it is not provisioned, so
+  // the only question left is whether the plane HAS a pool. The BYOK branch that used to accept a
+  // tenant own RunPod key is gone; see the purge notes in CHANGELOG.
   if (!deps.provisioner) return err("provisioner_unconfigured", 503);
-  if (!body?.runpod_api_key && !deps.provisioner.offersSharedTier()) {
+  if (!deps.provisioner.offersSharedTier()) {
+    // Same code as before, narrower meaning: it no longer says "bring a key", it says this deploy
+    // has no shared render capacity at all. Kept rather than renamed because it is the refusal a
+    // front door already branches on.
     return err("runpod_key_required", 400);
   }
-
-  // ONE read of the key, used for BOTH the recorded mode and the value handed to the driver.
-  //
-  // THIS IS THE POINT OF THE VARIABLE, not tidiness. The mode is a claim about which branch
-  // runProvisionJob will take, and that branch is decided by the key it receives. Deriving the two
-  // from separate expressions would let them disagree on any edge the two expressions treat
-  // differently (an empty string is the obvious one), and a job row asserting `dedicated` over a
-  // provision that took the shared branch is a lie no reader could detect.
-  const runpodApiKey = body?.runpod_api_key ?? null;
 
   // The two facts a later resume cannot reconstruct (cp#301). Derived here, ONCE, above both
   // createProvisionJob call sites, so the reclaim path and the fresh path cannot record different
   // things for the same request.
   //
-  // MODE COMES FROM THE KEY, never from whether the plane offers a pool. A plane with a pool armed
-  // still serves BYO dedicated tenants -- that is what the refusal above is careful to allow -- so
-  // "a pool exists" would put a tenant who brought their own RunPod account onto ours.
+  // MODE IS FIXED at shared: it is the only mode a tenant can be created in now. The column stays
+  // because 13 historical rows carry the other value and reconcile still reads it to decide whose
+  // endpoint ids a row names.
   //
   // RELEASE IS THE PIN NOW, because the pin moves. A poll-driven resume reads it at poll time, and
   // STUDIO_RELEASE went v1.13.0 to v1.19.3 in a single day on 2026-08-03.
   const jobFacts: ProvisionJobFacts = {
-    runpodMode: runpodApiKey ? "dedicated" : "shared",
+    runpodMode: "shared",
     toRelease: deps.provisioner.currentRelease(),
   };
   // A GRANTED RECLAIM CANNOT GO THROUGH THIS ROUTE, and that refusal is deliberate rather than a
@@ -1267,7 +1224,7 @@ async function provision(
     // THIS row: createTenant would hit the UNIQUE constraint, and a second row would orphan the
     // first. No getTenantForAccount check here: the reclaimed row IS this account tenant.
     const job = await deps.store.createProvisionJob(newId("job"), reclaimed.id, "provision", jobFacts);
-    ctx.waitUntil(deps.provisioner.start(job.id, reclaimed, runpodApiKey));
+    ctx.waitUntil(deps.provisioner.start(job.id, reclaimed));
     return json({ tenant_id: reclaimed.id, job_id: job.id, reclaimed: true }, 202);
   }
 
@@ -1286,7 +1243,7 @@ async function provision(
   // `?? null` is the cp#270 shared path, not defensive typing: an absent key is now a MEANINGFUL
   // argument (put this tenant on the shared pool), and the provisioner distinguishes it from a
   // present one to choose the shape. The route already refused above if neither is possible.
-  ctx.waitUntil(deps.provisioner.start(job.id, tenant, runpodApiKey));
+  ctx.waitUntil(deps.provisioner.start(job.id, tenant));
   return json({ tenant_id: tenant.id, job_id: job.id }, 202);
 }
 
@@ -1315,10 +1272,14 @@ async function provision(
  *     write `live`.
  *   - `setTenantStatus(..., "live")` occurs at exactly ONE site in this tree: performInvokeKeyInstall
  *     below. (Measured: 1 of 15 setTenantStatus call sites across src/.)
- *   - performInvokeKeyInstall has exactly TWO callers. One is the session route
+ *   - performInvokeKeyInstall has exactly ONE caller after cp#396: the session route
  *     POST /api/tenant/<ten>/invoke-key, which sits BELOW the blocking AUP gate in handle(), so the
- *     owner cannot reach it without having accepted the current version themselves. The other is the
- *     cp#169 handoff, which requires an operator to mint a one-time token under studio:operate.
+ *     owner cannot reach it without having accepted the current version themselves. The cp#169
+ *     handoff was a second caller and is GONE (an unauthenticated surface no remaining tier can
+ *     complete is a liability, not a spare door), and the tenant-paste branch was a third.
+ *
+ *     ONE is a STRONGER argument than two, which is why this line is worth keeping accurate rather
+ *     than approximately right: every path to live now passes through a single gate.
  *   - Until then routing.ts answers `awaiting_invoke_key` with 503 "still being set up", to everyone
  *     including the owner.
  *
@@ -1487,7 +1448,7 @@ async function operatorProvision(
   // `null` is the cp#270 shared path and is the ONLY value this route can pass: an absent key is a
   // meaningful argument (put this tenant on the shared pool), and it is what keeps the shared tier
   // off dedicated endpoints.
-  ctx.waitUntil(deps.provisioner.start(job.id, tenant, null));
+  ctx.waitUntil(deps.provisioner.start(job.id, tenant));
 
   // The response states the invariant rather than leaving the operator to infer it, so nobody reads
   // a 202 here as "the customer has a working studio".
@@ -1549,8 +1510,15 @@ async function installInvokeKey(
     return (await performInvokeKeyInstall(deps, tenant, poolKey)).response;
   }
 
-  if (!pasted) return err("invoke_key_required", 400);
-  return (await performInvokeKeyInstall(deps, tenant, pasted)).response;
+  // cp#396: THIS ROUTE IS SHARED-ONLY. The tenant-paste half went with the BYOK path, so a row that
+  // is not recorded shared has no key this plane could install and no endpoints of its own to scope
+  // one to. Those are the 13 legacy rows, all dead; refused by name rather than dropped through, so
+  // the reason appears in the response instead of a 404-shaped silence.
+  return err("tenant_not_on_shared_tier", 409, {
+    message:
+      "this studio predates the shared render tier and cannot be completed on this plane. " +
+      "Nothing was changed; please get in touch.",
+  });
 }
 
 /**
@@ -1725,73 +1693,6 @@ async function performInvokeKeyInstall(
   };
 }
 
-/** The handoff seam, assembled in one place so both routes and the admin mint share a clock. */
-const handoffDeps = (deps: ControlPlaneDeps): HandoffDeps => ({ store: deps.store, now: deps.now });
-
-/**
- * What the owner needs to SEE before they can act: which studio, which four endpoints to scope a key
- * to, and how long the link is good for. Reads the handoff; never consumes it.
- *
- * It returns endpoint ids and a slug and nothing else about the tenant. Both are identifiers the
- * owner already holds (the slug is their studio hostname, the ids are rows in their own RunPod
- * console), which is what makes this safe to serve to a bare token: a stranger who guessed a
- * 256-bit token would learn two facts they cannot act on without a credential we do not hold.
- */
-async function handoffContext(request: Request, deps: ControlPlaneDeps, url: URL): Promise<Response> {
-  const token = url.searchParams.get(HANDOFF_TOKEN_PARAM) ?? "";
-  const outcome = await resolveInvokeKeyHandoff(handoffDeps(deps), token);
-  if (!outcome.ok) {
-    return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
-  }
-  const { handoff, tenant } = outcome.context;
-  return json({
-    handoff_id: handoff.id,
-    slug: tenant.slug,
-    status: tenant.status,
-    expires_at: handoff.expires_at,
-    // The RECIPE data, in the shape the onboarding screen already renders: the owner is doing the
-    // same console work they did at signup, so they should be reading the same list. Projected from
-    // the TENANT row rather than copied onto the handoff, so there is one source of truth for what
-    // this studio's endpoints are, and the staleness check above is what guarantees they agree.
-    endpoints: tenantEndpointRecipe(tenant),
-  });
-}
-
-/**
- * The owner pastes their key. Same install as the session route, by identity, then burn the link.
- *
- * THE BURN IS AFTER, AND ONLY ON A COMPLETED INSTALL. A rejected key must leave the link usable (a
- * typo would otherwise re-strand the customer, which is the failure this whole issue is about), and
- * so must the 202, whose own instruction is to retry. `installed` comes back from the install rather
- * than being inferred from the status code here, so the two cannot drift.
- */
-async function handoffInstall(request: Request, deps: ControlPlaneDeps): Promise<Response> {
-  const body = (await readJson(request)) as { token?: unknown; runpod_invoke_key?: unknown } | null;
-  const token = typeof body?.token === "string" ? body.token : "";
-  const key = typeof body?.runpod_invoke_key === "string" ? body.runpod_invoke_key : "";
-  if (!key) return err("invoke_key_required", 400);
-
-  const outcome = await resolveInvokeKeyHandoff(handoffDeps(deps), token);
-  if (!outcome.ok) {
-    return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
-  }
-  const { handoff, tenant } = outcome.context;
-
-  const { response, installed } = await performInvokeKeyInstall(deps, tenant, key);
-  if (!installed) return response;
-
-  const burned = await burnInvokeKeyHandoff(handoffDeps(deps), handoff);
-  // CONSUMPTION IS AUDITED, and it is audited as the OWNER acting, not the operator: the actor
-  // records which handoff was used and who issued it, so an install has a person on both ends. The
-  // key is not here and never was -- the fields are ids and a boolean.
-  await deps.store.recordAdminAction(
-    `handoff:${handoff.id}`,
-    "tenant.install_invoke_key_via_handoff",
-    tenant.id,
-    JSON.stringify({ handoff_id: handoff.id, issued_by: handoff.issued_by, burned }),
-  );
-  return response;
-}
 
 /**
  * WHAT EACH ADMIN ROUTE REQUIRES (cp#219). ONE table, consulted BEFORE dispatch, and the fallback is
@@ -1875,8 +1776,6 @@ export const ADMIN_REQUIREMENTS: ReadonlyArray<{ method: string; pattern: RegExp
   { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/upgrade-modules$`), requires: "studio:operate" },
   { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/upgrade-studio$`), requires: "studio:operate" },
   { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/refresh-studio-bindings$`), requires: "studio:operate" },
-  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/invoke-key-handoff$`), requires: "studio:operate" },
-  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/reprovision-runpod$`), requires: "studio:operate" },
   // Spends GPU, so it sits with the operate scope rather than with the reads beside it.
   { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/smoke-render$`), requires: "studio:operate" },
   { method: "GET", pattern: new RegExp(`^/api/admin/tenants/${TEN}/smoke-render/smk_[a-f0-9]+$`), requires: "tenants:read" },
@@ -3349,172 +3248,6 @@ async function adminRoutes(
     );
   }
 
-  // ---- cp#169: hand the OWNER a one-time link to install a fresh invoke key -------------------
-  //
-  // WHY THIS ROUTE EXISTS SEPARATELY from the reprovision that mints one automatically. A tenant can
-  // be stranded at awaiting_invoke_key by a repair that happened before this existed, by a link that
-  // expired in a support queue, or by a second reprovision that made an outstanding link stale. All
-  // three need a fresh link WITHOUT re-running a repair, and re-running a repair to obtain one would
-  // rebuild four endpoints to solve a paperwork problem.
-  //
-  // WHY IT IS A LINK AND NOT AN ADMIN INSTALL (option 2 on cp#169, deliberately declined): an
-  // admin-gated install would let an operator credential place a RunPod key on a customer studio.
-  // The ruling keeps the credential decision with the owner and moves only the initiative.
-  //
-  // WHAT THE OPERATOR GETS BACK is the ONLY time the token exists outside this function. It is not
-  // logged, not audited, and cannot be re-read: a lost link is re-minted, never recovered.
-  const handoffMint = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/invoke-key-handoff$/.exec(path);
-  if (request.method === "POST" && handoffMint) {
-    const tenant = await deps.store.getTenantById(handoffMint[1]);
-    if (!tenant) return err("not_found", 404);
-
-    const outcome = await mintInvokeKeyHandoff(handoffDeps(deps), tenant, actor, publicOrigin(env));
-    if (!outcome.ok) return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
-
-    // IDS AND AN EXPIRY. The token is deliberately absent from the audit row: a credential-bearing
-    // URL in an audit table is a credential in an audit table.
-    await deps.store.recordAdminAction(
-      actor,
-      "tenant.issue_invoke_key_handoff",
-      tenant.id,
-      JSON.stringify({
-        handoff_id: outcome.minted.id,
-        expires_at: outcome.minted.expires_at,
-        endpoints: outcome.minted.endpoints,
-      }),
-    );
-    return json({ tenant_id: tenant.id, slug: tenant.slug, ...outcome.minted });
-  }
-
-  // ---- cp#137: rebuild a tenant's RunPod endpoints, through a plane mechanism ------------------
-  //
-  // WHY THIS ROUTE EXISTS AT ALL. cp#137's detection half proved a live tenant can point at four
-  // endpoints that no longer exist, and the standing ruling on that issue is that the fix goes
-  // through a plane mechanism rather than an UPDATE against D1. Correcting the record by hand would
-  // move the ids without making them real; this rebuilds the endpoints, re-points every consumer of
-  // their ids, and writes the record as a consequence of having done so.
-  //
-  // WHY confirm_slug, unlike refresh-studio-bindings: this pass REVOKES a live R2 credential and
-  // replaces the wiring of a running studio. It is not destructive of customer data, but it is not
-  // the kind of thing to run against the tenant one row above the one you meant, and the ids are
-  // opaque where the slug is recognisable. Same reasoning, and the same shape, as teardown.
-  //
-  // KEY A NEVER LANDS ANYWHERE. It arrives in this body, is passed as an argument, and is held by
-  // nothing afterwards: no job row (this route deliberately has none), no audit detail, no log line.
-  // The audit row below records ids and counts. A failure carries a message the module has already
-  // scrubbed of every secret it was holding.
-  const reprovisionRunPod = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/reprovision-runpod$/.exec(path);
-  if (request.method === "POST" && reprovisionRunPod) {
-    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
-    const tenant = await deps.store.getTenantById(reprovisionRunPod[1]);
-    if (!tenant) return err("not_found", 404);
-
-    const body = (await readJson(request)) as { confirm_slug?: unknown; runpod_api_key?: unknown } | null;
-    if (typeof body?.confirm_slug !== "string" || body.confirm_slug.trim() !== tenant.slug) {
-      return err("slug_confirmation_required", 400, { slug: tenant.slug });
-    }
-    // Checked BEFORE anything else that could change state, for the reason the provision route
-    // states out loud: discovering a missing key after the first write leaves the caller strictly
-    // worse off than the refusal they should have had for free.
-    const runpodApiKey = typeof body.runpod_api_key === "string" ? body.runpod_api_key.trim() : "";
-    if (!runpodApiKey) {
-      return err("runpod_key_required", 400, {
-        message:
-          "this needs the tenant's own RunPod key A (graphql read/write) to create endpoints on their " +
-          "account. It is used once and stored nowhere.",
-      });
-    }
-
-    // One writer at a time on this row: a provision, module upgrade or studio upgrade with a live
-    // driver is already PUTting at these scripts, and a bindings patch landing mid-upload races the
-    // upload that owns the binding set.
-    const latest = await deps.store.getLatestJobForTenant(tenant.id);
-    if (latest && jobHasLiveDriver(latest, deps.now())) {
-      return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
-    }
-
-    // Preflight FIRST and separately: a refusal here has written nothing at all, which is what lets
-    // the honest refusals (not serving, bundle missing, no recorded module release) be cheap.
-    const pre = await deps.provisioner.preflightReprovisionRunPod(tenant);
-    if (!pre.ok) return err(pre.refusal.code, pre.refusal.status, { message: pre.refusal.message });
-
-    let result;
-    try {
-      result = await deps.provisioner.reprovisionRunPod(tenant, pre.context, runpodApiKey);
-    } catch (e) {
-      if (e instanceof ReprovisionError) {
-        // The tenant is at awaiting_invoke_key and its studio is still serving. Say which step died
-        // and stop; the message is already scrubbed, and a re-run of this same route is the retry.
-        await deps.store.recordAdminAction(
-          actor,
-          "tenant.reprovision_runpod.failed",
-          tenant.id,
-          JSON.stringify({ step: e.step, message: e.message }),
-        );
-        return err("reprovision_failed", 409, { step: e.step, message: e.message });
-      }
-      throw e;
-    }
-
-    await deps.store.recordAdminAction(
-      actor,
-      "tenant.reprovision_runpod",
-      tenant.id,
-      // IDS AND COUNTS ONLY. Endpoint ids and an R2 token id are identifiers the plane already
-      // stores; neither key A nor the minted credential value appears here or anywhere else.
-      JSON.stringify({
-        endpoints_before: result.endpoints_before.map((e) => e.id),
-        endpoints_after: result.endpoints_after.map((e) => e.id),
-        templates_changed: result.templates.filter((t) => t.changed).length,
-        r2_token_id: result.r2_token_id,
-        previous_r2_token_revoked: result.previous_r2_token_revoked,
-        modules_release: result.modules_release,
-        missing_bindings: result.missing_bindings,
-        missing_secrets: result.missing_secrets,
-      }),
-    );
-
-    // cp#169: THE REPAIR EMITS ITS OWN LAST STEP. Every reprovision ends at awaiting_invoke_key by
-    // construction (new endpoints, new ids, the stored key B scoped to the ones just replaced), and
-    // until now the operator had no way to complete or to delegate that step: the install route
-    // resolves a session. So the successful repair now mints the one-time link in the same response
-    // that reports it, bound to the endpoints THIS run created, and the operator hands it to the
-    // customer through their support channel.
-    //
-    // A MINT FAILURE MUST NOT UNDO A SUCCESSFUL REPAIR. The endpoints are rebuilt and the record is
-    // written by the time we get here; failing the whole call over a link would report a repair that
-    // did happen as a repair that did not, and invite a re-run that rebuilds four endpoints again.
-    // So the link is reported as ABSENT with the reason attached, and the standalone mint route above
-    // is the retry.
-    let handoff: Record<string, unknown> | null = null;
-    let handoffRefusal: string | null = null;
-    const reread = await deps.store.getTenantById(tenant.id);
-    const minted = reread
-      ? await mintInvokeKeyHandoff(handoffDeps(deps), reread, actor, publicOrigin(env))
-      : null;
-    if (minted?.ok) {
-      handoff = { ...minted.minted };
-      await deps.store.recordAdminAction(
-        actor,
-        "tenant.issue_invoke_key_handoff",
-        tenant.id,
-        JSON.stringify({
-          handoff_id: minted.minted.id,
-          expires_at: minted.minted.expires_at,
-          endpoints: minted.minted.endpoints,
-          via: "reprovision",
-        }),
-      );
-    } else {
-      handoffRefusal = minted ? minted.refusal.code : "tenant_missing";
-    }
-
-    // 200 with the readback attached, and NO summary boolean (cp#20): reaching this line already
-    // means the studio census came back whole, because a short readback throws at studio_bindings and
-    // is answered above as a 409 naming that step. The facts a caller should branch on are `status`
-    // (awaiting_invoke_key, every time) and the endpoint ids in `endpoints_after`.
-    return json({ ...result, invoke_key_handoff: handoff, invoke_key_handoff_refusal: handoffRefusal });
-  }
 
   // ---- cp#95: STUDIO_TOKEN_KEK rotation -------------------------------------------------------
   //

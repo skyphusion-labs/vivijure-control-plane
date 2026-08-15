@@ -105,10 +105,11 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     // what a deploy is. uploadTenantModules refuses a vpc-backed module with no door, so an absent
     // default would fail every case in this file for a reason none of them are about.
     vpcDoors: TEST_VPC_DOORS,
-    // cp#270: the DEFAULT fixture is a plane with NO shared pool, so every pre-existing case
-    // still exercises the dedicated path exactly as it did. The pooled cases override both.
-    sharedPool: null,
-    sharedPoolInvokeKey: null,
+    // cp#396: the DEFAULT fixture is now a plane WITH a pool, because that is the only plane that
+    // exists. It used to be null so every case exercised the dedicated branch; that branch is gone,
+    // and leaving the default would fail every case here on a refusal none of them is about.
+    sharedPool: SHARED_POOL,
+    sharedPoolInvokeKey: "rpa_poolkey",
     // cp#288: the DEFAULT fixture is a plane with NO proxy configured, so every pre-existing case
     // still uploads modules exactly as it did. The proxy cases override it, same as sharedPool.
     runpodProxy: null,
@@ -122,10 +123,6 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     // cf#56: the default fixture is a plane WITH a gateway configured, because that is what the
     // hosted plane is. Tests covering the unconfigured degrade override it with null.
     aiGatewayId: "vivijure-hosted",
-    runpod: {
-      createEndpoints: vi.fn(async () => (calls.push("runpod.createEndpoints"), ENDPOINTS)),
-      convergeTemplateImages: vi.fn(async () => (calls.push("runpod.convergeTemplateImages"), [])),
-    },
     tokenMinter: {
       // The id depends on WHICH credential is being minted: the tenant long-lived bucket token, or
       // the ephemeral one a teardown cycle mints to empty the bucket (cf#72). Two ids, so a test can
@@ -253,6 +250,12 @@ const SHARED_POOL = {
   ids: new Set(["pool-1", "pool-3"]),
   names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync"]),
 };
+// cp#396: endpoint ids now come from the POOL, since nothing creates per-tenant endpoints. Derived
+// from the fixture rather than re-hardcoded, so a pool fixture change cannot leave these stale.
+const POOL_ID = {
+  backend: SHARED_POOL.endpoints[0].id,
+  lipsync: SHARED_POOL.endpoints[1].id,
+};
 
 describe("runProvisionJob on the SHARED pool (cp#270)", () => {
   it("creates ZERO endpoints and still reaches awaiting_invoke_key", async () => {
@@ -262,10 +265,9 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
-    const res = await runProvisionJob(d, job.id, t, null);
+    const res = await runProvisionJob(d, job.id, t);
 
     expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
-    expect(d.runpod.createEndpoints).toHaveBeenCalledTimes(0);
     expect(calls.filter((c) => c.startsWith("runpod."))).toEqual([]);
     expect(JSON.parse(store.jobs.get("job_1")!.steps_done)).toEqual([...PROVISION_STEPS]);
   });
@@ -274,7 +276,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     const t = await tenant();
     const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, null);
+    await runProvisionJob(d, job.id, t);
 
     const row = store.tenants.get(t.id)!;
     expect(row.runpod_mode).toBe("shared");
@@ -291,7 +293,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     const { store: recorder, journal } = recordingStore(store);
     const d = deps({ store: recorder, sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, null);
+    await runProvisionJob(d, job.id, t);
 
     // The journal records `name(args...)`, so match on the call NAME rather than on equality: an
     // args-sensitive matcher would silently stop finding the call the day an argument is added.
@@ -310,7 +312,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     const t = await tenant();
     const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, null);
+    await runProvisionJob(d, job.id, t);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       bindings: { name: string; text?: string }[];
@@ -319,20 +321,6 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     expect(upload.bindings.find((b) => b.name === "MUSETALK_RUNPOD_ENDPOINT_ID")?.text).toBe("pool-3");
   });
 
-  it("POSITIVE CONTROL: a key A on a plane WITH a pool still builds DEDICATED endpoints", async () => {
-    // The BYO power-user path, which keeps dedicated endpoints because the tenant brings the
-    // account. Conrad's ruling governs the SHARED tier only, and "no dedicated endpoints" must
-    // never become "no dedicated endpoints ever". A pool configured on the plane must not hijack a
-    // tenant who supplied their own key.
-    const t = await tenant();
-    const d = deps({ sharedPool: SHARED_POOL, sharedPoolInvokeKey: "rpa_poolkey" });
-    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, "rpa_keyA");
-
-    expect(d.runpod.createEndpoints).toHaveBeenCalledTimes(1);
-    expect(store.tenants.get(t.id)?.runpod_mode).toBe("dedicated");
-    expect(JSON.parse(store.tenants.get(t.id)!.endpoints_json!)).toEqual(ENDPOINTS);
-  });
 
   it("CONTROL: no key and NO pool is still the original honest stop, creating nothing", async () => {
     // The check that can come back negative. If this ever passes, the pooled branch has become the
@@ -341,10 +329,9 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
     const d = deps({ sharedPool: null, sharedPoolInvokeKey: null });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
-    const res = await runProvisionJob(d, job.id, t, null);
+    const res = await runProvisionJob(d, job.id, t);
 
     expect(res).toEqual({ ok: false, step: "runpod_endpoints", message: "runpod_key_required" });
-    expect(d.runpod.createEndpoints).toHaveBeenCalledTimes(0);
     expect(store.tenants.get(t.id)?.runpod_mode).toBe("dedicated");
     expect(store.tenants.get(t.id)?.endpoints_json).toBeNull();
   });
@@ -453,7 +440,7 @@ describe("runProvisionJob", () => {
   it("runs the steps in order and parks at awaiting_invoke_key, not live", async () => {
     const t = await tenant();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(deps(), job.id, t, "rpa_keyA");
+    const res = await runProvisionJob(deps(), job.id, t);
 
     expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
     // NOT live: the studio exists but cannot render until key B lands.
@@ -462,37 +449,6 @@ describe("runProvisionJob", () => {
     expect(JSON.parse(store.jobs.get("job_1")!.steps_done)).toEqual([...PROVISION_STEPS]);
   });
 
-  it("threads the REAL minted R2 credential into the RunPod templates (never a placeholder)", async () => {
-    // The satellite templates carry this credential and a render reads it; the live e2e once
-    // provisioned endpoints with placeholder creds, which would have failed at the tenant's first
-    // render. The seam now takes the credential, so prove it is the mint, S3-derived.
-    const t = await tenant();
-    const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
-    expect(res.ok).toBe(true);
-
-    const createEndpoints = d.runpod.createEndpoints as ReturnType<typeof vi.fn>;
-    expect(createEndpoints).toHaveBeenCalledTimes(1);
-    const [key, slug, r2] = createEndpoints.mock.calls[0] as [
-      string,
-      string,
-      { endpoint: string; accessKeyId: string; secretAccessKey: string; bucket: string },
-    ];
-    expect(key).toBe("rpa_keyA");
-    expect(slug).toBe("hero");
-    expect(r2.endpoint).toBe("https://acct.r2.cloudflarestorage.com");
-    expect(r2.accessKeyId).toBe("tok-1");
-    // R2 S3 semantics: the secret access key is the SHA-256 hex of the token value.
-    expect(r2.secretAccessKey).toBe(await sha256Hex("TOKEN_VALUE_SECRET"));
-    expect(r2.bucket).toBe("vivijure-tenant-hero");
-    // And the worker secret is the SAME derivation -- template and worker cannot disagree.
-    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
-      bindings: { name: string; text?: string }[];
-    };
-    const secret = upload.bindings.find((b) => b.name === "R2_S3_SECRET_ACCESS_KEY");
-    expect(secret?.text).toBe(r2.secretAccessKey);
-  });
 
   it("binds the abuse-report URL onto a NEW tenant studio (cp#164)", async () => {
     // THE DISCRIMINATING TEST for the provision door. It asserts what the plane SENT to the upload,
@@ -502,7 +458,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+    expect((await runProvisionJob(d, job.id, t)).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       bindings: { type: string; name: string; text?: string }[];
@@ -522,7 +478,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+    expect((await runProvisionJob(d, job.id, t)).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       bindings: { type: string; name: string; text?: string }[];
@@ -538,7 +494,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const d = deps({ storageQuota: { bytes: null, invalid: null } });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+    expect((await runProvisionJob(d, job.id, t)).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       bindings: { type: string; name: string }[];
@@ -558,7 +514,7 @@ describe("runProvisionJob", () => {
     const t = (await store.getTenantById(row.id)) as Tenant;
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+    expect((await runProvisionJob(d, job.id, t)).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       bindings: { type: string; name: string }[];
@@ -575,7 +531,7 @@ describe("runProvisionJob", () => {
     const t = (await store.getTenantById(row.id)) as Tenant;
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+    expect((await runProvisionJob(d, job.id, t)).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       bindings: { type: string; name: string; text?: string }[];
@@ -592,7 +548,7 @@ describe("runProvisionJob", () => {
     const t = (await store.getTenantById(row.id)) as Tenant;
     const d = deps({ storageQuota: { bytes: null, invalid: "100GB" } });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+    expect((await runProvisionJob(d, job.id, t)).ok).toBe(true);
   });
 
   it("REFUSES the whole provision while the plane's ceiling is malformed, creating nothing", async () => {
@@ -602,7 +558,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const d = deps({ storageQuota: { bytes: null, invalid: "100GB" } });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
+    const res = await runProvisionJob(d, job.id, t);
 
     const failure = expectProvisionFailure(res);
     expect(failure.message).toContain("TENANT_R2_STORAGE_QUOTA_BYTES");
@@ -619,7 +575,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const d = deps({ abuseReportUrl: null });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    expect((await runProvisionJob(d, job.id, t, "rpa_keyA")).ok).toBe(true);
+    expect((await runProvisionJob(d, job.id, t)).ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       bindings: { type: string; name: string }[];
@@ -634,7 +590,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
+    const res = await runProvisionJob(d, job.id, t);
     expect(res.ok).toBe(true);
 
     const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
@@ -644,8 +600,8 @@ describe("runProvisionJob", () => {
     // env.ASSETS must be declared or the studio 1101s on every static path.
     expect(byName.get("ASSETS")?.type).toBe("assets");
     // Each endpoint id is wired into the var the studio reads it from (spec.endpointVar).
-    expect(byName.get("RUNPOD_ENDPOINT_ID")?.text).toBe("ep1");
-    expect(byName.get("MUSETALK_RUNPOD_ENDPOINT_ID")?.text).toBe("ep3");
+    expect(byName.get("RUNPOD_ENDPOINT_ID")?.text).toBe(POOL_ID.backend);
+    expect(byName.get("MUSETALK_RUNPOD_ENDPOINT_ID")?.text).toBe(POOL_ID.lipsync);
     // ...and own iron carries NO endpoint id, so the studio is handed no var for one (cp#396). Both
     // directions asserted: a present var proves the wiring, an absent one proves the split, and an
     // empty string bound to satisfy a shape would upload clean and die at the tenant first render.
@@ -675,7 +631,7 @@ describe("runProvisionJob", () => {
       }),
     });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
+    const res = await runProvisionJob(d, job.id, t);
     expect(res).toMatchObject({ ok: false, step: "verify" });
     expect(store.tenants.get(t.id)?.status).toBe("failed");
   });
@@ -688,7 +644,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const rec = recordingStore(store);
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(deps({ store: rec.store }), job.id, t, "rpa_KEY_A_MUST_NOT_PERSIST");
+    await runProvisionJob(deps({ store: rec.store }), job.id, t);
 
     expect(rec.journal.join("\n")).not.toContain("rpa_KEY_A_MUST_NOT_PERSIST");
     expect(JSON.stringify(logs)).not.toContain("rpa_KEY_A_MUST_NOT_PERSIST");
@@ -699,7 +655,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const rec = recordingStore(store);
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(deps({ store: rec.store }), job.id, t, "rpa_keyA");
+    await runProvisionJob(deps({ store: rec.store }), job.id, t);
 
     expect(store.tenants.get(t.id)?.r2_token_id).toBe("tok-1"); // the id IS kept: teardown revokes by it
     expect(rec.journal.join("\n")).not.toContain("TOKEN_VALUE_SECRET");
@@ -710,7 +666,7 @@ describe("runProvisionJob", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    await runProvisionJob(d, job.id, t);
 
     const upload = (d.cf.uploadUserWorker as unknown as { mock: { calls: [{ bindings: { name: string; bucket_name?: string }[] }][] } }).mock.calls[0][0];
     const r2 = upload.bindings.filter((b) => b.bucket_name);
@@ -718,23 +674,13 @@ describe("runProvisionJob", () => {
     for (const b of r2) expect(b.bucket_name).toBe(tenantBucketName("hero"));
   });
 
-  it("STOPS honestly at runpod_endpoints when resuming without key A (never fakes it)", async () => {
-    const t = await tenant();
-    const d = deps();
-    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(d, job.id, t, null);
-
-    expect(res).toEqual({ ok: false, step: "runpod_endpoints", message: "runpod_key_required" });
-    expect(d.runpod.createEndpoints).not.toHaveBeenCalled();
-    expect(calls).not.toContain("uploadUserWorker"); // and does not sail on past it
-  });
 
   it("surfaces the REAL step error verbatim, not a cosmetic one", async () => {
     const t = await tenant();
     const quotaError = new CfApiError("d1.create", 400, [{ message: "workers.api.error.d1_quota_exceeded" }]);
     const d = deps({ cf: fakeCf({ createD1: vi.fn(async () => { throw quotaError; }) }) });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
+    const res = await runProvisionJob(d, job.id, t);
 
     expect(res.ok).toBe(false);
     {
@@ -752,7 +698,7 @@ describe("runProvisionJob", () => {
     // is exactly the reads-safe-but-isn't trap; we ask the API what it actually built.
     const d = deps({ cf: fakeCf({ getScriptBindings: vi.fn(async () => [{ type: "d1", name: "DB" }]) }) });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
+    const res = await runProvisionJob(d, job.id, t);
 
     expect(res.ok).toBe(false);
     {
@@ -781,7 +727,7 @@ describe("runProvisionJob", () => {
     const fresh = (await store.getTenantById(t.id))!;
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, fresh, "rpa_keyA");
+    await runProvisionJob(d, job.id, fresh);
 
     expect(d.tokenMinter.revoke).toHaveBeenCalledWith("tok-old");
     expect(calls.indexOf("mintR2Token")).toBeLessThan(calls.indexOf("revokeToken"));
@@ -792,7 +738,7 @@ describe("runProvisionJob", () => {
   it("uses deterministic per-tenant resource names (idempotency depends on it)", async () => {
     const t = await tenant();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(deps(), job.id, t, "rpa_keyA");
+    await runProvisionJob(deps(), job.id, t);
     expect(calls).toContain(`createD1:${tenantD1Name("hero")}`);
     expect(calls).toContain(`createR2:${tenantBucketName("hero")}`);
   });
@@ -922,7 +868,7 @@ describe("teardownTenant", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    await runProvisionJob(d, job.id, t);
     expect(d.tokenMinter.mintAigToken).toHaveBeenCalledWith(tenantAigTokenName("hero"));
     // Revoke-then-mint: a retry must not leave a trail of live grants behind it.
     expect(calls.indexOf(`revokeByName:${tenantAigTokenName("hero")}`)).toBeLessThan(
@@ -934,7 +880,7 @@ describe("teardownTenant", () => {
     const t = await tenant();
     const d = deps({ aiGatewayId: null });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    await runProvisionJob(d, job.id, t);
     expect(d.tokenMinter.mintAigToken).not.toHaveBeenCalled();
   });
 
@@ -972,20 +918,22 @@ describe("teardownTenant", () => {
 
 describe("auto-teardown on provision failure (cf#91)", () => {
   it("unwinds minted resources after a mid-chain failure", async () => {
+    // cp#396: the failure used to be injected through createEndpoints, which no longer exists.
+    // The CLAIM is unchanged and is shared-path behaviour: a provision that dies after the R2
+    // credential is minted must revoke it and tear down what it made. Injected at the studio
+    // upload instead, which is the next step after r2_token and is still a seam.
     const t = await tenant();
-    const boom = new CfApiError("runpod.create", 400, [{ message: "worker quota" }]);
-    const d = deps({
-      runpod: {
-        createEndpoints: vi.fn(async () => { throw boom; }),
-        convergeTemplateImages: vi.fn(async () => []),
-      },
+    const boom = new CfApiError("wfp.upload", 400, [{ message: "script too large" }]);
+    const d = deps();
+    (d.scriptUploadCf as unknown as { uploadUserWorker: unknown }).uploadUserWorker = vi.fn(async () => {
+      throw boom;
     });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
+    const res = await runProvisionJob(d, job.id, t);
 
     expect(res.ok).toBe(false);
     expect(store.tenants.get(t.id)?.status).toBe("failed");
-    // Token was persisted before the RunPod step; rollback must revoke it.
+    // Token was persisted before the failing step; rollback must revoke it.
     expect(d.tokenMinter.revoke).toHaveBeenCalledWith("tok-1");
     expect(calls).toContain("deleteD1");
     expect(calls).toContain("deleteR2Bucket");
@@ -1006,7 +954,7 @@ describe("auto-teardown on provision failure (cf#91)", () => {
       },
     });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    await runProvisionJob(d, job.id, t);
     expect(d.tokenMinter.revoke).toHaveBeenCalledWith("tok-1");
     // NARROWED, not dropped (cf#56): revokeByName is now legitimately used for the per-tenant AI
     // Gateway token, which has no persisted id by design. The guarantee this test exists for is
@@ -1043,7 +991,7 @@ describe("assets_config (the hosted-only parity defect, #77/#78)", () => {
     const t = await tenant();
     const d = withBundle({ html_handling: "none", run_worker_first: true });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    await runProvisionJob(d, job.id, t);
     expect(uploadArg(d).assetsConfig).toEqual({ html_handling: "none", run_worker_first: true });
   });
 
@@ -1054,7 +1002,7 @@ describe("assets_config (the hosted-only parity defect, #77/#78)", () => {
     const t = await tenant();
     const d = withBundle({});
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    await runProvisionJob(d, job.id, t);
     expect(uploadArg(d).assetsConfig).toEqual({});
   });
 
@@ -1062,7 +1010,7 @@ describe("assets_config (the hosted-only parity defect, #77/#78)", () => {
     const t = await tenant();
     const d = withBundle(undefined);
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    await runProvisionJob(d, job.id, t);
     expect(uploadArg(d).assetsConfig).toBeUndefined();
   });
 });
@@ -1081,7 +1029,7 @@ describe("cf#99 tenant module bridge", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    await runProvisionJob(d, job.id, t);
 
     const moduleUploads = uploads(d).filter((u) => u.namespace === "vivijure-tenant-modules");
     expect(moduleUploads.map((u) => u.scriptName).sort()).toEqual(
@@ -1114,7 +1062,7 @@ describe("cf#99 tenant module bridge", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    await runProvisionJob(d, job.id, t);
 
     const byScript = new Map(
       uploads(d)
@@ -1124,9 +1072,9 @@ describe("cf#99 tenant module bridge", () => {
     const pre = (n: string) => `${t.id}-${n}`.replace(/_/g, "-");
     // keyframe + own-gpu ride the backend endpoint (ep1); finish-lipsync gets its own (ep3).
     const epOf = (script: string, name: string) => byScript.get(script)!.find((b) => b.name === name)?.text;
-    expect(epOf(pre("keyframe"), "RUNPOD_ENDPOINT_ID")).toBe("ep1");
-    expect(epOf(pre("own-gpu"), "RUNPOD_ENDPOINT_ID")).toBe("ep1");
-    expect(epOf(pre("finish-lipsync"), "RUNPOD_ENDPOINT_ID")).toBe("ep3");
+    expect(epOf(pre("keyframe"), "RUNPOD_ENDPOINT_ID")).toBe(POOL_ID.backend);
+    expect(epOf(pre("own-gpu"), "RUNPOD_ENDPOINT_ID")).toBe(POOL_ID.backend);
+    expect(epOf(pre("finish-lipsync"), "RUNPOD_ENDPOINT_ID")).toBe(POOL_ID.lipsync);
     // cp#396: finish-upscale and speech-upscale are OWN IRON, so their transport is a vpc_service
     // binding plus the door bearer, and NO endpoint id. All three asserted per module, on purpose:
     // a missing RUNPOD_ENDPOINT_ID on its own reads exactly like a module that was never uploaded,
@@ -1167,7 +1115,7 @@ describe("cf#99 tenant module bridge", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(d, job.id, t, "rpa_keyA");
+    await runProvisionJob(d, job.id, t);
 
     const studio = uploads(d).find((u) => u.namespace === "vivijure-tenants")!;
     const md = studio.bindings.find((b) => b.name === "MODULE_DISPATCH") as
@@ -1181,7 +1129,7 @@ describe("cf#99 tenant module bridge", () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
+    const res = await runProvisionJob(d, job.id, t);
     expect(res.ok).toBe(true);
 
     const studioCalls = (d.callTenantStudio as ReturnType<typeof vi.fn>).mock.calls.map(
@@ -1218,7 +1166,7 @@ describe("cf#99 tenant module bridge", () => {
       }),
     });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
+    const res = await runProvisionJob(d, job.id, t);
     expect(res).toMatchObject({ ok: false, step: "modules_install" });
     expect(expectProvisionFailure(res).message).toContain("conformance failed");
     expect(store.tenants.get(t.id)?.status).toBe("failed");
@@ -1234,7 +1182,7 @@ describe("cf#99 tenant module bridge", () => {
       }),
     });
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA");
+    const res = await runProvisionJob(d, job.id, t);
     expect(res).toMatchObject({ ok: false, step: "verify" });
     expect(expectProvisionFailure(res).message).toContain("zero installed modules");
   });

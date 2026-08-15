@@ -90,27 +90,6 @@ export interface TenantEndpoint {
   endpointVar: string;
 }
 
-/**
- * The RunPod half of provisioning (#54). Split behind a seam because it is a different lane AND a
- * different trust domain: this is the only part that touches the tenant's transient key.
- */
-export interface RunPodProvisioner {
-  /**
-   * r2 is the REAL minted bucket credential (S3-derived), because the satellite templates carry it
-   * and a render reads it. The live e2e once passed placeholders here, which provisioned endpoints
-   * whose first render would have failed on R2 auth; the seam takes the credential so the shipping
-   * wiring cannot repeat that.
-   */
-  createEndpoints(runpodApiKey: string, slug: string, r2: TenantR2Creds): Promise<TenantEndpoint[]>;
-  /**
-   * Move this tenant's EXISTING templates onto the pins the plane currently holds (cp#137).
-   *
-   * On the seam rather than reached for directly, so there is still exactly one RunPod injection
-   * point. Required rather than optional: an optional method would let a wiring omission read as
-   * "nothing to converge", which is the silent-skip shape this repo keeps refusing.
-   */
-  convergeTemplateImages(runpodApiKey: string, slug: string): Promise<TemplateConvergence[]>;
-}
 
 /**
  * Where the published studio bundle comes from.
@@ -164,7 +143,6 @@ export interface StudioBundleSource {
 export interface ProvisionDeps {
   store: ControlPlaneStore;
   cf: CfApi;
-  runpod: RunPodProvisioner;
   bundle: StudioBundleSource;
   /** Where tenant MODULE worker bundles come from (cf#99). Same seam as `bundle`, per module. */
   moduleBundle: ModuleBundleSource;
@@ -371,15 +349,17 @@ export const PROVISION_INVOCATION_BUDGET_MS = 15_000;
  *   - After wfp_upload and everything past it, a poll-driven continueProvisionJob finishes the job
  *     with NO key A, because all it then needs is on the tenant row (endpoints_json, studio_token_enc).
  *
- * runpod_endpoints is NEITHER: it has just created 4 BILLABLE RunPod endpoints that a keyless poll
- * cannot use and a re-provision would strand. Yielding there produced a permanently unresumable job,
- * because continueProvisionJob refuses anything short of wfp_upload. So the invocation MUST carry
- * runpod_endpoints THROUGH to wfp_upload in the same run; suppressing the yield at exactly this
- * boundary lines the yield boundary up with continueProvisionJob resume boundary. Carrying one extra
- * step past the 15s budget is safe inside the ~30s waitUntil window (the finale run measured the
- * whole pre-install prefix at 22s, and wfp_upload is a fraction of that).
+ * runpod_endpoints WAS neither, and that is what this set existed for: it had just created billable
+ * RunPod endpoints a keyless poll could not use, so yielding there produced a permanently
+ * unresumable job.
+ *
+ * cp#396 DISSOLVED THAT REASON. Nothing is created any more -- the step is a pure resolution of
+ * pool config, and a keyless poll re-resolves it identically. There is no unresumable window left
+ * to line the yield boundary up with, so the set is EMPTY rather than deleted: the mechanism stays
+ * available for the next step that earns it, and the comment above records why this one no longer
+ * does.
  */
-const YIELD_UNSAFE_STEPS = new Set<MarkableProvisionStep>(["runpod_endpoints"]);
+const YIELD_UNSAFE_STEPS = new Set<MarkableProvisionStep>([]);
 
 /**
  * How often a live driver refreshes its lease (cp#148). A third of the lease, so two consecutive
@@ -512,8 +492,8 @@ export const REPROVISION_DESTROYS =
 /**
  * Run a provision job to completion or to an honest failure.
  *
- * runpodApiKey is key A: transient, used once, never stored. Pass null to resume the CF-side steps
- * only; the run then stops honestly at runpod_endpoints rather than pretending.
+ * cp#396: key A is gone. Nothing this function does needs a tenant RunPod credential; the pool is
+ * resolved from plane config, so a poll-driven resume is as capable as the first invocation.
  */
 /**
  * Carried by a RESUME of the pre-upload region (cp#301 item 3).
@@ -533,7 +513,6 @@ export async function runProvisionJob(
   deps: ProvisionDeps,
   jobId: string,
   tenant: Tenant,
-  runpodApiKey: string | null,
   clock: ProvisionClock = realClock,
   budgetMs: number = PROVISION_INVOCATION_BUDGET_MS,
   resume?: ProvisionResume,
@@ -737,28 +716,17 @@ export async function runProvisionJob(
             `the step that writes them; ${REPROVISION_DESTROYS}`,
         );
       }
-    } else if (runpodApiKey) {
-      endpoints = await deps.runpod.createEndpoints(runpodApiKey, tenant.slug, {
-        endpoint: deps.r2Endpoint,
-        accessKeyId: token.id,
-        secretAccessKey: s3Secret,
-        bucket,
-      });
-      // ORDER IS LOAD-BEARING, and it is the opposite of the obvious one. The MODE is written
-      // BEFORE the endpoint list on both branches, so a crash between the two writes leaves a row
-      // whose mode is known and whose endpoints are absent. That state is inert: reconcile reads
-      // no endpoints and teardown finds none. The reverse order would leave a row carrying POOL
-      // endpoint ids under the default mode 'dedicated', which is the one combination that makes
-      // reconciliation attribute production endpoints to a tenant and call them its debris.
-      runpodMode = "dedicated";
-      await deps.store.setTenantRunPodMode(tenant.id, "dedicated");
-      await deps.store.setTenantEndpoints(tenant.id, JSON.stringify(endpoints));
     } else if (deps.sharedPool) {
-      // NOTHING IS CREATED HERE. No quota is consumed, no template is written, no key A exists,
-      // and the step is a pure resolution of config into the same shape the dedicated branch
-      // returns. Both downstream consumers (the studio endpointVar bindings and
-      // uploadTenantModules) read only `id` and `endpointVar`, so neither can tell the
-      // difference -- which is why this is a branch here and not a second provisioning path.
+      // NOTHING IS CREATED HERE, and after cp#396 nothing anywhere creates a RunPod endpoint: this
+      // is a pure resolution of config into the shape both downstream consumers already read (the
+      // studio endpointVar bindings and uploadTenantModules read only id and endpointVar).
+      //
+      // ORDER IS LOAD-BEARING and it is the opposite of the obvious one. The MODE is written BEFORE
+      // the endpoint list, so a crash between the two writes leaves a row whose mode is known and
+      // whose endpoints are absent. That state is inert: reconcile reads no endpoints and teardown
+      // finds none. The reverse order would leave a row carrying POOL endpoint ids under the
+      // legacy default mode, which is the one combination that makes reconciliation attribute
+      // PRODUCTION endpoints to a tenant and call them its debris.
       endpoints = deps.sharedPool.endpoints;
       runpodMode = "shared";
       await deps.store.setTenantRunPodMode(tenant.id, "shared");
@@ -769,6 +737,7 @@ export async function runProvisionJob(
         created: 0,
       });
     } else {
+      // The plane offers no shared tier. Code kept for its callers; it no longer means bring a key.
       return { ok: false, step: "runpod_endpoints", message: "runpod_key_required" };
     }
     await mark("runpod_endpoints");
@@ -1283,7 +1252,7 @@ export async function continueProvisionJob(
         // No key, by construction: this branch exists BECAUSE the tenant brought none. Passing null
         // is what selects the shared shape inside the endpoints step, the same way the original
         // provision selected it.
-        return await runProvisionJob(deps, jobId, tenant, null, clock, budgetMs, {
+        return await runProvisionJob(deps, jobId, tenant, clock, budgetMs, {
           done,
           release: job.to_release,
         });
