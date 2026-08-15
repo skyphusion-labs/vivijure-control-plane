@@ -21,7 +21,12 @@ concurrency:
 
 jobs:
   analyze:
-    name: Analyze
+    # Job name interpolates the matrix, so GitHub uses it VERBATIM and cannot auto-append the
+    # matrix value. Measured in-estate: vivijure-core sets name: Analyze (${{ matrix.language }})
+    # and emits exactly Analyze (javascript-typescript), with no double suffix. Second half: the
+    # literal prefix CodeQL scan is not a string the dynamic Code Quality producer can emit; that
+    # producer only ever emits Analyze. Both together make the collision structurally impossible.
+    name: CodeQL scan (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
