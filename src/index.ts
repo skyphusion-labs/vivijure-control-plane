@@ -926,6 +926,27 @@ async function driveJobIfNeeded(
   // here to drive in any case: the correct behavior is to REPORT the job and drive nothing.
   if (job.kind !== "provision") return null;
 
+  // A LIVE DRIVER OWNS ITS JOB, AND NEITHER REAP BELOW MAY TERMINALIZE IT (cp#451, found by ernst).
+  //
+  // renewJobLease bumps lease_until ALONE and never updated_at, and both reaps below read only
+  // updated_at. So a driver heartbeating correctly every 20s while sitting inside ONE long step has
+  // a LIVE lease and a STALE updated_at, and to the only code that can kill it that is
+  // indistinguishable from a driver that died. It reaps, writes failed, and the still-living driver
+  // then writes its own terminal status over the row: job succeeded, tenant failed.
+  //
+  // THIS IS NOT A NEW CHECK, IT IS THE CHECK THIS FILE ALREADY APPLIES EVERYWHERE ELSE.
+  // jobHasLiveDriver guards eight admin routes here; the reap was the one terminalizer ignoring it.
+  //
+  // DEFER RATHER THAN REFUSE: returning null drives nothing and writes nothing, so the next tick
+  // re-examines it. If the driver really is dead its lease lapses within JOB_LEASE_SECONDS and the
+  // reaps below fire on the following pass, which costs one cycle and cannot cost a live provision.
+  //
+  // The total-age cap makes this MORE necessary, not less: an honest slow provision is old but
+  // ALIVE, and a runaway guard that cannot tell a runaway from a working driver is worse than the
+  // idle rule it supplements. claimJob refuses a live lease too, so the DRIVE path was already
+  // protected; only the terminalizers ran ahead of it.
+  if (jobHasLiveDriver(job, deps.now())) return null;
+
   // RUNAWAY GUARD, on TOTAL AGE, and it is checked BEFORE the staleness rule because on a
   // cron-driven job the staleness rule cannot fire at all (see MAX_PROVISION_JOB_AGE_MS).
   const createdAt = Date.parse(String(job.created_at).replace(" ", "T") + "Z");

@@ -290,4 +290,27 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     expect(await store.finishJob("job_open", "succeeded", null, null)).toBe(false);
     expect(jobRow("job_open").status).toBe("failed");
   });
+
+  it("NEVER reaps a job whose driver is still HEARTBEATING, however old or idle it looks", async () => {
+    // cp#451, found by ernst. renewJobLease bumps lease_until ALONE and never updated_at, so a
+    // driver sitting inside one long step is STALE by both reap clocks and ALIVE by the lease.
+    // Before this guard the reap could not tell it from a dead one, killed it, and the living
+    // driver then wrote its own terminal status over the row.
+    //
+    // Old by BOTH rules at once, so this fails if either terminalizer ignores the lease.
+    await store.createTenant("ten_alive", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_alive", "ten_alive", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_alive");
+    noProgressFor("job_alive", 30);
+    createdAgo("job_alive", 3 * 60);
+    // The heartbeat, doing exactly what cp#148 designed it to do.
+    await store.renewJobLease("job_alive", 60);
+
+    await runScheduledTick(env(), deps);
+
+    // Untouched: not failed, not driven, left for the driver that owns it.
+    expect(jobRow("job_alive").status).toBe("running");
+    expect(tenantRow("ten_alive").status).toBe("provisioning");
+    expect(resume).not.toHaveBeenCalled();
+  });
 });

@@ -52,3 +52,15 @@ it. The memory double mirrors both properties.
 The test for this nearly shipped unable to fail: the first version pre-closed the job, which never
 reaches the reap at all (driveJobIfNeeded returns early on a terminal job), and it passed with the
 conditional removed. Now simulated at the store seam and verified to fail without it.
+
+**The reap could kill a driver that was still alive, and the cap made that sharper (cp#451, found by
+ernst).** renewJobLease bumps lease_until alone and never updated_at, and both reaps read updated_at
+alone, so a driver heartbeating correctly every 20s inside one long step is indistinguishable from a
+dead one to the only code that can terminalize it. An age-based guard makes it worse: an honest slow
+provision is old but ALIVE, and a runaway guard that cannot tell a runaway from a working driver is
+worse than the idle rule it supplements.
+
+The fix is not a new check. jobHasLiveDriver already guards eight admin routes in this file; the reap
+was the one terminalizer ignoring it. Both reaps now DEFER while the lease is live: drive nothing,
+write nothing, re-examine next pass. A dead driver lapses within JOB_LEASE_SECONDS, so it costs one
+cycle and cannot cost a live provision.

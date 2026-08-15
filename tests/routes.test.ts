@@ -1171,8 +1171,13 @@ describe("GET /api/tenant/:id/job -- drives PROVISION jobs only", () => {
   // reads. This is what a job whose driver is genuinely GONE looks like: it ran (status running,
   // attempts 1) and then stopped beating (cp#148), which is the ONE state a poll may take over.
   const expireLease = (jobId: string) => {
+    // RELATIVE TO THE TEST CLOCK, not wall time. deps.now() here is fixed at 1_750_000_000_000, so a
+    // lease stamped from Date.now() sits in the FUTURE relative to the code under test and read as
+    // LIVE. It went unnoticed while nothing consulted the lease before claimJob, and MemoryStore
+    // claimJob uses Date.now() rather than deps.now(), so the two disagreed harmlessly until the
+    // reap started reading the lease.
     const j = store.jobs.get(jobId)!;
-    j.lease_until = new Date(Date.now() - 1_000).toISOString().replace("T", " ").slice(0, 19);
+    j.lease_until = new Date(1_750_000_000_000 - 1_000).toISOString().replace("T", " ").slice(0, 19);
   };
 
   it("POSITIVE CONTROL: it DOES drive a provision job whose driver is gone, so the guards are not vacuous", async () => {
