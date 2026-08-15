@@ -24,7 +24,7 @@
 // on the module scripts in installInvokeKey, alongside the studio -- the module can then render.
 
 import type { CfApi, WorkerBinding } from "./cf-api";
-import { isScriptAbsent } from "./cf-api";
+import { classifyVpcBindingFailure, isScriptAbsent } from "./cf-api";
 import {
   MODULE_PROXY_BASE_BINDING,
   MODULE_PROXY_TOKEN_BINDING,
@@ -345,10 +345,70 @@ export class TenantModuleError extends Error {
   }
 }
 
+/**
+ * Upload ONE tenant module script, on the SCRIPT UPLOAD credential, with the cf#118 guard the
+ * studio path has always had.
+ *
+ * WHY THIS EXISTS AT ALL (cp#464). The door pool attaches `vpc_service` bindings to MODULE workers.
+ * The studio attaches one to the STUDIO worker. Those were uploaded by two different credentials,
+ * only one of which had ever been granted Connectivity Directory, and nothing anywhere stated that
+ * the two had to match. The symptom was a provision dying with raw Cloudflare prose at a step whose
+ * sibling has carried a written-for-humans message since cf#118.
+ *
+ * The guard is here rather than at the call site because a bare upload is exactly what went wrong:
+ * the general path was written after the special case and inherited nothing from it.
+ */
+async function uploadModuleScript(
+  deps: TenantModuleDeps,
+  module: string,
+  args: Parameters<CfApi["uploadUserWorker"]>[0],
+): Promise<void> {
+  try {
+    await deps.scriptUploadCf.uploadUserWorker(args);
+  } catch (e) {
+    const verdict = classifyVpcBindingFailure(e, args.bindings.some((b) => b.type === "vpc_service"));
+    if (verdict.kind === "refused") {
+      throw new TenantModuleError(
+        "modules_upload",
+        "door binding refused for module " + module + ": the plane SCRIPT UPLOAD credential is not " +
+          "authorized for Workers VPC (needs Connectivity Directory access). The tenant was NOT " +
+          "provisioned without its doors -- fix the upload credential, or clear the door service ids " +
+          "to run this plane without own-iron doors on purpose.",
+      );
+    }
+    if (verdict.kind === "unmatched") {
+      // THE GUARD REPORTING ITS OWN OBSOLESCENCE (cp#462). A VPC binding failed and the code we key
+      // on did not match, which is the precise state in which this guard is inert. Logging what
+      // Cloudflare actually said turns the FIRST silent miss into a loud one, instead of leaving a
+      // dead predicate to be discovered by an operator reading raw vendor prose months later.
+      deps.log("module_upload.vpc_guard_did_not_match", {
+        module,
+        codes: verdict.codes,
+        messages: verdict.messages,
+      });
+    }
+    throw e;
+  }
+}
+
 /** The slice of provisioner wiring the module orchestration needs. ProvisionDeps satisfies this
  *  structurally, so there is ONE wiring seam (deps.ts) and no second injection surface. */
 export interface TenantModuleDeps {
   cf: CfApi;
+  /**
+   * THE CREDENTIAL THAT UPLOADS SCRIPTS, which is not always the same one as `cf` (cp#464).
+   *
+   * cf#118 split script upload onto its own token and granted THAT token the Connectivity Directory
+   * access a `vpc_service` binding needs. The module path was written earlier and kept using `cf`,
+   * so when the door pool started attaching VPC bindings on module workers it was uploading with a
+   * credential that had never been granted the permission -- and the failure was invisible until a
+   * provision died on it.
+   *
+   * Both clients still exist because they are different grants, not different code paths. What is
+   * fixed here is that ONE of them is responsible for every upload that can attach a VPC binding,
+   * so there is no longer a pair to keep in sync by hand.
+   */
+  scriptUploadCf: CfApi;
   /** The shared dispatch namespace tenant module scripts live in (vivijure-tenant-modules). */
   moduleNamespace: string;
   /**
@@ -776,7 +836,7 @@ export async function uploadTenantModules(
     }
     // cf#361: design, not omission -- refuse management bindings before they reach a tenant script.
     assertNoTenantModuleForbiddenBindings(spec.module, bindings);
-    await deps.cf.uploadUserWorker({
+    await uploadModuleScript(deps, spec.module, {
       namespace: deps.moduleNamespace,
       scriptName,
       mainModule: bundle.mainModule,

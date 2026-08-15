@@ -373,6 +373,10 @@ const endpoints: TenantEndpoint[] = [
 function makeDeps(): TenantModuleDeps {
   return {
     cf,
+    // cp#464: the live smoke drives ONE credential, so this is the same object. The field exists
+    // because PRODUCTION wiring can differ (CF_WORKER_UPLOAD_TOKEN), and a smoke that silently used
+    // the wrong one would prove nothing about the path that actually uploads.
+    scriptUploadCf: cf,
     // cp#396: same environment-read as the e2e suite. Absent doors REFUSE at modules_upload rather
     // than silently skipping a capability the smoke claims to have exercised.
     vpcDoors: resolveVpcDoors(process.env as unknown as ControlPlaneEnv),

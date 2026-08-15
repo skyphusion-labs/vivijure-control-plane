@@ -15,7 +15,7 @@
 // /retry answers 409 runpod_key_required instead of quietly re-running with a key it kept.
 
 import type { CfApi } from "./cf-api";
-import { CfApiError, isScriptAbsent } from "./cf-api";
+import { CfApiError, classifyVpcBindingFailure, isScriptAbsent } from "./cf-api";
 import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
 import type { TemplateConvergence, TenantR2Creds, ResolvedDoor } from "./runpod";
@@ -337,13 +337,6 @@ export const tenantR2TeardownTokenName = (slug: string) => `vivijure-tenant-${sl
  * cycles rather than one call that silently outlives its invocation.
  */
 const TEARDOWN_EMPTY_BUDGET_MS = 15_000;
-
-/**
- * Cloudflare's code for "this token may not attach that VPC binding" (cf#118). Read off a live
- * response during the credential probe, not guessed: the same upload succeeded without the binding
- * and failed with it, on the same token, carrying exactly this code.
- */
-const CF_VPC_BINDING_UNAUTHORIZED = 10196;
 
 /**
  * The Workers Rate Limiting namespace the tenant spend limiter binds to. Shared across tenant
@@ -1886,16 +1879,19 @@ async function uploadStudioScript(
   try {
     await deps.scriptUploadCf.uploadUserWorker(args);
   } catch (e) {
-    const attachingVpc = args.bindings.some((b) => b.type === "vpc_service");
-    const vpcRefusal = e instanceof CfApiError && e.cfErrors.some((c) => c.code === CF_VPC_BINDING_UNAUTHORIZED);
-    if (attachingVpc && vpcRefusal) {
+    const verdict = classifyVpcBindingFailure(e, args.bindings.some((b) => b.type === "vpc_service"));
+    if (verdict.kind === "refused") {
       throw new ProvisionFailure(
         "wfp_upload",
-        "video-finish binding refused: the plane's SCRIPT UPLOAD credential is not authorized for " +
+        "video-finish binding refused: the plane SCRIPT UPLOAD credential is not authorized for " +
           "Workers VPC (needs Connectivity Directory access). The tenant was NOT provisioned without " +
           "the tier -- fix CF_WORKER_UPLOAD_TOKEN, or clear VIDEO_FINISH_VPC_SERVICE_ID to run this " +
           "plane without video finishing on purpose.",
       );
+    }
+    if (verdict.kind === "unmatched") {
+      // The guard reporting its own obsolescence (cp#462). See classifyVpcBindingFailure.
+      deps.log("wfp_upload.vpc_guard_did_not_match", { codes: verdict.codes, messages: verdict.messages });
     }
     throw e;
   }
