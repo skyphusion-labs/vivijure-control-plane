@@ -1034,6 +1034,13 @@ const MODULE_READY_BACKOFF_MS = [250, 500, 1000, 2000] as const;
 interface ModuleReadyBody {
   ok?: boolean;
   module?: string;
+  /**
+   * WHICH credentials appear here is itself information (cp#396). A module that reaches RunPod at
+   * a PUBLIC vendor slug reports `runpod_api_key` and OMITS `runpod_endpoint_id` entirely, because
+   * its endpoint is a fixed public url baked into the image rather than a per-tenant secret. That
+   * is an ABSENT KEY, not a false one, and the two must not be conflated: false means "this module
+   * should have an endpoint id and cannot see it", absent means "this module has no such thing".
+   */
   credentials?: { runpod_api_key?: boolean; runpod_endpoint_id?: boolean };
   /**
    * vivijure-cf#279: can the version the edge SERVES record a RunPod job at all. Deliberately NOT
@@ -1052,6 +1059,48 @@ interface ModuleReadyBody {
    * unknown, never false. See parseJobLogReadiness for every shape this accepts.
    */
   telemetry?: { job_log?: unknown };
+  /**
+   * The DOOR this module is serving through, when it is serving through one (cf#480 / cp#396).
+   *
+   * TYPED `unknown` ON PURPOSE, exactly as telemetry.job_log above and for the same reason: cp#378
+   * cost twelve silent days because a field was DECLARED narrower than the wire, and a typeof test
+   * against a shape that moved does not throw, it answers no. This is one half of a cross-repo
+   * contract with no shared type anywhere (checked: neither vivijure-cf nor vivijure-core defines
+   * one), so the wire type is unparsed input and the narrowing happens in one audited place.
+   *
+   * PRESENT ONLY WHEN A DOOR IS BOUND. An unbound module omits the key entirely rather than
+   * reporting `bound:false`, so absence means "not door-backed" and never "door broken".
+   */
+  door?: unknown;
+}
+
+/**
+ * What a module says about its own door, narrowed to the ONE field this gate acts on (cp#396).
+ *
+ * DELIBERATELY MINIMAL. The wire object also carries `bound` and `route` and a `routes` array, and
+ * none of them is read here:
+ *
+ *  - `bound` is the literal `true` whenever the object exists at all -- the emitting module spreads
+ *    the whole key away when no door is bound, so `bound:false` is a body production CANNOT
+ *    produce. Requiring it would be asserting against a state that does not exist.
+ *  - `route` is a door LABEL, not a transport discriminator. Its values are "vpc" and
+ *    "vpc-<host>" (today "vpc-propagandhi"), and it reports whichever door is legacy-or-first.
+ *    Comparing it to the string "vpc" would fail a perfectly healthy deploy whose legacy door is
+ *    not bound. There is no "runpod" value: on the RunPod path the object is absent entirely.
+ *  - `routes` names every bound door individually; useful to an operator, not to a gate.
+ *
+ * Depending on fewer fields is not laziness here, it is the coupling budget: every field this
+ * narrowing insists on is a field whose rename in the other repo turns a healthy tenant into a
+ * failed provision.
+ */
+export type DoorBacking = { token: boolean } | null | "unreadable";
+
+export function parseDoorBacking(raw: unknown): DoorBacking {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) return "unreadable";
+  const token = (raw as { token?: unknown }).token;
+  if (typeof token !== "boolean") return "unreadable";
+  return { token };
 }
 
 /**
@@ -1097,10 +1146,58 @@ export function classifyReadyResponse(status: number, text: string, expectedModu
   // The echo has to MATCH. A module that answers as something else means we are talking to the wrong
   // script, and treating its credentials as this module's would be a false pass of the worst kind.
   if (typeof body.module !== "string" || body.module !== expectedModule) return "misconfigured";
-  const creds = body.credentials;
-  if (!creds || typeof creds.runpod_api_key !== "boolean" || typeof creds.runpod_endpoint_id !== "boolean") {
-    return "misconfigured";
+  // ASK THE MODULE WHICH CREDENTIALS IT NEEDS, rather than demanding one fixed pair (cp#396).
+  //
+  // This function used to require BOTH runpod_api_key and runpod_endpoint_id as booleans, which
+  // encoded an assumption that every probed module reaches RunPod at an endpoint of ours. Two
+  // whole module families do not, and BOTH were in the probe population:
+  //
+  //   DOOR-BACKED (finish-upscale, speech-upscale). Runs on our own hardware through a door, so
+  //   the plane binds NO endpoint id BY DESIGN (PlannedVpcCapability: "no endpoint id to bind ...
+  //   on purpose rather than by omission"). It reported endpoint_id:false and landed on
+  //   `misconfigured`, which is not retryable and throws. The emitting module already says this
+  //   in its own source: requiring RunPod credentials of it "would make a correctly-configured
+  //   on-iron module report NOT READY, which is the readiness probe reporting the opposite of the
+  //   truth". cf#480 fixed that half; this is the half that never followed.
+  //
+  //   PUBLIC-SLUG (the eight cost-door modules). Reaches RunPod at a fixed public vendor url, so
+  //   it OMITS runpod_endpoint_id entirely. That failed one line earlier still, on the typeof
+  //   guard, and it is in the population for every tenant.
+  //
+  // THE ORDER BELOW IS THE CONTRACT: door first, because a door-backed module answers about a
+  // transport that does not use RunPod credentials at all.
+  const door = parseDoorBacking(body.door);
+  if (door && door !== "unreadable") {
+    // THE DOOR IS THE WHOLE ANSWER. `token` is the module own readiness on this arm (it means at
+    // least one bound door has a readable bearer), and it is bound at UPLOAD like an endpoint id,
+    // so a missing one is a provisioning defect rather than propagation. This is the branch that
+    // keeps `misconfigured` reachable for door-backed modules.
+    //
+    // RunPod credentials are deliberately NOT consulted here. Demanding a credential the chosen
+    // transport does not use is the cp#290 mistake, and on a door-only deploy it would invent a
+    // fatal state the system has never had.
+    return door.token ? "ready" : "misconfigured";
   }
+  // An UNREADABLE door falls through rather than failing here, and that is a deliberate choice
+  // against the louder one. This gate blocks every tenant going live, and cp#323 is the precedent:
+  // a change in the OTHER repo that was an improvement turned a benign verdict fatal here and no
+  // tenant could provision. Refusing on an unrecognised door shape would rebuild that trap, so a
+  // shape we cannot read costs a worse message and never a new outage. It IS surfaced, on the
+  // observation surface instead, which is where a contract drift should be LOOKED at.
+
+  const creds = body.credentials;
+  if (!creds || typeof creds.runpod_api_key !== "boolean") return "misconfigured";
+
+  // ABSENT endpoint id: a public-slug module, which has no such credential to see. Its readiness
+  // is its key alone. ABSENT is not false -- false means "should have one and cannot see it", and
+  // collapsing the two is what made this fatal.
+  if (creds.runpod_endpoint_id === undefined) {
+    return creds.runpod_api_key ? "ready" : "not_visible_yet";
+  }
+  if (typeof creds.runpod_endpoint_id !== "boolean") return "misconfigured";
+
+  // ENDPOINT-BACKED, UNCHANGED. Every verdict reachable before cp#396 is still reachable on the
+  // same input, which is the property the branches above must not buy their way out of.
   if (creds.runpod_api_key && creds.runpod_endpoint_id) return "ready";
   if (creds.runpod_endpoint_id && !creds.runpod_api_key) return "not_visible_yet";
   return "misconfigured";
@@ -1179,6 +1276,23 @@ export interface TenantModuleObservation {
   /** The module own ok flag, or null when nothing parseable answered as this module. */
   ok: boolean | null;
   credentials: { runpod_api_key: boolean; runpod_endpoint_id: boolean } | null;
+  /**
+   * The door this module is serving through, when it reports one (cp#396).
+   *
+   * THE SIBLING OF THE GATE, and it exists because the gate deliberately does NOT fail on a door
+   * shape it cannot read: this blocks every tenant going live, and refusing on an unrecognised
+   * field would rebuild the cp#323 trap where a change in the other repo froze provisioning. A
+   * drift that is tolerated by the gate has to be VISIBLE somewhere, or tolerating it is just
+   * ignoring it. This is that somewhere.
+   *
+   *   null          the module reports no door: it is not door-backed, which is not a fault.
+   *   { token }     door-backed, and whether a bearer is readable. token:false IS the fault.
+   *   "unreadable"  a door field arrived in a shape this plane does not know. The contract moved.
+   *
+   * Without this an operator reading a healthy door-backed module sees runpod_endpoint_id:false
+   * and concludes it is broken, which is the same wrong-system diagnosis the gate used to make.
+   */
+  door: DoorBacking;
   /**
    * Whether the RUNNING worker resolved TELEMETRY_DB (vivijure-cf#279), as the module said it.
    *
@@ -1326,6 +1440,8 @@ async function observeTenantModulesOnce(
           ok: null,
           credentials: null,
           job_log: null,
+          // Nothing answered AS this module, so this says nothing about its door either.
+          door: null,
           // NOT "absent". Nothing answered as this module, so this sample says nothing about the
           // module at all -- collapsing it into "the module reported no field" would put a control
           // plane dispatch failure and a stale tenant image under one word.
@@ -1335,6 +1451,7 @@ async function observeTenantModulesOnce(
       }
       const creds = body.credentials;
       const rawJobLog = body.telemetry?.job_log;
+      const door = parseDoorBacking(body.door);
       const jobLog = parseJobLogReadiness(rawJobLog);
       return {
         ...base,
@@ -1345,6 +1462,7 @@ async function observeTenantModulesOnce(
             ? { runpod_api_key: creds.runpod_api_key, runpod_endpoint_id: creds.runpod_endpoint_id }
             : null,
         job_log: jobLog,
+        door,
         // A value we do not recognise is reported, never swallowed. It reads null like an absent
         // field does, and only this string separates "the pin is old" from "the contract moved".
         ...(isUnrecognisedJobLog(rawJobLog)
