@@ -969,16 +969,42 @@ describe("POST /api/tenant/provision", () => {
       return job!;
     };
 
-    // THE NEXT TWO TESTS ARE ONE CONTROL AND MUST NOT BE SEPARATED. Both arm the pool; they differ
-    // in exactly one input, whether a key was pasted. A derivation that read "this plane has a pool"
-    // rather than "this tenant brought a key" PASSES the first and FAILS the second, and that
-    // failure is the BYO-tenant-silently-on-our-pool defect the design rejected. Either test alone
-    // is satisfied by the wrong rule.
+    // THIS WAS A TWO-LEG CONTROL AND cp#427 RETIRED ONE LEG DELIBERATELY.
+    //
+    // The pair used to be "mode is SHARED when no key was pasted" beside "mode is DEDICATED when a
+    // key was pasted", and it existed because a derivation reading "this plane has a pool" rather
+    // than "this tenant brought a key" passes the first and fails the second. cp#427 removes the
+    // dedicated path rather than deferring it, so the second leg cannot be restated without
+    // asserting retired behaviour back into existence: there is no key to paste and no other mode.
+    //
+    // SAID PLAINLY BECAUSE THE TREE CANNOT OTHERWISE TELL THE DIFFERENCE. A control pair that lost
+    // a leg to a RULING and one that lost a leg to a careless MERGE leave an identical file. Only
+    // this comment and the diff that carries it distinguish them, and in three months the tree is
+    // all anyone has.
+    //
+    // THE PAIR IS RE-ESTABLISHED ON A DIFFERENT AXIS, immediately below: the surviving leg is now
+    // paired against a POOLLESS plane, which refuses. That restores the property the original pair
+    // protected -- that the recorded mode is derived from something real -- without reintroducing
+    // the path the ruling removed.
     it("mode is SHARED when no key was pasted (pool armed)", async () => {
       wiring.offersSharedTier.mockReturnValue(true);
       const { cookie } = await ready();
       const job = await jobOf(await provision(cookie, { slug: "pooled" }));
       expect(job.runpod_mode).toBe("shared");
+    });
+
+    // THE REPLACEMENT LEG (ernst, on the cp#427 retirement). Same input as the test above, one
+    // input changed: the plane offers no shared tier. If the route derived "shared" from a
+    // constant rather than from the plane actually having a pool, the test above would pass and
+    // this one would fail. That is the pairing the retired leg used to provide.
+    it("CONTROL: a keyless provision on a POOLLESS plane REFUSES rather than recording shared", async () => {
+      wiring.offersSharedTier.mockReturnValue(false);
+      const { cookie } = await ready();
+      const res = await provision(cookie, { slug: "poolless" });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: "runpod_key_required" });
+      // Nothing was recorded: a refused provision must not leave a job claiming a mode.
+      expect(wiring.start).not.toHaveBeenCalled();
     });
 
 
@@ -1542,16 +1568,28 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(configured.status).toBe(200);
   });
 
-  it("a DEDICATED tenant still REQUIRES a key on an empty body (the tier control)", async () => {
-    // Without this, the empty-body success above would read identically against a route that had
-    // simply stopped requiring a key for everybody.
+  // RETIRED BY cp#427, AND THIS IS A TRANSFORMATION RATHER THAN A DELETION.
+  //
+  // What retires is the ASSERTION that a dedicated row still demands a pasted key. cp#427 removes
+  // the dedicated path rather than deferring it, so "this route requires a key from somebody" is no
+  // longer a property this plane has, and a test asserting it would assert retired behaviour back
+  // into existence.
+  //
+  // WHAT MUST NOT RETIRE WITH IT is the ROLE this test played. Without a non-shared leg, the
+  // empty-body success above reads identically against a route that accepts EVERY row. That
+  // property is still real, and the purged route still answers it -- with a NAMED refusal instead
+  // of a key demand. So the leg stays and its expectation moves.
+  it("a NON-SHARED tenant is refused BY NAME, so the empty-body success is not blanket acceptance", async () => {
     const { cookie } = await sharedTenantReady();
     const t = store.tenants.get("ten_abc123");
     if (t) t.runpod_mode = "dedicated";
     wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
     const res = await handle(jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }), env(), ctx, deps);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: "invoke_key_required" });
+    // 409 + tenant_not_on_shared_tier, NOT 400 + invoke_key_required. The row is not asked for a key
+    // it could no longer use; it is told this plane cannot complete it, which is the honest sentence
+    // for a studio that predates the tier.
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "tenant_not_on_shared_tier" });
     expect(wiring.installInvokeKey).not.toHaveBeenCalled();
   });
 
