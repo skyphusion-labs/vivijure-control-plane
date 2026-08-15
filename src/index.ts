@@ -875,6 +875,35 @@ async function tenantRoutes(
 const MAX_JOB_STALE_MS = 10 * 60 * 1000;
 
 /**
+ * How old a provision job may get, TOTAL, before it is declared lost.
+ *
+ * WHY A SECOND MEASURE EXISTS ALONGSIDE MAX_JOB_STALE_MS, and it is not belt-and-braces.
+ *
+ * The staleness rule reads IDLE TIME and treats it as evidence a driver died. That inference was
+ * sound while the only driver was a browser poll: a healthy job was being touched constantly, so a
+ * gap meant something had stopped. **The premise expired when the cron became a driver.** Idle time
+ * now measures how long ago the last TICK was, which is a property of the cron schedule and not of
+ * the job at all.
+ *
+ * Worse than uninformative: on a cron-driven job the staleness rule can no longer FIRE. claimJob
+ * sets updated_at = datetime(now) on every successful claim (store-d1.ts:645), and the cron runs
+ * every 5 minutes against a 10-minute window, so each tick resets the clock it is measured by. A
+ * job that throws between claimJob and the provisioner own catch is re-claimed forever, never
+ * reaped, and never reported -- found by ernst on the merged code, independently of the reasoning
+ * above, which is why there are two arguments for one constant.
+ *
+ * TOTAL AGE is the quantity that still carries information once idleness does not: it measures the
+ * job, not the schedule, and no amount of re-claiming can reset it. Two hours is deliberately
+ * generous against a 5-minute cadence -- a healthy provision yields a handful of times and finishes
+ * in tens of minutes -- because this is a runaway guard, not a deadline.
+ *
+ * NOT A FIX FOR cp#438. That is finishJob missing a status predicate, which shares a symptom with
+ * the loop above and has a different cause; a job reaped here still goes through the same
+ * finishJob. Keep them separate.
+ */
+const MAX_PROVISION_JOB_AGE_MS = 2 * 60 * 60 * 1000;
+
+/**
  * One invocation claim on a job. THE store lease length, not a copy of it (cp#148): the poller and
  * the driver heartbeat have to agree on one number, and two 60s literals that agree by luck is how
  * a lease hierarchy drifts.
@@ -926,17 +955,58 @@ async function driveJobIfNeeded(
   // here to drive in any case: the correct behavior is to REPORT the job and drive nothing.
   if (job.kind !== "provision") return null;
 
+  // A LIVE DRIVER OWNS ITS JOB, AND NEITHER REAP BELOW MAY TERMINALIZE IT (cp#451, found by ernst).
+  //
+  // renewJobLease bumps lease_until ALONE and never updated_at, and both reaps below read only
+  // updated_at. So a driver heartbeating correctly every 20s while sitting inside ONE long step has
+  // a LIVE lease and a STALE updated_at, and to the only code that can kill it that is
+  // indistinguishable from a driver that died. It reaps, writes failed, and the still-living driver
+  // then writes its own terminal status over the row: job succeeded, tenant failed.
+  //
+  // THIS IS NOT A NEW CHECK, IT IS THE CHECK THIS FILE ALREADY APPLIES EVERYWHERE ELSE.
+  // jobHasLiveDriver guards eight admin routes here; the reap was the one terminalizer ignoring it.
+  //
+  // DEFER RATHER THAN REFUSE: returning null drives nothing and writes nothing, so the next tick
+  // re-examines it. If the driver really is dead its lease lapses within JOB_LEASE_SECONDS and the
+  // reaps below fire on the following pass, which costs one cycle and cannot cost a live provision.
+  //
+  // The total-age cap makes this MORE necessary, not less: an honest slow provision is old but
+  // ALIVE, and a runaway guard that cannot tell a runaway from a working driver is worse than the
+  // idle rule it supplements. claimJob refuses a live lease too, so the DRIVE path was already
+  // protected; only the terminalizers ran ahead of it.
+  if (jobHasLiveDriver(job, deps.now())) return null;
+
+  // RUNAWAY GUARD, on TOTAL AGE, and it is checked BEFORE the staleness rule because on a
+  // cron-driven job the staleness rule cannot fire at all (see MAX_PROVISION_JOB_AGE_MS).
+  const createdAt = Date.parse(String(job.created_at).replace(" ", "T") + "Z");
+  if (Number.isFinite(createdAt) && deps.now() - createdAt > MAX_PROVISION_JOB_AGE_MS) {
+    const closed = await deps.store.finishJob(
+      job.id,
+      "failed",
+      job.step,
+      `provision did not complete within ${Math.round(MAX_PROVISION_JOB_AGE_MS / 60000)} minutes of ` +
+        "being created; giving up rather than driving it forever",
+    );
+    // CONDITIONAL, and this is cp#443. The reap is two writes; if the job write refused because
+    // another driver already closed the row, flipping the tenant anyway would report a studio that
+    // provisioned correctly as failed, beside a job row saying succeeded. Two records disagreeing
+    // is worse than either being wrong alone.
+    if (closed) await deps.store.setTenantStatus(tenant.id, "failed");
+    return await deps.store.getJob(job.id);
+  }
+
   // Lost driver: no progress for too long. Fail honestly rather than leave a spinner running.
   const lastProgress = Date.parse(`${job.updated_at.replace(" ", "T")}Z`);
   if (Number.isFinite(lastProgress) && deps.now() - lastProgress > MAX_JOB_STALE_MS) {
-    await deps.store.finishJob(
+    const closed = await deps.store.finishJob(
       job.id,
       "failed",
       job.step,
       `invocation lost: no progress for over ${Math.round(MAX_JOB_STALE_MS / 60000)} minutes; ` +
         "the provision did not complete",
     );
-    await deps.store.setTenantStatus(tenant.id, "failed");
+    // Conditional for the same reason as the cap reap above (cp#443).
+    if (closed) await deps.store.setTenantStatus(tenant.id, "failed");
     return await deps.store.getJob(job.id);
   }
 
