@@ -61,14 +61,30 @@ REFERENCE = (
 
 PATTERN = re.compile(rf"\b(?:{KEYWORDS})\b\s*:?\s*{REFERENCE}", re.IGNORECASE)
 
+# Fenced blocks first, so a fence is removed whole before the inline pass ever sees what is inside
+# it; inline spans second. GitHub does not auto-close from either (cp#387), so a keyword+reference
+# QUOTED in code is describing the string, not asserting a link -- categorically different from the
+# same text in prose. Replaced with a space, not deleted, so a keyword on one side of a span and a
+# reference on the other stay separated rather than fusing into an accidental match.
+CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
+INLINE_CODE = re.compile(r"`[^`\n]*`")
+
+
+def strip_code(text: str) -> str:
+    """Blank out fenced code blocks and inline code spans before the pattern ever runs."""
+    text = CODE_FENCE.sub(" ", text)
+    text = INLINE_CODE.sub(" ", text)
+    return text
+
 
 def find_hits(body: str):
-    """Every linking-keyword occurrence, with enough context to see the sentence it hid in."""
+    """Every linking-keyword occurrence outside code, with context to see the sentence it hid in."""
+    scrubbed = strip_code(body)
     hits = []
-    for m in PATTERN.finditer(body):
+    for m in PATTERN.finditer(scrubbed):
         start = max(0, m.start() - 70)
-        end = min(len(body), m.end() + 30)
-        hits.append((m.group(0), body[start:end].replace("\n", " ").strip()))
+        end = min(len(scrubbed), m.end() + 30)
+        hits.append((m.group(0), scrubbed[start:end].replace("\n", " ").strip()))
     return hits
 
 
