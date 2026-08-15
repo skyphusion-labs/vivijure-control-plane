@@ -248,15 +248,6 @@
 
       // CONTRACT: 202 { job_id }, or 409 runpod_key_required when the failure
       // was in the RunPod steps (we stored no key, so we cannot resume alone).
-      retry(tenantId, key) {
-        if (useMock) return Promise.resolve({ job_id: "mock-job" });
-        return this.json("/api/tenant/" + encodeURIComponent(tenantId) + "/retry", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(key ? { runpod_api_key: key } : {}),
-        });
-      },
-
       // TRANSPORT ONLY. Returns the real HTTP status and the parsed body and
       // decides NOTHING. The interpretation lives in checks.invokeKeyVerdict,
       // which is pure and therefore testable against the shapes the route
