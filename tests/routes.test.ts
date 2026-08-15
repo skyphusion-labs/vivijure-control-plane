@@ -1792,11 +1792,58 @@ describe("POST /api/admin/tenants/:id/teardown", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { delete_data: boolean; reaped: string[]; status: string };
     expect(body.delete_data).toBe(false);
-    expect(wiring.teardown).toHaveBeenCalledWith(expect.objectContaining({ id: "ten_abc123" }), { deleteData: false });
+    expect(wiring.teardown).toHaveBeenCalledWith(expect.objectContaining({ id: "ten_abc123" }), {
+      deleteData: false,
+      ignoreTombstoneReferrers: false,
+    });
     expect(body.reaped.sort()).toEqual(["r2_token_id", "script_name"]);
     // THE POINT OF #23: the data is still there, so the row must NOT say deleted.
     expect(body.status).toBe("deleting");
     expect((await store.getTenantById("ten_abc123"))!.deleted_at).toBeNull();
+    // Default: no i_own assertion in the response.
+    expect((body as { i_own?: unknown }).i_own).toBeNull();
+  });
+
+  // cp#106 option C: wrong i_own is refused before any destructive call.
+  it("refuses i_own that is not this tenant's id", async () => {
+    await provisionedTenant();
+    const res = await handle(
+      jsonReq(
+        "/api/admin/tenants/ten_abc123/teardown",
+        { confirm_slug: "hero", delete_data: true, i_own: "ten_someone_else" },
+        { headers: admin() },
+      ),
+      env(),
+      ctx,
+      deps,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("i_own_mismatch");
+    expect(wiring.teardown).not.toHaveBeenCalled();
+  });
+
+  it("passes ignoreTombstoneReferrers when i_own matches this tenant", async () => {
+    await provisionedTenant();
+    reaps(["script_name", "d1_database_id", "r2_bucket_name", "r2_token_id"]);
+    const res = await handle(
+      jsonReq(
+        "/api/admin/tenants/ten_abc123/teardown",
+        { confirm_slug: "hero", delete_data: true, i_own: "ten_abc123" },
+        { headers: admin() },
+      ),
+      env(),
+      ctx,
+      deps,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { i_own: string | null; delete_data: boolean };
+    expect(body.i_own).toBe("ten_abc123");
+    expect(body.delete_data).toBe(true);
+    expect(wiring.teardown).toHaveBeenCalledWith(expect.objectContaining({ id: "ten_abc123" }), {
+      deleteData: true,
+      ignoreTombstoneReferrers: true,
+    });
   });
 
   it("promotes to deleted ONLY on a clean pass that was allowed to take the data", async () => {

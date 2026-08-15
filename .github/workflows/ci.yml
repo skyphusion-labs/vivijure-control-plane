@@ -21,6 +21,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -71,12 +72,26 @@ jobs:
       #
       # THE BODY IS PASSED THROUGH env, NEVER INTERPOLATED INTO THE SHELL. `${{ }}` expansion of a
       # PR body inside a `run:` block is a script-injection vector, and this repo is PUBLIC and
-      # accepts fork PRs, so the body is attacker-controlled text by definition.
+      # accepts fork PRs, so the body is attacker-controlled text by definition. That invariant is
+      # unchanged below: PR_BODY is assigned via a shell variable through `env`, never spliced into
+      # `${{ }}` template text.
+      #
+      # cp#395: `${{ github.event.pull_request.body }}` is the FROZEN event payload. `gh run rerun`
+      # replays it verbatim, so a body corrected after a refusal reran against the pre-edit text
+      # forever (measured on cp#393: refused on `close cf#372`, fixed via `gh pr edit`, `gh run
+      # rerun --failed` refused AGAIN on the old sentence, only an unrelated push cleared it).
+      # Fetching the body live via `gh pr view` at run time means any rerun sees current state, not
+      # only one triggered by a new push. Needs `pull-requests: read` above for `gh pr view` to work
+      # off the ambient GITHUB_TOKEN, including on fork PRs.
       - name: PR body carries no issue-linking keyword
         if: github.event_name == 'pull_request'
         env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: python3 scripts/pr-body-guard.py
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          PR_BODY="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          export PR_BODY
+          python3 scripts/pr-body-guard.py
 
       # COMMIT MESSAGE GUARD (cp#265). Same matcher as the body guard; different surface.
       #
@@ -150,6 +165,13 @@ jobs:
         run: |
           python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
           python3 tests/workflow-guards.test.py
+
+      # cp#395 structural guard: asserts ci.yml still reads the PR body LIVE (via `gh pr view`)
+      # rather than the frozen event payload, and still carries the permission that read needs.
+      - name: PR-body guard reads the live PR body, not the frozen event payload
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+          python3 tests/pr-body-guard-live-body-395.test.py
 
       # The front-door pages are classic scripts that tsc never sees and vitest never loads
       # (the suites test the pure helpers, not the DOM path). This catches a call to a function
