@@ -1284,13 +1284,17 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     const t = await store.createTenant("ten_abc123", "hero", s.account.id, "awaiting_invoke_key");
     t.endpoints_json = endpoints;
     t.script_name = script;
+    // cp#396: the invoke-key route is SHARED-ONLY now, so the fixture records the tier every
+    // reachable tenant is on. It used to inherit the legacy dedicated default and therefore drove
+    // the tenant-paste branch, which no longer exists.
+    await store.setTenantRunPodMode("ten_abc123", "shared");
     return s;
   }
 
   it("REFUSES a key before endpoints exist: there is nothing to scope to", async () => {
     const { cookie } = await tenantReady(null);
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_x" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(409);
@@ -1305,7 +1309,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response("{}", { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_toopowerful" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(400);
@@ -1324,7 +1328,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(200);
@@ -1343,7 +1347,8 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(wiring.installInvokeKey).toHaveBeenCalledTimes(1);
     const [tenant, key] = wiring.installInvokeKey.mock.calls[0] as [{ id: string }, string];
     expect(tenant.id).toBe("ten_abc123");
-    expect(key).toBe("rpa_good");
+    // cp#396: the key installed is the PLANE pool key, never a tenant-supplied one.
+    expect(key).toBe("rpa_poolkey");
     expect(store.tenants.get("ten_abc123")?.status).toBe("live");
     expect(JSON.stringify([...store.tenants.values()])).not.toContain("rpa_good");
   });
@@ -1377,7 +1382,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(200);
@@ -1418,7 +1423,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     ) as unknown as typeof fetch;
 
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     const body = (await res.json()) as {
@@ -1450,7 +1455,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(200);
@@ -1472,7 +1477,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(202);
@@ -1493,7 +1498,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     const body = (await res.json()) as Record<string, unknown>;
@@ -1522,7 +1527,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     ) as unknown as typeof fetch;
 
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(202);
@@ -1565,7 +1570,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     ) as unknown as typeof fetch;
 
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     const body = (await res.json()) as Record<string, unknown>;
@@ -1596,7 +1601,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     ) as unknown as typeof fetch;
 
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(503);
@@ -1620,7 +1625,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     ) as unknown as typeof fetch;
 
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(500);
@@ -1630,7 +1635,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
   it("REFUSES (409 not_provisioned) when endpoints exist but the studio upload never completed", async () => {
     const { cookie } = await tenantReady('["ep1"]', null);
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(409);
@@ -1642,7 +1647,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     const { cookie } = await tenantReady('["ep1"]');
     const probes = vi.fn(async () => new Response("{}", { status: 200 }));
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, { ...deps, fetch: probes as unknown as typeof fetch, provisioner: undefined },
     );
     expect(res.status).toBe(503);
@@ -1660,7 +1665,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(500);

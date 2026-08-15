@@ -1066,10 +1066,11 @@ async function provision(
  *     write `live`.
  *   - `setTenantStatus(..., "live")` occurs at exactly ONE site in this tree: performInvokeKeyInstall
  *     below. (Measured: 1 of 15 setTenantStatus call sites across src/.)
- *   - performInvokeKeyInstall has exactly TWO callers. One is the session route
+ *   - performInvokeKeyInstall has exactly TWO callers after cp#396, and BOTH are the session route
  *     POST /api/tenant/<ten>/invoke-key, which sits BELOW the blocking AUP gate in handle(), so the
- *     owner cannot reach it without having accepted the current version themselves. The other is the
- *     cp#169 handoff, which requires an operator to mint a one-time token under studio:operate.
+ *     owner cannot reach it without having accepted the current version themselves. The cp#169
+ *     handoff was the third caller and is GONE: an unauthenticated surface that no remaining tier
+ *     can complete is a liability, not a spare door.
  *   - Until then routing.ts answers `awaiting_invoke_key` with 503 "still being set up", to everyone
  *     including the owner.
  *
@@ -1300,8 +1301,15 @@ async function installInvokeKey(
     return (await performInvokeKeyInstall(deps, tenant, poolKey)).response;
   }
 
-  if (!pasted) return err("invoke_key_required", 400);
-  return (await performInvokeKeyInstall(deps, tenant, pasted)).response;
+  // cp#396: THIS ROUTE IS SHARED-ONLY. The tenant-paste half went with the BYOK path, so a row that
+  // is not recorded shared has no key this plane could install and no endpoints of its own to scope
+  // one to. Those are the 13 legacy rows, all dead; refused by name rather than dropped through, so
+  // the reason appears in the response instead of a 404-shaped silence.
+  return err("tenant_not_on_shared_tier", 409, {
+    message:
+      "this studio predates the shared render tier and cannot be completed on this plane. " +
+      "Nothing was changed; please get in touch.",
+  });
 }
 
 /**

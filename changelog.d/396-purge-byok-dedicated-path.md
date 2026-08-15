@@ -48,3 +48,14 @@ in `teardownTenant`, on any branch, so the protection is structural. But the com
 with two reasons, one per tier; deleting the dedicated half would leave a claim that is false of
 every remaining tenant, and a reader who noticed would be one step from adding the reap leg it
 exists to prevent.
+
+**The invoke-key route is now SHARED-ONLY, and the handoff removal was CONDITIONAL on proving it.**
+`setTenantStatus(..., "live")` occurs at exactly ONE site, `performInvokeKeyInstall`, which after
+this change has exactly two callers and BOTH are the session route. So a shared tenant reaches live
+without traversing the handoff, which is what made removing an unauthenticated surface safe. A row
+that is not recorded shared -- the 13 legacy ones, all dead -- is refused BY NAME
+(`tenant_not_on_shared_tier`) rather than dropping through to a 404-shaped silence.
+
+The caller comment on that route named the handoff as one of its two callers. Left alone it would
+have been a false statement about the security argument the route rests on, which is the same
+defect class as the teardown comment above.
