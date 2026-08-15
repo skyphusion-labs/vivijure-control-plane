@@ -153,8 +153,7 @@ export interface PlatformApi {
   acceptAup(version: string | null): Promise<AcceptAupResult>;
   slugAvailable(slug: string): Promise<{ available: boolean; reason?: string }>;
   plan(): Promise<ProvisionPlan>;
-  capacity(key: string): Promise<CapacityResponse>;
-  provision(slug: string, key: string): Promise<ProvisionStarted>;
+  provision(slug: string): Promise<ProvisionStarted>;
   job(tenantId: string): Promise<JobStatus>;
   retry(tenantId: string, key?: string): Promise<{ job_id: string }>;
   invokeKey(tenantId: string, key: string): Promise<InvokeKeyTransportResult>;
@@ -169,7 +168,6 @@ export const mockResponses: {
   me(): MeResponse;
   slugAvailable(slug: string): { available: boolean; reason?: string };
   plan(): ProvisionPlan;
-  capacity(): CapacityResponse;
   provision(): ProvisionStarted;
   job(): JobStatus;
   invokeKey(): InvokeKeyTransportResult;

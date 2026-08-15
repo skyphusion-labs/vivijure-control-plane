@@ -33,15 +33,21 @@
   // collapsed into one paste, and account-wide invoke as a shortcut was
   // rejected for launch: we hold other people's keys, so minimal stored blast
   // radius beats one screen of friction.
+  // SEVEN STEPS, not nine (cp#427 purge). Setup key and Your capacity were both BYOK-only:
+  // the first asked for a RunPod key the plane no longer accepts, and the second probed the
+  // CUSTOMER own RunPod quota, which is meaningless when the capacity is ours.
+  //
+  // Capacity had to go WITH the key step rather than after it. It POSTed to /api/tenant/capacity,
+  // a route the plane has never served (cp#467), so it 404d and its gate demanded fits === true,
+  // which the error path never sets. Removing the key gate alone would have moved everybody from
+  // the first wall onto the second and read as a regression introduced by the fix.
   const STEPS = [
     { key: "what", title: "What you get" },
     { key: "rules", title: "The rules" },
     { key: "name", title: "Name it" },
-    { key: "key", title: "Setup key" },
-    { key: "capacity", title: "Your capacity" },
     { key: "review", title: "Review" },
     { key: "build", title: "Building" },
-    { key: "invoke", title: "Render key" },
+    { key: "invoke", title: "Go live" },
     { key: "done", title: "Done" },
   ];
 
@@ -466,6 +472,44 @@
     }
   }
 
+  // CAN THIS PLANE PROVISION AT ALL (cp#427 purge widened this question).
+  //
+  // shared_tier_available was introduced to answer a narrower one -- is a setup key optional --
+  // back when a pasted key still selected a dedicated tier. With BYOK removed there is no other
+  // tier, so the pool IS the product: a plane without one cannot provision anybody. The field is
+  // the same, the question it answers is bigger, and the name still fits.
+  //
+  // Said UP FRONT rather than discovered at the end. The provision route refuses a poolless plane,
+  // so without this the wizard would walk somebody through naming a studio it could never build.
+  function planCanProvision(config) {
+    return (config || {}).shared_tier_available === true;
+  }
+
+  // THREE ANSWERS, because NULL IS NOT A TIER (cp#439, and the contract tenants.ts states in as
+  // many words: a consumer that treats null as dedicated re-introduces this very issue).
+  //
+  // tenants.runpod_mode is NOT NULL DEFAULT dedicated and is written INSIDE the runpod_endpoints
+  // step, so before that step every row READS dedicated whether or not it is one. The projection
+  // therefore withholds the value until endpoints exist, and null means NOT DECIDED YET, never
+  // BYO. Collapsing it into byok here would hand a pooled tenant the key-paste screen again, which
+  // is the wall this whole issue is about.
+  // WHAT THIS TENANT NEEDS TO GO LIVE (cp#427 purge).
+  //
+  // pooled is now the ONLY supported shape: the plane installs its own key on an empty-bodied
+  // POST. A row still recording dedicated is a LEGACY tenant from before the purge, and the
+  // invoke-key route refuses it by name (tenant_not_on_shared_tier), so the honest UI answer is
+  // not BYO instructions -- those would send somebody to make a key nothing will accept -- it is
+  // to say this studio is on a path we no longer run.
+  //
+  // NULL IS STILL NOT A TIER. runpod_mode is withheld until the endpoints exist, so absent means
+  // NOT DECIDED YET and must not be read as either answer.
+  function invokeRequirement(tenant) {
+    const mode = (tenant || {}).runpod_mode;
+    if (mode === "shared") return "pooled";
+    if (mode === "dedicated") return "unsupported";
+    return "undecided";
+  }
+
   function canAdvance(key, state) {
     const s = state || {};
     if (key === "rules") return s.rulesAccepted === true;
@@ -486,8 +530,6 @@
       // still has to equal the one about to be torn down.
       return typeof s.slug === "string" && s.slug.length > 0 && s.slugReclaimConfirmedFor === s.slug;
     }
-    if (key === "key") return typeof s.keyPresent === "boolean" ? s.keyPresent : false;
-    if (key === "capacity") return !!(s.capacity && s.capacity.fits === true);
     if (key === "review") return s.confirmed === true;
     // Nothing goes live on a key whose scope we did not verify.
     if (key === "invoke") return !!(s.invokeVerified === true);
@@ -805,6 +847,8 @@
     canAdvance: canAdvance,
     resumeStep: resumeStep,
     slugVerdict: slugVerdict,
+    planCanProvision: planCanProvision,
+    invokeRequirement: invokeRequirement,
     PROVISION_RESUME_BOUNDARY: PROVISION_RESUME_BOUNDARY,
     PROVISION_FIRST_POLL_MS: PROVISION_FIRST_POLL_MS,
     PROVISION_PRE_BOUNDARY_POLL_MS: PROVISION_PRE_BOUNDARY_POLL_MS,

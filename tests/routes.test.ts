@@ -1546,6 +1546,30 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(JSON.stringify([...store.tenants.values()])).not.toContain(POOL_KEY);
   });
 
+  it("accepts the EXACT shape the wizard sends: an explicit empty runpod_invoke_key", async () => {
+    // THE TESTED SHAPE AND THE SHIPPED SHAPE WERE DIFFERENT, and the gap was invisible from both
+    // sides. The sibling above drives {}, and Conrad devtools workaround sends no body at all, so
+    // three shapes existed and only one was pinned. What the browser actually puts on the wire is
+    // this one: PlatformApi.invokeKey always serialises the field, so a pooled go-live is
+    // {"runpod_invoke_key":""} rather than an absent key. Measured at the harness, not assumed.
+    //
+    // It works only because the route coerces String(x ?? "") and branches on TRUTHINESS. Switch
+    // that to an in-test or a presence check and the UI breaks with every other test still green,
+    // which is precisely the failure this pins.
+    const { cookie } = await sharedTenantReady();
+    wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status, "an explicit empty key is the wizard go-live request, not a pasted key").toBe(200);
+    expect(await res.json()).toMatchObject({ status: "live" });
+    // Same outcome as the {} shape: the PLANE key is installed, never the caller empty string.
+    const [, key] = wiring.installInvokeKey.mock.calls[0] as [{ id: string }, string];
+    expect(key).toBe(POOL_KEY);
+    expect(store.tenants.get("ten_abc123")?.status).toBe("live");
+  });
+
   it("REFUSES with shared_pool_unconfigured when this deploy has no pool key", async () => {
     // Asserted as a CONTRAST inside one test rather than alone, because null is the wiring
     // double default: a lone assertion here would pass against a route that could never install

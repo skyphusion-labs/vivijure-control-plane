@@ -47,15 +47,11 @@
   // Two-phase custody (#52 ruling). Key A is transient and dies at the end of
   // provisioning. Key B is verified before it is kept, and this page never
   // keeps either one: both live in a closure and go nowhere else.
-  let runpodKey = "";   // key A: transient, graphql R/W, used once to build
   let invokeKey = "";   // key B: invoke-only on the 4 created endpoints
-  function clearKey() { runpodKey = ""; }
   function clearInvokeKey() { invokeKey = ""; }
 
   const state = {
     rulesAccepted: false,
-    keyPresent: false,
-    capacity: null,
     confirmed: false,
     invokeVerified: false,
     plan: [],
@@ -190,37 +186,6 @@
 
   // The four endpoints we just created, named, so the console step is a
   // copy-match rather than guesswork (#52 ruling).
-  function renderCreatedEndpoints() {
-    const el = $("#created-endpoints");
-    if (!el) return;
-    el.innerHTML = "";
-    if (!state.createdEndpoints.length) {
-      el.innerHTML = '<p class="muted small">No endpoints reported yet.</p>';
-      return;
-    }
-    state.createdEndpoints.forEach(function (ep) {
-      const row = document.createElement("div");
-      row.className = "row";
-      const head = document.createElement("div");
-      head.className = "row-head";
-      const name = document.createElement("span");
-      name.className = "row-name";
-      name.textContent = ep.name || ep.label || ep.key;
-      head.appendChild(name);
-      const meta = document.createElement("span");
-      meta.className = "row-meta";
-      meta.textContent = "Read/Write";
-      head.appendChild(meta);
-      row.appendChild(head);
-      if (ep.id) {
-        const id = document.createElement("p");
-        id.className = "row-why row-image";
-        id.textContent = "id: " + ep.id;
-        row.appendChild(id);
-      }
-      el.appendChild(row);
-    });
-  }
 
   // The intro cost line. Takes the example it renders so it never depends on a
   // fetch: the figure is a real, dated render from our history (representative),
@@ -255,49 +220,6 @@
     renderCostExample(rep.cost_example);
   }
 
-  function renderCapacity() {
-    const el = $("#capacity-result");
-    if (!el) return;
-    const fit = state.capacity;
-    if (!fit) { el.textContent = "checking with RunPod..."; return; }
-
-    el.innerHTML = "";
-    const callout = document.createElement("div");
-    callout.className = "callout " + (fit.fits ? "" : "callout-bad");
-
-    const msg = document.createElement("p");
-    msg.textContent = fit.message;
-    callout.appendChild(msg);
-
-    if (!fit.fits && fit.guidance && fit.guidance.length) {
-      const what = document.createElement("p");
-      what.className = "small";
-      what.innerHTML = "<strong>What you can do:</strong>";
-      callout.appendChild(what);
-      const ul = document.createElement("ul");
-      ul.className = "small muted";
-      fit.guidance.forEach(function (g) {
-        const li = document.createElement("li");
-        li.textContent = g;
-        ul.appendChild(li);
-      });
-      callout.appendChild(ul);
-    }
-    el.appendChild(callout);
-
-    if (fit.fits) {
-      const note = document.createElement("p");
-      note.className = "small muted";
-      note.textContent =
-        "That is the number we read back from RunPod for your account, not a guess from their " +
-        "published balance chart. We have seen that chart be wrong.";
-      el.appendChild(note);
-    }
-  }
-
-  // `note` is the screen own voice (why it is quiet, what happens next), kept
-  // separate from the step rows so nothing the SERVER said can be confused
-  // with something we made up about it.
   function renderProgress(steps, note) {
     const ol = $("#build-progress");
     if (!ol) return;
@@ -501,25 +423,6 @@
     refreshGates();
   }
 
-  async function runCapacityCheck() {
-    state.capacity = null;
-    renderCapacity();
-    refreshGates();
-    try {
-      const data = await PlatformApi.capacity(runpodKey);
-      state.capacity = checks.quotaFit(data.quota, data.existing_worker_sum, state.plan);
-    } catch (err) {
-      state.capacity = {
-        fits: false, known: false, needed: checks.planWorkerTotal(state.plan),
-        available: null, quota: null,
-        message: "We could not check your account with RunPod: " + err.message,
-        guidance: ["Check the key you pasted is complete, and that its graphql access is Read/Write."],
-      };
-    }
-    renderCapacity();
-    refreshGates();
-  }
-
   // Provisioning: start the job, poll it, then read the TENANT status to learn
   // where we landed. Job status (queued/running/succeeded/failed) and tenant
   // status (provisioning/awaiting_invoke_key/live) are different machines in
@@ -532,7 +435,7 @@
   async function runProvision() {
     renderProgress([{ key: "start", label: "Starting setup", status: "running" }]);
     try {
-      const job = await PlatformApi.provision(state.slug, runpodKey);
+      const job = await PlatformApi.provision(state.slug);
       state.tenantId = job.tenant_id;
 
       // THE BOUNDARY (cp#124). The job is now running on the plane side, and
@@ -569,7 +472,6 @@
 
       // The endpoints exist, so key A has done its whole job. It stops existing
       // here, BEFORE the tenant is asked for key B: we never hold both at once.
-      clearKey();
 
       const me = await PlatformApi.me();
       const tenant = (me && me.tenant) || null;
@@ -581,7 +483,7 @@
       else if (tenant && tenant.slug) state.studioUrl = "https://" + tenant.slug + state.tenantDomainSuffix;
 
       if (tenant && tenant.status === "awaiting_invoke_key") {
-        renderCreatedEndpoints();
+        applyInvokeRequirement(tenant);
         show("invoke");
         return;
       }
@@ -634,7 +536,6 @@
     // Both keys stop existing here. Key A was already dropped when the
     // endpoints appeared; key B lives on the tenant's own studio now, not in
     // this page.
-    clearKey();
     clearInvokeKey();
     const link = $("#studio-link");
     if (link && state.studioUrl) {
@@ -739,12 +640,6 @@
     // message is "Do not re-paste your key; nothing is wrong with it" -- wiped
     // the key out from under that sentence and invited exactly the re-paste it
     // warns against. The UI must not contradict the words it is displaying.
-    if (verdict.clearKey) {
-      clearInvokeKey();
-      const input = $("#invoke-key");
-      if (input) input.value = "";
-    }
-
     if (verdictEl) {
       verdictEl.innerHTML = "";
       const callout = document.createElement("div");
@@ -802,31 +697,6 @@
       slugInput.addEventListener("input", function () { onSlugInput(slugInput.value); });
     }
 
-    const keyInput = $("#runpod-key");
-    const keyHint = $("#key-hint");
-    if (keyInput) {
-      keyInput.addEventListener("input", function () {
-        runpodKey = keyInput.value.trim();
-        const hint = checks.keyShapeHint(runpodKey);
-        if (keyHint) {
-          keyHint.textContent = hint.message;
-          keyHint.dataset.level = hint.level === "empty" ? "" : hint.level;
-        }
-        state.keyPresent = runpodKey.length > 0;
-        refreshGates();
-      });
-    }
-
-    const reveal = $("#key-reveal");
-    if (reveal && keyInput) {
-      reveal.addEventListener("click", function () {
-        const showing = keyInput.type === "text";
-        keyInput.type = showing ? "password" : "text";
-        reveal.textContent = showing ? "Show" : "Hide";
-        reveal.setAttribute("aria-pressed", String(!showing));
-      });
-    }
-
     const confirm = $("#confirm-create");
     if (confirm) {
       confirm.addEventListener("change", function () {
@@ -835,38 +705,16 @@
       });
     }
 
-    const invokeInput = $("#invoke-key");
-    const invokeHint = $("#invoke-hint");
-    if (invokeInput) {
-      invokeInput.addEventListener("input", function () {
-        invokeKey = invokeInput.value.trim();
-        const hint = checks.keyShapeHint(invokeKey);
-        if (invokeHint) {
-          invokeHint.textContent = hint.message;
-          invokeHint.dataset.level = hint.level === "empty" ? "" : hint.level;
-        }
-        // Editing the key invalidates any earlier verdict: never let a verified
-        // flag outlive the key it was about.
-        state.invokeVerified = false;
-        refreshGates();
+    const goLive = $("#go-live");
+    if (goLive) {
+      goLive.addEventListener("click", function () {
+        // THE EMPTY-BODIED POST, which is the request that actually works for a pooled tenant.
+        // The plane reads runpod_invoke_key, sees nothing, fetches its OWN pool key and promotes
+        // the studio. Sending a key here is the one thing it refuses.
+        invokeKey = "";
+        runInvokeKeyCheck();
       });
     }
-    const invokeReveal = $("#invoke-reveal");
-    if (invokeReveal && invokeInput) {
-      invokeReveal.addEventListener("click", function () {
-        const showing = invokeInput.type === "text";
-        invokeInput.type = showing ? "password" : "text";
-        invokeReveal.textContent = showing ? "Show" : "Hide";
-        invokeReveal.setAttribute("aria-pressed", String(!showing));
-      });
-    }
-    const invokeCheck = $("#invoke-check");
-    if (invokeCheck) {
-      invokeCheck.addEventListener("click", function () {
-        if (invokeKey) runInvokeKeyCheck();
-      });
-    }
-
     document.querySelectorAll("[data-next]").forEach(function (btn) {
       btn.addEventListener("click", async function () {
         const from = btn.dataset.next;
@@ -920,7 +768,6 @@
         if (!next) return;
         show(next.key);
 
-        if (next.key === "capacity") runCapacityCheck();
         if (next.key === "review") { renderPlan("#plan-review", state.plan, { errorMessage: state.planError }); renderTotal(); }
         if (next.key === "build") runProvision();
       });
@@ -939,19 +786,47 @@
     const el = $("#plan-total");
     if (!el) return;
     const total = checks.planWorkerTotal(state.plan);
-    const fit = state.capacity;
     let text = "Total: " + total + (total === 1 ? " worker" : " workers") + " at most, across " +
       state.plan.length + " endpoints, all scale-to-zero.";
-    if (fit && fit.known && typeof fit.quota === "number") {
-      text += " Your account's real quota is " + fit.quota + ".";
-    }
     el.textContent = text;
+  }
+
+  // cp#439: PROJECT THE TIER ONTO BOTH STEPS THAT ASSUMED BYOK.
+  //
+  // Step 4 asks a PLATFORM question (does this plane pool, so is a key optional) and step 8 asks a
+  // TENANT question (is THIS tenant pooled, so is a key refused). Two facts, two moments, and the
+  // tenant does not exist yet at step 4, which is why one field cannot serve both.
+  // WHICH GO-LIVE SCREEN THIS TENANT GETS (cp#427 purge).
+  //
+  // Three states and no BYO one. pooled is the supported shape and the only one with an action;
+  // unsupported is a legacy dedicated row the invoke-key route refuses by name, so we say that
+  // rather than offering key instructions nothing will accept; undecided is an unwritten
+  // runpod_mode, which is NOT a tier and must not be read as either answer.
+  function applyInvokeRequirement(tenant) {
+    const req = checks.invokeRequirement(tenant);
+    state.invokePooled = req === "pooled";
+    const pool = $("#invoke-pooled");
+    if (pool) pool.hidden = req !== "pooled";
+    const unknown = $("#invoke-undecided");
+    if (unknown) unknown.hidden = req !== "undecided";
+    const legacy = $("#invoke-unsupported");
+    if (legacy) legacy.hidden = req !== "unsupported";
+  }
+
+  // CAN THIS PLANE PROVISION AT ALL (cp#427). Said up front: the provision route refuses a
+  // poolless plane, and walking somebody through naming a studio we cannot build is the same
+  // confidently-wrong screen the rest of this work has been removing.
+  function applyProvisionAvailability(cfg) {
+    state.canProvision = checks.planCanProvision(cfg);
+    const el = $("#no-shared-capacity");
+    if (el) el.hidden = state.canProvision;
   }
 
   async function loadConfig() {
     try {
       const cfg = await PlatformApi.config();
       if (cfg && cfg.tenant_domain_suffix) state.tenantDomainSuffix = cfg.tenant_domain_suffix;
+      applyProvisionAvailability(cfg);
       // SIGNUPS-OFF FREEZES A STRANGER, NEVER AN ACCOUNT THAT ALREADY EXISTS (cp#428).
       //
       // This used to disable every [data-next] on the page the moment the switch was off, which
@@ -1033,11 +908,10 @@
     }
 
     if (target.step === "invoke") {
-      // INTEGRATION POINT for cp#439 (held on a ruling): when the tier projection lands, the
-      // resumed invoke step must branch on runpod_mode here too, or a pooled tenant reaching this
-      // screen by RESUME gets the BYO half while one reaching it by provision does not. Called out
-      // rather than silently coupled, because that divergence is invisible from either PR alone.
-      renderCreatedEndpoints();
+      // THE SEAM cp#455 MARKED, now closed. A tenant arriving here BY RESUME must get the same
+      // tier projection as one arriving BY PROVISION, or the two paths disagree about which of
+      // the three go-live states this studio is in.
+      applyInvokeRequirement(tenant);
       show("invoke");
       return;
     }

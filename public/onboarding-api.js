@@ -97,7 +97,6 @@
         },
       };
     },
-    capacity() { return { quota: 10, existing_worker_sum: 0 }; },
     provision() { return { tenant_id: "ten_mock", job_id: "job_mock" }; },
     // The REAL step vocabulary (provisioner PROVISION_STEPS), not a friendly
     // parallel one. The old mock reported d1/r2/runpod/studio/verify, which no
@@ -231,26 +230,12 @@
         return this.json("/api/tenant/provision-plan");
       },
 
-      // REQUESTED (raised on #52): a read-only capacity probe that creates
-      // nothing, so we can show the REAL quota on the account BEFORE touching
-      // it. #58 requires the happy path to surface the number we found; a
-      // number that only appears in a failure message does not satisfy that.
-      capacity(key) {
-        if (useMock) return Promise.resolve(mock.capacity());
-        return this.json("/api/tenant/capacity", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ runpod_api_key: key }),
-        });
-      },
-
-      // CONTRACT: 202 { tenant_id, job_id }
-      provision(slug, key) {
+      provision(slug) {
         if (useMock) return Promise.resolve(mock.provision());
         return this.json("/api/tenant/provision", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ slug: slug, runpod_api_key: key }),
+          body: JSON.stringify({ slug: slug }),
         });
       },
 

@@ -255,12 +255,75 @@ describe("onboarding boots from the account rather than always at step 1 (cp#455
     // A spinner-shaped word implies work in progress, so the honest reading -- this page does
     // not know your endpoints -- is the one it hid. renderCreatedEndpoints says so itself when
     // it has nothing.
-    expect(html).toMatch(/id="created-endpoints"[^>]*><\/div>/);
-    expect(html).not.toMatch(/id="created-endpoints"[^>]*>loading/i);
+    // cp#427 SUBSUMED THIS. The fix was to stop shipping a fake loading state; the purge removed
+    // the endpoint list outright, because those endpoints are OURS on the shared pool and naming
+    // them to a tenant is neither useful nor theirs to act on. The stronger assertion replaces the
+    // weaker one rather than sitting next to it.
+    expect(html).not.toContain("created-endpoints");
   });
 
   it("refuses to start a wizard for a studio that is not in setup", () => {
     expect(html).toContain("data-step=\"not-in-setup\"");
     expect(html).toMatch(/not in setup/i);
+  });
+});
+
+// cp#439: BOTH tier branches must SHIP, not merely be computable.
+//
+// keyRequirement and invokeRequirement returning the right string proves the decision. It does not
+// prove the page carries the controls those decisions reveal, and the whole wall was a correct
+// plane next to a UI that offered no way to send the request it accepts.
+describe("the BYOK surface is GONE from the wizard (cp#427)", () => {
+  const raw = readFileSync(join(HERE, "..", "public", "onboarding.html"), "utf8");
+  const page = raw.replace(/\s+/g, " ");
+  const js = readFileSync(join(HERE, "..", "public", "onboarding.js"), "utf8");
+
+  it("CONTROL: the wizard is really there and still has its go-live step", () => {
+    expect(page).toContain("data-step=\"invoke\"");
+    expect(js).toContain("function init()");
+  });
+
+  it("has no setup-key step and no capacity step", () => {
+    // Removed rather than hidden. cp#427 retired the path; the capacity step additionally POSTed
+    // to a route that has never existed (cp#467), and removing only the key gate would have moved
+    // everybody from the first wall onto the second.
+    expect(page).not.toContain("data-step=\"key\"");
+    expect(page).not.toContain("data-step=\"capacity\"");
+    expect(page).not.toContain("id=\"runpod-key\"");
+  });
+
+  it("asks for no key anywhere, and keeps no code to read one", () => {
+    expect(page).not.toContain("id=\"invoke-key\"");
+    expect(js).not.toContain("runpodKey");
+    expect(js).not.toContain("state.keyPresent");
+    // The dead route call goes with the step that made it.
+    expect(js).not.toContain("PlatformApi.capacity(");
+  });
+
+  it("still offers the ONE action that works, and says what the other two states are", () => {
+    expect(page).toContain("id=\"go-live\"");
+    // ACROSS A LINE BREAK ON PURPOSE. The collapse above is the instrument, and an assertion
+    // that only ever matches within one line cannot tell a working collapse from a dead one.
+    // This file shipped the dead variant TWICE; the second time it was written beside its own
+    // correct twin. Make the instrument fail loudly rather than trusting the character.
+    expect(page).toMatch(/do not provision that way any more/i);
+    expect(page).toContain("id=\"invoke-undecided\"");
+    expect(page).toContain("id=\"invoke-unsupported\"");
+    // And a plane that cannot provision says so up front rather than at the end.
+    expect(page).toContain("id=\"no-shared-capacity\"");
+  });
+
+  it("clears the key BEFORE submitting, so the go-live POST carries none", () => {
+    const start = js.indexOf("#go-live");
+    const body = js.slice(start, start + 700);
+    const cleared = body.indexOf("invokeKey = \"\"");
+    const submitted = body.indexOf("runInvokeKeyCheck()");
+    expect(cleared).toBeGreaterThan(-1);
+    expect(cleared).toBeLessThan(submitted);
+  });
+
+  it("projects the plane capability and the tenant tier from the payloads", () => {
+    expect(js).toContain("checks.planCanProvision(");
+    expect(js).toContain("checks.invokeRequirement(");
   });
 });

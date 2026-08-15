@@ -39,6 +39,15 @@
       </nav>
 
       <!-- STEP 1: what you get ------------------------------------------->
+
+      <!-- cp#427: with BYOK gone the pool IS the product, so a plane without one cannot provision
+           anybody. Said UP FRONT rather than discovered at the end of the wizard. -->
+      <div class="callout callout-bad" id="no-shared-capacity" hidden>
+        <p><strong>This deploy cannot build studios right now.</strong></p>
+        <p class="small">It has no render capacity configured, so there is nothing for a new
+        studio to run on. Nothing you do here will go through until that changes. This is our
+        problem, not yours.</p>
+      </div>
       <section class="panel" data-step="what">
         <h1>Your own studio, in about five minutes</h1>
         <p class="lede">
@@ -147,76 +156,6 @@
           <button type="button" class="primary" data-next="name" disabled>Continue</button>
         </div>
       </section>
-
-      <!-- STEP 4: the key ------------------------------------------------>
-      <section class="panel" data-step="key" hidden>
-        <h2>Your RunPod key</h2>
-        <p class="lede">
-          We need one key, once, to build your four endpoints. Then we are done with it and you can
-          delete it.
-        </p>
-
-        <h3>Make the key</h3>
-        <p>In your RunPod console, create an API key with the <strong>Restricted</strong> setting:</p>
-        <div class="rows">
-          <div class="row">
-            <div class="row-head"><span class="row-name">api.runpod.io/graphql</span>
-              <span class="row-meta">set to Read/Write</span></div>
-          </div>
-          <div class="row">
-            <div class="row-head"><span class="row-name">api.runpod.ai</span>
-              <span class="row-meta">leave at None</span></div>
-            <p class="row-why">This is the invoke surface. Setup does not need it.</p>
-          </div>
-        </div>
-        <p class="small">
-          <a href="https://console.runpod.io/user/settings" target="_blank" rel="noopener noreferrer">Open your RunPod key settings</a>
-          -- that is the smallest key that can still create endpoints. We checked it against the
-          real API rather than trusting the docs.
-        </p>
-
-        <div class="callout callout-warn">
-          <p><strong>Being straight with you: this key is powerful while it exists.</strong> RunPod
-          has no "may only create endpoints" permission, so a key that can create your four
-          endpoints can also create pods anywhere on your account. RunPod calls this level of
-          access "extremely powerful" themselves. There is no smaller key that does the job.</p>
-          <p class="small">So: we use it once, we hold it in memory only while we build, we never
-          store it, and the last screen walks you through deleting it. What your studio keeps
-          afterwards is a much weaker key that can only run jobs on your four endpoints (a 403 on
-          anything else, and it cannot change your settings at all).</p>
-        </div>
-
-        <label for="runpod-key">Paste your RunPod API key</label>
-        <div class="field-row">
-          <input type="password" id="runpod-key" autocomplete="off" spellcheck="false"
-                 placeholder="rpa_..." aria-describedby="key-hint" />
-          <button type="button" id="key-reveal" aria-pressed="false">Show</button>
-        </div>
-        <p class="hint" id="key-hint" data-level="" aria-live="polite"></p>
-
-        <div class="actions">
-          <button type="button" data-back="key">Back</button>
-          <button type="button" class="primary" data-next="key" disabled>Check my account</button>
-        </div>
-      </section>
-
-      <!-- STEP 4: capacity ----------------------------------------------->
-      <section class="panel" data-step="capacity" hidden>
-        <h2>Your account's real capacity</h2>
-        <p class="lede">
-          RunPod caps how many workers you can run at once, across your whole account. We read your
-          real number from RunPod instead of guessing it from their published balance chart, because
-          we have seen that chart be wrong.
-        </p>
-        <div id="capacity-result" aria-live="polite">checking with RunPod...</div>
-
-        <div class="actions">
-          <button type="button" data-back="capacity">Back</button>
-          <button type="button" class="primary" data-next="capacity" disabled>Continue</button>
-        </div>
-      </section>
-
-      <!-- STEP 5: review ------------------------------------------------->
       <section class="panel" data-step="review" hidden>
         <h2>Review, then we build</h2>
         <p class="lede">This is everything we will create on your RunPod account. Last stop before
@@ -253,56 +192,52 @@
       </section>
 
       <!-- STEP 7: the render key (key B) --------------------------------->
+      <!-- STEP 6: go live ---------------------------------------------->
+      <!--
+           cp#427 purge: there is no second key and no key step before this one. The plane runs
+           the render capacity, so going live is an empty-bodied POST that installs OUR pool key.
+           Everything BYOK-shaped here (make a key, tick these four endpoints, set graphql to
+           None) is gone rather than hidden, because none of it is reachable any more.
+      -->
       <section class="panel" data-step="invoke" hidden>
-        <h2>One more key, and this is the last one</h2>
+        <h2>Ready to go live</h2>
         <p class="lede">
-          Your four endpoints exist now. This second key is the one your studio keeps, and it can
-          only do one thing: run jobs on these four endpoints. Nothing else on your account.
+          Your endpoints are built and the render key is ours, already in place. One button and
+          the studio is yours.
         </p>
 
-        <div class="callout">
-          <p><strong>Why twice?</strong> RunPod only lets you create keys in their console, and a
-          key can only be locked to endpoints that already exist. So the first key had to come
-          first to build them, and this one can only be made now. We would have merged these two
-          screens if RunPod let us.</p>
+        <!-- NULL IS NOT A TIER. runpod_mode is withheld until the endpoints exist, so an absent
+             value means NOT DECIDED YET. Claiming either answer here would be a guess about
+             somebody studio, so neither is shown. -->
+        <div class="callout" id="invoke-undecided" hidden>
+          <p><strong>We cannot tell you which render tier this studio is on yet.</strong></p>
+          <p class="small">That is a gap on our side, not something you did, and we would rather
+          say so than guess and hand you the wrong instructions. Reload in a moment; if it keeps
+          saying this, tell us and we will look.</p>
         </div>
 
-        <h3>These are the four we just created</h3>
-        <p class="small muted">
-          Tick exactly these in the console, and set each to Read/Write. The names are here so you
-          can match them instead of guessing.
-        </p>
-        <!-- cp#449: NO fake loading state in static markup. renderCreatedEndpoints fills this, and says
-             so honestly when it has nothing, rather than leaving a spinner-shaped word that
-             nothing ever replaces. -->
-        <div class="rows" id="created-endpoints" aria-live="polite"></div>
-
-        <h3>The click path</h3>
-        <ol class="small muted" id="invoke-steps">
-          <li>Open your <a href="https://console.runpod.io/user/settings" target="_blank" rel="noopener noreferrer">RunPod key settings</a> and create a new API key.</li>
-          <li>Choose <strong>Restricted</strong>.</li>
-          <li>Set <strong>api.runpod.io/graphql</strong> to <strong>None</strong>. This is the part that matters: it is what stops this key from touching the rest of your account.</li>
-          <li>Set <strong>api.runpod.ai</strong> to <strong>Restricted</strong>, then give <strong>Read/Write</strong> to the four endpoints listed above, and nothing else.</li>
-          <li>Create it, and paste it below.</li>
-        </ol>
-
-        <label for="invoke-key">Paste your render key</label>
-        <div class="field-row">
-          <input type="password" id="invoke-key" autocomplete="off" spellcheck="false"
-                 placeholder="rpa_..." aria-describedby="invoke-hint" />
-          <button type="button" id="invoke-reveal" aria-pressed="false">Show</button>
+        <!-- A row still recording dedicated predates the purge. The invoke-key route refuses it
+             by name, so offering key instructions would send somebody to make a credential that
+             nothing will accept. -->
+        <div class="callout callout-bad" id="invoke-unsupported" hidden>
+          <p><strong>This studio is set up on a path we no longer run.</strong></p>
+          <p class="small">It was built to use your own RunPod account. We do not provision that
+          way any more, and there is nothing you can paste here that would work. Please get in
+          touch and we will move it across rather than leave you guessing.</p>
         </div>
-        <p class="hint" id="invoke-hint" data-level="" aria-live="polite"></p>
+
+        <div id="invoke-pooled" hidden>
+          <h3>Nothing to paste. This one is on us.</h3>
+          <p>Your studio runs on our render capacity, so the key it needs is ours and is already
+          in place. There is no second key for you to make.</p>
+          <div class="actions">
+            <button type="button" class="primary" id="go-live">Take my studio live</button>
+          </div>
+        </div>
+
         <div id="invoke-verdict" aria-live="polite"></div>
 
-        <div class="callout callout-warn">
-          <p class="small"><strong>We check this key before we keep it.</strong> We try your four
-          endpoints with it, and we try an account-level call that should fail. If it turns out to
-          be more powerful than it needs to be, we tell you and we do not store it.</p>
-        </div>
-
         <div class="actions">
-          <button type="button" id="invoke-check" class="primary">Check this key</button>
           <button type="button" class="primary" data-next="invoke" disabled>Go live</button>
         </div>
       </section>
