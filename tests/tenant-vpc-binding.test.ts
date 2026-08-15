@@ -56,6 +56,17 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     store,
     cf,
     scriptUploadCf: fakeCf("scriptUpload"),
+    // cp#396: this plane has one tier, so the fixture must carry a pool or every case fails on a
+    // refusal none of them is about. Ids mirror the endpoint-backed plan keys.
+    sharedPool: {
+      endpoints: [
+        { key: "backend", label: "Render", id: "pool-1", name: "vivijure-prod-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
+        { key: "lipsync", label: "Lip sync", id: "pool-3", name: "vivijure-prod-lipsync", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+      ],
+      ids: new Set(["pool-1", "pool-3"]),
+      names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync"]),
+    },
+    sharedPoolInvokeKey: "rpa_poolkey",
     videoFinishServiceId: null,
     runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
     tokenMinter: {
@@ -108,7 +119,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
 async function provision(d: ProvisionDeps): Promise<{ ok: boolean; step?: string; message?: string }> {
   const t: Tenant = await store.createTenant("ten_1", "hero", "acct_1", "pending");
   const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-  return (await runProvisionJob(d, job.id, t, "rpa_keyA")) as { ok: boolean; step?: string; message?: string };
+  return (await runProvisionJob(d, job.id, t)) as { ok: boolean; step?: string; message?: string };
 }
 
 /** The studio script upload, identified by its ASSETS binding (module uploads carry none). */
@@ -217,7 +228,7 @@ describe("the finish-tier state var on a provision upload (cp#136)", () => {
     });
     const row = (await store.getTenantById(t.id))!;
     const job = await store.createProvisionJob("job_1", row.id, "provision", TEST_PROVISION_FACTS);
-    await runProvisionJob(deps({ videoFinishServiceId: SERVICE_ID }), job.id, row, "rpa_keyA");
+    await runProvisionJob(deps({ videoFinishServiceId: SERVICE_ID }), job.id, row);
 
     expect(studioUpload()!.bindings.find((b) => b.name === VIDEO_FINISH_TIER_STATE_VAR)).toEqual({
       type: "plain_text",

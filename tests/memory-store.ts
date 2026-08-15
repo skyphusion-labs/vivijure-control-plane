@@ -45,10 +45,11 @@ import { classifySlugClaim, leaseIsLive, JOB_LEASE_SECONDS, TIER_A_STATUSES } fr
  * to this release. A fixture the world cannot produce lets a suite go green over a state that does
  * not exist, which is the defect the mode column was added to avoid in the first place.
  *
- * Tests that care about the SHARED shape must say so explicitly rather than reach for this.
+ * cp#396: DEFAULTS ARE SHARED, because that is the only mode a tenant can be created in now. The
+ * legacy value survives in the column for 13 historical rows; a test that needs it says so.
  */
 export const TEST_PROVISION_FACTS: ProvisionJobFacts = {
-  runpodMode: "dedicated",
+  runpodMode: "shared",
   toRelease: "v1.0.0",
 };
 

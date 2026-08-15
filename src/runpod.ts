@@ -232,8 +232,6 @@ export const PROVISION_PLAN: PlannedCapability[] = [
   },
 ];
 
-export const planWorkerTotal = (plan: PlannedEndpoint[] = endpointBackedPlan()): number =>
-  plan.reduce((n, e) => n + e.maxWorkers, 0);
 
 export interface TenantR2Creds {
   endpoint: string;
@@ -250,23 +248,6 @@ export interface TenantR2Creds {
  * does not fail at provision; it fails at the tenant's FIRST FULL RENDER with an R2-mode error
  * (finding F10), which is the worst possible time to find out.
  */
-export function templateEnv(key: PlannedEndpoint["key"], r2: TenantR2Creds): Record<string, string> {
-  if (key === "backend") {
-    return {
-      R2_ACCESS_KEY_ID: r2.accessKeyId,
-      R2_SECRET_ACCESS_KEY: r2.secretAccessKey,
-      R2_BUCKET: r2.bucket,
-      R2_ENDPOINT: r2.endpoint,
-      HF_HUB_OFFLINE: "1",
-    };
-  }
-  return {
-    R2_ENDPOINT_URL: r2.endpoint,
-    R2_ACCESS_KEY_ID: r2.accessKeyId,
-    R2_SECRET_ACCESS_KEY: r2.secretAccessKey,
-    R2_BUCKET: r2.bucket,
-  };
-}
 
 export class RunPodError extends Error {
   constructor(
@@ -320,15 +301,6 @@ export interface QuotaReading {
  * refuses honestly (quota_unreadable, "this one is on us") rather than guessing -- which is the
  * whole reason that refusal is distinguished.
  */
-export function parseQuotaError(message: string): { quota: number | null; atMost: number | null } {
-  // "worker quota of 10" | "workers quota (10)" | "workers quota: 10"
-  const quota = /workers?\s+quota\s*(?:of\s+|\(|:\s*)(\d+)/i.exec(message);
-  const atMost = /at most\s+(\d+)/i.exec(message);
-  return {
-    quota: quota ? Number(quota[1]) : null,
-    atMost: atMost ? Number(atMost[1]) : null,
-  };
-}
 
 export class RunPodClient {
   // Same detached-global-fetch fix as CfApi: calling this.fetchImpl(...) rebinds `this` to the
@@ -489,52 +461,6 @@ function normalizeList<T>(payload: unknown, key: string): T[] {
  * the quota shape of, and read the REAL numbers out of its refusal. Trusting the docs table here is
  * how you ship a provisioner that breaks on the accounts it was supposed to serve.
  */
-export async function preflightQuota(
-  client: RunPodClient,
-  slug?: string,
-  plan: PlannedEndpoint[] = endpointBackedPlan(),
-): Promise<QuotaReading> {
-  const existing = await client.listEndpoints();
-  const existingSum = existing.reduce((n, e) => n + (e.workersMax ?? 0), 0);
-  // Only NET-NEW endpoints add workers. Endpoints that already exist by name will be ADOPTED
-  // (idempotent-by-name), so their workers are ALREADY in existingSum; counting the whole plan on
-  // top double-counts a re-provision's OWN endpoints and permanently blocks retry after a partial
-  // failure -- the tenant's own endpoints counting against them (#40 e2e burn). Without a slug (the
-  // unit path) there is nothing to match against, so the whole plan is treated as net-new.
-  const existingNames = new Set(existing.map((e) => e.name));
-  const needed =
-    slug === undefined
-      ? planWorkerTotal(plan)
-      : plan
-          .filter((pl) => !existingNames.has(tenantEndpointName(slug, pl.key)))
-          .reduce((n, pl) => n + pl.maxWorkers, 0);
-
-  // Probe with a deliberately impossible workersMax so RunPod tells us the real quota in its
-  // refusal. Nothing is created: the request is rejected at validation, before any resource exists.
-  try {
-    await client.createEndpoint({
-      name: `vivijure-quota-probe-${Date.now().toString(36)}`,
-      templateId: "quota-probe-not-a-real-template",
-      gpuTypeIds: ["NVIDIA H200"],
-      workersMax: 9999,
-    });
-    // Should not happen; if it ever does, the probe created nothing usable but we must not claim a
-    // reading we do not have.
-    return { quota: null, atMost: null, fits: existingSum + needed <= 9999 };
-  } catch (e) {
-    const raw = e instanceof RunPodError ? e.detail : String(e);
-    const { quota, atMost } = parseQuotaError(raw);
-    if (quota === null) {
-      // RunPod refused for some OTHER reason (a bad template id will do it). We learned nothing
-      // about the quota, and saying "fits" here would be a guess dressed as a fact. Fail CLOSED:
-      // over-provisioning on the tenant's card, at the tenant's expense, is the one direction we
-      // never fail.
-      return { quota: null, atMost: null, fits: false, refusal: "quota_unreadable", raw };
-    }
-    const fits = existingSum + needed <= quota;
-    return { quota, atMost, fits, ...(fits ? {} : { refusal: "quota_too_small" as const }), raw };
-  }
-}
 
 /**
  * The tenant-facing sentence. The two refusals get DIFFERENT text on purpose: they need different
@@ -542,22 +468,6 @@ export async function preflightQuota(
  * RunPod to raise it). "Unreadable" is OURS to look at, and telling the tenant to go fund their
  * account for it would be actively wrong advice.
  */
-export function quotaGuidance(reading: QuotaReading, plan: PlannedEndpoint[] = endpointBackedPlan()): string {
-  const needed = planWorkerTotal(plan);
-  if (reading.fits) return `Your RunPod account has room for all ${plan.length} endpoints.`;
-  if (reading.refusal === "quota_unreadable") {
-    return (
-      "We could not read your RunPod account's worker quota, so we stopped rather than guess and " +
-      "risk creating endpoints you did not agree to pay for. Nothing was created. This one is on " +
-      "us: please get in touch and we will look at it."
-    );
-  }
-  return (
-    `Your RunPod account's worker quota is ${reading.quota}, and this studio needs ${needed} ` +
-    `workers across ${plan.length} endpoints. Free up workers on your existing endpoints, or ask RunPod support ` +
-    "to raise the quota, then try again. Nothing was created."
-  );
-}
 
 /** Deterministic per-tenant names. Idempotency (reuse-by-name) depends on these being stable. */
 export const tenantEndpointName = (slug: string, key: string) => `vivijure-${slug}-${key}`;
@@ -578,73 +488,6 @@ export interface CreatedEndpoint {
  *
  * The key is a parameter and stays one: it is never captured in a field, never logged, never stored.
  */
-export async function createTenantEndpoints(
-  runpodApiKey: string,
-  slug: string,
-  r2: TenantR2Creds,
-  plan: PlannedEndpoint[] = endpointBackedPlan(),
-  fetchImpl: typeof fetch = fetch,
-): Promise<CreatedEndpoint[]> {
-  const client = new RunPodClient(runpodApiKey, fetchImpl);
-
-  // Fit-or-fail BEFORE creating anything: a half-provisioned RunPod account is the tenant's mess to
-  // clean up, on their bill, so we refuse early with RunPod's real numbers instead of discovering
-  // the wall on endpoint 3 of 4.
-  const quota = await preflightQuota(client, slug, plan);
-  if (!quota.fits) throw new RunPodError("quota.preflight", 400, quotaGuidance(quota, plan));
-
-  const [templates, endpoints] = await Promise.all([client.listTemplates(), client.listEndpoints()]);
-  const created: CreatedEndpoint[] = [];
-
-  for (const spec of plan) {
-    const name = tenantEndpointName(slug, spec.key);
-    const env = templateEnv(spec.key, r2);
-    const existingTemplate = templates.find((t) => t.name === name);
-    const existingEndpoint = endpoints.find((e) => e.name === name);
-
-    // THE TEMPLATE COMES FIRST, ALWAYS (#83). Previously an adopted endpoint short-circuited the
-    // whole iteration and an adopted template was reused as-is, so the freshly-minted R2 credential
-    // only ever reached a template we CREATED. Every provision mints a new credential, so an adopted
-    // tenant rendered with a dead one and died at the first R2 read (401 HeadObject). Refreshing the
-    // template before touching the endpoint means the fresh credential reaches every consumer BEFORE
-    // anything can invalidate the old one.
-    let templateId: string;
-    if (existingTemplate) {
-      await client.updateTemplateEnv(existingTemplate.id, env);
-      templateId = existingTemplate.id;
-    } else if (existingEndpoint) {
-      // An endpoint we cannot trace to a template by name: we have nowhere to write the fresh
-      // credential, so we CANNOT honestly claim this endpoint can render. Fail loudly rather than
-      // hand back an endpoint that will 401 at the tenant's first render (the #83 failure mode).
-      throw new RunPodError(
-        "templates.refresh",
-        409,
-        `endpoint ${name} exists but no template named ${name} was found, so the freshly minted R2 ` +
-          `credential cannot be written to it; refusing to report this endpoint as ready`,
-      );
-    } else {
-      templateId = (
-        await client.createTemplate(name, imageRef(spec.key), env)
-      ).id;
-    }
-
-    if (existingEndpoint) {
-      created.push({ key: spec.key, label: spec.label, id: existingEndpoint.id, name, endpointVar: spec.endpointVar });
-      continue;
-    }
-
-    const endpoint = await client.createEndpoint({
-      name,
-      templateId,
-      gpuTypeIds: spec.gpuTypeIds,
-      // ALWAYS explicit. RunPod's default of 3 x 4 endpoints = 12 breaks provisioning outright.
-      workersMax: spec.maxWorkers,
-    });
-    created.push({ key: spec.key, label: spec.label, id: endpoint.id, name, endpointVar: spec.endpointVar });
-  }
-
-  return created;
-}
 
 /**
  * The key-B console recipe for one tenant.
@@ -658,31 +501,6 @@ export async function createTenantEndpoints(
  * that do not exist yet, which is what forces two-phase onboarding. It is the one irreducibly manual
  * step in the whole flow, so it had better be exact.
  */
-export function invokeKeyRecipe(endpoints: CreatedEndpoint[]): {
-  summary: string;
-  steps: string[];
-  endpoints: { key: string; label: string; id: string; name: string }[];
-} {
-  return {
-    summary:
-      "Create a second RunPod key that can ONLY run jobs on the 4 endpoints we just made for you. " +
-      "This is the key your studio keeps.",
-    steps: [
-      "In the RunPod console, open Settings -> API Keys -> Create API Key.",
-      "Set the key type to Restricted.",
-      "Set api.runpod.io/graphql to None. (We will refuse a key that has GraphQL access: it can " +
-        "create and delete anything on your whole account, and we will not store that.)",
-      "Set api.runpod.ai to Restricted, then give Read/Write to EXACTLY these 4 endpoints and " +
-        "nothing else:",
-      ...endpoints.map((e) => `    - ${e.name}   (${e.label})`),
-      "Create the key, copy it once, and paste it back here. We verify it against those 4 endpoints " +
-        "before we store it; if it is wrong or too powerful, we reject it and tell you why.",
-      "Then delete or rotate the FIRST key (the setup one) in the console. It has done its job and " +
-        "we never kept it.",
-    ],
-    endpoints: endpoints.map((e) => ({ key: e.key, label: e.label, id: e.id, name: e.name })),
-  };
-}
 
 /**
  * What converging ONE tenant template did. Reported per key so an operator SEES the pin move rather
@@ -711,46 +529,3 @@ export interface TemplateConvergence {
  * `check:pins:prod` reads. A readback that disagrees THROWS rather than reporting a pin that did not
  * move.
  */
-export async function convergeTenantTemplateImages(
-  runpodApiKey: string,
-  slug: string,
-  plan: PlannedEndpoint[] = endpointBackedPlan(),
-  fetchImpl: typeof fetch = fetch,
-): Promise<TemplateConvergence[]> {
-  const client = new RunPodClient(runpodApiKey, fetchImpl);
-  const templates = (await client.listTemplates()) as { id: string; name: string; imageName?: string }[];
-  const converged: TemplateConvergence[] = [];
-
-  for (const spec of plan) {
-    const name = tenantEndpointName(slug, spec.key);
-    const want = imageRef(spec.key);
-    const existing = templates.find((t) => t.name === name);
-
-    if (!existing) {
-      // Nothing to converge: createTenantEndpoints CREATES this template at imageRef(). Reported
-      // rather than skipped silently, so an operator sees which half of the plan took which path.
-      converged.push({ key: spec.key, name, template_id: null, image_before: null, image_after: want, changed: false });
-      continue;
-    }
-
-    const before = existing.imageName ?? null;
-    if (before === want) {
-      converged.push({ key: spec.key, name, template_id: existing.id, image_before: before, image_after: want, changed: false });
-      continue;
-    }
-
-    await client.updateTemplateImage(existing.id, want);
-    const after = await client.getTemplate(existing.id);
-    if (after.imageName !== want) {
-      throw new RunPodError(
-        "templates.converge",
-        409,
-        `template ${name} (${existing.id}) still reports image ${after.imageName} after being set to ` +
-          `${want}; refusing to build an endpoint on a pin that did not move`,
-      );
-    }
-    converged.push({ key: spec.key, name, template_id: existing.id, image_before: before, image_after: want, changed: true });
-  }
-
-  return converged;
-}
