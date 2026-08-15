@@ -461,4 +461,66 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     expect(tick).toContain("budget_spent");
     expect(tick).not.toContain("drained");
   });
+
+  // ---- THE SEAM THE MERGE CREATED (cp#437 cap x cp#429 loop) ----------------------------------
+  //
+  // NEITHER PR COULD HAVE TESTED THIS, because it only exists once both land. The cap reap is
+  // reached from a fresh read; the loop takes a fresh read on EVERY pass; and a yield hands the
+  // lease back, so jobHasLiveDriver does not defer the next pass. Therefore a job that is actively
+  // PROGRESSING can cross the age line between two drives of the SAME tick and be reaped by the
+  // very loop that is driving it.
+  //
+  // That is the intended semantics rather than a hole: the cap measures how long a provision has
+  // been alive, and a job that has been alive too long is not rescued by the fact that somebody is
+  // still driving it. What matters is that the behaviour is PINNED, because it is invisible from
+  // either side alone and would otherwise be discovered months later.
+  it("reaps a job that crosses the age cap BETWEEN two drives of the same tick", async () => {
+    await store.createTenant("ten_cross", "crossing", "acct_1", "provisioning");
+    await store.createProvisionJob("job_cross", "ten_cross", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_cross");
+    expireLease("job_cross");
+    // JUST under the cap, so the FIRST pass drives and the second is the one that gives up.
+    // SECONDS, not minutes, and that precision is load-bearing. The burn below has to cross the
+    // cap while staying INSIDE the per-tenant slice, or the loop exits on the slice before it
+    // ever takes the second read and the seam is never reached. A two-minute burn looked like the
+    // obvious setup and silently tested nothing.
+    db.prepare("UPDATE provision_jobs SET created_at = datetime(:now, :ago) WHERE id = :id")
+      .run({ now: "now", ago: "-7180 seconds", id: "job_cross" });
+
+    // A drive that makes real progress and burns two minutes doing it, which is what carries the
+    // job over the line. The lease hand-back is what lets the next pass reach the reap at all.
+    resume = vi.fn(async (jobId: string) => {
+      await store.updateJobProgress(jobId, "wfp_upload", JSON.stringify(["wfp_upload"]));
+      await store.releaseJobLease(jobId);
+      clockMs += 30 * 1000;
+    });
+    deps = { ...deps, now: () => clockMs, provisioner: { resume } as unknown as ProvisionerWiring } as ControlPlaneDeps;
+
+    await runScheduledTick(env(), deps);
+
+    // Drove ONCE, then gave up rather than driving it forever.
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(jobRow("job_cross").status).toBe("failed");
+    expect(jobRow("job_cross").error_message).toMatch(/did not complete within/);
+    expect(tenantRow("ten_cross").status).toBe("failed");
+  });
+
+  it("does NOT reap mid-loop while the job is still inside the cap", async () => {
+    // The control for the case above. Without it, that test passes against a loop that reaps
+    // everything on the second pass, which would be a far worse bug than the one it guards.
+    await store.createTenant("ten_inside", "inside", "acct_1", "provisioning");
+    await store.createProvisionJob("job_inside", "ten_inside", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_inside");
+    expireLease("job_inside");
+    createdAgo("job_inside", 30);
+
+    resume = resumeThatYieldsThenCompletes();
+    deps = { ...deps, now: () => clockMs, provisioner: { resume } as unknown as ProvisionerWiring } as ControlPlaneDeps;
+
+    await runScheduledTick(env(), deps);
+
+    expect(resume).toHaveBeenCalledTimes(2);
+    expect(jobRow("job_inside").status).toBe("succeeded");
+    expect(tenantRow("ten_inside").status).toBe("awaiting_invoke_key");
+  });
 });

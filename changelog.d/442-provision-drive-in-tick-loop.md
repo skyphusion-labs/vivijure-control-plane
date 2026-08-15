@@ -44,3 +44,20 @@ once, and against the single-drive cut it fails with "expected 2 times, got 1". 
 yield, persisting progress and handing the lease back, so the test drives the real contention path.
 Two termination tests ship with it: a cp#132 queued job must not be retried inside the tick, and a
 completed job must not be driven a second time.
+
+**The seam the merge created, pinned (ernst).** The cap reap is reached from a fresh read, the loop
+takes a fresh read on every pass, and a yield hands the lease back, so jobHasLiveDriver does not
+defer the next pass. A job that is actively PROGRESSING can therefore cross the age line between
+two drives of the SAME tick and be reaped by the very loop driving it. **Neither PR could have
+tested that, because it only exists once both land.**
+
+That IS the intended semantics: the cap measures how long a provision has been alive, and being
+actively driven does not buy it more time. What matters is that it is pinned rather than
+discovered months later, so it is asserted in both directions -- crossing the line reaps, and a
+job still inside the cap drives to completion untouched.
+
+**Writing that test found a real interaction I had not seen.** The obvious setup, a two-minute
+burn between drives, SILENTLY TESTED NOTHING: two minutes exceeds the 60s per-tenant slice, so the
+loop exited on the slice before it ever took the second read. The burn has to cross the cap while
+staying inside the slice, which is why the backdate is in seconds rather than minutes and why that
+precision is commented in the test. A green run there would have proved only that the loop stops.
