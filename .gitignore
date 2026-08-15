@@ -14,3 +14,7 @@ __pycache__/
 # via envsubst). Committing it would put account resource IDs in a public repo.
 # Edit the .example; render locally to work.
 /wrangler.toml
+
+# Written and deleted inside tests/typecheck-tests-pass-armed-368.test.ts (cp#368). Ignored so a
+# test that dies mid-run cannot leave a deliberately-uncompilable file in a commit.
+tests/typecheck-armed-probe.generated.ts

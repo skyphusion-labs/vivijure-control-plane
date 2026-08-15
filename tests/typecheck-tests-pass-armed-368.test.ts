@@ -1,46 +1,121 @@
 /**
- * cp#368: pin that BOTH tsc passes stay wired into `npm run typecheck`, and that the second pass
- * still pulls tests/ in.
+ * cp#368: pin that a type error in tests/ ACTUALLY FAILS `npm run typecheck`.
  *
- * WHY. The base tsconfig.json `include` is `src/**\/*.ts` only -- a bare `tsc --noEmit` never sees
- * `tests/`. Only the second pass, `tsc -p tsconfig.tests.json --noEmit`, typechecks anything under
- * tests/, including the cp#339 mapped WiringDouble test-double protection (widening
- * `ProvisionerWiring` fails typecheck at the double instead of drifting into a runtime failure).
- * Simplifying the script to a single invocation -- the kind of tidy-up a later cleanup makes
- * without ceremony -- disarms that protection with no error and no signal it ever existed.
+ * WHY. The base tsconfig.json `include` is `src/**\/*.ts` only, so a bare `tsc --noEmit` never sees
+ * tests/. Only the second pass, `tsc -p tsconfig.tests.json --noEmit`, typechecks anything under
+ * tests/, including the cp#339 mapped WiringDouble protection (widening `ProvisionerWiring` fails
+ * typecheck at the double instead of drifting into a runtime failure). Disarming that pass is the
+ * kind of tidy-up a later cleanup makes without ceremony, with no error and no signal it existed.
  *
- * WHY THIS INSTRUMENT IS A SOURCE-TEXT PIN, NOT A BEHAVIOURAL ONE. There is no seam to drive
- * `npm run typecheck` itself from inside a vitest run without shelling out to a second tsc
- * invocation, which would make this test as slow and fragile as the thing it guards. A source-text
- * assertion on the package.json script and the tsconfig.tests.json include list is a weak
- * instrument in the abstract (it does not prove tsc actually passes), but it is exactly the
- * instrument that catches THIS failure mode: the script or config being tidied away, not a real
- * type error. Same idiom as tests/tenant-modules-guard-armed.test.ts.
+ * THIS FILE USED TO REASON ABOUT CONFIGURATION, AND THAT IS WHY IT WAS REPLACED.
  *
- * MUTATION-TESTED: both assertions were driven red by hand before this file was trusted --
- * (1) collapsing the typecheck script to a single `tsc --noEmit` reddened the first assertion, and
- * (2) dropping `tests/**\/*.ts` from tsconfig.tests.json include reddened the second assertion.
- * Both were restored and reconfirmed green. See the PR body for the transcript.
+ * The first version read two pieces of source TEXT: the `typecheck` script string in package.json,
+ * and the `include` array of tsconfig.tests.json. It never ran a compiler. A guard that reasons
+ * about configuration can always be disarmed by a configuration SHAPE it did not anticipate, and
+ * two were found, both measured on 9d88278 with a deliberate type error planted in tests/:
+ *
+ *   config                                        typecheck rc   this guard
+ *   probe planted, configs untouched (control)         1          2 passed, 0 failed
+ *   probe + "exclude": ["tests/**\/*.ts"] in
+ *     tsconfig.tests.json, include UNTOUCHED           0          2 passed, 0 failed
+ *   probe + the same "exclude" in the BASE
+ *     tsconfig.json, inherited through "extends"       0          2 passed, 0 failed
+ *   no probe, configs untouched (baseline)             0          2 passed, 0 failed
+ *
+ * Four rows, one verdict. `exclude` wins over `include` in tsc, so the assertion that `include`
+ * still lists `tests/**\/*.ts` was TRUE and MEANINGLESS in rows two and three; the base-tsconfig
+ * disarm walked past a file this guard never opened at all. The type error became invisible and
+ * the guard reported green, which is the failure mode this whole repo keeps paying for: a check
+ * that cannot distinguish two states reporting the reassuring one.
+ *
+ * SO THE INSTRUMENT IS NOW BEHAVIOURAL, WITH ONE UN-STUBBABLE SEAM. It writes a file into tests/
+ * that cannot possibly typecheck, runs the REAL `npm run typecheck` as shipped in package.json,
+ * and asserts the compiler FAILS and names that file. Then it deletes the file and asserts the
+ * same command passes, because a gate that is always red passes a red test and looks correct.
+ * There is no config shape that survives this: any disarm which hides tests/ from the compiler
+ * also hides the probe, and the probe not failing IS the alarm.
+ *
+ * COST: two real typecheck runs, measured at about 0.45s each on the crew box, roughly 1s added to
+ * the suite. The earlier version of this file argued no such seam existed without making the test
+ * as slow as the thing it guards. It costs a second. That trade is worth restating rather than
+ * inheriting.
+ *
+ * SCOPE, stated so it is a decision and not an omission: cp#368 ranked FOLDING TESTS INTO THE BASE
+ * TSCONFIG as the real fix and a hardened guard as the fallback. This is the fallback. It does not
+ * re-decide that; it makes the fallback impossible to disarm silently while the real fix waits.
  */
-import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { afterAll, describe, expect, it } from "vitest";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 const root = join(import.meta.dirname, "..");
-const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-const tsconfigTests = JSON.parse(readFileSync(join(root, "tsconfig.tests.json"), "utf8"));
+
+// Not `*.test.ts`, so vitest never collects it (vitest.config.ts includes tests/**\/*.test.ts),
+// and it IS under tests/, so tsconfig.tests.json must pull it in or the pass is not armed.
+const PROBE = join(root, "tests", "typecheck-armed-probe.generated.ts");
+const PROBE_NAME = "typecheck-armed-probe.generated.ts";
+
+// TS2322 specifically. Asserting only that tsc exited non-zero would accept ANY error in the
+// repo, so a tree that is already broken would satisfy this guard without the probe doing
+// anything -- an assertion that passes for the wrong reason is the same defect one level up.
+const PROBE_SOURCE =
+  "// GENERATED BY tests/typecheck-tests-pass-armed-368.test.ts. Deleted in the same test run.\n" +
+  "// If you are reading this in a committed tree, that test died mid-run; delete this file.\n" +
+  "export const typecheckArmedProbe: number = \"this must not typecheck\";\n";
+
+function typecheck() {
+  const r = spawnSync("npm", ["run", "typecheck"], { cwd: root, encoding: "utf8" });
+  return { status: r.status, output: (r.stdout ?? "") + (r.stderr ?? "") };
+}
+
+afterAll(() => {
+  // Belt and braces with the finally below: a probe left behind would break typecheck for
+  // everyone, which is a worse outcome than the one this file guards against.
+  rmSync(PROBE, { force: true });
+});
 
 describe("cp#368 the test-typecheck pass stays armed", () => {
+  it(
+    "a type error planted in tests/ fails the real npm run typecheck, and passes again once removed",
+    () => {
+      expect(existsSync(PROBE)).toBe(false);
+
+      let red;
+      try {
+        writeFileSync(PROBE, PROBE_SOURCE, "utf8");
+        red = typecheck();
+      } finally {
+        rmSync(PROBE, { force: true });
+      }
+
+      // RED: the compiler must have seen the probe and refused it, by name and by error code.
+      expect(red.status).not.toBe(0);
+      expect(red.output).toContain(PROBE_NAME);
+      expect(red.output).toContain("TS2322");
+
+      // GREEN RESTORE: without the probe the same command passes. Without this, a typecheck that
+      // is broken for an unrelated reason would satisfy the red assertion above forever.
+      const green = typecheck();
+      expect(green.status, green.output).toBe(0);
+    },
+    120_000,
+  );
+
+  // SECONDARY, and deliberately labelled as the weak one. The behavioural probe above covers the
+  // tests/ pass completely, but it does NOT cover the FIRST pass: the base tsconfig omits "node"
+  // from "types", so `tsc --noEmit` is what catches a Node API used in src/ that will not exist on
+  // the Workers runtime. Collapsing the script to the tests config alone would keep this file green
+  // while losing that. It is a source-text pin and it is worth exactly what a source-text pin is
+  // worth; it is here because it covers a different property, not because it corroborates the one
+  // above.
   it("npm run typecheck still runs both tsc passes, in order", () => {
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     const script: string = pkg.scripts.typecheck;
     expect(script).toContain("tsc --noEmit");
     expect(script).toContain("tsc -p tsconfig.tests.json --noEmit");
     expect(script.indexOf("tsc -p tsconfig.tests.json")).toBeGreaterThan(
       script.indexOf("tsc --noEmit"),
     );
-  });
-
-  it("tsconfig.tests.json still pulls tests files into the typechecked set", () => {
-    expect(tsconfigTests.include).toContain("tests/**/*.ts");
   });
 });
