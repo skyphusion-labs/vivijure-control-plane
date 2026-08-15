@@ -19,7 +19,13 @@ refused, so no client has to know which branch it is in before it can read it:
 
 `null` means never accepted anything. Present alongside `accepted: false` means the policy moved under
 them, which is a returning owner rather than a new signup, and the panel can finally say the true
-thing. The UI copy is cp#431 and is not in this change.
+thing.
+
+**The UI copy is NOT in this change, and it is tracked at cp#452.** That issue carries the enabling
+sentence (the policy changed since you accepted version X on DATE; your studio keeps running;
+review and accept to continue) and the note that the offline mock in public/onboarding-api.js is
+populated only for its own accepted:true state, so a mock STALE state is a one-line addition left
+deliberately to the copy PR rather than guessed at from the backend side.
 
 **This closes an asymmetry the tree already held itself to.** `acceptAup` refuses a stale submission
 precisely so nobody is recorded agreeing to wording they were never shown, and the client says
