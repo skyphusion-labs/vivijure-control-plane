@@ -161,6 +161,24 @@
     });
   }
 
+  // THE SIGNUP SWITCH CHANGES THE COPY, NOT THE DOOR (cp#428).
+  //
+  // Both variants ship in index.html and this only picks one, for the same reason the rest of
+  // this page keeps its words in the markup: copy gets reviewed as copy. What it must never do
+  // is remove the sign-in form, which is what routing a closed signup to its own panel did.
+  function applySignedOutCopy(open) {
+    [
+      ["#auth-title-open", "#auth-title-closed"],
+      ["#auth-lede-open", "#auth-lede-closed"],
+      ["#auth-open-note", "#auth-closed-note"],
+    ].forEach(function (pair) {
+      const openEl = $(pair[0]);
+      const closedEl = $(pair[1]);
+      if (openEl) openEl.hidden = !open;
+      if (closedEl) closedEl.hidden = open;
+    });
+  }
+
   // Auth buttons are rendered FROM config.auth_methods. Adding a provider on
   // the backend grows a button here with no change to this file; Apple appears
   // the day its credentials are staged. The registry-projection ethos, applied
@@ -276,7 +294,7 @@
       return;
     }
 
-    const route = checks.shellRoute(me, config);
+    const route = checks.shellRoute(me);
 
     if (me && me.account) {
       const email = $("#account-email");
@@ -285,7 +303,13 @@
       if (out) out.hidden = false;
     }
 
-    if (route === "auth") renderAuthMethods(config.auth_methods);
+    if (route === "auth") {
+      // The switch decides what this screen SAYS. It never decides whether it has a
+      // way in: an account that already exists must be able to sign in with signups
+      // closed, which is what the plane has done all along (cp#428).
+      applySignedOutCopy(checks.signupsOpen(config));
+      renderAuthMethods(config.auth_methods);
+    }
 
     if (route === "studio" && me.tenant && me.tenant.url) {
       const link = $("#studio-link");
