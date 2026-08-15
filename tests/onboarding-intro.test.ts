@@ -327,3 +327,42 @@ describe("the BYOK surface is GONE from the wizard (cp#427)", () => {
     expect(js).toContain("checks.invokeRequirement(");
   });
 });
+
+// cp#448: the classifier must be WIRED, and the destructive advice must be GONE.
+//
+// provisionFailureCopy returning the right strings proves the decision. It does not prove the
+// handler uses it, and the original defect was a correct plane next to a client that dropped its
+// message and offered advice pointing at a teardown.
+describe("the failure screen reads the plane rather than the status (cp#448)", () => {
+  const js = readFileSync(join(HERE, "..", "public", "onboarding.js"), "utf8");
+
+  it("CONTROL: the handler is really there", () => {
+    expect(js).toContain("function handleProvisionError");
+  });
+
+  it("classifies on the code, not on the status", () => {
+    expect(js).toContain("checks.provisionFailureCopy(err)");
+    // The exact expression that made every 409 a key problem.
+    expect(js).not.toContain("err.status === 409");
+  });
+
+  it("NEVER advises re-provisioning the same name from a failure screen", () => {
+    // That advice is the cp#435 teardown, and it appeared as INSTRUCTIONS in cases where
+    // destruction was not the answer. Under cp#427 there is also no key left to re-paste.
+    expect(js).not.toMatch(/destroys the partial environment/i);
+    expect(js).not.toMatch(/paste it again to start over/i);
+    expect(js).not.toMatch(/Setup needs your key again/i);
+  });
+
+  it("has no control that says Back and goes forward (cp#447)", () => {
+    // A data-next button relabelled "Back to the key step" advanced BY INDEX into the render-key
+    // step, past its own gate, with none of the state that step needs. The step it named no longer
+    // exists either.
+    // Asserted on the ASSIGNMENT, not the phrase: the comment explaining why the control was
+    // removed legitimately names the old label, and a test that forbade the words would have
+    // deleted the explanation to stay green.
+    expect(js).not.toMatch(/textContent\s*=\s*"Back/);
+    const html = readFileSync(join(HERE, "..", "public", "onboarding.html"), "utf8");
+    expect(html).not.toContain("build-continue");
+  });
+});
