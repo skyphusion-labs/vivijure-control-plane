@@ -104,6 +104,28 @@ expect(
     0,
 )
 
+# ---- CODE SPANS (cp#387). GitHub does not auto-close from fenced or inline code, so a keyword+
+# ---- reference QUOTED in either is describing the string, not asserting a link. -------------------
+expect(
+    "the exact cp#387 trap -- a keyword+ref inside backticks, describing the fix -- is ACCEPTED",
+    "1. `Closes #48` -> `Refs #48`, which is what the shipped commit-message-guard.py requires",
+    0,
+)
+expect(
+    "an unquoted keyword+ref inside a FENCED code block is ACCEPTED",
+    "Before:\n\n```\nCloses #48\n```\n\nAfter the rename above.",
+    0,
+)
+# ASSUMPTION, stated rather than silently changed: GitHub does not autolink `#N` inside inline code,
+# so a keyword left in prose with only the REFERENCE fenced strips to a keyword with no reference
+# left adjacent, and is accepted. Not exercised by the trap above (there the whole phrase is quoted);
+# recorded here so the behaviour is a decision, not a surprise discovered later.
+expect(
+    "a keyword in prose with only the `#N` inside backticks is ACCEPTED (reference stripped)",
+    "Closes `#48` once the rename lands.",
+    0,
+)
+
 # ---- THE VACUOUS-PASS GUARD. An absent input must not read as a clean input. ---------------------
 expect("an UNSUPPLIED body is rc=2, never a pass", "", 2, supply=False)
 
