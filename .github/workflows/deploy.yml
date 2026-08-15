@@ -121,9 +121,30 @@ jobs:
       - name: Config render guards
         run: npm run guards:config
 
+      - name: AUP pin gate guards
+        run: npm run guards:aup
+
       # Render here too, even though the release job renders again: a dry run must prove the
       # Actions secrets and variables are correctly populated, and the render guards are where
       # that gets proven. See scripts/render-wrangler.sh.
+      # AUP pin gate (cp#396). BEFORE the render, because a deploy whose policy label and
+      # policy pointer disagree must be refused rather than performed and inspected after.
+      #
+      # This is the control the endpoint cannot be. GET /api/aup/current returns a sha256, but
+      # it is computed at request time from the bytes it just fetched, so it agrees with
+      # whatever it serves and has nothing to disagree WITH. The independent value is the sha
+      # recorded in docs/legal/hosted/aup/SHA256SUMS when the version was cut.
+      #
+      # It exists because the failure already happened: on 2026-08-14 AUP_URL was repointed at
+      # a different document while AUP_VERSION stayed 1.0.0, and the change sat staged in the
+      # repository variables, invisible at runtime, waiting for the next deploy of this Worker
+      # for any unrelated reason to swap the text behind four existing acceptances.
+      - name: AUP pin gate
+        env:
+          AUP_VERSION: ${{ vars.AUP_VERSION }}
+          AUP_URL: ${{ vars.AUP_URL }}
+        run: bash scripts/check-aup-pin.sh
+
       - name: Render wrangler.toml
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -347,6 +368,24 @@ jobs:
       # Rendered again rather than carried from preflight as an artifact. The rendered file holds
       # the account id and D1 id, and an artifact is downloadable from the run page by anyone who
       # can see the repo -- which is everyone, this repo is public. Re-rendering costs seconds.
+      # AUP pin gate (cp#396). BEFORE the render, because a deploy whose policy label and
+      # policy pointer disagree must be refused rather than performed and inspected after.
+      #
+      # This is the control the endpoint cannot be. GET /api/aup/current returns a sha256, but
+      # it is computed at request time from the bytes it just fetched, so it agrees with
+      # whatever it serves and has nothing to disagree WITH. The independent value is the sha
+      # recorded in docs/legal/hosted/aup/SHA256SUMS when the version was cut.
+      #
+      # It exists because the failure already happened: on 2026-08-14 AUP_URL was repointed at
+      # a different document while AUP_VERSION stayed 1.0.0, and the change sat staged in the
+      # repository variables, invisible at runtime, waiting for the next deploy of this Worker
+      # for any unrelated reason to swap the text behind four existing acceptances.
+      - name: AUP pin gate
+        env:
+          AUP_VERSION: ${{ vars.AUP_VERSION }}
+          AUP_URL: ${{ vars.AUP_URL }}
+        run: bash scripts/check-aup-pin.sh
+
       - name: Render wrangler.toml
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

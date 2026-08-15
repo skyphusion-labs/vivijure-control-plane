@@ -690,8 +690,47 @@ existing tenant already accepted. No fix is required before phase 4. The one thi
 it is vivijure-cf being deleted or made private -- it stays public, so this holds.
 
 **Going forward:** new AUP versions published from THIS repo pin to a commit SHA in THIS repo, by
-the same rule. Bumping `AUP_VERSION` re-gates every account on their next request by construction,
-so a new version and a new immutable URL travel together.
+the same rule. Bumping `AUP_VERSION` re-gates every account on their next request by construction.
+
+> **This paragraph used to end "so a new version and a new immutable URL travel together". That
+> was an assumption written as a fact, and nothing enforced it.** On 2026-08-14 `AUP_URL` was
+> repointed at a different document while `AUP_VERSION` stayed `1.0.0`. The change sat staged in
+> the repository variables, invisible at runtime, armed to swap the accepted text behind four
+> existing acceptances on the next deploy of this Worker for any unrelated reason. See cp#396.
+
+## The AUP pin gate: what makes the label and the bytes travel together
+
+`scripts/check-aup-pin.sh` runs in **both** deploy jobs, before the render. It fetches `AUP_URL`,
+hashes the bytes, and compares them to the sha256 recorded for `AUP_VERSION` in
+`docs/legal/hosted/aup/SHA256SUMS`. Three outcomes, and only one of them deploys:
+
+| Situation | Result |
+|---|---|
+| version bumped, pointer not re-pinned | **REFUSED** -- fetched bytes are the old document |
+| pointer moved under an unchanged version | **REFUSED** -- bytes do not match the record |
+| version with no recorded sha | **REFUSED** -- an unverifiable document is not waved through |
+| both moved together, correctly | deploys |
+
+**Why the endpoint cannot do this job.** `GET /api/aup/current` returns a `sha256` and it looks
+exactly like the check that would have caught the drift. It is not one: `src/index.ts` computes it
+at request time from the bytes it has just fetched, so it agrees with whatever it serves by
+construction and has nothing to disagree WITH. It is a receipt of what was served, not a control
+on whether that was the right thing to serve. The recorded sha is the independent value.
+
+**The release ordering this enforces.** A new AUP version cannot pin its own URL in the same
+commit, because the commit SHA does not exist until the PR merges. So the sequence is:
+
+1. merge the PR that adds `aup/<version>.md` and its `SHA256SUMS` line
+2. set `AUP_VERSION` and `AUP_URL` (pinned at the merge commit) together
+3. deploy
+
+Step 2 is not a step anybody has to remember. If it is skipped, step 3 REFUSES: `AUP_VERSION`
+names a version whose recorded sha does not match the document the stale `AUP_URL` still points
+at. That is the whole point of the gate -- the ordering is enforced by the pipeline failing,
+not by a runbook line somebody reads.
+
+Negative tests: `npm run guards:aup` (`tests/aup-pin-gate.test.sh`), hermetic, seven cases,
+including a positive control and a reconstruction of the 2026-08-14 incident.
 
 ## Zone security
 

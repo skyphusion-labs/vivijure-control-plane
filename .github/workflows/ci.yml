@@ -135,6 +135,14 @@ jobs:
       - name: Config render guards
         run: npm run guards:config
 
+      # cp#396: the AUP pin gate, negative-tested here and RUN for real in deploy.yml.
+      # Same one-definition-two-callers shape as the render guards above, for the same
+      # reason: a guard defined in one workflow and absent from the other cannot fail on
+      # the path that matters. The suite is hermetic (file:// fixtures, no network), so it
+      # proves the GATE works; the deploy step proves THIS deploy pin is right.
+      - name: AUP pin gate guards
+        run: npm run guards:aup
+
       # The changelog job guards a PR; THIS guards the changelog job. It used to compare two-dot
       # against a moving base and pass a PR whose entry was somebody else. The fixture reproduces
       # that false pass before asserting the fix, because a guard whose fix cannot be watched

@@ -15,6 +15,7 @@
     "check:studio-pin": "node scripts/check-studio-pin.mjs",
     "check:studio-pin:deployed": "node scripts/check-studio-pin.mjs --deployed",
     "guards:config": "bash tests/render-wrangler.test.sh",
+    "guards:aup": "bash tests/aup-pin-gate.test.sh",
     "test": "vitest run",
     "test:live:scratch": "vitest run tests/runpod.live.test.ts tests/cf-api.live.test.ts",
     "smoke:predeploy": "vitest run tests/pre-deploy-smoke.live.test.ts",

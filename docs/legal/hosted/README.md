@@ -105,7 +105,20 @@ read `1.0.0`. Version files are never deleted.
 
 | Version | Date | Status | Change |
 |---|---|---|---|
-| `1.0.0` | (unreleased) | DRAFT | Initial hosted AUP. Not in force; awaiting counsel review and launch. **Amended in place 2026-07-17 (pre-serve, zero acceptance records): Conrad's ruling incorporated the hub's opening language.** Legitimate under the first-serve rule above; would NOT be legitimate after serving starts. **Amended in place again 2026-07-28, three times, all pre-serve with zero acceptance records (the cp#219 disclosure gate, PR #224): (1) added the operator support-access recording bullet to Section 5; (2) rewrote that bullet to disclose the break-glass credential as the stated exception to attribution and to scope the recording claim to access that reaches into a specific studio; (3) added the sentence bounding tenant visibility (the record is ours; no self-serve view promised).** |
+| `1.0.0` | served from 2026-07-17 | **SERVED AND ACCEPTED -- FROZEN** | Initial hosted AUP. **CORRECTED 2026-08-15 (cp#396): the two entries this row used to carry, both claiming amendment was legitimate because it was pre-serve with zero acceptance records, were wrong on the facts.** A count against the live control-plane D1 (`CP_DB`, table `aup_acceptances`) found **4 acceptances of 1.0.0**: one on 2026-07-17, two on 2026-07-25, one on 2026-08-01, all recording sha256 `1072c782`. So the 2026-07-28 amendment (PR #224) landed after TWO acceptances and the 2026-08-14 amendment (PR #394) after all four. Both were post-serve edits to a frozen version. The claim was never checked when it was written, and it read as true because nobody had asked the database. |
+| `1.1.0` | (not yet served) | DRAFT | **The cp#394 shared-tier scoping correction, shipped as a NEW version rather than an edit, because 1.0.0 is frozen.** 1.0.0 states of ALL tenants that the hosted studio renders on GPU endpoints running on their own RunPod account, which is false for a pooled tenant (`provisioner.ts:202`: a pooled tenant has no RunPod account). MINOR, not PATCH: it changes what a person is agreeing to, and a patch number would understate that to the four accounts being re-prompted. Re-acceptance is Conrad to trigger and is NOT part of the change that adds this file. |
+
+
+### The 1.0.0 file in this repository is NOT the 1.0.0 that was served
+
+Recorded because it is the kind of fact that gets lost, and because anyone reading `aup/1.0.0.md` here will reasonably assume it is the accepted text. It is not.
+
+The bytes four accounts accepted hash to `1072c782`. **No revision of `aup/1.0.0.md` in this repository has ever hashed to that value** (measured across all three of its commits: `ca9bf69a`, `20fd5105`, `d0533987`). The served document has only ever existed in `vivijure-cf` at commit `8a5d96b4`, orphaned from that repository main, which is what cp#396 was filed about.
+
+Two consequences worth stating plainly:
+
+1. The file here cannot be used to prove what anyone accepted. `docs/legal/hosted/aup/SHA256SUMS` records the served hash, which can.
+2. Restoring `aup/1.0.0.md` to the served bytes is NOT done in this change. It is a change to a legal artifact against live acceptances, so it is Conrad and Ernst to decide, not an author to slip in alongside a version cut.
 
 ## Drift: this AUP vs the canonical constellation AUP
 
