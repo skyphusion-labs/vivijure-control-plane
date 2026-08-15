@@ -20,7 +20,26 @@ const BACKEND_GPUS = ["NVIDIA H200", "NVIDIA B200"];
 /** The finish satellites are CPU-light GPU work; RTX 6000 Pro class, as live-verified 2026-07-15. */
 const SATELLITE_GPUS = ["NVIDIA RTX 6000 Ada Generation", "NVIDIA L40S"];
 
-export interface PlannedEndpoint {
+/**
+ * A capability in the plan is satisfied EITHER by a RunPod endpoint we provision, OR by hardware
+ * we already own and run ourselves. Modelled as a discriminated union rather than a boolean flag
+ * so the compiler enumerates every site that assumed an endpoint id exists (cp#396-adjacent
+ * reasoning: make the wrong state unrepresentable rather than guarded).
+ *
+ * WHY THIS EXISTS. The shared invoke key is endpoint-scoped, and Conrad minted it with
+ * vivijure-video-upscale and vivijure-audio-upscale set to NO ACCESS: those two run as long-lived
+ * serve containers on our own boxes, so the plane must not be able to reach a RunPod endpoint for
+ * them even if a config named one. That ruling now lives in the CREDENTIAL. Until this split, it
+ * did not live in the CODE, and the two disagreed in a way nothing could report:
+ * SHARED_RUNPOD_ENDPOINTS is all-or-nothing across every plan key, so the correct JSON could not
+ * be written at all -- four keys demanded, two of which must not exist.
+ *
+ * Own iron carries no maxWorkers and no endpointVar, on purpose and not as an omission. There is
+ * no RunPod quota to spend and no endpoint id to bind, and a nullable field here would let an
+ * empty string reach the studio as an endpoint id, which fails at the tenant FIRST RENDER rather
+ * than at provision -- the failure shape this file already warns about for templateEnv.
+ */
+interface PlannedCapabilityBase {
   /** Stable key the UI and the studio secrets use. */
   key: SatelliteKey;
   label: string;
@@ -31,17 +50,51 @@ export interface PlannedEndpoint {
    */
   imageRepo: string;
   tag: string;
+}
+
+/** A capability we provision as a RunPod serverless endpoint. */
+export interface PlannedEndpoint extends PlannedCapabilityBase {
+  backing: "runpod";
   /**
-   * Pinned EXPLICITLY on every endpoint, never left to RunPod's default of 3.
+   * Pinned EXPLICITLY on every endpoint, never left to RunPod default of 3.
    * Why it matters: the quota is ACCOUNT-WIDE and enforced at CONFIG time against the sum of
    * workersMax across all endpoints (#60). Four endpoints at the default 3 = 12, which fails at
-   * create time on the later endpoints. This layout sums to 5 and therefore fits any observed tier.
+   * create time on the later endpoints.
    */
   maxWorkers: number;
   gpuTypeIds: string[];
-  /** The studio secret that carries this endpoint's id. */
+  /** The studio secret that carries this endpoint id. */
   endpointVar: string;
 }
+
+/**
+ * A capability served by hardware we own and operate, reached over the fleet rather than through
+ * RunPod. No endpoint is provisioned for it on either tier, so it consumes no RunPod quota and
+ * appears in no pool config.
+ */
+export interface PlannedOwnIron extends PlannedCapabilityBase {
+  backing: "own-iron";
+  /** Operator-facing note on where it actually runs. Never a hostname; this string is tenant-visible. */
+  servedBy: string;
+}
+
+export type PlannedCapability = PlannedEndpoint | PlannedOwnIron;
+
+/**
+ * The narrowing every consumer that needs an endpoint id must go through.
+ *
+ * A type guard rather than a filter on a string field, so a caller cannot reach `endpointVar` on
+ * an own-iron entry without the compiler objecting. That is the whole safety property here.
+ */
+export const isEndpointBacked = (c: PlannedCapability): c is PlannedEndpoint => c.backing === "runpod";
+
+/** Only the entries a RunPod endpoint must exist for. */
+export const endpointBackedPlan = (plan: PlannedCapability[] = PROVISION_PLAN): PlannedEndpoint[] =>
+  plan.filter(isEndpointBacked);
+
+/** Only the entries served by our own hardware. Exported so the UI can say so rather than omit them. */
+export const ownIronPlan = (plan: PlannedCapability[] = PROVISION_PLAN): PlannedOwnIron[] =>
+  plan.filter((c): c is PlannedOwnIron => c.backing === "own-iron");
 
 /**
  * THE PROVISIONING PLAN, as DATA.
@@ -63,13 +116,14 @@ const pinned = (key: SatelliteKey) => ({
 // this file already uses, instead of a hand-duplicated literal that can silently drift.
 export const NO_TRAINING_CLAUSE = /lora|train/i;
 
-export const PROVISION_PLAN: PlannedEndpoint[] = [
+export const PROVISION_PLAN: PlannedCapability[] = [
   {
     ...pinned("backend"),
+    backing: "runpod",
     // cp#303: cast LoRA training does NOT run on this endpoint. Training is fail-closed on its
-    // own satellite (`vivijure-wan-train` / RUNPOD_WAN_TRAIN_ENDPOINT_ID) and never falls back
+    // own satellite (vivijure-wan-train / RUNPOD_WAN_TRAIN_ENDPOINT_ID) and never falls back
     // here. A training clause in this label was a tenant-visible lie and invited the wrong
-    // inference that the shared pool already covers training because it covers `backend`.
+    // inference that the shared pool already covers training because it covers backend.
     label: "Render (keyframes, video)",
     maxWorkers: 2,
     gpuTypeIds: BACKEND_GPUS,
@@ -77,13 +131,18 @@ export const PROVISION_PLAN: PlannedEndpoint[] = [
   },
   {
     ...pinned("upscale"),
+    // OWN IRON. Runs as a long-lived serve container on our own GPU boxes, not as a RunPod
+    // endpoint, per Conrad ruling 2026-08-07: own iron needs no meter, because the meter tracks
+    // marginal vendor cost and always-on hardware has none. The shared invoke key encodes the
+    // same ruling by granting NO ACCESS to vivijure-video-upscale, so the plane cannot reach a
+    // RunPod endpoint for this capability even if one were configured.
+    backing: "own-iron",
     label: "Video upscale",
-    maxWorkers: 1,
-    gpuTypeIds: SATELLITE_GPUS,
-    endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID",
+    servedBy: "Skyphusion Labs own GPU hardware",
   },
   {
     ...pinned("lipsync"),
+    backing: "runpod",
     label: "Lip sync",
     maxWorkers: 1,
     gpuTypeIds: SATELLITE_GPUS,
@@ -91,14 +150,13 @@ export const PROVISION_PLAN: PlannedEndpoint[] = [
   },
   {
     ...pinned("audio-upscale"),
+    // OWN IRON, same ruling and same credential posture as the upscale entry above.
+    backing: "own-iron",
     label: "Audio upscale",
-    maxWorkers: 1,
-    gpuTypeIds: SATELLITE_GPUS,
-    endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID",
+    servedBy: "Skyphusion Labs own GPU hardware",
   },
 ];
-
-export const planWorkerTotal = (plan: PlannedEndpoint[] = PROVISION_PLAN): number =>
+export const planWorkerTotal = (plan: PlannedEndpoint[] = endpointBackedPlan()): number =>
   plan.reduce((n, e) => n + e.maxWorkers, 0);
 
 export interface TenantR2Creds {
@@ -358,7 +416,7 @@ function normalizeList<T>(payload: unknown, key: string): T[] {
 export async function preflightQuota(
   client: RunPodClient,
   slug?: string,
-  plan: PlannedEndpoint[] = PROVISION_PLAN,
+  plan: PlannedEndpoint[] = endpointBackedPlan(),
 ): Promise<QuotaReading> {
   const existing = await client.listEndpoints();
   const existingSum = existing.reduce((n, e) => n + (e.workersMax ?? 0), 0);
@@ -408,7 +466,7 @@ export async function preflightQuota(
  * RunPod to raise it). "Unreadable" is OURS to look at, and telling the tenant to go fund their
  * account for it would be actively wrong advice.
  */
-export function quotaGuidance(reading: QuotaReading, plan: PlannedEndpoint[] = PROVISION_PLAN): string {
+export function quotaGuidance(reading: QuotaReading, plan: PlannedEndpoint[] = endpointBackedPlan()): string {
   const needed = planWorkerTotal(plan);
   if (reading.fits) return `Your RunPod account has room for all ${plan.length} endpoints.`;
   if (reading.refusal === "quota_unreadable") {
@@ -448,7 +506,7 @@ export async function createTenantEndpoints(
   runpodApiKey: string,
   slug: string,
   r2: TenantR2Creds,
-  plan: PlannedEndpoint[] = PROVISION_PLAN,
+  plan: PlannedEndpoint[] = endpointBackedPlan(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<CreatedEndpoint[]> {
   const client = new RunPodClient(runpodApiKey, fetchImpl);
@@ -580,7 +638,7 @@ export interface TemplateConvergence {
 export async function convergeTenantTemplateImages(
   runpodApiKey: string,
   slug: string,
-  plan: PlannedEndpoint[] = PROVISION_PLAN,
+  plan: PlannedEndpoint[] = endpointBackedPlan(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<TemplateConvergence[]> {
   const client = new RunPodClient(runpodApiKey, fetchImpl);

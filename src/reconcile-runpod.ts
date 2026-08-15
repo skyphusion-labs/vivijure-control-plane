@@ -38,7 +38,7 @@
 // was not proven whole is reported as unproven rather than asserted. A check that could not be
 // performed never reads here as a check that passed.
 
-import { PROVISION_PLAN, tenantEndpointName } from "./runpod";
+import { endpointBackedPlan, tenantEndpointName } from "./runpod";
 import { readRunPodMode } from "./runpod-pool";
 import type { SharedRunPodPool } from "./runpod-pool";
 import type { Tenant } from "./store";
@@ -244,7 +244,7 @@ export function reconcileRunPod(
   const owningTenantByName = new Map<string, { tenant: Tenant; key: string }>();
   for (const tenant of census.tenants) {
     if (readRunPodMode(tenant.runpod_mode) === "shared") continue;
-    for (const spec of PROVISION_PLAN) {
+    for (const spec of endpointBackedPlan()) {
       owningTenantByName.set(tenantEndpointName(tenant.slug, spec.key), { tenant, key: spec.key });
     }
   }

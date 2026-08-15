@@ -41,7 +41,7 @@ import {
   type ProvisionDeps,
   type ProvisionOutcome,
 } from "../src/provisioner";
-import { convergeTenantTemplateImages, createTenantEndpoints, RunPodClient, tenantEndpointName, PROVISION_PLAN } from "../src/runpod";
+import { convergeTenantTemplateImages, createTenantEndpoints, RunPodClient, tenantEndpointName, PROVISION_PLAN, endpointBackedPlan } from "../src/runpod";
 import { localStudioBundleSource } from "./studio-bundle-local";
 import { localModuleBundleSource } from "./module-bundle-local";
 import { provisionE2eLive, provisionE2eEnvOrThrow } from "./provision-e2e-env";
@@ -264,9 +264,9 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
     for (const want of ["DB", "R2_RENDERS", "AUTH_MODE"]) expect(names, want).toContain(want);
   });
 
-  it("the tenant's 4 RunPod endpoints exist, scale-to-zero, with workers PINNED", async () => {
+  it("the tenant endpoint-backed RunPod endpoints exist, scale-to-zero, with workers PINNED", async () => {
     const eps = await runpodClient.listEndpoints();
-    for (const spec of PROVISION_PLAN) {
+    for (const spec of endpointBackedPlan()) {
       const mine = eps.find((e) => e.name === tenantEndpointName(slug, spec.key));
       expect(mine, `${spec.key} endpoint missing`).toBeTruthy();
       const detail = await runpodClient.getEndpoint(mine!.id);

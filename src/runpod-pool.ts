@@ -23,7 +23,7 @@
 // provisions green, serves, and then fails on the one render path nobody smoke-tested. So a pool is
 // ALL-OR-NOTHING, and an incomplete one REFUSES rather than resolving the keys it happens to have.
 
-import { PROVISION_PLAN } from "./runpod";
+import { endpointBackedPlan, ownIronPlan } from "./runpod";
 import type { TenantEndpoint } from "./provisioner";
 
 /**
@@ -74,7 +74,7 @@ export type PoolConfigResult =
  * capability that silently has no endpoint on the shared tier, which is the quiet-degrade class this
  * repo keeps refusing.
  */
-export const requiredPoolKeys = (): string[] => PROVISION_PLAN.map((spec) => spec.key);
+export const requiredPoolKeys = (): string[] => endpointBackedPlan().map((spec) => spec.key);
 
 /**
  * Parse the SHARED_RUNPOD_ENDPOINTS var into a pool.
@@ -108,9 +108,32 @@ export function parseSharedPool(raw: string | undefined | null): PoolConfigResul
   }
   const byKey = parsed as Record<string, unknown>;
 
+  // OWN IRON MUST NOT BE POOLED. A config naming one of these keys says somebody believes there is
+  // a RunPod endpoint for a capability that runs on our own hardware, and the shared invoke key
+  // grants NO ACCESS to those endpoints, so the belief is not merely redundant: the id would be
+  // unreachable and the failure would surface at a tenant FIRST RENDER rather than here.
+  //
+  // Refused rather than ignored. Silently dropping a key the operator deliberately wrote is the
+  // quiet-degrade shape this file exists to refuse, and it would leave them believing the pool
+  // covers something it does not.
+  const ownIron = ownIronPlan()
+    .map((c) => c.key)
+    .filter((k) => k in byKey);
+  if (ownIron.length) {
+    return {
+      ok: false,
+      detail:
+        "SHARED_RUNPOD_ENDPOINTS names own-iron capability(ies): " +
+        ownIron.join(", ") +
+        ". These run on hardware we operate, not as RunPod endpoints, so no endpoint id belongs " +
+        "here and the shared invoke key has no access to one. Remove the key rather than pointing " +
+        "it at an endpoint the plane cannot reach ",
+    };
+  }
+
   const endpoints: TenantEndpoint[] = [];
   const missing: string[] = [];
-  for (const spec of PROVISION_PLAN) {
+  for (const spec of endpointBackedPlan()) {
     const entry = byKey[spec.key] as Record<string, unknown> | undefined;
     if (!entry || typeof entry !== "object") {
       missing.push(spec.key);
@@ -144,7 +167,7 @@ export function parseSharedPool(raw: string | undefined | null): PoolConfigResul
     return {
       ok: false,
       detail:
-        `SHARED_RUNPOD_ENDPOINTS is missing ${missing.length} of ${PROVISION_PLAN.length} plan ` +
+        `SHARED_RUNPOD_ENDPOINTS is missing ${missing.length} of ${endpointBackedPlan().length} endpoint-backed plan ` +
         `key(s): ${missing.join(", ")}. A partial pool is refused rather than partially resolved: ` +
         "a tenant with some capabilities pointed at nothing provisions green and fails at the first " +
         "render on the missing path",

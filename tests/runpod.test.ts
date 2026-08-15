@@ -5,6 +5,8 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   PROVISION_PLAN,
+  endpointBackedPlan,
+  ownIronPlan,
   NO_TRAINING_CLAUSE,
   createTenantEndpoints,
   parseQuotaError,
@@ -52,13 +54,19 @@ function fakeRunPod(opts: { endpoints?: unknown[]; templates?: unknown[]; quotaE
 }
 
 describe("the provisioning plan", () => {
-  it("fits any observed quota: 4 endpoints summing to 5 workers", () => {
+  it("the plan holds 4 capabilities, 2 of them endpoint-backed, summing to 3 workers", () => {
+    // The full plan is the CAPABILITY list; only the endpoint-backed half consumes RunPod quota.
+    // Own iron (video upscale, audio upscale) runs on hardware we operate, so it has no workersMax
+    // to sum and no endpoint to create. Asserted as both numbers rather than one, because a single
+    // figure here cannot distinguish a capability being dropped from it moving to own iron.
     expect(PROVISION_PLAN).toHaveLength(4);
-    expect(planWorkerTotal()).toBe(5);
+    expect(endpointBackedPlan()).toHaveLength(2);
+    expect(ownIronPlan().map((c) => c.key).sort()).toEqual(["audio-upscale", "upscale"]);
+    expect(planWorkerTotal()).toBe(3);
   });
 
   it("pins max_workers EXPLICITLY on every endpoint (RunPod's default of 3 x 4 = 12 breaks it)", () => {
-    for (const e of PROVISION_PLAN) expect(e.maxWorkers, e.key).toBeGreaterThan(0);
+    for (const e of endpointBackedPlan()) expect(e.maxWorkers, e.key).toBeGreaterThan(0);
   });
 
   it("never uses the frozen python default tag (0.4.4 footgun stays in the script)", () => {
@@ -166,7 +174,7 @@ describe("preflightQuota", () => {
 describe("createTenantEndpoints", () => {
   it("creates 4 endpoints with explicitly pinned workers", async () => {
     const { fetchImpl, created } = fakeRunPod();
-    const out = await createTenantEndpoints("rpa_keyA", "hero", R2, PROVISION_PLAN, fetchImpl);
+    const out = await createTenantEndpoints("rpa_keyA", "hero", R2, endpointBackedPlan(), fetchImpl);
     expect(out.map((e) => e.key)).toEqual(["backend", "upscale", "lipsync", "audio-upscale"]);
     expect(created).toContain(`endpoint:${tenantEndpointName("hero", "backend")}:2`);
     expect(created.filter((c) => c.startsWith("endpoint:"))).toHaveLength(4);
@@ -180,7 +188,7 @@ describe("createTenantEndpoints", () => {
     const existing = { id: "ep-old", name: tenantEndpointName("hero", "backend"), workersMax: 2 };
     const existingTemplate = { id: "tpl-old", name: tenantEndpointName("hero", "backend") };
     const { fetchImpl, created } = fakeRunPod({ endpoints: [existing], templates: [existingTemplate] });
-    const out = await createTenantEndpoints("rpa_keyA", "hero", R2, PROVISION_PLAN, fetchImpl);
+    const out = await createTenantEndpoints("rpa_keyA", "hero", R2, endpointBackedPlan(), fetchImpl);
     expect(out.find((e) => e.key === "backend")?.id).toBe("ep-old");
     expect(created).not.toContain(`endpoint:${existing.name}:2`);
     // and the adopted template got the fresh credential written to it
@@ -190,13 +198,13 @@ describe("createTenantEndpoints", () => {
   it("FAILS BEFORE creating anything when the plan does not fit, with RunPod's real numbers", async () => {
     // A half-provisioned RunPod account is the tenant's mess, on their bill. Refuse early.
     const { fetchImpl, created } = fakeRunPod({ endpoints: [{ id: "e1", name: "other", workersMax: 8 }] });
-    await expect(createTenantEndpoints("rpa_keyA", "hero", R2, PROVISION_PLAN, fetchImpl)).rejects.toThrow(/quota is 10/);
+    await expect(createTenantEndpoints("rpa_keyA", "hero", R2, endpointBackedPlan(), fetchImpl)).rejects.toThrow(/quota is 10/);
     expect(created.filter((c) => c.startsWith("endpoint:vivijure-hero"))).toHaveLength(0);
   });
 
   it("NEVER logs or returns key A", async () => {
     const { fetchImpl } = fakeRunPod();
-    const out = await createTenantEndpoints("rpa_KEY_A_SECRET", "hero", R2, PROVISION_PLAN, fetchImpl);
+    const out = await createTenantEndpoints("rpa_KEY_A_SECRET", "hero", R2, endpointBackedPlan(), fetchImpl);
     expect(JSON.stringify(out)).not.toContain("rpa_KEY_A_SECRET");
   });
 });

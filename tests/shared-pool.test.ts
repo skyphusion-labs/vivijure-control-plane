@@ -12,7 +12,7 @@
 import { describe, it, expect } from "vitest";
 import { parseSharedPool, readRunPodMode, requiredPoolKeys } from "../src/runpod-pool";
 import { reconcileRunPod, type RunPodInventory, type TenantCensus } from "../src/reconcile-runpod";
-import { PROVISION_PLAN } from "../src/runpod";
+import { PROVISION_PLAN, endpointBackedPlan } from "../src/runpod";
 import type { Tenant, TenantLifecycle } from "../src/store";
 
 const POOL_JSON = JSON.stringify({
@@ -84,13 +84,13 @@ describe("parseSharedPool", () => {
     // endpointVar and label come from the PLAN, never from the config: which studio var an endpoint
     // id belongs in is a property of the capability, not of who owns the endpoint. That is why both
     // paths can hand the same array to the same two consumers.
-    for (const spec of PROVISION_PLAN) {
+    for (const spec of endpointBackedPlan()) {
       const got = res.pool.endpoints.find((e) => e.key === spec.key);
       expect(got, `pool is missing plan key ${spec.key}`).toBeTruthy();
       expect(got!.endpointVar).toBe(spec.endpointVar);
       expect(got!.label).toBe(spec.label);
     }
-    expect(res.pool.endpoints).toHaveLength(PROVISION_PLAN.length);
+    expect(res.pool.endpoints).toHaveLength(endpointBackedPlan().length);
     expect([...res.pool.ids].sort()).toEqual(
       ["pool-audio", "pool-backend", "pool-lipsync", "pool-upscale"],
     );
@@ -99,7 +99,7 @@ describe("parseSharedPool", () => {
   it("derives the required keys from the PLAN, so a new satellite makes every pool refuse", () => {
     // Deliberate coupling. Adding a capability to PROVISION_PLAN must break existing pool config
     // loudly rather than produce a shared tier that silently lacks the new capability.
-    expect(requiredPoolKeys()).toEqual(PROVISION_PLAN.map((s) => s.key));
+    expect(requiredPoolKeys()).toEqual(endpointBackedPlan().map((s) => s.key));
   });
 });
 
@@ -271,7 +271,7 @@ describe("reconcileRunPod with a shared pool", () => {
 
     expect(report.tenants).toHaveLength(1);
     expect(report.tenants[0]).toMatchObject({ slug: "rider", findings: 0, verdict: "clean" });
-    expect(report.tenants[0].endpoints_recorded).toBe(PROVISION_PLAN.length);
+    expect(report.tenants[0].endpoints_recorded).toBe(endpointBackedPlan().length);
   });
 
   it("does not invent ownership by NAME for a shared tenant", () => {

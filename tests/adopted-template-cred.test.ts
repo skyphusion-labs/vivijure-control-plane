@@ -13,6 +13,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   PROVISION_PLAN,
+  endpointBackedPlan,
   createTenantEndpoints,
   templateEnv,
   tenantEndpointName,
@@ -42,13 +43,13 @@ function statefulRunPod(opts: { seedTemplates?: boolean; seedEndpoints?: boolean
   const calls: string[] = [];
 
   if (opts.seedTemplates) {
-    for (const spec of PROVISION_PLAN) {
+    for (const spec of endpointBackedPlan()) {
       const name = tenantEndpointName("hero", spec.key);
       templates.set(name, { id: `tpl-${name}`, name, env: templateEnv(spec.key, seedEnv) });
     }
   }
   if (opts.seedEndpoints) {
-    for (const spec of PROVISION_PLAN) {
+    for (const spec of endpointBackedPlan()) {
       const name = tenantEndpointName("hero", spec.key);
       endpoints.set(name, { id: `ep-${name}`, name, workersMax: spec.maxWorkers });
     }
@@ -108,9 +109,9 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
     // Exactly the live case: endpoints AND templates already exist from an earlier provision.
     const rp = statefulRunPod({ seedTemplates: true, seedEndpoints: true });
 
-    const out = await createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl);
+    const out = await createTenantEndpoints("rpa_keyA", "hero", FRESH, endpointBackedPlan(), rp.fetchImpl);
 
-    expect(out).toHaveLength(PROVISION_PLAN.length);
+    expect(out).toHaveLength(endpointBackedPlan().length);
     for (const env of storedEnvs(rp.templates)) {
       expect(env.R2_ACCESS_KEY_ID).toBe("FRESH_AK_minted_this_run");
       expect(env.R2_SECRET_ACCESS_KEY).toBe("FRESH_SK_minted_this_run");
@@ -122,7 +123,7 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
   it("refreshes the template BEFORE touching the endpoint, so no consumer sees a dead cred window", async () => {
     const rp = statefulRunPod({ seedTemplates: true, seedEndpoints: false });
 
-    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl);
+    await createTenantEndpoints("rpa_keyA", "hero", FRESH, endpointBackedPlan(), rp.fetchImpl);
 
     const firstBackendPatch = rp.calls.indexOf("PATCH template:vivijure-hero-backend");
     const firstBackendEndpoint = rp.calls.findIndex((c) => c.startsWith("POST endpoint:vivijure-hero-backend"));
@@ -133,7 +134,7 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
   it("adopted template + missing endpoint: template refreshed AND the new endpoint uses it", async () => {
     const rp = statefulRunPod({ seedTemplates: true, seedEndpoints: false });
 
-    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl);
+    await createTenantEndpoints("rpa_keyA", "hero", FRESH, endpointBackedPlan(), rp.fetchImpl);
 
     for (const env of storedEnvs(rp.templates)) {
       expect(env.R2_ACCESS_KEY_ID).toBe("FRESH_AK_minted_this_run");
@@ -144,9 +145,9 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
   it("fresh tenant: creates templates carrying the minted cred (unchanged behaviour)", async () => {
     const rp = statefulRunPod();
 
-    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl);
+    await createTenantEndpoints("rpa_keyA", "hero", FRESH, endpointBackedPlan(), rp.fetchImpl);
 
-    expect(rp.templates.size).toBe(PROVISION_PLAN.length);
+    expect(rp.templates.size).toBe(endpointBackedPlan().length);
     for (const env of storedEnvs(rp.templates)) {
       expect(env.R2_ACCESS_KEY_ID).toBe("FRESH_AK_minted_this_run");
     }
@@ -157,7 +158,7 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
     // would be the #83 lie in a new costume.
     const rp = statefulRunPod({ seedTemplates: false, seedEndpoints: true });
 
-    await expect(createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl)).rejects.toThrow(
+    await expect(createTenantEndpoints("rpa_keyA", "hero", FRESH, endpointBackedPlan(), rp.fetchImpl)).rejects.toThrow(
       /no template named .* was found/,
     );
   });
@@ -167,7 +168,7 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
     // Getting this wrong on the refresh path would fail only at the tenant first render.
     const rp = statefulRunPod({ seedTemplates: true, seedEndpoints: true });
 
-    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl);
+    await createTenantEndpoints("rpa_keyA", "hero", FRESH, endpointBackedPlan(), rp.fetchImpl);
 
     const backend = rp.templates.get("vivijure-hero-backend")!.env;
     expect(backend.R2_ENDPOINT).toBe(FRESH.endpoint);
