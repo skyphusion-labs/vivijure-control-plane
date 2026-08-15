@@ -40,7 +40,10 @@ describe("cf#361 forbidden-binding guard is armed", () => {
 
   it("the call precedes the upload it guards, so no binding is added after the check", () => {
     const call = src.indexOf("assertNoTenantModuleForbiddenBindings(spec.module");
-    const upload = src.indexOf("deps.cf.uploadUserWorker", call);
+    // cp#464: the upload moved onto the SCRIPT UPLOAD credential and behind uploadModuleScript, so
+    // this anchor tracks the helper rather than the client. Same property either way: the
+    // forbidden-binding check must run BEFORE the bytes leave, whichever credential carries them.
+    const upload = src.indexOf("uploadModuleScript(deps, spec.module", call);
     expect(call).toBeGreaterThan(-1);
     expect(upload).toBeGreaterThan(call);
   });

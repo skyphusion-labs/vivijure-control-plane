@@ -9,7 +9,7 @@ import { TEST_VPC_DOORS } from "./door-fixture";
 import { describe, it, expect, vi } from "vitest";
 import { uploadTenantModules, TENANT_MODULE_CATALOG, reachesRunpod, type TenantModuleDeps } from "../src/tenant-modules";
 import { endpointBackedPlan } from "../src/runpod";
-import type { WorkerBinding } from "../src/cf-api";
+import { CfApiError, type WorkerBinding } from "../src/cf-api";
 
 // The tenant studio D1 uuid the recording modules get as TELEMETRY_DB (cp#248).
 const TENANT_D1 = "d1-uuid-acme";
@@ -40,11 +40,21 @@ const AIG_ATTRIBUTION_NAMES = ["TENANT_ID", "TENANT_SLUG"] as const;
 
 type Upload = { scriptName: string; bindings: WorkerBinding[] };
 
-function deps(over: Partial<TenantModuleDeps> = {}): { d: TenantModuleDeps; uploads: Upload[]; logs: string[] } {
+function deps(over: Partial<TenantModuleDeps> = {}): { d: TenantModuleDeps; uploads: Upload[]; logs: string[]; wrongCredential: Upload[] } {
   const uploads: Upload[] = [];
+  // cp#464: anything landing here means the module upload used the GENERAL credential. It must stay
+  // empty; that is the assertion the credential split exists for.
+  const wrongCredential: Upload[] = [];
   const logs: string[] = [];
   const d = {
     cf: {
+      createDispatchNamespace: vi.fn(async () => undefined),
+      uploadUserWorker: vi.fn(async (a: Upload) => void wrongCredential.push(a)),
+    },
+    // cp#464: module uploads run on the SCRIPT UPLOAD credential, not the general one. These are
+    // SEPARATE recorders on purpose: pointing both at one array would let every assertion below
+    // pass whichever client the source actually used, which is the thing under test.
+    scriptUploadCf: {
       createDispatchNamespace: vi.fn(async () => undefined),
       uploadUserWorker: vi.fn(async (a: Upload) => void uploads.push(a)),
     },
@@ -63,7 +73,7 @@ function deps(over: Partial<TenantModuleDeps> = {}): { d: TenantModuleDeps; uplo
     log: vi.fn((event: string) => void logs.push(event)),
     ...over,
   } as unknown as TenantModuleDeps;
-  return { d, uploads, logs };
+  return { d, uploads, logs, wrongCredential };
 }
 
 const forModule = (uploads: Upload[], name: string): Upload =>
@@ -263,5 +273,73 @@ describe("uploadTenantModules -- per-tenant attribution vars (cp#185)", () => {
         expect(names(u), `${m} must not carry ${name}`).not.toContain(name);
       }
     }
+  });
+});
+
+describe("module uploads run on the SCRIPT UPLOAD credential (cp#464)", () => {
+  // WHY THIS TEST EXISTS. The door pool attaches vpc_service bindings to MODULE workers, and those
+  // uploads used the GENERAL provisioner credential while the studio upload used the dedicated
+  // script-upload one. Only the second had ever been granted Connectivity Directory, so a door
+  // binding was uploaded by a credential that could not attach it. Nothing stated the two had to
+  // match and nothing detected that they had diverged; the first symptom was a dead provision.
+  //
+  // The assertion is a PAIR, and the second half is the one that can fail. Asserting only that the
+  // upload credential was used would also pass if BOTH were called -- which is exactly the state
+  // where a stray deps.cf upload still slips a door binding onto the wrong token.
+  it("uploads through scriptUploadCf, and NEVER through the general client", async () => {
+    const { d, uploads, wrongCredential } = deps();
+
+    await uploadTenantModules(d, "v1.0.0", "ten_1", "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "dedicated", undefined, "AIG_SECRET_VALUE");
+
+    // It really uploaded, so the emptiness below is not vacuous.
+    expect(uploads.length).toBeGreaterThan(0);
+    // The general credential was not used for a single script.
+    expect(wrongCredential).toEqual([]);
+  });
+});
+
+describe("the door-binding guard, and its own staleness detector (cp#462, cp#464)", () => {
+  // Refuses ONLY the upload that actually attaches a door, which is what Cloudflare does. A fake
+  // that threw on every upload would fail on the first module in the catalog, whose bindings carry
+  // no vpc_service -- and the guard would correctly not fire, making the test measure the fixture.
+  const failWith = (code: number) => ({
+    createDispatchNamespace: vi.fn(async () => undefined),
+    uploadUserWorker: vi.fn(async (a: Upload) => {
+      if (!a.bindings.some((b) => b.type === "vpc_service")) return;
+      throw new CfApiError("wfp.upload", 400, [{ code, message: "VPC binding configuration failed" }]);
+    }),
+  });
+
+  const run = (d: TenantModuleDeps) =>
+    uploadTenantModules(d, "v1.0.0", "ten_1", "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "dedicated", undefined, "AIG_SECRET_VALUE");
+
+  it("translates the KNOWN refusal into words an operator can act on", async () => {
+    const { d } = deps({ scriptUploadCf: failWith(10196) } as unknown as Partial<TenantModuleDeps>);
+    // The module path had NO guard at all before this: the operator got raw Cloudflare prose from
+    // a step whose sibling has had a written-for-humans message since cf#118.
+    await expect(run(d)).rejects.toThrow(/door binding refused/);
+  });
+
+  // THE POINT OF cp#462, AND THE HALF THAT IS EASY TO LEAVE OUT.
+  //
+  // A predicate keyed on a vendor constant has an expiry date nobody wrote down. When Cloudflare
+  // renumbers, a boolean guard answers false forever and NOTHING reports that it stopped working --
+  // which is exactly how the cf#118 guard sat inert above the failing call while an operator read
+  // raw vendor prose. So the miss is logged. This test is the difference between a guard that dies
+  // silently and one that announces its own obsolescence the first time it is wrong.
+  it("LOGS the codes Cloudflare actually returned when the known code does NOT match", async () => {
+    const { d, logs } = deps({ scriptUploadCf: failWith(99999) } as unknown as Partial<TenantModuleDeps>);
+
+    // Still throws: the guard translates, it never swallows.
+    await expect(run(d)).rejects.toThrow(/VPC binding configuration failed/);
+    expect(logs).toContain("module_upload.vpc_guard_did_not_match");
+  });
+
+  // CONTROL: the detector must fire on a MISS, not on every failure. A version that logged
+  // unconditionally would pass the test above while telling an operator nothing.
+  it("CONTROL: does NOT cry stale when the code DID match", async () => {
+    const { d, logs } = deps({ scriptUploadCf: failWith(10196) } as unknown as Partial<TenantModuleDeps>);
+    await expect(run(d)).rejects.toThrow();
+    expect(logs).not.toContain("module_upload.vpc_guard_did_not_match");
   });
 });
