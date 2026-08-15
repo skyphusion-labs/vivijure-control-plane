@@ -930,28 +930,33 @@ async function driveJobIfNeeded(
   // cron-driven job the staleness rule cannot fire at all (see MAX_PROVISION_JOB_AGE_MS).
   const createdAt = Date.parse(String(job.created_at).replace(" ", "T") + "Z");
   if (Number.isFinite(createdAt) && deps.now() - createdAt > MAX_PROVISION_JOB_AGE_MS) {
-    await deps.store.finishJob(
+    const closed = await deps.store.finishJob(
       job.id,
       "failed",
       job.step,
       `provision did not complete within ${Math.round(MAX_PROVISION_JOB_AGE_MS / 60000)} minutes of ` +
         "being created; giving up rather than driving it forever",
     );
-    await deps.store.setTenantStatus(tenant.id, "failed");
+    // CONDITIONAL, and this is cp#443. The reap is two writes; if the job write refused because
+    // another driver already closed the row, flipping the tenant anyway would report a studio that
+    // provisioned correctly as failed, beside a job row saying succeeded. Two records disagreeing
+    // is worse than either being wrong alone.
+    if (closed) await deps.store.setTenantStatus(tenant.id, "failed");
     return await deps.store.getJob(job.id);
   }
 
   // Lost driver: no progress for too long. Fail honestly rather than leave a spinner running.
   const lastProgress = Date.parse(`${job.updated_at.replace(" ", "T")}Z`);
   if (Number.isFinite(lastProgress) && deps.now() - lastProgress > MAX_JOB_STALE_MS) {
-    await deps.store.finishJob(
+    const closed = await deps.store.finishJob(
       job.id,
       "failed",
       job.step,
       `invocation lost: no progress for over ${Math.round(MAX_JOB_STALE_MS / 60000)} minutes; ` +
         "the provision did not complete",
     );
-    await deps.store.setTenantStatus(tenant.id, "failed");
+    // Conditional for the same reason as the cap reap above (cp#443).
+    if (closed) await deps.store.setTenantStatus(tenant.id, "failed");
     return await deps.store.getJob(job.id);
   }
 

@@ -840,15 +840,19 @@ export class MemoryStore implements ControlPlaneStore {
     j.updated_at = this.stamp(Date.now());
     j.lease_until = this.stamp(Date.now() + JOB_LEASE_SECONDS * 1000);
   }
+  /** Mirrors the SQL exactly on BOTH properties that carry meaning (cp#438, cp#443): a terminal job
+   *  refuses, and the result says whether a row changed. A double that always succeeded would let
+   *  every conditional built on it pass while the shipped store refused. */
   async finishJob(id: string, status: "succeeded" | "failed", errorStep: string | null, errorMessage: string | null) {
     const j = this.jobs.get(id);
-    if (j) {
-      j.status = status;
-      j.error_step = errorStep;
-      j.error_message = errorMessage;
-      j.finished_at = new Date().toISOString();
-      j.lease_until = null;
-    }
+    if (!j) return false;
+    if (j.status !== "queued" && j.status !== "running") return false;
+    j.status = status;
+    j.error_step = errorStep;
+    j.error_message = errorMessage;
+    j.finished_at = new Date().toISOString();
+    j.lease_until = null;
+    return true;
   }
 
   async getLatestJobForTenant(tenant_id: string) {

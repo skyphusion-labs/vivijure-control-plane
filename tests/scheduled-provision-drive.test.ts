@@ -241,4 +241,53 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     expect(jobRow("job_loop").status).toBe("failed");
     expect(tenantRow("ten_loop").status).toBe("failed");
   });
+
+  // ---- cp#438 + cp#443: the reap is TWO writes, and half a guard is worse than none -------------
+
+  it("a reap whose job write REFUSES does not flip the tenant either", async () => {
+    // THE STATE THIS PREVENTS, and it is worse than the bug it comes from: another driver closes the
+    // job between our read and our write, the job write correctly refuses on the terminal predicate
+    // (cp#438), and without cp#443 the tenant write runs anyway. That leaves a studio which
+    // provisioned CORRECTLY reading failed, beside a job row reading succeeded. Two records that
+    // disagree are harder to diagnose than either being wrong alone.
+    //
+    // SIMULATED AT THE STORE SEAM rather than through the sweep, deliberately and stated because it
+    // matters: driveJobIfNeeded returns early on a terminal job (index.ts:913), so a job that is
+    // ALREADY closed never reaches the reap at all. The window is a genuine time-of-check to
+    // time-of-use one -- read running, closed by someone else, then written -- and a fixture that
+    // merely pre-closes the row tests nothing. I wrote that fixture first and it passed with the
+    // conditional REMOVED, which is how I found it.
+    await store.createTenant("ten_race", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_race", "ten_race", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_race");
+    noProgressFor("job_race", 30);
+    expireLease("job_race");
+
+    // The other driver wins the moment our reap tries to close: the write changes no row.
+    const realFinish = store.finishJob.bind(store);
+    let refusedOnce = false;
+    (store as unknown as { finishJob: unknown }).finishJob = async (...args: unknown[]) => {
+      refusedOnce = true;
+      void realFinish;
+      void args;
+      return false;
+    };
+
+    await runScheduledTick(env(), deps);
+
+    expect(refusedOnce, "the reap never attempted a close, so this asserts nothing").toBe(true);
+    // THE ASSERTION: the tenant is untouched because the job write refused.
+    expect(tenantRow("ten_race").status).toBe("provisioning");
+  });
+
+  it("CONTROL: finishJob still closes a job that is genuinely open, and refuses the second close", async () => {
+    // The predicate must not be refusing everything, and the terminal-record rule must actually
+    // hold. Both directions, at the store, against real SQL.
+    await store.createTenant("ten_open", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_open", "ten_open", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_open");
+    expect(await store.finishJob("job_open", "failed", "wfp_upload", "boom")).toBe(true);
+    expect(await store.finishJob("job_open", "succeeded", null, null)).toBe(false);
+    expect(jobRow("job_open").status).toBe("failed");
+  });
 });

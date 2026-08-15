@@ -704,19 +704,38 @@ export class D1Store implements ControlPlaneStore, CreditStore {
       .run();
   }
 
+  /**
+   * Close a job, and REPORT whether it actually closed one (cp#438, cp#443).
+   *
+   * THE PREDICATE, matching updateJobProgress above and for the same cp#148 reason: a terminal job
+   * is a closed record. A driver that lost its job to another driver keeps running to the end of
+   * its invocation, and its finishJob used to overwrite the terminal row, turning a succeeded
+   * provision into a failed one.
+   *
+   * THE RETURN VALUE IS THE OTHER HALF, and the predicate alone is a trap without it. The reap is
+   * TWO writes: finish the job, then flip the tenant. Add the predicate and the job write correctly
+   * refuses while the tenant write runs anyway, because nothing told it the first one did not land.
+   * That leaves a studio which provisioned correctly reading failed, beside a job row reading
+   * succeeded: two records that disagree, which is worse than either being wrong alone.
+   *
+   * So a caller pairing this with a tenant-status write MUST branch on the result. Same
+   * changes === 1 shape claimJob already uses.
+   */
   async finishJob(
     id: string,
     status: "succeeded" | "failed",
     errorStep: string | null,
     errorMessage: string | null,
-  ): Promise<void> {
-    await this.db
+  ): Promise<boolean> {
+    const res = await this.db
       .prepare(
         "UPDATE provision_jobs SET status = ?2, error_step = ?3, error_message = ?4, " +
-          "finished_at = datetime('now'), updated_at = datetime('now'), lease_until = NULL WHERE id = ?1",
+          "finished_at = datetime('now'), updated_at = datetime('now'), lease_until = NULL " +
+          "WHERE id = ?1 AND status IN ('queued', 'running')",
       )
       .bind(id, status, errorStep, errorMessage)
       .run();
+    return (res.meta?.changes ?? 0) === 1;
   }
 
   // ---- settings + audit ----

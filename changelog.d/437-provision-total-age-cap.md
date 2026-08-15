@@ -37,3 +37,18 @@ reaped **while its `updated_at` is fresh** (the case the idle rule structurally 
 CONTROL that a job inside the cap is still driven, and a reproduction of the forever loop that ticks
 three times without the row ever failing before the cap ends it. **Watched red** with the cap
 disabled: both cap tests fail, the control stays green.
+
+## Also here: cp#438 and cp#443, one change because half of it is a trap
+
+finishJob had no status predicate, so a driver that lost its job could overwrite the terminal row
+(cp#438). But the reap is TWO writes, and adding the predicate ALONE means the job write refuses
+while the tenant write runs anyway -- a studio that provisioned correctly reading failed beside a
+job row reading succeeded. A partial guard on a multi-write operation converts a wrong-but-
+consistent state into an inconsistent one (cp#443).
+
+So finishJob gains the predicate and reports whether it changed a row, and both reap sites branch on
+it. The memory double mirrors both properties.
+
+The test for this nearly shipped unable to fail: the first version pre-closed the job, which never
+reaches the reap at all (driveJobIfNeeded returns early on a terminal job), and it passed with the
+conditional removed. Now simulated at the store seam and verified to fail without it.
