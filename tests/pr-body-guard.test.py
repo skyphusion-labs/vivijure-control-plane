@@ -126,6 +126,53 @@ expect(
     0,
 )
 
+# ---- THE cp#402 FENCE-PAIRING REGRESSION. The first code-span pass was `re.compile(r"```.*?```",
+# ---- re.DOTALL)`, anchored to nothing, so ANY two runs of three backticks in the document paired
+# ---- up and everything between them was blanked -- across paragraph breaks that GitHub renders as
+# ---- ordinary prose. Verified through POST /markdown (mode=gfm): the middle line below came back
+# ---- as a live <a class="issue-link js-issue-link"> to issue 48, NOT inside a <code>. ----------
+expect(
+    "fence markers used as PROSE, paragraphs apart, must not pair up and hide a keyword",
+    "The literal ``` is our fence marker.\n\nCloses #48 by hand.\n\nWe also ban ``` in titles.",
+    1,
+)
+expect(
+    "a keyword+ref on the line IMMEDIATELY AFTER a closing fence is REFUSED",
+    "```\nsome code\n```\nCloses #48 by hand, right after the close.",
+    1,
+)
+expect(
+    "CONTROL: a real fenced block still hides its contents, so stripping is not simply disabled",
+    "## What changed\n\n```\nCloses #48\nfixes #49\n```\n\nRefs #48.",
+    0,
+)
+# ---- An UNTERMINATED fence fails SAFE, toward refusing: it strips nothing, so the opening line and
+# ---- everything after it stay in the scanned prose. CommonMark would run that block to the end of
+# ---- the document, so this can refuse a body GitHub would render entirely as code -- a false
+# ---- REFUSAL, costing one edit. Blanking to end of document would be a false ACCEPT, which is how
+# ---- an issue gets closed at merge. The pair below pins BOTH directions of that choice. ----------
+expect(
+    "an UNTERMINATED fence strips nothing, so a keyword after it is still REFUSED",
+    "```\nCloses #48 inside a fence nobody closed.",
+    1,
+)
+expect(
+    "CONTROL: an unterminated fence does not make a CLEAN body refuse either",
+    "```\nnothing linking in here at all. Refs #48.",
+    0,
+)
+# ---- Fence SHAPES CommonMark accepts, which must keep stripping or the guard becomes noise. ------
+expect(
+    "a fence indented up to three spaces still pairs and strips",
+    "text\n\n   ```\n   Closes #48\n   ```\n\nRefs #48.",
+    0,
+)
+expect(
+    "a four-backtick fence pairs and strips",
+    "text\n\n````\nCloses #48\n````\n\nRefs #48.",
+    0,
+)
+
 # ---- THE VACUOUS-PASS GUARD. An absent input must not read as a clean input. ---------------------
 expect("an UNSUPPLIED body is rc=2, never a pass", "", 2, supply=False)
 

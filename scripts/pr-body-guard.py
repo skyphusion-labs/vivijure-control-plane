@@ -66,15 +66,62 @@ PATTERN = re.compile(rf"\b(?:{KEYWORDS})\b\s*:?\s*{REFERENCE}", re.IGNORECASE)
 # QUOTED in code is describing the string, not asserting a link -- categorically different from the
 # same text in prose. Replaced with a space, not deleted, so a keyword on one side of a span and a
 # reference on the other stay separated rather than fusing into an accidental match.
-CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
+#
+# THE FENCE PASS IS LINE-ANCHORED, AND THAT IS THE WHOLE POINT. The first version of this pass was
+# `re.compile(r"```.*?```", re.DOTALL)`, which is anchored to nothing: ANY two runs of three
+# backticks anywhere in the document paired up, across blank lines, and every character between
+# them was blanked before the keyword pattern ever ran. A three-paragraph body reading
+#
+#     The literal ``` is our fence marker.
+#
+#     Closes #48 by hand.
+#
+#     We also ban ``` in titles.
+#
+# was ACCEPTED at rc=0, while GitHub rendered that middle line as a LIVE issue link -- verified
+# through POST /markdown with mode=gfm, which returned an <a class="issue-link js-issue-link">
+# pointing at issue 48, NOT wrapped in a <code> element. CommonMark forms no code span across a
+# paragraph break, so the guard was blanking text GitHub treats as ordinary prose. That put the
+# exact cp#246 / cp#255 failure this file exists to prevent back on the table, through the fix for
+# cp#387, and the 30-case suite stayed 30 of 30 green while it did.
+#
+# So a fence OPENS only on a line whose content begins with three or more backticks (up to three
+# leading spaces, per CommonMark) and CLOSES only on a LATER line that also begins with three or
+# more backticks. Nothing past that closing line is consumed, so a genuine keyword+reference on the
+# line immediately after a closing fence is still seen and still refused. A regex spelled
+# `^```.*?^```.*$` under DOTALL looks line-anchored and is not: the greedy `.*$` runs to the last
+# line of the document and eats that prose too. Measured, which is why this is a line scanner.
+#
+# AN UNTERMINATED FENCE FAILS SAFE, TOWARD REFUSING: it strips NOTHING. The opening line is treated
+# as ordinary prose and so is every line after it. CommonMark would run that block to the end of
+# the document, so this can refuse a body GitHub would have rendered entirely as code. That is a
+# false REFUSAL and it costs the author one edit. Blanking to end of document instead would be a
+# false ACCEPT, which is how an issue gets closed at merge. The guard takes the cost it can pay.
+FENCE_LINE = re.compile(r"^ {0,3}`{3,}")
 INLINE_CODE = re.compile(r"`[^`\n]*`")
 
 
 def strip_code(text: str) -> str:
     """Blank out fenced code blocks and inline code spans before the pattern ever runs."""
-    text = CODE_FENCE.sub(" ", text)
-    text = INLINE_CODE.sub(" ", text)
-    return text
+    lines = text.split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        if FENCE_LINE.match(lines[i]):
+            close = next(
+                (j for j in range(i + 1, len(lines)) if FENCE_LINE.match(lines[j])), None
+            )
+            if close is not None:
+                # Blank the opening fence, the contents and the closing fence, then resume on the
+                # line AFTER the close. Line count is preserved so the hit context printed below
+                # still lines up with the body the author actually wrote.
+                out.extend(" " for _ in range(close - i + 1))
+                i = close + 1
+                continue
+            # Unterminated. Fall through: this line is prose, and so is everything after it.
+        out.append(lines[i])
+        i += 1
+    return INLINE_CODE.sub(" ", "\n".join(out))
 
 
 def find_hits(body: str):
