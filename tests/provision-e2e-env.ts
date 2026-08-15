@@ -3,6 +3,16 @@
 
 import { randomBytes } from "node:crypto";
 
+// `@cloudflare/workers-types` declares a GLOBAL `Buffer` whose `toString()` takes no arguments, and
+// it wins over @types/node's in this project's global scope. So `someNodeBuffer.toString("utf8")`
+// stopped type-checking (TS2554 "Expected 0 arguments, but got 1") purely from a types bump -- the
+// runtime behaviour never changed and these are Node buffers in Node-only test helpers.
+//
+// Importing Buffer explicitly from "node:buffer" and routing through `Buffer.from(...)` names which
+// Buffer is meant, rather than casting the error away. A cast would silence the same message for a
+// value that genuinely IS the Workers type, which is the case worth keeping loud.
+import { Buffer } from "node:buffer";
+
 declare const process: { env: Record<string, string | undefined> };
 
 export interface ProvisionE2eEnv {
@@ -42,7 +52,7 @@ export interface ProvisionE2eEnv {
  * production KEK gets pasted in "just to check something", which is the exact custody widening
  * this comment exists to prevent.
  */
-const EPHEMERAL_KEK = randomBytes(32).toString("base64");
+const EPHEMERAL_KEK = Buffer.from(randomBytes(32)).toString("base64");
 
 function required(name: string): string | undefined {
   const v = process.env[name];
