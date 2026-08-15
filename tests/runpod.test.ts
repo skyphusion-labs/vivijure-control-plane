@@ -5,6 +5,8 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   PROVISION_PLAN,
+  endpointBackedPlan,
+  vpcBackedPlan,
   NO_TRAINING_CLAUSE,
   createTenantEndpoints,
   parseQuotaError,
@@ -52,14 +54,34 @@ function fakeRunPod(opts: { endpoints?: unknown[]; templates?: unknown[]; quotaE
 }
 
 describe("the provisioning plan", () => {
-  it("fits any observed quota: 4 endpoints summing to 5 workers", () => {
+  it("holds 4 capabilities: 2 endpoint-backed summing to 3 workers, 2 on our own iron", () => {
+    // BOTH NUMBERS, never one. A single figure cannot distinguish a capability that was DROPPED
+    // from one that MOVED transport, and telling those apart is the entire point of cp#396: a
+    // shared tenant keeps the full upscale capability and reaches our GPU boxes instead of RunPod.
     expect(PROVISION_PLAN).toHaveLength(4);
-    expect(planWorkerTotal()).toBe(5);
+    expect(endpointBackedPlan()).toHaveLength(2);
+    expect(vpcBackedPlan()).toHaveLength(2);
+    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "lipsync"]);
+    expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["audio-upscale", "upscale"]);
+    // Only the endpoint-backed half spends RunPod quota. Own iron has none to spend.
+    expect(planWorkerTotal()).toBe(3);
   });
 
-  it("pins max_workers EXPLICITLY on every endpoint (RunPod's default of 3 x 4 = 12 breaks it)", () => {
-    for (const e of PROVISION_PLAN) expect(e.maxWorkers, e.key).toBeGreaterThan(0);
+  it("pins max_workers EXPLICITLY on every ENDPOINT (RunPod default of 3 would overrun the quota)", () => {
+    for (const e of endpointBackedPlan()) expect(e.maxWorkers, e.key).toBeGreaterThan(0);
   });
+
+  it("a vpc-backed capability carries NO maxWorkers and NO endpointVar, by design", () => {
+    // The absences are the safety property, not an oversight: no quota to spend, and no endpoint id
+    // that could reach a studio as an empty string and fail at the tenant first render.
+    for (const c of vpcBackedPlan()) {
+      const asAny = c as unknown as Record<string, unknown>;
+      expect(asAny.maxWorkers, c.key).toBeUndefined();
+      expect(asAny.endpointVar, c.key).toBeUndefined();
+      expect(typeof c.bindingName, c.key).toBe("string");
+    }
+  });
+
 
   it("never uses the frozen python default tag (0.4.4 footgun stays in the script)", () => {
     expect(PROVISION_PLAN.find((e) => e.key === "backend")?.tag).not.toBe("0.4.4");
@@ -164,12 +186,19 @@ describe("preflightQuota", () => {
 });
 
 describe("createTenantEndpoints", () => {
-  it("creates 4 endpoints with explicitly pinned workers", async () => {
+  it("creates one endpoint per ENDPOINT-BACKED capability, with workers pinned", async () => {
+    // Two, not four. The other two capabilities are served by our own iron and create nothing on
+    // RunPod at all -- which is the point: they never come into existence rather than being
+    // created and then ignored.
     const { fetchImpl, created } = fakeRunPod();
-    const out = await createTenantEndpoints("rpa_keyA", "hero", R2, PROVISION_PLAN, fetchImpl);
-    expect(out.map((e) => e.key)).toEqual(["backend", "upscale", "lipsync", "audio-upscale"]);
+    const out = await createTenantEndpoints("rpa_keyA", "hero", R2, endpointBackedPlan(), fetchImpl);
+    expect(out.map((e) => e.key)).toEqual(["backend", "lipsync"]);
     expect(created).toContain(`endpoint:${tenantEndpointName("hero", "backend")}:2`);
-    expect(created.filter((c) => c.startsWith("endpoint:"))).toHaveLength(4);
+    expect(created.filter((c) => c.startsWith("endpoint:"))).toHaveLength(endpointBackedPlan().length);
+    // CONTROL: nothing was created for an own-iron capability, by NAME rather than by count.
+    for (const c of vpcBackedPlan()) {
+      expect(created.some((x) => x.includes(tenantEndpointName("hero", c.key))), c.key).toBe(false);
+    }
   });
 
   it("REUSES an existing endpoint by name instead of duplicating it on the tenant's bill", async () => {
@@ -180,7 +209,7 @@ describe("createTenantEndpoints", () => {
     const existing = { id: "ep-old", name: tenantEndpointName("hero", "backend"), workersMax: 2 };
     const existingTemplate = { id: "tpl-old", name: tenantEndpointName("hero", "backend") };
     const { fetchImpl, created } = fakeRunPod({ endpoints: [existing], templates: [existingTemplate] });
-    const out = await createTenantEndpoints("rpa_keyA", "hero", R2, PROVISION_PLAN, fetchImpl);
+    const out = await createTenantEndpoints("rpa_keyA", "hero", R2, endpointBackedPlan(), fetchImpl);
     expect(out.find((e) => e.key === "backend")?.id).toBe("ep-old");
     expect(created).not.toContain(`endpoint:${existing.name}:2`);
     // and the adopted template got the fresh credential written to it
@@ -190,13 +219,13 @@ describe("createTenantEndpoints", () => {
   it("FAILS BEFORE creating anything when the plan does not fit, with RunPod's real numbers", async () => {
     // A half-provisioned RunPod account is the tenant's mess, on their bill. Refuse early.
     const { fetchImpl, created } = fakeRunPod({ endpoints: [{ id: "e1", name: "other", workersMax: 8 }] });
-    await expect(createTenantEndpoints("rpa_keyA", "hero", R2, PROVISION_PLAN, fetchImpl)).rejects.toThrow(/quota is 10/);
+    await expect(createTenantEndpoints("rpa_keyA", "hero", R2, endpointBackedPlan(), fetchImpl)).rejects.toThrow(/quota is 10/);
     expect(created.filter((c) => c.startsWith("endpoint:vivijure-hero"))).toHaveLength(0);
   });
 
   it("NEVER logs or returns key A", async () => {
     const { fetchImpl } = fakeRunPod();
-    const out = await createTenantEndpoints("rpa_KEY_A_SECRET", "hero", R2, PROVISION_PLAN, fetchImpl);
+    const out = await createTenantEndpoints("rpa_KEY_A_SECRET", "hero", R2, endpointBackedPlan(), fetchImpl);
     expect(JSON.stringify(out)).not.toContain("rpa_KEY_A_SECRET");
   });
 });
@@ -205,7 +234,11 @@ describe("quotaGuidance", () => {
   it("tells the tenant the real numbers and that nothing was created", () => {
     const msg = quotaGuidance({ quota: 5, atMost: 4, fits: false, refusal: "quota_too_small" });
     expect(msg).toContain("quota is 5");
-    expect(msg).toContain("needs 5 workers");
+    expect(msg).toContain(`needs ${planWorkerTotal()} workers`);
+    // The endpoint COUNT is derived too: it read a hardcoded "4 endpoints" until cp#396, which the
+    // transport split made simply false. A tenant-facing number that cannot follow the plan is the
+    // same defect as a refusal naming the wrong knob.
+    expect(msg).toContain(`across ${endpointBackedPlan().length} endpoints`);
     expect(msg).toContain("Nothing was created");
   });
 

@@ -58,6 +58,10 @@ function deps(over: Partial<TenantModuleDeps> = {}): {
     },
     callTenantModule: vi.fn(async () => ({ status: 200, text: "{}" })),
     callTenantStudio: vi.fn(async () => ({ status: 201, text: "{}" })),
+    vpcDoors: {
+      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
+      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
+    },
     log: vi.fn(),
     ...over,
   } as unknown as TenantModuleDeps;

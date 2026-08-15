@@ -7,6 +7,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { uploadTenantModules, TENANT_MODULE_CATALOG, reachesRunpod, type TenantModuleDeps } from "../src/tenant-modules";
+import { endpointBackedPlan } from "../src/runpod";
 import type { WorkerBinding } from "../src/cf-api";
 
 // The tenant studio D1 uuid the recording modules get as TELEMETRY_DB (cp#248).
@@ -14,18 +15,23 @@ const TENANT_D1 = "d1-uuid-acme";
 // cp#284: the TENANT bucket. A distinctive value, not "vivijure", so a binding that
 // silently carried the OPERATOR bucket would be visible rather than plausible.
 const TENANT_BUCKET = "vivijure-tenant-acme-films";
-const ENDPOINTS = [
-  { key: "backend", label: "Backend", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
-  { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
-  { key: "lipsync", label: "Lip sync", id: "ep3", name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
-  { key: "audio-upscale", label: "Audio", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
-];
+// DERIVED from the plan, not hand-listed (cp#396). A four-entry literal here was a fixture claiming
+// a shape the code can no longer produce: only ENDPOINT-BACKED capabilities yield endpoints now.
+const ENDPOINTS = endpointBackedPlan().map((spec, i) => ({
+  key: spec.key,
+  label: spec.label,
+  id: `ep${i + 1}`,
+  name: `n${i + 1}`,
+  endpointVar: spec.endpointVar,
+}));
 
 // POPULATION derived from the catalog (cp#314). A hardcoded list is the silent-gap shape: when
 // finish-rife joined the catalog this guard stayed green and simply never looked. The proxy suite
 // already derives ENDPOINT_BACKED the same way. Derive the set of modules to INSPECT, never the
 // EXPECTATION of what their bindings should be (that would invert the assertion into a tautology).
-const ENDPOINT_BACKED = TENANT_MODULE_CATALOG.filter((s) => s.endpointKey).map((s) => s.module);
+// cp#396: endpoint-backed means the plan gives this capability a RunPod ENDPOINT, which is now a
+// strict subset of "has an endpointKey" -- vpc-backed capabilities have a key and a door instead.
+const ENDPOINT_BACKED = TENANT_MODULE_CATALOG.filter((s) => Boolean(s.endpointKey) && endpointBackedPlan().some((c) => c.key === s.endpointKey)).map((s) => s.module);
 const NOT_GATEWAY_BACKED = TENANT_MODULE_CATALOG.filter((s) => !s.needsAiGateway).map((s) => s.module);
 // The credential-boundary names that must never land on a non-gateway module.
 const AIG_CREDENTIAL_NAMES = ["AI", "GATEWAY_ID", "CF_AIG_TOKEN"] as const;
@@ -52,6 +58,10 @@ function deps(over: Partial<TenantModuleDeps> = {}): { d: TenantModuleDeps; uplo
     },
     callTenantModule: vi.fn(async () => ({ status: 200, text: "{}" })),
     callTenantStudio: vi.fn(async () => ({ status: 201, text: "{}" })),
+    vpcDoors: {
+      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
+      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
+    },
     log: vi.fn((event: string) => void logs.push(event)),
     ...over,
   } as unknown as TenantModuleDeps;
@@ -153,14 +163,22 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
     expect(names(pe)).not.toContain("GATEWAY_ID");
     expect(logs).toContain("module.ai_gateway_unconfigured");
   });
-
   // A tenant missing a RunPod endpoint must still fail loudly. plan-enhance made endpointKey
-  // optional, and the risk of that change is that it also silently softened THIS check.
+  // optional, and cp#396 made it possible for a key to exist with NO endpoint by design -- the risk
+  // of both changes is that they silently soften THIS check.
+  //
+  // The missing capability is DERIVED, not named. It used to read /needs the upscale endpoint/, and
+  // upscale is now vpc-backed, so that literal would have made this test assert a refusal that can
+  // no longer happen. Taking the second endpoint-backed key keeps the claim true whatever the plan
+  // holds: provisioning only the FIRST endpoint must still be refused, by name.
   it("still refuses loudly when an ENDPOINT-BACKED module has no endpoint", async () => {
     const { d } = deps();
+    const backed = endpointBackedPlan();
+    expect(backed.length, "need at least two endpoint-backed capabilities to withhold one").toBeGreaterThan(1);
+    const withheld = backed[1].key;
     await expect(
       uploadTenantModules(d, "v1.0.0", "ten_1", "acme-films", [ENDPOINTS[0]], TENANT_D1, TENANT_BUCKET, "dedicated", undefined, "AIG_SECRET_VALUE"),
-    ).rejects.toThrow(/needs the upscale endpoint/);
+    ).rejects.toThrow(new RegExp(`needs the ${withheld} endpoint`));
   });
 
   // BAKED LESSON: a negative-about-secrets test that reads FINAL state is worthless. Assert the

@@ -36,7 +36,7 @@ import {
   type TeardownOpts,
   type TeardownOutcome,
 } from "./provisioner";
-import { convergeTenantTemplateImages, createTenantEndpoints } from "./runpod";
+import { convergeTenantTemplateImages, createTenantEndpoints, vpcBackedPlan } from "./runpod";
 import { parseSharedPool, readRunPodMode } from "./runpod-pool";
 import type { SharedRunPodPool } from "./runpod-pool";
 import type { ControlPlaneStore, CreditStore, Tenant } from "./store";
@@ -430,6 +430,40 @@ export function llmMeterReader(env: ControlPlaneEnv): GatewayLogReader | undefin
 const TENANT_STUDIO_FETCH_TIMEOUT_MS = 5_000;
 
 /** Exported for the wiring test: the same construction production takes. */
+
+/**
+ * Resolve the own-iron doors from the environment (cp#396).
+ *
+ * Derived from the PLAN, never from a hand-written list: each vpc-backed capability declares which
+ * two vars carry its service id and its bearer, so this function stays correct when a capability is
+ * added and cannot silently disagree with what the modules are bound to.
+ *
+ * BOTH OR NEITHER. A door with one half set is REFUSED and logged naming both vars. Attaching the
+ * binding without the bearer would upload clean and 401 on every render; attaching neither while
+ * pretending otherwise is the quiet degrade. The refusal surfaces again at modules_upload, which is
+ * where an operator can act on it.
+ */
+export function resolveVpcDoors(env: ControlPlaneEnv): Record<string, { serviceId: string; token: string }> {
+  const out: Record<string, { serviceId: string; token: string }> = {};
+  const read = (name: string): string | null =>
+    (env as unknown as Record<string, string | undefined>)[name]?.trim() || null;
+  for (const capability of vpcBackedPlan()) {
+    const serviceId = read(capability.serviceIdVar);
+    const token = read(capability.doorTokenVar);
+    if (serviceId && token) {
+      out[capability.key] = { serviceId, token };
+      continue;
+    }
+    if (serviceId || token) {
+      console.error(
+        "vpc_door.refused",
+        `${capability.key}: set BOTH ${capability.serviceIdVar} and ${capability.doorTokenVar}; ` +
+          "a door binding without its bearer is refused 401 on every render",
+      );
+    }
+  }
+  return out;
+}
 export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore): ProvisionerWiring | undefined {
   const {
     CF_PROVISIONER_TOKEN,
@@ -530,6 +564,14 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     // Trimmed, and empty-means-absent: a whitespace-only value is a config typo, and treating it as
     // a service id would attach a binding CF cannot resolve.
     videoFinishServiceId: env.VIDEO_FINISH_VPC_SERVICE_ID?.trim() || null,
+    // cp#396: the own-iron doors, keyed by plan key and derived FROM the plan, so adding a
+    // vpc-backed capability is a plan entry plus two deploy vars and never an edit here.
+    //
+    // BOTH OR NEITHER, per door, and a half-set door is REFUSED rather than half-attached. The
+    // refusal is logged with both var names because an operator who set one and not the other has
+    // no other way to find out: the module would upload clean, switch transport, and take a 401 on
+    // every render.
+    vpcDoors: resolveVpcDoors(env),
     runpod: {
       createEndpoints: (key, slug, r2) => createTenantEndpoints(key, slug, r2),
       // cp#137: adopt-by-name reuses a template's IMAGE, so a long-lived tenant's templates have to

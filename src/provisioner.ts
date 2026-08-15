@@ -225,6 +225,16 @@ export interface ProvisionDeps {
    */
   videoFinishServiceId: string | null;
   /**
+   * The own-iron doors (cp#396), keyed by PROVISION_PLAN key. See TenantModuleDeps.vpcDoors for
+   * the both-or-neither rule; resolved once in deps.ts so the module upload and any future studio
+   * consumer cannot disagree about whether a door is configured.
+   *
+   * DISTINCT FROM videoFinishServiceId above, which is a STUDIO binding that render-frames.ts and
+   * video-finish-availability.ts genuinely read. These are MODULE bindings. Both are doors onto the
+   * same fleet; they are attached to different workers because different code reads them.
+   */
+  vpcDoors: Record<string, { serviceId: string; token: string }>;
+  /**
    * Clock, sleep and fetch, injected rather than reached for globally (#23 / cf#72).
    *
    * Teardown empties a tenant bucket over the S3 API, and that is a BUDGETED loop: it needs a clock

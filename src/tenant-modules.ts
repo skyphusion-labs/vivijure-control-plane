@@ -31,6 +31,7 @@ import {
   mintTenantProxyToken,
 } from "./runpod-proxy-auth";
 import type { TenantEndpoint } from "./provisioner";
+import { vpcBackedPlan } from "./runpod";
 import type { RunPodMode } from "./runpod-pool";
 
 /**
@@ -372,6 +373,20 @@ export interface TenantModuleDeps {
    */
   runpodProxy: { base: string; signingKey: string } | null;
   moduleBundle: ModuleBundleSource;
+  /**
+   * The OWN-IRON DOORS (cp#396), keyed by PROVISION_PLAN key, or an empty record on a plane that
+   * configures none.
+   *
+   * A door is a PAIR and both halves are required: the Connectivity Directory service id the
+   * vpc_service binding resolves, and the bearer the container checks. BOTH OR NEITHER, resolved
+   * once in deps.ts -- a binding without its token is not a partial rollout, it is a module that
+   * switches transport and is refused 401 on every call, which is strictly worse than never
+   * switching. Same rule as the cp#288 proxy pair.
+   *
+   * Absent means the vpc-backed capability is NOT BOUND, and uploadTenantModules refuses rather
+   * than uploading a module with no route to its door at all.
+   */
+  vpcDoors: Record<string, { serviceId: string; token: string }>;
   /** Dispatch a GET to one tenant MODULE script over TENANT_MODULE_DISPATCH (cf#114). Separate from
    *  callTenantStudio because module scripts live in a DIFFERENT dispatch namespace and take no
    *  bearer: /ready is unauthenticated by design (it carries booleans, never values, and the control
@@ -533,13 +548,35 @@ export async function uploadTenantModules(
   const moduleProxyReason = tenantModuleProxyUnboundReason(runpodMode, deps.runpodProxy, moduleProxy);
   const scriptNames: string[] = [];
   for (const spec of TENANT_MODULE_CATALOG) {
-    // A spec WITHOUT an endpointKey is not endpoint-backed (cf#56, plan-enhance) and legitimately
-    // has no endpoint. A spec WITH one that the tenant lacks is still a loud failure, unchanged.
-    const endpoint = spec.endpointKey ? endpoints.find((e) => e.key === spec.endpointKey) : undefined;
-    if (spec.endpointKey && !endpoint) {
+    // THREE CASES, and keeping them apart is the point (cp#396).
+    //
+    //   1. no endpointKey at all      -> not endpoint-backed (cf#56, plan-enhance). Legitimate.
+    //   2. endpointKey, VPC-BACKED     -> served by our own iron. No RunPod endpoint exists for it
+    //                                     BY DESIGN, so the absence must NOT throw. It binds a door
+    //                                     instead, below.
+    //   3. endpointKey, endpoint-backed, and the tenant lacks it -> still a loud failure, unchanged.
+    //
+    // Collapsing 2 into 3 is what made the first attempt at this split kill EVERY provision:
+    // trimming the plan orphaned finish-upscale and speech-upscale, and the guard below threw on
+    // both, shared and dedicated alike. Collapsing 2 into 1 would be worse in the other direction --
+    // a module that silently reaches nothing.
+    const vpcCapability = spec.endpointKey ? vpcBackedPlan().find((c) => c.key === spec.endpointKey) : undefined;
+    const endpoint = spec.endpointKey && !vpcCapability ? endpoints.find((e) => e.key === spec.endpointKey) : undefined;
+    if (spec.endpointKey && !vpcCapability && !endpoint) {
       throw new TenantModuleError(
         "modules_upload",
         `module ${spec.module} needs the ${spec.endpointKey} endpoint, which the tenant does not have`,
+      );
+    }
+    // A vpc-backed capability with no configured door is the SAME class of failure as a missing
+    // endpoint, and is refused with the knob named. Uploading it anyway would produce a module that
+    // takes neither transport: no endpoint id, no door, and a first render that dies.
+    const door = vpcCapability ? deps.vpcDoors[vpcCapability.key] : undefined;
+    if (vpcCapability && !door) {
+      throw new TenantModuleError(
+        "modules_upload",
+        `module ${spec.module} is served by our own iron, but this plane configures no door for ` +
+          `${vpcCapability.key}: set ${vpcCapability.serviceIdVar} and ${vpcCapability.doorTokenVar}`,
       );
     }
     let bundle: ModuleBundle;
@@ -560,6 +597,24 @@ export async function uploadTenantModules(
       // provisioner binds its endpoint-id vars. The module reads env.RUNPOD_ENDPOINT_ID (string-typed
       // via secretValue), so a plain_text binding drops straight in.
       bindings.push({ type: "plain_text", name: "RUNPOD_ENDPOINT_ID", text: endpoint.id });
+    }
+    if (vpcCapability && door) {
+      // THE OWN-IRON DOOR (cp#396), following the VIDEO_FINISH_VPC precedent in provisioner.ts:
+      // a vpc_service binding plus the bearer the container checks.
+      //
+      // NO RUNPOD_ENDPOINT_ID IS BOUND, and that is not an omission. vivijure-cf resolves the door
+      // FIRST (modules/finish-upscale doorFor) and doorBound() short-circuits before
+      // credentialProblem, so a door-bound module never reads an endpoint id. Binding an empty
+      // string to satisfy a shape would be the exact failure this split exists to remove: it
+      // uploads clean and dies at the tenant first render.
+      //
+      // The NAMES come from the module Env, not from us -- see PlannedVpcCapability. Getting one
+      // wrong produces a binding nothing reads, which is silent, so they are carried as data on the
+      // plan entry rather than written here.
+      bindings.push({ type: "vpc_service", name: vpcCapability.bindingName, service_id: door.serviceId });
+      // secret_text, never plain_text: this is a BEARER. A plain_text binding is readable from the
+      // dashboard and the API, which is how a door token becomes a shared secret nobody rotated.
+      bindings.push({ type: "secret_text", name: vpcCapability.doorTokenBinding, text: door.token });
     }
     if (reachesRunpod(spec)) {
       // cp#288: the pair that lets this module reach RunPod THROUGH the plane instead of holding a

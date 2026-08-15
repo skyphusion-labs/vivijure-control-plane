@@ -41,7 +41,9 @@ import {
   type ProvisionDeps,
   type ProvisionOutcome,
 } from "../src/provisioner";
-import { convergeTenantTemplateImages, createTenantEndpoints, RunPodClient, tenantEndpointName, PROVISION_PLAN } from "../src/runpod";
+import { resolveVpcDoors } from "../src/deps";
+import type { ControlPlaneEnv } from "../src/env";
+import { convergeTenantTemplateImages, createTenantEndpoints, RunPodClient, tenantEndpointName, endpointBackedPlan } from "../src/runpod";
 import { localStudioBundleSource } from "./studio-bundle-local";
 import { localModuleBundleSource } from "./module-bundle-local";
 import { provisionE2eLive, provisionE2eEnvOrThrow } from "./provision-e2e-env";
@@ -132,6 +134,15 @@ beforeAll(async () => {
     // not by silently widening what this suite claims to cover.
     scriptUploadCf: cf,
     videoFinishServiceId: null,
+    // cp#396: the own-iron doors, read from the environment like every other piece of this suite
+    // config. Supply FINISH_UPSCALE_VPC_SERVICE_ID / FINISH_DOOR_TOKEN (and the SPEECH_ pair) to
+    // cover the door-bound modules end to end.
+    //
+    // WITHOUT THEM THIS SUITE NOW REFUSES AT modules_upload, and that is the correct direction: a
+    // vpc-backed capability with no door has no transport at all, and an e2e that quietly skipped
+    // it would report a clean provision for a studio that cannot upscale. Stated here because a
+    // refusal an operator has not been warned about reads as a broken suite.
+    vpcDoors: resolveVpcDoors(process.env as unknown as ControlPlaneEnv),
     tokenMinter: new CfTokenMinter(cf),
     r2Endpoint: `https://${env.cfAccountId}.r2.cloudflarestorage.com`,
     // The live suite takes the REAL three: this is the run that has to prove the emptying loop
@@ -168,7 +179,7 @@ afterAll(async () => {
   // The tenant's RunPod endpoints are on the SCRATCH account and are ours to clean here (in
   // production they are the tenant's own and we never touch them).
   if (scratchOk) {
-    for (const spec of PROVISION_PLAN) {
+    for (const spec of endpointBackedPlan()) {
       const name = tenantEndpointName(slug, spec.key);
       try {
         const eps = await runpodClient.listEndpoints();
@@ -266,7 +277,7 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
 
   it("the tenant's 4 RunPod endpoints exist, scale-to-zero, with workers PINNED", async () => {
     const eps = await runpodClient.listEndpoints();
-    for (const spec of PROVISION_PLAN) {
+    for (const spec of endpointBackedPlan()) {
       const mine = eps.find((e) => e.name === tenantEndpointName(slug, spec.key));
       expect(mine, `${spec.key} endpoint missing`).toBeTruthy();
       const detail = await runpodClient.getEndpoint(mine!.id);

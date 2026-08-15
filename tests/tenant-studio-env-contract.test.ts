@@ -22,16 +22,24 @@ import {
   r2S3Endpoint,
 } from "../src/tenant-studio-env";
 import { runProvisionJob, type ProvisionDeps } from "../src/provisioner";
+import { endpointBackedPlan, vpcBackedPlan } from "../src/runpod";
 import type { CfApi } from "../src/cf-api";
 import { MemoryStore, TEST_PROVISION_FACTS } from "./memory-store";
 
 const MIGRATIONS = [{ name: "0001_init.sql", sql: "CREATE TABLE IF NOT EXISTS projects (id TEXT);" }];
-const ENDPOINTS = [
-  { key: "backend", label: "Render", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
-  { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
-  { key: "lipsync", label: "Lipsync", id: "ep3", name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
-  { key: "audio-upscale", label: "Audio", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
-];
+// The endpoints a provision actually yields, DERIVED rather than hand-listed (cp#396).
+//
+// It used to be a four-entry literal, and that is precisely how the transport split shipped once
+// with every provision broken and a green suite: a fixture that hardcodes what it should derive
+// cannot fail when the plan moves. Built from endpointBackedPlan() so this file cannot claim a
+// shape the code is no longer able to produce.
+const ENDPOINTS = endpointBackedPlan().map((spec, i) => ({
+  key: spec.key,
+  label: spec.label,
+  id: `ep${i + 1}`,
+  name: `n${i + 1}`,
+  endpointVar: spec.endpointVar,
+}));
 const R2_ENDPOINT = "https://acct123.r2.cloudflarestorage.com";
 
 /** Records what was uploaded for the STUDIO script, so assertions read the real payload. */
@@ -65,6 +73,10 @@ function recordingDeps() {
     // captures the bindings this file exists to assert on.
     scriptUploadCf: cf,
     videoFinishServiceId: null,
+    vpcDoors: {
+      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
+      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
+    },
     runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),
@@ -107,8 +119,9 @@ function recordingDeps() {
   return { deps, store, uploads };
 }
 
-async function provisionAndCaptureStudioBindings() {
+async function provisionAndCaptureStudioBindings(over: Partial<ProvisionDeps> = {}) {
   const { deps, store, uploads } = recordingDeps();
+  Object.assign(deps, over);
   await store.createAccount("acct_1", "a@b.com");
   const tenant = await store.createTenant("ten_1", "hero", "acct_1", "pending");
   const job = await store.createProvisionJob("job_1", tenant.id, "provision", TEST_PROVISION_FACTS);
@@ -291,5 +304,67 @@ describe("the pinned release contract, not just our own table (cp#183)", () => {
 
   it("names the storage ceiling explicitly, so deleting its entry fails HERE", () => {
     expect(TENANT_STUDIO_VAR_DISPOSITION.R2_STORAGE_QUOTA_BYTES?.disposition).toBe("conditional");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// THE TRANSPORT CONTRACT (cp#396). What a tenant studio must carry once a capability can be served
+// by our own iron instead of RunPod.
+//
+// STATED AS EXACTLY-ONE-TRANSPORT-PER-CAPABILITY, and deliberately not as "the four endpoint vars
+// are present". The old shape could be satisfied by binding four vars; this one can go RED for the
+// right reason, because it asserts an ABSENCE that a wrong implementation would violate.
+//
+// WHERE THE BINDING LIVES IS PART OF THE CONTRACT. Upscale is a MODULE capability: the studio
+// dispatches to a module worker, and the module worker is what reaches RunPod or a door. A
+// vpc_service binding attached to the STUDIO under a name nothing reads would upload clean and
+// change nothing -- which is exactly how the first attempt at this split was built. So the studio
+// must carry NEITHER the retired endpoint vars NOR the door bindings.
+describe("the tenant studio transport contract (cp#396)", () => {
+  it("binds an endpoint var for every ENDPOINT-BACKED capability, and its id is real", async () => {
+    const bindings = await provisionAndCaptureStudioBindings();
+    const byName = new Map(bindings.map((b) => [b.name, b]));
+    for (const spec of endpointBackedPlan()) {
+      const bound = byName.get(spec.endpointVar);
+      expect(bound, `studio missing ${spec.endpointVar}`).toBeTruthy();
+      expect(bound!.type).toBe("plain_text");
+      // NOT merely present: an EMPTY endpoint id binds clean and dies at the first render, which is
+      // the failure shape the whole transport split exists to make impossible.
+      expect(bound!.text, `${spec.endpointVar} is bound but empty`).toBeTruthy();
+    }
+  });
+
+  it("binds NO endpoint var for a VPC-BACKED capability: there is no endpoint to name", async () => {
+    // The retired vars. Their PRESENCE would mean an endpoint id reached a capability that has no
+    // endpoint, which is the precise defect the split removes.
+    const names = new Set((await provisionAndCaptureStudioBindings()).map((b) => b.name));
+    expect(names.has("VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID")).toBe(false);
+    expect(names.has("AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID")).toBe(false);
+  });
+
+  it("binds NO door on the STUDIO: the door belongs to the MODULE worker", async () => {
+    // A vpc_service binding here would be inert -- vivijure-cf reads FINISH_UPSCALE_VPC in
+    // modules/finish-upscale, never in the studio. Inert and silent is worse than absent, because
+    // it looks configured.
+    const bindings = await provisionAndCaptureStudioBindings();
+    const names = new Set(bindings.map((b) => b.name));
+    for (const capability of vpcBackedPlan()) {
+      expect(names.has(capability.bindingName), `${capability.bindingName} bound on the studio`).toBe(false);
+      expect(names.has(capability.doorTokenBinding), `${capability.doorTokenBinding} bound on the studio`).toBe(false);
+    }
+    // CONTROL: the studio DOES still carry the video-finish door, which it genuinely reads
+    // (render-frames.ts, video-finish-availability.ts). Without this the assertion above would
+    // also pass on a studio carrying no vpc_service binding for any reason at all.
+    const withFinish = await provisionAndCaptureStudioBindings({ videoFinishServiceId: "svc-video-finish" });
+    expect(withFinish.some((b) => b.name === "VIDEO_FINISH_VPC" && b.type === "vpc_service")).toBe(true);
+  });
+
+  it("EXACTLY ONE TRANSPORT per capability, counted across the whole plan", () => {
+    // The summary claim, asserted as BOTH numbers. One figure cannot distinguish a capability that
+    // was DROPPED from one that MOVED transport, and telling those apart is the entire point.
+    expect(endpointBackedPlan()).toHaveLength(2);
+    expect(vpcBackedPlan()).toHaveLength(2);
+    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "lipsync"]);
+    expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["audio-upscale", "upscale"]);
   });
 });

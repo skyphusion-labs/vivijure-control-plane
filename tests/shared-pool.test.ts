@@ -12,15 +12,17 @@
 import { describe, it, expect } from "vitest";
 import { parseSharedPool, readRunPodMode, requiredPoolKeys } from "../src/runpod-pool";
 import { reconcileRunPod, type RunPodInventory, type TenantCensus } from "../src/reconcile-runpod";
-import { PROVISION_PLAN } from "../src/runpod";
+import { PROVISION_PLAN, endpointBackedPlan, vpcBackedPlan } from "../src/runpod";
 import type { Tenant, TenantLifecycle } from "../src/store";
 
-const POOL_JSON = JSON.stringify({
-  backend: { id: "pool-backend", name: "vivijure-prod-backend" },
-  upscale: { id: "pool-upscale", name: "vivijure-prod-upscale" },
-  lipsync: { id: "pool-lipsync", name: "vivijure-prod-lipsync" },
-  "audio-upscale": { id: "pool-audio", name: "vivijure-prod-audio-upscale" },
-});
+// cp#396: a pool covers the ENDPOINT-BACKED plan keys only. Naming upscale or audio-upscale here
+// is now REFUSED outright (they run on our own iron), so this fixture is derived from the plan
+// rather than listed -- a hand-written pool is the shape that silently stops matching the code.
+const POOL_JSON = JSON.stringify(
+  Object.fromEntries(
+    endpointBackedPlan().map((c) => [c.key, { id: `pool-${c.key}`, name: `vivijure-prod-${c.key}` }]),
+  ),
+);
 
 const pool = () => {
   const parsed = parseSharedPool(POOL_JSON);
@@ -49,15 +51,25 @@ describe("parseSharedPool", () => {
     expect(parseSharedPool('"a string"').ok).toBe(false);
   });
 
-  it("REFUSES A PARTIAL POOL and names every missing key", () => {
+  it("REFUSES A PARTIAL POOL and names every missing ENDPOINT-BACKED key", () => {
     // The whole point. A pool covering keyframes and not lip sync provisions a tenant that is green
     // through verify and dies at the first finish render, which is the silent-degrade shape.
-    const res = parseSharedPool(JSON.stringify({ backend: { id: "a", name: "n" } }));
+    //
+    // The expectation is DERIVED (cp#396): it used to name upscale and audio-upscale as missing,
+    // and those are now served by our own iron, so demanding them would assert a refusal the code
+    // must no longer produce.
+    const first = endpointBackedPlan()[0];
+    const res = parseSharedPool(JSON.stringify({ [first.key]: { id: "a", name: "n" } }));
     expect(res.ok).toBe(false);
     if (!res.ok) {
-      expect(res.detail).toContain("upscale");
-      expect(res.detail).toContain("lipsync");
-      expect(res.detail).toContain("audio-upscale");
+      for (const spec of endpointBackedPlan().slice(1)) {
+        expect(res.detail, `missing key ${spec.key} not named`).toContain(spec.key);
+      }
+      // And it must NOT demand an own-iron key: naming one here would send an operator to add an
+      // endpoint id that parseSharedPool refuses two lines later.
+      for (const c of vpcBackedPlan()) {
+        expect(res.detail, `${c.key} demanded as a missing pool key`).not.toContain(c.key);
+      }
     }
   });
 
@@ -84,22 +96,22 @@ describe("parseSharedPool", () => {
     // endpointVar and label come from the PLAN, never from the config: which studio var an endpoint
     // id belongs in is a property of the capability, not of who owns the endpoint. That is why both
     // paths can hand the same array to the same two consumers.
-    for (const spec of PROVISION_PLAN) {
+    for (const spec of endpointBackedPlan()) {
       const got = res.pool.endpoints.find((e) => e.key === spec.key);
       expect(got, `pool is missing plan key ${spec.key}`).toBeTruthy();
       expect(got!.endpointVar).toBe(spec.endpointVar);
       expect(got!.label).toBe(spec.label);
     }
-    expect(res.pool.endpoints).toHaveLength(PROVISION_PLAN.length);
+    expect(res.pool.endpoints).toHaveLength(endpointBackedPlan().length);
     expect([...res.pool.ids].sort()).toEqual(
-      ["pool-audio", "pool-backend", "pool-lipsync", "pool-upscale"],
+      endpointBackedPlan().map((c) => `pool-${c.key}`).sort(),
     );
   });
 
   it("derives the required keys from the PLAN, so a new satellite makes every pool refuse", () => {
     // Deliberate coupling. Adding a capability to PROVISION_PLAN must break existing pool config
     // loudly rather than produce a shared tier that silently lacks the new capability.
-    expect(requiredPoolKeys()).toEqual(PROVISION_PLAN.map((s) => s.key));
+    expect(requiredPoolKeys()).toEqual(endpointBackedPlan().map((s) => s.key));
   });
 });
 
@@ -167,18 +179,12 @@ function inventory(over: Partial<RunPodInventory> = {}): RunPodInventory {
     account_label: "prod",
     read_at: "2026-08-01T12:00:00Z",
     complete: true,
-    endpoints: [
-      { id: "pool-backend", name: "vivijure-prod-backend" },
-      { id: "pool-upscale", name: "vivijure-prod-upscale" },
-      { id: "pool-lipsync", name: "vivijure-prod-lipsync" },
-      { id: "pool-audio", name: "vivijure-prod-audio-upscale" },
-    ],
-    templates: [
-      { id: "tpl-backend", name: "vivijure-prod-backend" },
-      { id: "tpl-upscale", name: "vivijure-prod-upscale" },
-      { id: "tpl-lipsync", name: "vivijure-prod-lipsync" },
-      { id: "tpl-audio", name: "vivijure-prod-audio-upscale" },
-    ],
+    // DERIVED from the pool (cp#396). The inventory is what RunPod reports EXISTS, and this fixture
+    // exists to isolate one claim: pool endpoints must not be reported as orphans. Listing the two
+    // retired upscale endpoints here would be truthful about the live account but would add real
+    // orphan findings to a test whose subject is the pool, so it belongs in its own case.
+    endpoints: endpointBackedPlan().map((c) => ({ id: `pool-${c.key}`, name: `vivijure-prod-${c.key}` })),
+    templates: endpointBackedPlan().map((c) => ({ id: `tpl-${c.key}`, name: `vivijure-prod-${c.key}` })),
     ...over,
   };
 }
@@ -271,7 +277,7 @@ describe("reconcileRunPod with a shared pool", () => {
 
     expect(report.tenants).toHaveLength(1);
     expect(report.tenants[0]).toMatchObject({ slug: "rider", findings: 0, verdict: "clean" });
-    expect(report.tenants[0].endpoints_recorded).toBe(PROVISION_PLAN.length);
+    expect(report.tenants[0].endpoints_recorded).toBe(endpointBackedPlan().length);
   });
 
   it("does not invent ownership by NAME for a shared tenant", () => {

@@ -4,30 +4,37 @@
 // can never answer 200 would refuse everything while looking like coverage. So the in-scope and
 // out-of-scope cases run against the SAME fake and differ only in what the key can reach.
 //
-// THE OUT-OF-SCOPE FIXTURE IS THE REAL PRODUCTION PAIRING, NOT AN INVENTED ONE. 4q8idwbk6tyqbq is
-// vivijure-video-upscale, live on the account, and it is the endpoint a pool MUST name for the
-// upscale plan key today. Conrad minted the shared invoke key with no access to it. So the second
-// case below is not a hypothetical: it is the live state of the shared tier, and it is why
-// cp#389 cannot simply be armed.
+// WHAT CHANGED WITH THE TRANSPORT SPLIT, because this file used to say the opposite. It used to
+// name 4q8idwbk6tyqbq (vivijure-video-upscale) as a POOL ENTRY, on the grounds that a complete pool
+// had to cover the upscale plan key and the shared invoke key could not reach that endpoint --
+// which was the live, un-arm-able state of the shared tier and the reason for cp#396.
 //
-// A made-up id would also produce a refusal, and that refusal would read identically while meaning
-// something else entirely: nothing there, rather than there and refused.
+// That pairing is now GONE at the source: upscale and audio-upscale are vpc-backed, so a pool is
+// two endpoint-backed keys and naming the video-upscale endpoint here is REFUSED outright by
+// parseSharedPool. Keeping it as a pool fixture would document a configuration the code now
+// rejects.
+//
+// The realness of an endpoint id only ever mattered where a REAL API answers, so that argument
+// lives in the live sibling (shared-pool-key-scope.live.test.ts), which still probes the real
+// endpoint with the real key. Against a fake, an unreachable id is unreachable because the fake
+// says so, and pretending otherwise would be borrowed authority.
 
 import { describe, it, expect } from "vitest";
 import { verifySharedPoolScope } from "../src/shared-pool-scope";
+import { endpointBackedPlan } from "../src/runpod";
 
-const VIDEO_UPSCALE = "4q8idwbk6tyqbq"; // real, live, and outside the shared key scope by design
 const KEY = "rpa_testkey_not_a_real_credential";
 
-/** A pool naming every plan key, which is the only shape parseSharedPool accepts. */
-const POOL_FULL = JSON.stringify({
-  backend: { id: "ep-backend", name: "vivijure-prod-backend" },
-  upscale: { id: VIDEO_UPSCALE, name: "vivijure-video-upscale" },
-  lipsync: { id: "ep-lipsync", name: "vivijure-prod-lipsync" },
-  "audio-upscale": { id: "ep-audio", name: "vivijure-prod-audio-upscale" },
-});
+/** A pool covering every ENDPOINT-BACKED plan key, which is the only shape parseSharedPool accepts.
+ *  Derived from the plan, so this fixture cannot claim a shape the code can no longer produce. */
+const POOL_FULL = JSON.stringify(
+  Object.fromEntries(endpointBackedPlan().map((c) => [c.key, { id: `ep-${c.key}`, name: `vivijure-prod-${c.key}` }])),
+);
 
-const ALL_IDS = ["ep-backend", VIDEO_UPSCALE, "ep-lipsync", "ep-audio"];
+const ALL_IDS = endpointBackedPlan().map((c) => `ep-${c.key}`);
+/** The one the key will not cover in the refusal case. Any pool id serves; this is the last.
+ *  Named rather than positional so the assertions below read as a claim, not an index. */
+const UNREACHABLE = `ep-${endpointBackedPlan()[endpointBackedPlan().length - 1].key}`;
 
 /** A RunPod that enforces per-endpoint scoping exactly as the #60 probe matrix measured it. */
 function fakeRunPod(reachable: string[]) {
@@ -52,13 +59,13 @@ describe("the deploy-time shared-pool scope gate (cp#396)", () => {
   it("THE GATE: REFUSES a COMPLETE pool naming an endpoint the key cannot reach", async () => {
     // Every plan key present, the pool well formed, requiredPoolKeys satisfied, and the tier still
     // cannot serve. Nothing else in this repo can see that, which is the whole reason this exists.
-    const v = await verifySharedPoolScope(POOL_FULL, KEY, fakeRunPod(["ep-backend", "ep-lipsync", "ep-audio"]));
+    const v = await verifySharedPoolScope(POOL_FULL, KEY, fakeRunPod(ALL_IDS.filter((i) => i !== UNREACHABLE)));
     expect(v.ok).toBe(false);
     expect(v.state).toBe("key_out_of_scope");
-    expect(v.outOfScope).toEqual([VIDEO_UPSCALE]);
+    expect(v.outOfScope).toEqual([UNREACHABLE]);
     // It must NAME the endpoint. A refusal that does not say which knob to turn sends the reader
     // to the wrong one, which is its own defect class.
-    expect(v.detail).toContain(VIDEO_UPSCALE);
+    expect(v.detail).toContain(UNREACHABLE);
   });
 
   it("CONTROL: the SAME pool passes once the key reaches that endpoint, so the fake is not stuck red", async () => {
@@ -111,5 +118,34 @@ describe("the deploy-time shared-pool scope gate (cp#396)", () => {
     const v = await verifySharedPoolScope(POOL_FULL, KEY, boom);
     expect(v.ok).toBe(false);
     expect(v.outOfScope).toContain("ep-lipsync");
+  });
+});
+
+describe("the gate carries the own-iron refusal too (cp#396)", () => {
+  it("REFUSES a pool naming a vpc-backed capability, naming which one", async () => {
+    // The new refusal parseSharedPool owns. It must reach the deploy in the parser OWN words rather
+    // than being re-derived here: two components restating one rule in two voices is how they
+    // drift. This is also the exact config an operator would write from muscle memory, since it was
+    // the CORRECT config until the transport split.
+    const withOwnIron = JSON.stringify({
+      backend: { id: "ep-backend", name: "b" },
+      lipsync: { id: "ep-lipsync", name: "l" },
+      upscale: { id: "4q8idwbk6tyqbq", name: "vivijure-video-upscale" },
+    });
+    const v = await verifySharedPoolScope(withOwnIron, KEY, fakeRunPod(["ep-backend", "ep-lipsync"]));
+    expect(v.ok).toBe(false);
+    expect(v.state).toBe("pool_unparseable");
+    expect(v.detail).toContain("upscale");
+    expect(v.detail).toContain("own-iron");
+  });
+
+  it("CONTROL: the SAME pool minus that key passes, so the refusal is the key and not the shape", async () => {
+    const clean = JSON.stringify({
+      backend: { id: "ep-backend", name: "b" },
+      lipsync: { id: "ep-lipsync", name: "l" },
+    });
+    const v = await verifySharedPoolScope(clean, KEY, fakeRunPod(["ep-backend", "ep-lipsync"]));
+    expect(v.ok).toBe(true);
+    expect(v.state).toBe("scope_verified");
   });
 });

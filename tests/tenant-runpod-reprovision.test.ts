@@ -149,6 +149,10 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
       return { status: 200, text: "ok" };
     }),
     callTenantModule: vi.fn(async () => ({ status: 200, text: JSON.stringify({ ready: true, module: "keyframe" }) })),
+    vpcDoors: {
+      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
+      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
+    },
     log: (event: string, fields: Record<string, unknown>) => void logs.push({ event, fields }),
     ...over,
   } as unknown as ProvisionDeps;
