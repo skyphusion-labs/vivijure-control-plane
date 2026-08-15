@@ -1,3 +1,4 @@
+import { TEST_VPC_DOORS } from "./door-fixture";
 // cp#248: the D1 binding that lets a HOSTED tenant module record the RunPod jobs it submits, and the
 // read that lets somebody see whether it can.
 //
@@ -58,10 +59,7 @@ function deps(over: Partial<TenantModuleDeps> = {}): {
     },
     callTenantModule: vi.fn(async () => ({ status: 200, text: "{}" })),
     callTenantStudio: vi.fn(async () => ({ status: 201, text: "{}" })),
-    vpcDoors: {
-      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
-      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
-    },
+    vpcDoors: TEST_VPC_DOORS,
     log: vi.fn(),
     ...over,
   } as unknown as TenantModuleDeps;

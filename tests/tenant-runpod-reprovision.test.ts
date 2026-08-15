@@ -1,3 +1,4 @@
+import { TEST_VPC_DOORS } from "./door-fixture";
 // cp#137 remediation: the RunPod rebuild path (src/tenant-runpod-reprovision.ts).
 //
 // WHAT THESE PROVE AND WHAT THEY DO NOT. Fakes stand in for Cloudflare and RunPod, so this suite
@@ -149,10 +150,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
       return { status: 200, text: "ok" };
     }),
     callTenantModule: vi.fn(async () => ({ status: 200, text: JSON.stringify({ ready: true, module: "keyframe" }) })),
-    vpcDoors: {
-      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
-      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
-    },
+    vpcDoors: TEST_VPC_DOORS,
     log: (event: string, fields: Record<string, unknown>) => void logs.push({ event, fields }),
     ...over,
   } as unknown as ProvisionDeps;

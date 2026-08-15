@@ -1,3 +1,4 @@
+import { TEST_VPC_DOORS } from "./door-fixture";
 // Poll-driven provision continuation, its lease, and the lost-invocation reap (#112).
 //
 // WHY THIS EXISTS: a provision does not fit in one invocation. Run 4 of the cf#99 finale spent 22 of
@@ -97,10 +98,7 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     // cp#396: both own-iron doors configured, which is what a wired plane looks like. Absent, every
     // case in this file would die at modules_upload on the vpc-backed modules refusing to upload
     // with no route to their door.
-    vpcDoors: {
-      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
-      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
-    },
+    vpcDoors: TEST_VPC_DOORS,
     runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),

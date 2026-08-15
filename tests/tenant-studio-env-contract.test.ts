@@ -1,3 +1,4 @@
+import { TEST_VPC_DOORS } from "./door-fixture";
 // The link between the studio's platform-env contract and what the provisioner actually binds (#116).
 //
 // THE DEFECT THIS EXISTS TO PREVENT: two hand-maintained lists with nothing connecting them. The
@@ -73,10 +74,7 @@ function recordingDeps() {
     // captures the bindings this file exists to assert on.
     scriptUploadCf: cf,
     videoFinishServiceId: null,
-    vpcDoors: {
-      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
-      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
-    },
+    vpcDoors: TEST_VPC_DOORS,
     runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),
@@ -349,8 +347,10 @@ describe("the tenant studio transport contract (cp#396)", () => {
     const bindings = await provisionAndCaptureStudioBindings();
     const names = new Set(bindings.map((b) => b.name));
     for (const capability of vpcBackedPlan()) {
-      expect(names.has(capability.bindingName), `${capability.bindingName} bound on the studio`).toBe(false);
-      expect(names.has(capability.doorTokenBinding), `${capability.doorTokenBinding} bound on the studio`).toBe(false);
+      for (const door of capability.doors) {
+        expect(names.has(door.bindingName), door.bindingName + " bound on the studio").toBe(false);
+        expect(names.has(door.doorTokenBinding), door.doorTokenBinding + " bound on the studio").toBe(false);
+      }
     }
     // CONTROL: the studio DOES still carry the video-finish door, which it genuinely reads
     // (render-frames.ts, video-finish-availability.ts). Without this the assertion above would

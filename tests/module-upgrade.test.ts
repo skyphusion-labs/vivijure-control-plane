@@ -1,3 +1,4 @@
+import { TEST_VPC_DOORS } from "./door-fixture";
 // The module-upgrade route for a LIVE tenant (cf#103 half two).
 //
 // WHAT THIS FILE IS ACTUALLY GUARDING, and why every fixture below is an ALREADY-PROVISIONED
@@ -90,10 +91,7 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
       if (init.path === "/api/modules/install") return { status: 201, text: "{}" };
       return { status: 200, text: "{}" };
     }),
-    vpcDoors: {
-      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
-      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
-    },
+    vpcDoors: TEST_VPC_DOORS,
     log: () => undefined,
     ...over,
   } as unknown as ProvisionDeps;

@@ -78,7 +78,7 @@ describe("the provisioning plan", () => {
       const asAny = c as unknown as Record<string, unknown>;
       expect(asAny.maxWorkers, c.key).toBeUndefined();
       expect(asAny.endpointVar, c.key).toBeUndefined();
-      expect(typeof c.bindingName, c.key).toBe("string");
+      expect(c.doors.length, c.key).toBeGreaterThan(0);
     }
   });
 
