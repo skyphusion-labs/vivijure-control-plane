@@ -1720,6 +1720,27 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     // The tenant never supplied this. It is ours, and it is the one thing that may be installed.
     expect(key).toBe("rpa_poolkey");
   });
+
+  it("LEGACY ROW: refuses a tenant not on the shared tier, BY NAME", async () => {
+    // The third refusal on the sole install path, and it had no test -- added to a PR whose whole
+    // argument is that an untested refusal is invisible. Ernst caught it, which is the argument
+    // working.
+    //
+    // The fixture is a LEGACY row: MemoryStore.createTenant records the pre-cp#396 mode, which is
+    // exactly the shape of the 13 historical tenants this branch exists for. It is stated rather
+    // than inherited, so the case still says what it is about if the default ever moves.
+    const { cookie } = await tenantReady(JSON.stringify([{ key: "backend", id: "pool-1", endpointVar: "RUNPOD_ENDPOINT_ID" }]));
+    await store.setTenantRunPodMode("ten_abc123", "dedicated");
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "tenant_not_on_shared_tier" });
+    // Nothing installed, nothing promoted: a refusal must leave the tenant exactly as it was.
+    expect(wiring.installInvokeKey).not.toHaveBeenCalled();
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+  });
 });
 
 // ---- admin ----

@@ -1066,11 +1066,14 @@ async function provision(
  *     write `live`.
  *   - `setTenantStatus(..., "live")` occurs at exactly ONE site in this tree: performInvokeKeyInstall
  *     below. (Measured: 1 of 15 setTenantStatus call sites across src/.)
- *   - performInvokeKeyInstall has exactly TWO callers after cp#396, and BOTH are the session route
+ *   - performInvokeKeyInstall has exactly ONE caller after cp#396: the session route
  *     POST /api/tenant/<ten>/invoke-key, which sits BELOW the blocking AUP gate in handle(), so the
  *     owner cannot reach it without having accepted the current version themselves. The cp#169
- *     handoff was the third caller and is GONE: an unauthenticated surface that no remaining tier
- *     can complete is a liability, not a spare door.
+ *     handoff was a second caller and is GONE (an unauthenticated surface no remaining tier can
+ *     complete is a liability, not a spare door), and the tenant-paste branch was a third.
+ *
+ *     ONE is a STRONGER argument than two, which is why this line is worth keeping accurate rather
+ *     than approximately right: every path to live now passes through a single gate.
  *   - Until then routing.ts answers `awaiting_invoke_key` with 503 "still being set up", to everyone
  *     including the owner.
  *
