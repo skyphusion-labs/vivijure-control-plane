@@ -83,23 +83,6 @@ describe("transport: every route hits the path and method the control plane serv
     expect(calls[0].url).toBe("/api/tenant/ten%2F..%2Fevil/job");
   });
 
-  it("POST retry WITHOUT a key sends an empty object, not a null key", async () => {
-    // The route reads runpod_api_key when present. Sending {runpod_api_key: null}
-    // is a different request from sending {}, and the 409 runpod_key_required
-    // path depends on the difference.
-    const { impl, calls } = recordingFetch(() => json({ job_id: "j2" }));
-    const api = createPlatformApi({ fetchImpl: impl });
-    await api.retry("ten_1");
-    expect(bodyOf(calls[0].init)).toEqual({});
-  });
-
-  it("POST retry WITH a key carries it", async () => {
-    const { impl, calls } = recordingFetch(() => json({ job_id: "j2" }));
-    const api = createPlatformApi({ fetchImpl: impl });
-    await api.retry("ten_1", "rpa_again");
-    expect(bodyOf(calls[0].init)).toEqual({ runpod_api_key: "rpa_again" });
-  });
-
   it("carries the real status and the parsed body, not just a string", async () => {
     // handleProvisionError in onboarding.js branches on err.status === 409 and
     // on err.body.error. If either is dropped here, the customer gets a dead
@@ -215,10 +198,9 @@ describe("transport: SECRET HYGIENE, a key never reaches a URL", () => {
     const api = createPlatformApi({ apiBase: "https://cp.example", fetchImpl: impl });
 
     await api.provision("slug").catch(() => {});
-    await api.retry("ten_1", SECRET).catch(() => {});
     await api.invokeKey("ten_1", SECRET);
 
-    expect(calls.length).toBe(3);
+    expect(calls.length).toBe(2);
     calls.forEach(({ url }) => expect(url).not.toContain(SECRET));
   });
 
@@ -242,7 +224,6 @@ describe("transport: mock mode is a real short circuit, not a fallback", () => {
     await api.plan();
     await api.provision("k");
     await api.job("t");
-    await api.retry("t", "k");
     await api.slugAvailable("s");
     await api.invokeKey("t", "k");
     await api.aup();
@@ -350,5 +331,69 @@ describe("TRIPWIRE: onboarding.js owns no transport of its own", () => {
     expect(api).toBeGreaterThan(-1);
     expect(page).toBeGreaterThan(-1);
     expect(api).toBeLessThan(page);
+  });
+});
+
+// cp#467: EVERY ROUTE THE TRANSPORT CALLS MUST BE ONE THE PLANE SERVES.
+//
+// Two phantoms were found one after the other. capacity() POSTed /api/tenant/capacity, which the
+// plane has NEVER served, and its mock answered green so the flow was walkable in preview and dead
+// in production. retry() POSTed /api/tenant/:id/retry, which no handler matches either, and its
+// body still conditionally advertised runpod_api_key after cp#427 removed the concept.
+//
+// Neither was a route that ROTTED. Both were routes that never existed, sitting behind a client
+// method and a mock that agreed with each other. THE MOCK WAS NOT DRIFTING FROM THE CONTRACT, IT
+// WAS INVENTING ONE, and the only thing asserting the contract was something we wrote to stand in
+// for it.
+//
+// So this reads the SHIPPED transport and the SHIPPED route table and demands they agree. It is
+// deliberately crude -- string extraction, not a parser -- because the failure it catches is a
+// path that appears in one file and nowhere in the other, which crude is enough for.
+describe("no transport calls a route the plane does not serve (cp#467)", () => {
+  const api = readFileSync(join(HERE, "..", "public", "onboarding-api.js"), "utf8");
+  const plane = readFileSync(join(HERE, "..", "src", "index.ts"), "utf8");
+
+  it("CONTROL: both files are really there and the extraction finds paths", () => {
+    expect(api.length).toBeGreaterThan(2000);
+    expect(plane.length).toBeGreaterThan(2000);
+    expect(api).toMatch(/["`]\/api\//);
+  });
+
+  it("every literal /api/tenant path in the transport is served", () => {
+    // The two shapes the transport uses: a fixed path, and a scoped one built by concatenation.
+    const fixed = [...api.matchAll(/["`](\/api\/tenant\/[a-z-]+)["`]/g)].map((m) => m[1]);
+    // Scoped calls look like "/api/tenant/" + encodeURIComponent(id) + "/action".
+    const scoped = [...api.matchAll(/\+ ["`]\/([a-z-]+)["`]/g)].map((m) => m[1]);
+
+    const servedFixed = [...plane.matchAll(/path === ["`](\/api\/tenant\/[a-z-]+)["`]/g)].map((m) => m[1]);
+    const servedActions = [...plane.matchAll(/action === ["`]([a-z-]+)["`]/g)].map((m) => m[1]);
+
+    // Positive control: the extraction must actually find something, or this passes on an empty set.
+    expect(servedFixed.length + servedActions.length).toBeGreaterThan(3);
+
+    // ONE KNOWN EXCEPTION, tracked rather than tolerated (cp#474). provision-plan is a
+    // phantom this very test found, and it has a LIVE caller: the review step renders from it,
+    // so it cannot simply be deleted the way capacity and retry were. It needs a decision about
+    // whether the route gets built or the step is rewritten. Listed by name so a SECOND phantom
+    // cannot hide behind it, and so removing this line is part of closing that issue.
+    const KNOWN_PHANTOM = [
+      "/api/tenant/provision-plan", // cp#474, has a live caller and needs a decision
+    ];
+
+    // THE ALLOWLIST CLEANS ITSELF. An entry that is no longer called is an exception granted
+    // to nothing, and a list of those is how a guard quietly stops guarding: the next phantom
+    // to take one of these names would be waved straight through. So a stale entry FAILS, and
+    // removing it is part of closing the issue that put it here.
+    for (const known of KNOWN_PHANTOM) {
+      expect(fixed, known + " is allowlisted but no longer called; delete the entry").toContain(known);
+    }
+
+    for (const path of fixed) {
+      if (KNOWN_PHANTOM.includes(path)) continue;
+      expect(servedFixed, path + " is called by the client and served by nothing").toContain(path);
+    }
+    for (const action of scoped) {
+      expect(servedActions, action + " is called by the client and served by nothing").toContain(action);
+    }
   });
 });

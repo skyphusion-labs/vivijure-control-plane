@@ -155,7 +155,6 @@ export interface PlatformApi {
   plan(): Promise<ProvisionPlan>;
   provision(slug: string): Promise<ProvisionStarted>;
   job(tenantId: string): Promise<JobStatus>;
-  retry(tenantId: string, key?: string): Promise<{ job_id: string }>;
   invokeKey(tenantId: string, key: string): Promise<InvokeKeyTransportResult>;
 }
 
