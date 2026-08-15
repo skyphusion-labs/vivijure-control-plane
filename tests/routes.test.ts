@@ -16,7 +16,6 @@ import { MemoryStore, TEST_PROVISION_FACTS } from "./memory-store";
 import type { Tenant } from "../src/store";
 import { TenantModuleError } from "../src/tenant-modules";
 import { StudioBindingError } from "../src/tenant-studio-bindings";
-import { ReprovisionError } from "../src/tenant-runpod-reprovision";
 import { decryptStudioToken, encryptStudioToken, kekRing } from "../src/token-crypto";
 // Cross-lane (authorized by the lead, control-plane#20 client fix): the CANONICAL invoke-key
 // response shapes, shared with the client suite that reads them
@@ -203,8 +202,10 @@ function makeWiring(): WiringDouble {
     })),
     // cp#270: default plane offers NO shared tier, so pre-pooling cases keep their meaning
     // (notably "a provision with no RunPod key is refused 400"). Pooled cases override both.
-    offersSharedTier: vi.fn(() => false),
-    sharedPoolInvokeKey: vi.fn(() => null),
+    // cp#396: the plane has ONE tier, so the default double OFFERS it. It used to default false so
+    // the pre-pool cases exercised the dedicated branch; that branch no longer exists.
+    offersSharedTier: vi.fn(() => true),
+    sharedPoolInvokeKey: vi.fn(() => "rpa_poolkey"),
     // cp#301: pin a provision job records at creation. Matches TEST_PROVISION_FACTS.toRelease.
     currentRelease: vi.fn(() => "v1.0.0"),
     moduleReadiness: vi.fn(async () => []),
@@ -248,19 +249,6 @@ function makeWiring(): WiringDouble {
       },
     })),
     upgradeModules: vi.fn(async () => {}),
-    // cp#137: RunPod rebuild. Default is a passing preflight and a clean rebuild.
-    preflightReprovisionRunPod: vi.fn(async () => ({
-      ok: true,
-      context: {
-        script: "tenant-hero-studio",
-        studioApiToken: "tok",
-        bucket: "vivijure-tenant-hero",
-        modulesRelease: "v1.6.0",
-        bundles: new Map(),
-        recorded: [],
-      },
-    })),
-    reprovisionRunPod: vi.fn(async () => CLEAN_REBUILD),
     // cp#136 / cp#164 / cp#183: clean defaults; refusal cases override per test.
     setVideoFinishTierState: vi.fn(async () => ({ ok: true, result: CLEAN_TIER_STATE })),
     setAbuseReportUrl: vi.fn(async () => ({ ok: true, result: CLEAN_ABUSE_URL })),
@@ -870,22 +858,27 @@ describe("POST /api/tenant/provision", () => {
     return s;
   }
 
-  it("creates a tenant and a queued job, and LAUNCHES the runner with the transient key", async () => {
+  it("creates a tenant and a queued job, and LAUNCHES the runner with NO key (cp#396)", async () => {
     const { cookie } = await ready();
     const res = await handle(
-      jsonReq("/api/tenant/provision", { slug: "hero", runpod_api_key: "rpa_x" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/provision", { slug: "hero" }, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(202);
     const body = (await res.json()) as { tenant_id: string; job_id: string };
     expect(store.tenants.get(body.tenant_id)?.status).toBe("pending");
     expect(store.jobs.get(body.job_id)?.status).toBe("queued");
-    // The wiring handoff: job id, THE created tenant, and the key -- the one place it may travel.
+    // The wiring handoff: job id and THE created tenant. The third argument used to be key A and
+    // is now always null -- asserted rather than dropped, because a key reaching the runner again
+    // is exactly the regression this purge exists to make impossible.
     expect(wiring.start).toHaveBeenCalledTimes(1);
-    const [jobId, tenant, key] = wiring.start.mock.calls[0] as [string, { id: string }, string];
+    const call = wiring.start.mock.calls[0] as unknown[];
+    const [jobId, tenant] = call as [string, { id: string }];
     expect(jobId).toBe(body.job_id);
     expect(tenant.id).toBe(body.tenant_id);
-    expect(key).toBe("rpa_x");
+    // The third argument does not exist any more: a key cannot be handed to the driver at all,
+    // which is stronger than handing it null.
+    expect(call).toHaveLength(2);
   });
 
   it("REFUSES (503) when the provisioner wiring is absent, creating NOTHING", async () => {
@@ -925,15 +918,30 @@ describe("POST /api/tenant/provision", () => {
     expect(dump).not.toContain("rpa_SUPERSECRET");
   });
 
-  it("REFUSES provisioning without a key, a reserved slug, a taken slug, or a second tenant", async () => {
+  it("REFUSES a reserved slug, a taken slug, or a second tenant (cp#396: no key to omit)", async () => {
     const { cookie } = await ready();
     const post = (body: unknown) =>
       handle(jsonReq("/api/tenant/provision", body, { headers: { cookie } }), env(), ctx, deps);
 
-    expect((await post({ slug: "hero" })).status).toBe(400); // no key
-    expect((await post({ slug: "admin", runpod_api_key: "rpa_x" })).status).toBe(400); // reserved
-    expect((await post({ slug: "hero", runpod_api_key: "rpa_x" })).status).toBe(202); // ok
-    expect((await post({ slug: "hero2", runpod_api_key: "rpa_x" })).status).toBe(409); // second tenant
+    // The no-key refusal is gone with the dedicated path: there is no key to omit. The remaining
+    // three refusals are unchanged and are what this case is now about.
+    expect((await post({ slug: "admin" })).status).toBe(400); // reserved
+    expect((await post({ slug: "hero" })).status).toBe(202); // ok
+    expect((await post({ slug: "hero2" })).status).toBe(409); // second tenant
+  });
+
+  it("REFUSES when the plane offers no shared tier, which is the only remaining 400 here", async () => {
+    // The refusal code is kept (runpod_key_required) but its meaning narrowed: it no longer says
+    // bring a key, it says this deploy has no shared render capacity. Asserted so the narrowing is
+    // covered rather than merely commented.
+    const { cookie } = await ready();
+    wiring.offersSharedTier.mockReturnValue(false);
+    const res = await handle(
+      jsonReq("/api/tenant/provision", { slug: "hero" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("runpod_key_required");
   });
 
   // ---- cp#301: the two facts a resume cannot reconstruct -------------------------------------
@@ -961,11 +969,23 @@ describe("POST /api/tenant/provision", () => {
       return job!;
     };
 
-    // THE NEXT TWO TESTS ARE ONE CONTROL AND MUST NOT BE SEPARATED. Both arm the pool; they differ
-    // in exactly one input, whether a key was pasted. A derivation that read "this plane has a pool"
-    // rather than "this tenant brought a key" PASSES the first and FAILS the second, and that
-    // failure is the BYO-tenant-silently-on-our-pool defect the design rejected. Either test alone
-    // is satisfied by the wrong rule.
+    // THIS WAS A TWO-LEG CONTROL AND cp#427 RETIRED ONE LEG DELIBERATELY.
+    //
+    // The pair used to be "mode is SHARED when no key was pasted" beside "mode is DEDICATED when a
+    // key was pasted", and it existed because a derivation reading "this plane has a pool" rather
+    // than "this tenant brought a key" passes the first and fails the second. cp#427 removes the
+    // dedicated path rather than deferring it, so the second leg cannot be restated without
+    // asserting retired behaviour back into existence: there is no key to paste and no other mode.
+    //
+    // SAID PLAINLY BECAUSE THE TREE CANNOT OTHERWISE TELL THE DIFFERENCE. A control pair that lost
+    // a leg to a RULING and one that lost a leg to a careless MERGE leave an identical file. Only
+    // this comment and the diff that carries it distinguish them, and in three months the tree is
+    // all anyone has.
+    //
+    // THE PAIR IS RE-ESTABLISHED ON A DIFFERENT AXIS, immediately below: the surviving leg is now
+    // paired against a POOLLESS plane, which refuses. That restores the property the original pair
+    // protected -- that the recorded mode is derived from something real -- without reintroducing
+    // the path the ruling removed.
     it("mode is SHARED when no key was pasted (pool armed)", async () => {
       wiring.offersSharedTier.mockReturnValue(true);
       const { cookie } = await ready();
@@ -973,12 +993,20 @@ describe("POST /api/tenant/provision", () => {
       expect(job.runpod_mode).toBe("shared");
     });
 
-    it("mode is DEDICATED when a key was pasted, on a plane that DOES offer a pool", async () => {
-      wiring.offersSharedTier.mockReturnValue(true);
+    // THE REPLACEMENT LEG (ernst, on the cp#427 retirement). Same input as the test above, one
+    // input changed: the plane offers no shared tier. If the route derived "shared" from a
+    // constant rather than from the plane actually having a pool, the test above would pass and
+    // this one would fail. That is the pairing the retired leg used to provide.
+    it("CONTROL: a keyless provision on a POOLLESS plane REFUSES rather than recording shared", async () => {
+      wiring.offersSharedTier.mockReturnValue(false);
       const { cookie } = await ready();
-      const job = await jobOf(await provision(cookie, { slug: "byo", runpod_api_key: "rpa_x" }));
-      expect(job.runpod_mode, "a tenant who brought a key is dedicated, pool or no pool").toBe("dedicated");
+      const res = await provision(cookie, { slug: "poolless" });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: "runpod_key_required" });
+      // Nothing was recorded: a refused provision must not leave a job claiming a mode.
+      expect(wiring.start).not.toHaveBeenCalled();
     });
+
 
     it("records the plane pin as to_release, and leaves from_release NULL", async () => {
       const { cookie } = await ready();
@@ -992,13 +1020,17 @@ describe("POST /api/tenant/provision", () => {
     // The recorded mode is a claim about which branch runProvisionJob will take, and that branch is
     // decided by the key the driver receives. This asserts the two cannot disagree rather than
     // trusting the route to have derived them from one expression.
-    it("the recorded mode agrees with the key actually handed to the driver", async () => {
+    it("records the mode as shared, and hands the driver no key argument at all", async () => {
+      // The claim used to be that the recorded mode AGREED with the key handed over, because the
+      // two could disagree. After cp#396 there is no key and no other mode: the invariant is now
+      // that both are unconditional, which is why this asserts the argument does not exist rather
+      // than that it is null.
       wiring.offersSharedTier.mockReturnValue(true);
       const { cookie } = await ready();
       const job = await jobOf(await provision(cookie, { slug: "agree" }));
-      const call = wiring.start.mock.calls.at(-1) as [string, unknown, string | null];
+      const call = wiring.start.mock.calls.at(-1) as unknown[];
       expect(job.runpod_mode).toBe("shared");
-      expect(call[2], "shared was recorded, so the driver must have received no key").toBeNull();
+      expect(call, "a key must not be passable to the driver").toHaveLength(2);
     });
 
     // THE SECOND CALL SITE. A change that touched only the fresh path passes every test above.
@@ -1207,9 +1239,14 @@ describe("POST /api/tenant/provision", () => {
     spy.mockRestore();
   });
 
-  it("refuses a MISSING KEY before destroying anything (cheap refusals precede teardown)", async () => {
+  it("refuses BEFORE destroying anything (cheap refusals precede teardown)", async () => {
+    // cp#396: the trigger used to be a missing key A. The CLAIM is unchanged and is the reason the
+    // ordering in provision() is load-bearing: a customer must not lose a half-built studio to a
+    // refusal that costs nothing to compute. Triggered now through the no-shared-tier refusal,
+    // which is the remaining cheap 400 on this route.
     const { cookie, account } = await ready();
     await halfBuilt(account.id);
+    wiring.offersSharedTier.mockReturnValue(false);
 
     const res = await handle(
       jsonReq("/api/tenant/provision", { slug: "hero" }, { headers: { cookie } }),
@@ -1218,7 +1255,6 @@ describe("POST /api/tenant/provision", () => {
 
     expect(res.status).toBe(400);
     expect((await res.json() as Record<string, unknown>).error).toBe("runpod_key_required");
-    // The point: a customer who forgot to paste a key must not lose their half-built studio for it.
     expect(wiring.teardown).not.toHaveBeenCalled();
     const after = await store.getTenantById("ten_halfbuilt");
     expect(after?.d1_database_id).toBe("db-old");
@@ -1441,6 +1477,10 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     const t = await store.createTenant("ten_abc123", "hero", s.account.id, "awaiting_invoke_key");
     t.endpoints_json = endpoints;
     t.script_name = script;
+    // cp#396: the invoke-key route is SHARED-ONLY now, so the fixture records the tier every
+    // reachable tenant is on. It used to inherit the legacy dedicated default and therefore drove
+    // the tenant-paste branch, which no longer exists.
+    await store.setTenantRunPodMode("ten_abc123", "shared");
     return s;
   }
 
@@ -1552,23 +1592,35 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(configured.status).toBe(200);
   });
 
-  it("a DEDICATED tenant still REQUIRES a key on an empty body (the tier control)", async () => {
-    // Without this, the empty-body success above would read identically against a route that had
-    // simply stopped requiring a key for everybody.
+  // RETIRED BY cp#427, AND THIS IS A TRANSFORMATION RATHER THAN A DELETION.
+  //
+  // What retires is the ASSERTION that a dedicated row still demands a pasted key. cp#427 removes
+  // the dedicated path rather than deferring it, so "this route requires a key from somebody" is no
+  // longer a property this plane has, and a test asserting it would assert retired behaviour back
+  // into existence.
+  //
+  // WHAT MUST NOT RETIRE WITH IT is the ROLE this test played. Without a non-shared leg, the
+  // empty-body success above reads identically against a route that accepts EVERY row. That
+  // property is still real, and the purged route still answers it -- with a NAMED refusal instead
+  // of a key demand. So the leg stays and its expectation moves.
+  it("a NON-SHARED tenant is refused BY NAME, so the empty-body success is not blanket acceptance", async () => {
     const { cookie } = await sharedTenantReady();
     const t = store.tenants.get("ten_abc123");
     if (t) t.runpod_mode = "dedicated";
     wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
     const res = await handle(jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }), env(), ctx, deps);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: "invoke_key_required" });
+    // 409 + tenant_not_on_shared_tier, NOT 400 + invoke_key_required. The row is not asked for a key
+    // it could no longer use; it is told this plane cannot complete it, which is the honest sentence
+    // for a studio that predates the tier.
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "tenant_not_on_shared_tier" });
     expect(wiring.installInvokeKey).not.toHaveBeenCalled();
   });
 
   it("REFUSES a key before endpoints exist: there is nothing to scope to", async () => {
     const { cookie } = await tenantReady(null);
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_x" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(409);
@@ -1583,7 +1635,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response("{}", { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_toopowerful" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(400);
@@ -1602,7 +1654,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(200);
@@ -1621,7 +1673,8 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(wiring.installInvokeKey).toHaveBeenCalledTimes(1);
     const [tenant, key] = wiring.installInvokeKey.mock.calls[0] as [{ id: string }, string];
     expect(tenant.id).toBe("ten_abc123");
-    expect(key).toBe("rpa_good");
+    // cp#396: the key installed is the PLANE pool key, never a tenant-supplied one.
+    expect(key).toBe("rpa_poolkey");
     expect(store.tenants.get("ten_abc123")?.status).toBe("live");
     expect(JSON.stringify([...store.tenants.values()])).not.toContain("rpa_good");
   });
@@ -1655,7 +1708,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(200);
@@ -1696,7 +1749,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     ) as unknown as typeof fetch;
 
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     const body = (await res.json()) as {
@@ -1728,7 +1781,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(200);
@@ -1750,7 +1803,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(202);
@@ -1771,7 +1824,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     const body = (await res.json()) as Record<string, unknown>;
@@ -1800,7 +1853,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     ) as unknown as typeof fetch;
 
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(202);
@@ -1843,7 +1896,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     ) as unknown as typeof fetch;
 
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     const body = (await res.json()) as Record<string, unknown>;
@@ -1874,7 +1927,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     ) as unknown as typeof fetch;
 
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(503);
@@ -1898,7 +1951,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     ) as unknown as typeof fetch;
 
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(500);
@@ -1908,7 +1961,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
   it("REFUSES (409 not_provisioned) when endpoints exist but the studio upload never completed", async () => {
     const { cookie } = await tenantReady('["ep1"]', null);
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(409);
@@ -1920,7 +1973,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     const { cookie } = await tenantReady('["ep1"]');
     const probes = vi.fn(async () => new Response("{}", { status: 200 }));
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, { ...deps, fetch: probes as unknown as typeof fetch, provisioner: undefined },
     );
     expect(res.status).toBe(503);
@@ -1938,10 +1991,80 @@ describe("POST /api/tenant/:id/invoke-key", () => {
         : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
     ) as unknown as typeof fetch;
     const res = await handle(
-      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_good" }, { headers: { cookie } }),
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
       env(), ctx, deps,
     );
     expect(res.status).toBe(500);
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+  });
+
+  // ---- cp#396: the SHARED branch, which had NO coverage at all before the purge -----------------
+  //
+  // Measured, not assumed: before this block, invoke_key_not_accepted and shared_pool_unconfigured
+  // appeared in ZERO test files. Every route-level invoke-key test drove a PASTED key, because
+  // MemoryStore.createTenant records a legacy dedicated row by default. The purge makes this the
+  // ONLY branch, so shipping the tier with two refusals that cannot go red was not acceptable.
+
+  it("SHARED: REFUSES a pasted key rather than silently discarding it", async () => {
+    const { cookie } = await tenantReady(JSON.stringify([{ key: "backend", id: "pool-1", endpointVar: "RUNPOD_ENDPOINT_ID" }]));
+    await store.setTenantRunPodMode("ten_abc123", "shared");
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_theirs" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    // Discarding it quietly would leave the customer believing their credential is in use.
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invoke_key_not_accepted" });
+    expect(wiring.installInvokeKey).not.toHaveBeenCalled();
+  });
+
+  it("SHARED: REFUSES honestly when the plane holds no pool key, and stores nothing", async () => {
+    const { cookie } = await tenantReady(JSON.stringify([{ key: "backend", id: "pool-1", endpointVar: "RUNPOD_ENDPOINT_ID" }]));
+    await store.setTenantRunPodMode("ten_abc123", "shared");
+    wiring.sharedPoolInvokeKey.mockReturnValue(null);
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    // A deploy-config fact, not something the customer can act on, so 503 rather than 400.
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: "shared_pool_unconfigured" });
+    expect(wiring.installInvokeKey).not.toHaveBeenCalled();
+  });
+
+  it("SHARED CONTROL: with a pool key configured, the PLANE key is what gets installed", async () => {
+    // Without this the two refusals above would also pass on a build that refused everything.
+    const { cookie } = await tenantReady(JSON.stringify([{ key: "backend", id: "pool-1", endpointVar: "RUNPOD_ENDPOINT_ID" }]));
+    await store.setTenantRunPodMode("ten_abc123", "shared");
+    wiring.sharedPoolInvokeKey.mockReturnValue("rpa_poolkey");
+    await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(wiring.installInvokeKey).toHaveBeenCalledTimes(1);
+    const [, key] = wiring.installInvokeKey.mock.calls[0] as [unknown, string];
+    // The tenant never supplied this. It is ours, and it is the one thing that may be installed.
+    expect(key).toBe("rpa_poolkey");
+  });
+
+  it("LEGACY ROW: refuses a tenant not on the shared tier, BY NAME", async () => {
+    // The third refusal on the sole install path, and it had no test -- added to a PR whose whole
+    // argument is that an untested refusal is invisible. Ernst caught it, which is the argument
+    // working.
+    //
+    // The fixture is a LEGACY row: MemoryStore.createTenant records the pre-cp#396 mode, which is
+    // exactly the shape of the 13 historical tenants this branch exists for. It is stated rather
+    // than inherited, so the case still says what it is about if the default ever moves.
+    const { cookie } = await tenantReady(JSON.stringify([{ key: "backend", id: "pool-1", endpointVar: "RUNPOD_ENDPOINT_ID" }]));
+    await store.setTenantRunPodMode("ten_abc123", "dedicated");
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "tenant_not_on_shared_tier" });
+    // Nothing installed, nothing promoted: a refusal must leave the tenant exactly as it was.
+    expect(wiring.installInvokeKey).not.toHaveBeenCalled();
     expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
   });
 });
@@ -2832,239 +2955,6 @@ describe("KEK rotation admin routes (cp#95)", () => {
   });
 });
 
-// cp#169: the operator-initiated, owner-completed invoke-key handoff (Conrad ruling, PATH 3).
-//
-// What only the ROUTER can get wrong is proved here: that the owner-facing routes need NO session
-// (the whole point of the ruling), that a link-level refusal never reads as a key rejection, that
-// the link is burned on a completed install and on nothing else, and that neither the token nor the
-// key ever reaches an audit row. The mint/resolve/staleness semantics live in
-// tests/invoke-key-handoff.test.ts, which owns them.
-describe("cp#169 invoke-key handoff", () => {
-  const admin = () => ({ authorization: `Bearer ${ADMIN_TOKEN}` });
-  const FOUR = JSON.stringify([
-    { key: "backend", label: "Render", id: "ep1", name: "vivijure-hero-backend" },
-  ]);
-
-  async function strandedTenant(): Promise<Tenant> {
-    const t = await store.createTenant("ten_abc123", "hero", "acct_1", "awaiting_invoke_key");
-    t.script_name = "tenant-hero-studio";
-    t.endpoints_json = FOUR;
-    return t;
-  }
-
-  /** Mint through the ADMIN route, and return the token the operator would hand over. */
-  async function issueLink(): Promise<{ token: string; body: Record<string, unknown> }> {
-    const res = await handle(
-      jsonReq("/api/admin/tenants/ten_abc123/invoke-key-handoff", {}, { headers: admin() }),
-      env(), ctx, deps,
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, unknown>;
-    const url = new URL(String(body.url));
-    return { token: url.searchParams.get("t") as string, body };
-  }
-
-  /** A key that passes verification: graphql denied, every endpoint 200. */
-  function goodKeyProbes() {
-    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
-      String(input).includes("graphql")
-        ? new Response("no", { status: 401 })
-        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
-    ) as unknown as typeof fetch;
-  }
-
-  describe("POST /api/admin/tenants/:id/invoke-key-handoff", () => {
-    it("REFUSES without the admin token", async () => {
-      await strandedTenant();
-      const res = await handle(
-        jsonReq("/api/admin/tenants/ten_abc123/invoke-key-handoff", {}), env(), ctx, deps,
-      );
-      expect(res.status).toBe(401);
-      expect(store.handoffs.size).toBe(0);
-    });
-
-    it("404s an unknown tenant", async () => {
-      const res = await handle(
-        jsonReq("/api/admin/tenants/ten_nope/invoke-key-handoff", {}, { headers: admin() }),
-        env(), ctx, deps,
-      );
-      expect(res.status).toBe(404);
-    });
-
-    it("returns the link ONCE and audits everything about it EXCEPT the token", async () => {
-      await strandedTenant();
-      const { token, body } = await issueLink();
-
-      expect(body).toMatchObject({ tenant_id: "ten_abc123", slug: "hero", endpoints: ["ep1"] });
-      expect(String(body.url)).toContain("/install-key?t=");
-      // CONTROL FIRST: the audit row exists and carries the correlation id, so "no token in the
-      // audit" is an assertion about a row that is really there.
-      const audit = JSON.stringify(store.audit);
-      expect(audit).toContain("tenant.issue_invoke_key_handoff");
-      expect(audit).toContain(String(body.id));
-      expect(audit).not.toContain(token);
-      // ...and the stored row holds only the hash.
-      expect(JSON.stringify([...store.handoffs.values()])).not.toContain(token);
-    });
-
-    it("refuses a tenant with no endpoints AT MINT TIME, so no dead link is handed over", async () => {
-      const t = await strandedTenant();
-      t.endpoints_json = null;
-      const res = await handle(
-        jsonReq("/api/admin/tenants/ten_abc123/invoke-key-handoff", {}, { headers: admin() }),
-        env(), ctx, deps,
-      );
-      expect(res.status).toBe(409);
-      expect(await res.json()).toMatchObject({ error: "no_endpoints" });
-      expect(store.handoffs.size).toBe(0);
-    });
-  });
-
-  describe("GET /api/handoff/invoke-key (what the owner sees)", () => {
-    it("needs NO session: that is the entire point of the ruling", async () => {
-      await strandedTenant();
-      const { token } = await issueLink();
-      // No cookie, no bearer. A 401 here would put the flow back where cp#169 found it.
-      const res = await handle(new Request(`https://cp.example/api/handoff/invoke-key?t=${token}`), env(), ctx, deps);
-      expect(res.status).toBe(200);
-      expect(await res.json()).toMatchObject({
-        slug: "hero",
-        status: "awaiting_invoke_key",
-        endpoints: [{ id: "ep1", name: "vivijure-hero-backend", label: "Render" }],
-      });
-    });
-
-    it("does not consume the link", async () => {
-      await strandedTenant();
-      const { token } = await issueLink();
-      await handle(new Request(`https://cp.example/api/handoff/invoke-key?t=${token}`), env(), ctx, deps);
-      expect([...store.handoffs.values()][0].consumed_at).toBeNull();
-    });
-
-    it("404s an unknown token", async () => {
-      const res = await handle(new Request("https://cp.example/api/handoff/invoke-key?t=nope"), env(), ctx, deps);
-      expect(res.status).toBe(404);
-      expect(await res.json()).toMatchObject({ error: "handoff_unknown" });
-    });
-  });
-
-  describe("POST /api/handoff/invoke-key (the owner pastes)", () => {
-    it("installs, promotes the tenant, and BURNS the link", async () => {
-      await strandedTenant();
-      const { token } = await issueLink();
-      goodKeyProbes();
-
-      const res = await handle(
-        jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_good" }), env(), ctx, deps,
-      );
-
-      expect(res.status).toBe(200);
-      expect(await res.json()).toMatchObject({ status: "live" });
-      // The install ran through the SAME seam the session route uses, with the same key.
-      expect(wiring.installInvokeKey).toHaveBeenCalledTimes(1);
-      const [tenant, key] = wiring.installInvokeKey.mock.calls[0] as [{ id: string }, string];
-      expect(tenant.id).toBe("ten_abc123");
-      expect(key).toBe("rpa_good");
-      expect(store.tenants.get("ten_abc123")?.status).toBe("live");
-      // Single use: burned.
-      expect([...store.handoffs.values()][0].consumed_at).not.toBeNull();
-      // Audited on CONSUMPTION as well as issuance, correlated by the handoff id, and the key is in
-      // neither row. CONTROL first: both rows are present.
-      const actions = store.audit.map((a) => a.action);
-      expect(actions).toEqual(["tenant.issue_invoke_key_handoff", "tenant.install_invoke_key_via_handoff"]);
-      const audit = JSON.stringify(store.audit);
-      expect(audit).not.toContain("rpa_good");
-      expect(audit).not.toContain(token);
-    });
-
-    it("REFUSES a graphql-capable key and does NOT burn the link", async () => {
-      // The custody check runs unrelaxed on this path (the cp#169 constraint), and a refused key
-      // must leave the link usable: burning here would re-strand the customer over a paste error,
-      // which is the failure this whole issue exists to end.
-      await strandedTenant();
-      const { token } = await issueLink();
-      deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
-        String(input).includes("graphql")
-          ? new Response(JSON.stringify({ data: { myself: { id: "u" } } }), { status: 200 })
-          : new Response("{}", { status: 200 }),
-      ) as unknown as typeof fetch;
-
-      const res = await handle(
-        jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_toopowerful" }), env(), ctx, deps,
-      );
-
-      expect(res.status).toBe(400);
-      expect(await res.json()).toMatchObject({ error: "invoke_key_rejected", reason: "graphql_capable" });
-      expect([...store.handoffs.values()][0].consumed_at).toBeNull();
-      expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
-      expect(JSON.stringify([...store.tenants.values()])).not.toContain("rpa_toopowerful");
-    });
-
-    it("does NOT burn on a 202, whose own message tells the customer to RETRY", async () => {
-      await strandedTenant();
-      const { token } = await issueLink();
-      goodKeyProbes();
-      wiring.installInvokeKey.mockResolvedValueOnce({
-        verified: ["backend"], unconfirmed: [{ module: "upscale", script: "s", reason: "not ready" }],
-        unverified: [], attempts: 3, elapsedMs: 900,
-      });
-
-      const res = await handle(
-        jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_good" }), env(), ctx, deps,
-      );
-
-      expect(res.status).toBe(202);
-      // A burnt link would make the response's own "retry this request" advice a lie.
-      expect([...store.handoffs.values()][0].consumed_at).toBeNull();
-      expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
-    });
-
-    it("refuses a REPLAY of a burned link, and says the key was already installed", async () => {
-      await strandedTenant();
-      const { token } = await issueLink();
-      goodKeyProbes();
-      expect(
-        (await handle(jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_good" }), env(), ctx, deps))
-          .status,
-      ).toBe(200);
-
-      const again = await handle(
-        jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_good" }), env(), ctx, deps,
-      );
-      expect(again.status).toBe(409);
-      expect(await again.json()).toMatchObject({ error: "handoff_consumed" });
-      // The second attempt never reached the install.
-      expect(wiring.installInvokeKey).toHaveBeenCalledTimes(1);
-    });
-
-    it("refuses a link whose tenant was reprovisioned again, WITHOUT probing the key", async () => {
-      await strandedTenant();
-      const { token } = await issueLink();
-      goodKeyProbes();
-      (store.tenants.get("ten_abc123") as Tenant).endpoints_json = JSON.stringify([{ id: "ep9" }]);
-
-      const res = await handle(
-        jsonReq("/api/handoff/invoke-key", { token, runpod_invoke_key: "rpa_good" }), env(), ctx, deps,
-      );
-      expect(res.status).toBe(409);
-      expect(await res.json()).toMatchObject({ error: "handoff_endpoints_changed" });
-      expect(wiring.installInvokeKey).not.toHaveBeenCalled();
-    });
-
-    it("400s an empty key before it looks the link up at all", async () => {
-      const res = await handle(jsonReq("/api/handoff/invoke-key", { token: "x" }), env(), ctx, deps);
-      expect(res.status).toBe(400);
-      expect(await res.json()).toMatchObject({ error: "invoke_key_required" });
-    });
-  });
-});
-
-// cp#164: the route that reaches a tenant ALREADY LIVE.
-//
-// The behaviour that matters here is the ROUTE half: what it refuses, what it audits, and that it
-// never answers 200 over a readback that disagrees with the intent -- including the reader floor,
-// where the var is bound and the studio bundle is too old to project it. What the plane SENDS to
-// Cloudflare, and the derivation of the URL itself, live in tests/tenant-abuse-report.test.ts.
 describe("POST /api/admin/tenants/:id/abuse-report-url (cp#164)", () => {
   const admin = () => ({ authorization: `Bearer ${ADMIN_TOKEN}` });
   const call = (id = "ten_abc123", d: ControlPlaneDeps = deps) =>
@@ -3592,215 +3482,6 @@ describe("POST /api/admin/tenants/:id/video-finish-binding (cp#136)", () => {
     expect(store.audit.map((a) => a.action)).toEqual(["tenant.detach_video_finish_binding"]);
   });
 });
-
-// ---- cp#137: rebuild a tenant's RunPod endpoints -------------------------------------------------
-//
-// The route is the thin half; the step machine and every custody rule live in
-// tests/tenant-runpod-reprovision.test.ts. What is proved HERE is what only the router can get
-// wrong: the gate, the confirmation, the key refusal, the writer interlock, the refusal passthrough,
-// and -- the one that matters most -- that a failure records and returns a message with no
-// credential in it.
-describe("POST /api/admin/tenants/:id/reprovision-runpod (cp#137)", () => {
-  const admin = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${ADMIN_TOKEN}`, ...extra });
-  const KEY_A = "rpa_ROUTEKEYAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-  const stamp = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
-
-  const call = (
-    body: Record<string, unknown> = { confirm_slug: "hero", runpod_api_key: KEY_A },
-    id = "ten_abc123",
-    d: ControlPlaneDeps = deps,
-  ) => handle(jsonReq(`/api/admin/tenants/${id}/reprovision-runpod`, body, { headers: admin() }), env(), ctx, d);
-
-  async function liveTenant(): Promise<Tenant> {
-    const t = await store.createTenant("ten_abc123", "hero", "acct_1", "live");
-    t.script_name = "tenant-hero-studio";
-    t.modules_release = "v1.6.0";
-    t.r2_bucket_name = "vivijure-tenant-hero";
-    return t;
-  }
-
-  it("REFUSES without the admin token: this rebuilds someone else's render capacity", async () => {
-    await liveTenant();
-    const res = await handle(
-      jsonReq("/api/admin/tenants/ten_abc123/reprovision-runpod", { confirm_slug: "hero", runpod_api_key: KEY_A }),
-      env(), ctx, deps,
-    );
-    expect(res.status).toBe(401);
-    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
-  });
-
-  it("refuses 503 when the plane has no provisioner wiring, rather than looking present", async () => {
-    await liveTenant();
-    const res = await call(undefined, "ten_abc123", { ...deps, provisioner: undefined });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: "provisioner_unconfigured" });
-  });
-
-  it("404s an unknown tenant", async () => {
-    expect((await call(undefined, "ten_nope")).status).toBe(404);
-    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
-  });
-
-  it("REFUSES a wrong or missing slug confirmation: the ids are opaque, the slug is not", async () => {
-    await liveTenant();
-    const wrong = await call({ confirm_slug: "hero-2", runpod_api_key: KEY_A });
-    expect(wrong.status).toBe(400);
-    expect(await wrong.json()).toEqual({ error: "slug_confirmation_required", slug: "hero" });
-    expect((await call({ runpod_api_key: KEY_A })).status).toBe(400);
-    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
-  });
-
-  it("REFUSES without key A, BEFORE anything can change state", async () => {
-    await liveTenant();
-    const res = await call({ confirm_slug: "hero" });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: "runpod_key_required" });
-    // The refusal is upstream of the preflight, so nothing has even been read on the tenant's behalf.
-    expect(wiring.preflightReprovisionRunPod).not.toHaveBeenCalled();
-    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
-  });
-
-  it("REFUSES while a job holds a live lease: this must not race an upload", async () => {
-    await liveTenant();
-    const running = await store.createProvisionJob("job_running", "ten_abc123", "provision", TEST_PROVISION_FACTS);
-    running.status = "running";
-    running.lease_until = stamp(deps.now() + 60_000);
-
-    const res = await call();
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: "job_in_progress", job_id: "job_running", kind: "provision" });
-    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
-  });
-
-  it("POSITIVE CONTROL: a dead lease does NOT block, or the guard would wedge the route forever", async () => {
-    await liveTenant();
-    const stale = await store.createProvisionJob("job_stale", "ten_abc123", "provision", TEST_PROVISION_FACTS);
-    stale.status = "running";
-    stale.lease_until = stamp(deps.now() - 60_000);
-
-    expect((await call()).status).toBe(200);
-    expect(wiring.reprovisionRunPod).toHaveBeenCalledTimes(1);
-  });
-
-  // cp#169: the repair now emits its own last step.
-  it("mints the owner handoff link in the SAME response that reports the repair", async () => {
-    // A reprovision ends at awaiting_invoke_key by construction (new endpoints, new ids, the stored
-    // key scoped to the ones just replaced), and until cp#169 the operator had no way to complete
-    // or delegate that step. The link is minted from the tenant re-read AFTER the rebuild, so it is
-    // bound to the ids this run created rather than the ones it replaced.
-    const t = await liveTenant();
-    t.endpoints_json = JSON.stringify([{ key: "backend", label: "Render", id: "ep1", name: "n1" }]);
-
-    const res = await call();
-
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { invoke_key_handoff: Record<string, unknown> | null };
-    expect(body.invoke_key_handoff).toMatchObject({ endpoints: ["ep1"] });
-    expect(String(body.invoke_key_handoff?.url)).toContain("/install-key?t=");
-    const actions = store.audit.map((a) => a.action);
-    expect(actions).toContain("tenant.issue_invoke_key_handoff");
-    // The token is in the operator's response and NOWHERE else.
-    const token = new URL(String(body.invoke_key_handoff?.url)).searchParams.get("t") as string;
-    expect(JSON.stringify(store.audit)).not.toContain(token);
-    expect(JSON.stringify([...store.handoffs.values()])).not.toContain(token);
-  });
-
-  it("a link that cannot be minted does NOT undo a repair that already happened", async () => {
-    // liveTenant() has no endpoints recorded, so the mint refuses. The endpoints were still rebuilt
-    // and the record still written by the time we get here; failing the whole call would report a
-    // repair that DID happen as one that did not, and invite a re-run that rebuilds four endpoints
-    // for a paperwork problem. The refusal is REPORTED instead, and the standalone mint route is
-    // the retry.
-    await liveTenant();
-
-    const res = await call();
-
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { invoke_key_handoff: unknown; invoke_key_handoff_refusal: string };
-    expect(body.invoke_key_handoff).toBeNull();
-    expect(body.invoke_key_handoff_refusal).toBe("no_endpoints");
-    // CONTROL: the repair itself is still recorded as having happened.
-    expect(store.audit.map((a) => a.action)).toContain("tenant.reprovision_runpod");
-  });
-
-  it("passes a preflight refusal through with its own code and status, having written nothing", async () => {
-    await liveTenant();
-    wiring.preflightReprovisionRunPod = vi.fn(async () => ({
-      ok: false,
-      refusal: { code: "tenant_studio_not_serving", status: 422, message: "the tenant studio answered 503" },
-    }));
-
-    const res = await call();
-
-    expect(res.status).toBe(422);
-    expect(await res.json()).toMatchObject({ error: "tenant_studio_not_serving" });
-    expect(wiring.reprovisionRunPod).not.toHaveBeenCalled();
-    // A refusal is not an action: nothing is audited, because nothing happened.
-    expect(store.audit).toEqual([]);
-  });
-
-  it("hands key A to the runner and keeps it out of the audit row", async () => {
-    await liveTenant();
-
-    const res = await call();
-
-    expect(res.status).toBe(200);
-    // The key reaches the runner as an ARGUMENT and lives nowhere else.
-    expect(wiring.reprovisionRunPod).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "ten_abc123" }),
-      expect.objectContaining({ script: "tenant-hero-studio" }),
-      KEY_A,
-    );
-    const audit = JSON.stringify(store.audit);
-    // CONTROL FIRST: the audit row exists and carries the ids, so "no key in the audit" is not an
-    // assertion about an empty table.
-    expect(audit).toContain("tenant.reprovision_runpod");
-    expect(audit).toContain("new-backend");
-    expect(audit).toContain("fresh-token-id");
-    expect(audit).not.toContain(KEY_A);
-  });
-
-  it("answers with the new ids and the honest status, and no summary boolean (cp#20)", async () => {
-    await liveTenant();
-
-    const body = (await (await call()).json()) as Record<string, unknown>;
-
-    expect(body.status).toBe("awaiting_invoke_key");
-    expect(body.endpoints_after).toEqual(CLEAN_REBUILD.endpoints_after);
-    expect(body.next_step).toContain("new-backend");
-    // No `ok`: a caller branches on status and on the ids, never on a summary flag that reads as
-    // success while the tenant cannot render (cp#20).
-    expect("ok" in body).toBe(false);
-  });
-
-  it("turns a rebuild failure into a 409 naming the step, with a message carrying no credential", async () => {
-    await liveTenant();
-    // The module already scrubs; the route must not re-introduce the value by reporting something
-    // else. This asserts the ROUTE's half of that contract.
-    wiring.reprovisionRunPod = vi.fn(async () => {
-      throw new ReprovisionError("runpod_endpoints", 'endpoints.create: 401 {"authorization":"Bearer [redacted]"}');
-    });
-
-    const res = await call();
-
-    expect(res.status).toBe(409);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toMatchObject({ error: "reprovision_failed", step: "runpod_endpoints" });
-    expect(String(body.message)).toContain("[redacted]");
-    expect(String(body.message)).not.toContain(KEY_A);
-    // The failure is AUDITED, not swallowed: an operator reading the log has to see the attempt.
-    const audit = JSON.stringify(store.audit);
-    expect(audit).toContain("tenant.reprovision_runpod.failed");
-    expect(audit).not.toContain(KEY_A);
-  });
-});
-
-// ---- the LLM meter surfaces (cp#185) ---------------------------------------------------------
-//
-// Two routes, and the bias is the same as everywhere above: watch each guard REFUSE on the real
-// refusal path before trusting it, with a positive control beside it so a route that refused
-// everything could not pass the section.
-
 describe("LLM meter admin surfaces", () => {
   const admin = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${ADMIN_TOKEN}`, ...extra });
 

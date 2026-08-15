@@ -84,8 +84,8 @@ export const OPERATOR_SCOPES = [
   {
     id: "studio:operate",
     summary:
-      "Run the studio: module and studio upgrades, refreshing studio bindings, re-provisioning RunPod, " +
-      "starting a smoke render (which spends GPU), and minting an invoke-key handoff for an owner.",
+      "Run the studio: module and studio upgrades, refreshing studio bindings, " +
+      "and starting a smoke render (which spends GPU).",
   },
   {
     id: "credits:write",

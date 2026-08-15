@@ -51,16 +51,13 @@
 // credential than the one that wrote, and reports any binding or secret that went missing instead of
 // trusting a success:true.
 
-import { CfApiError, type WorkerBinding } from "./cf-api";
+import { CfApiError, classifyVpcBindingFailure, type WorkerBinding } from "./cf-api";
 import { isVideoFinishUnreachable, withVideoFinishTierState } from "./video-finish-tier-state";
 import type { ProvisionDeps } from "./provisioner";
 import type { Tenant } from "./store";
 
 /** The studio binding name the video-finish tier is reached through (cf#118). */
 export const VIDEO_FINISH_BINDING = "VIDEO_FINISH_VPC";
-
-/** CF's own code for "this credential may not attach a Workers VPC binding" (cf#118 probe). */
-const CF_VPC_BINDING_UNAUTHORIZED = 10196;
 
 /**
  * A named, operator-readable failure from the PATCH itself. Carries the status the route answers
@@ -210,7 +207,12 @@ export async function refreshTenantStudioBindings(
     // Connectivity Directory access, which is exactly why cf#118 split the credential in two.
     await deps.scriptUploadCf.patchScriptSettings(deps.namespace, script, desired);
   } catch (e) {
-    if (e instanceof CfApiError && e.cfErrors.some((c) => c.code === CF_VPC_BINDING_UNAUTHORIZED)) {
+    const verdict = classifyVpcBindingFailure(e, desired.some((b) => b.type === "vpc_service"));
+    if (verdict.kind === "unmatched") {
+      // The guard reporting its own obsolescence (cp#462). See classifyVpcBindingFailure.
+      console.error("studio_bindings.vpc_guard_did_not_match", JSON.stringify(verdict));
+    }
+    if (verdict.kind === "refused") {
       // Same translation the provision path does, for the same reason: CF blames the caller
       // accurately and uselessly, and an operator reading this needs to know it is the PLANE's
       // credential, not anything about the tenant.
@@ -384,7 +386,12 @@ export async function detachTenantStudioBinding(
   try {
     await deps.scriptUploadCf.patchScriptSettings(deps.namespace, script, desired);
   } catch (e) {
-    if (e instanceof CfApiError && e.cfErrors.some((c) => c.code === CF_VPC_BINDING_UNAUTHORIZED)) {
+    const verdict = classifyVpcBindingFailure(e, desired.some((b) => b.type === "vpc_service"));
+    if (verdict.kind === "unmatched") {
+      // The guard reporting its own obsolescence (cp#462). See classifyVpcBindingFailure.
+      console.error("studio_bindings.vpc_guard_did_not_match", JSON.stringify(verdict));
+    }
+    if (verdict.kind === "refused") {
       throw new StudioBindingError(
         "vpc_binding_unauthorized",
         409,

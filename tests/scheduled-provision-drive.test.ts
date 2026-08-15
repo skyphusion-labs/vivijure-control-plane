@@ -24,7 +24,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ControlPlaneDeps, ProvisionerWiring } from "../src/deps";
 import type { ControlPlaneEnv } from "../src/env";
-import { runScheduledTick } from "../src/index";
+import {
+  PROVISION_DRIVE_TENANT_SLICE_MS,
+  PROVISION_DRIVE_TICK_BUDGET_MS,
+  runScheduledTick,
+} from "../src/index";
 import { D1Store } from "../src/store-d1";
 import { d1Over, freshMigratedDb as freshDb } from "./sqlite-d1";
 
@@ -39,6 +43,9 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
   let store: D1Store;
   let resume: ReturnType<typeof vi.fn>;
   let deps: ControlPlaneDeps;
+  /** Steered, not waited on. Advanced explicitly by a driver double so a read never moves it: the
+   *  stale check reads the same clock, and a clock that ticked on every read would perturb it. */
+  let clockMs: number;
 
   /** What the real continuation does on its success path, and nothing else: progress, a terminal
    *  job, and the tenant lifecycle move. Written THROUGH THE STORE so the assertions below read
@@ -72,6 +79,7 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     db = freshDb();
     store = new D1Store(d1Over(db));
     await store.createAccount("acct_1", "owner@example.com");
+    clockMs = Date.now();
     resume = resumeThatSucceeds();
     deps = {
       store,
@@ -312,5 +320,209 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     expect(jobRow("job_alive").status).toBe("running");
     expect(tenantRow("ten_alive").status).toBe("provisioning");
     expect(resume).not.toHaveBeenCalled();
+  });
+
+  // ---- THE DUTY CYCLE (cp#429) ----------------------------------------------------------------
+  //
+  // A drive buys at most PROVISION_INVOCATION_BUDGET_MS (15s) of progress and then YIELDS, handing
+  // the lease straight back (cp#158). The cron fires every 5 minutes. So one drive per tenant per
+  // tick is 15 seconds of work per 300 seconds of clock: a 5% duty cycle, and roughly twenty times
+  // slower than the poll path it substitutes for, which got a drive every few seconds because a
+  // client was polling.
+  //
+  // Worse, it defeats the guard it inherits. cp#158 releases the lease ON YIELD precisely so the
+  // next driver does not wait out a dead lease; driving once per tick then makes the job wait five
+  // minutes anyway. Every guard individually intact, the optimisation one of them was written to
+  // buy thrown away. No existing test can see that, because none of them measures HOW MANY times
+  // one tick drives.
+  //
+  // So this one does, and it is the assertion that matters: the SAME tick drives the SAME job more
+  // than once, and the row lands where the second drive puts it.
+
+  /** A driver that behaves like the real one across a yield boundary: the first drive persists
+   *  progress and hands the lease back (cp#158), the second finishes. Anything that drives only
+   *  once leaves the tenant mid-flight, which is exactly what the assertion catches. */
+  const resumeThatYieldsThenCompletes = () => {
+    let calls = 0;
+    return vi.fn(async (jobId: string, tenant: { id: string }) => {
+      calls += 1;
+      if (calls === 1) {
+        await store.updateJobProgress(jobId, "wfp_upload", JSON.stringify(["wfp_upload"]));
+        // The yield hand-back. Without it the next claimJob loses and the loop stops, so this is
+        // also what makes the test drive the REAL contention path rather than an easier one.
+        await store.releaseJobLease(jobId);
+        return;
+      }
+      await store.updateJobProgress(jobId, "verify", JSON.stringify(["wfp_upload", "verify"]));
+      await store.finishJob(jobId, "succeeded", null, null);
+      await store.setTenantStatus(tenant.id, "awaiting_invoke_key");
+    });
+  };
+
+  it("RED ON THE FIRST CUT: ONE tick drives a yielding job MORE THAN ONCE, instead of once per 5 minutes", async () => {
+    resume = resumeThatYieldsThenCompletes();
+    deps = { ...deps, provisioner: { resume } as unknown as ProvisionerWiring } as ControlPlaneDeps;
+    await store.createTenant("ten_7", "duty", "acct_1", "provisioning");
+    await store.createProvisionJob("job_7", "ten_7", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_7");
+    expireLease("job_7");
+
+    await runScheduledTick(env(), deps);
+
+    // THE ASSERTION. Not that the tenant finished -- it could finish for other reasons -- but that
+    // ONE tick drove it twice. A single-drive tick calls this once and leaves the row behind.
+    expect(resume).toHaveBeenCalledTimes(2);
+    expect(tenantRow("ten_7").status).toBe("awaiting_invoke_key");
+    expect(jobRow("job_7").status).toBe("succeeded");
+  });
+
+  it("stops driving a job the guards refuse, rather than spinning on it inside the tick", async () => {
+    // The loop termination proof. A queued job is refused by cp#132 on EVERY drive, so a loop that
+    // retried on refusal would spin until the wall budget ran out and burn the whole tick.
+    clockMs = Date.now();
+    resume = resumeThatSucceeds();
+    deps = { ...deps, provisioner: { resume } as unknown as ProvisionerWiring } as ControlPlaneDeps;
+    await store.createTenant("ten_8", "queued", "acct_1", "pending");
+    await store.createProvisionJob("job_8", "ten_8", "provision", SHARED_FACTS);
+
+    await runScheduledTick(env(), deps);
+
+    expect(resume).not.toHaveBeenCalled();
+    expect(jobRow("job_8").status).toBe("queued");
+  });
+
+  it("stops when the job COMPLETES, without driving a terminal job a second time", async () => {
+    // The other termination edge: after the drive that finishes the job, the next read sees a
+    // terminal row and must stop. Driving a succeeded job would re-run a provision that is done.
+    clockMs = Date.now();
+    resume = resumeThatSucceeds();
+    deps = { ...deps, provisioner: { resume } as unknown as ProvisionerWiring } as ControlPlaneDeps;
+    await store.createTenant("ten_9", "onedrive", "acct_1", "provisioning");
+    await store.createProvisionJob("job_9", "ten_9", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_9");
+    expireLease("job_9");
+
+    await runScheduledTick(env(), deps);
+
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(jobRow("job_9").status).toBe("succeeded");
+  });
+
+  // ---- THE BOUNDS THEMSELVES (ernst) ----------------------------------------------------------
+  //
+  // The loop stops on refusal-stability, which the tests above cover. The BUDGET and the SLICE are
+  // the other two exits and nothing exercised them, so they were assertions about code that had
+  // never run. deps.now is injectable, so time is steered rather than waited on: the driver double
+  // advances the clock the way real work would, instead of the clock advancing on every read (which
+  // would perturb the stale check this loop also depends on).
+  //
+  // WHAT THESE TWO PIN, AND WHAT THEY DO NOT. They derive the burn from the constants, so they are
+  // insensitive to the VALUES: setting either bound to a billion leaves them green. Measured, not
+  // assumed. What they DO pin is that each exit EXISTS and FIRES, which is the part an edit removes:
+  // stubbing out the slice branch turns the first red (2 drives instead of 1), and hardcoding the
+  // outcome to drained turns the second red. Retuning a bound is a deliberate act and belongs in
+  // review; deleting an exit is an accident and belongs in a test.
+  const driveThatBurns = (ms: number) =>
+    vi.fn(async (jobId: string) => {
+      await store.updateJobProgress(jobId, "wfp_upload", JSON.stringify(["wfp_upload"]));
+      await store.releaseJobLease(jobId);
+      clockMs += ms;
+    });
+
+  it("stops driving a tenant once its SLICE is spent, even though the job would still yield", async () => {
+    resume = driveThatBurns(PROVISION_DRIVE_TENANT_SLICE_MS + 10_000);
+    deps = { ...deps, now: () => clockMs, provisioner: { resume } as unknown as ProvisionerWiring } as ControlPlaneDeps;
+    await store.createTenant("ten_a", "slice", "acct_1", "provisioning");
+    await store.createProvisionJob("job_a", "ten_a", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_a");
+    expireLease("job_a");
+
+    await runScheduledTick(env(), deps);
+
+    // One drive, not a loop that runs until the job finishes: the slice is what stopped it.
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(jobRow("job_a").status).toBe("running");
+  });
+
+  it("reports budget_spent, so a truncated tick cannot read as a finished one", async () => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void logged.push(a.join(" ")));
+    resume = driveThatBurns(PROVISION_DRIVE_TICK_BUDGET_MS + 10_000);
+    deps = { ...deps, now: () => clockMs, provisioner: { resume } as unknown as ProvisionerWiring } as ControlPlaneDeps;
+    await store.createTenant("ten_b", "budget", "acct_1", "provisioning");
+    await store.createProvisionJob("job_b", "ten_b", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_b");
+    expireLease("job_b");
+
+    await runScheduledTick(env(), deps);
+    spy.mockRestore();
+
+    const tick = logged.find((l) => l.indexOf("scheduled.provision_drive_tick") !== -1) || "";
+    expect(tick).toContain("budget_spent");
+    expect(tick).not.toContain("drained");
+  });
+
+  // ---- THE SEAM THE MERGE CREATED (cp#437 cap x cp#429 loop) ----------------------------------
+  //
+  // NEITHER PR COULD HAVE TESTED THIS, because it only exists once both land. The cap reap is
+  // reached from a fresh read; the loop takes a fresh read on EVERY pass; and a yield hands the
+  // lease back, so jobHasLiveDriver does not defer the next pass. Therefore a job that is actively
+  // PROGRESSING can cross the age line between two drives of the SAME tick and be reaped by the
+  // very loop that is driving it.
+  //
+  // That is the intended semantics rather than a hole: the cap measures how long a provision has
+  // been alive, and a job that has been alive too long is not rescued by the fact that somebody is
+  // still driving it. What matters is that the behaviour is PINNED, because it is invisible from
+  // either side alone and would otherwise be discovered months later.
+  it("reaps a job that crosses the age cap BETWEEN two drives of the same tick", async () => {
+    await store.createTenant("ten_cross", "crossing", "acct_1", "provisioning");
+    await store.createProvisionJob("job_cross", "ten_cross", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_cross");
+    expireLease("job_cross");
+    // JUST under the cap, so the FIRST pass drives and the second is the one that gives up.
+    // SECONDS, not minutes, and that precision is load-bearing. The burn below has to cross the
+    // cap while staying INSIDE the per-tenant slice, or the loop exits on the slice before it
+    // ever takes the second read and the seam is never reached. A two-minute burn looked like the
+    // obvious setup and silently tested nothing.
+    db.prepare("UPDATE provision_jobs SET created_at = datetime(:now, :ago) WHERE id = :id")
+      .run({ now: "now", ago: "-7180 seconds", id: "job_cross" });
+
+    // A drive that makes real progress and burns THIRTY SECONDS doing it, which is what carries
+    // the job over the line at 7180s + 30s > the 7200s cap. Thirty and not more: the burn has to
+    // cross the cap while staying INSIDE the 60s slice, or the loop exits on the slice before it
+    // ever takes the second read. The lease hand-back is what lets that next pass reach the reap.
+    resume = vi.fn(async (jobId: string) => {
+      await store.updateJobProgress(jobId, "wfp_upload", JSON.stringify(["wfp_upload"]));
+      await store.releaseJobLease(jobId);
+      clockMs += 30 * 1000;
+    });
+    deps = { ...deps, now: () => clockMs, provisioner: { resume } as unknown as ProvisionerWiring } as ControlPlaneDeps;
+
+    await runScheduledTick(env(), deps);
+
+    // Drove ONCE, then gave up rather than driving it forever.
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(jobRow("job_cross").status).toBe("failed");
+    expect(jobRow("job_cross").error_message).toMatch(/did not complete within/);
+    expect(tenantRow("ten_cross").status).toBe("failed");
+  });
+
+  it("does NOT reap mid-loop while the job is still inside the cap", async () => {
+    // The control for the case above. Without it, that test passes against a loop that reaps
+    // everything on the second pass, which would be a far worse bug than the one it guards.
+    await store.createTenant("ten_inside", "inside", "acct_1", "provisioning");
+    await store.createProvisionJob("job_inside", "ten_inside", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_inside");
+    expireLease("job_inside");
+    createdAgo("job_inside", 30);
+
+    resume = resumeThatYieldsThenCompletes();
+    deps = { ...deps, now: () => clockMs, provisioner: { resume } as unknown as ProvisionerWiring } as ControlPlaneDeps;
+
+    await runScheduledTick(env(), deps);
+
+    expect(resume).toHaveBeenCalledTimes(2);
+    expect(jobRow("job_inside").status).toBe("succeeded");
+    expect(tenantRow("ten_inside").status).toBe("awaiting_invoke_key");
   });
 });
