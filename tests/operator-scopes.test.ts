@@ -570,12 +570,17 @@ describe("scoped operator credentials (cp#219)", () => {
           moduleReadiness: async () => [
             // PRODUCIBLE VALUES ONLY (cp#378). These rows used to carry booleans, which the shipped
             // parser can no longer emit -- a fixture asserting a shape production cannot create is
-            // green about a state that does not exist.
-            { module: "keyframe", script: "ten-x-keyframe", status: 200, ok: true, credentials: null, job_log: "ok", records_runpod_jobs: true },
-            { module: "own-gpu", script: "ten-x-own-gpu", status: 200, ok: true, credentials: null, job_log: "unavailable", records_runpod_jobs: true },
-            { module: "finish-rife", script: "ten-x-finish-rife", status: 200, ok: true, credentials: null, job_log: "unknown", records_runpod_jobs: true },
-            { module: "finish-upscale", script: "ten-x-finish-upscale", status: 200, ok: true, credentials: null, job_log: null, records_runpod_jobs: true },
-            { module: "plan-enhance", script: "ten-x-plan-enhance", status: 404, ok: null, credentials: null, job_log: null, records_runpod_jobs: false },
+            // green about a state that does not exist. cp#254 added `readings`/`reads`/`settled` to
+            // what production emits, so they are here for the same reason: a fixture missing them
+            // would be asserting against a shape the probe cannot return.
+            { module: "keyframe", script: "ten-x-keyframe", status: 200, ok: true, credentials: null, job_log: "ok", records_runpod_jobs: true, readings: ["ok", "ok"], reads: 2, settled: true },
+            { module: "own-gpu", script: "ten-x-own-gpu", status: 200, ok: true, credentials: null, job_log: "unavailable", records_runpod_jobs: true, readings: ["unavailable", "unavailable"], reads: 2, settled: true },
+            { module: "finish-rife", script: "ten-x-finish-rife", status: 200, ok: true, credentials: null, job_log: "unknown", records_runpod_jobs: true, readings: ["unknown", "unknown"], reads: 2, settled: true },
+            { module: "finish-upscale", script: "ten-x-finish-upscale", status: 200, ok: true, credentials: null, job_log: null, records_runpod_jobs: true, readings: ["absent", "absent"], reads: 2, settled: true },
+            { module: "plan-enhance", script: "ten-x-plan-enhance", status: 404, ok: null, credentials: null, job_log: null, records_runpod_jobs: false, readings: ["unreachable", "unreachable"], reads: 2, settled: true },
+            // THE cp#254 ROW: an "ok" the samples did not agree on. Its job_log is identical to
+            // keyframe above, and it must not be summarised identically.
+            { module: "speech-upscale", script: "ten-x-speech-upscale", status: 200, ok: true, credentials: null, job_log: "ok", records_runpod_jobs: true, readings: ["unavailable", "ok"], reads: 2, settled: false },
           ],
         },
       } as unknown as ControlPlaneDeps;
@@ -587,13 +592,25 @@ describe("scoped operator credentials (cp#219)", () => {
         withProvisioner,
       );
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { records_unproven: string[]; modules: unknown[] };
+      const body = (await res.json()) as {
+        records_unproven: string[];
+        unsettled: string[];
+        modules: unknown[];
+      };
       // EVERY non-"ok" state, and NOT the module that never records. A summary that omitted any of
       // these would report an unprovable module as fine: "unavailable" is an explicit no, "unknown"
       // is a worker that could not tell, null is an image too old to say. Three causes, three
       // remedies, one consequence -- rows nobody will get.
-      expect(body.records_unproven).toEqual(["own-gpu", "finish-rife", "finish-upscale"]);
-      expect(body.modules).toHaveLength(5);
+      //
+      // speech-upscale is the fourth cause (cp#254): it answered "ok", exactly like keyframe, on a
+      // reading its own samples contradicted. An unsettled "ok" is not proof, so it is unproven,
+      // and keyframe next to it is what makes that a discrimination rather than a blanket refusal.
+      expect(body.records_unproven).toEqual([
+        "own-gpu", "finish-rife", "finish-upscale", "speech-upscale",
+      ]);
+      // And it is NAMED as mid-convergence, so an operator re-asks rather than re-provisioning.
+      expect(body.unsettled).toEqual(["speech-upscale"]);
+      expect(body.modules).toHaveLength(6);
 
       const rows = await store.listAdminAudit({ target: TEN, limit: 20 });
       expect(rows.some((r) => r.action === "tenant.read.module_readiness" && r.actor === "operator:reader")).toBe(true);

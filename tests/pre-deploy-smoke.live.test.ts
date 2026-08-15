@@ -85,6 +85,7 @@ import {
   TENANT_MODULE_CATALOG,
   TenantModuleError,
   probeTenantModuleReadiness,
+  summariseModuleReadiness,
   tenantModuleScriptName,
   tenantModuleScriptPrefix,
   uploadTenantModules,
@@ -718,17 +719,27 @@ describe.skipIf(!LIVE)("pre-deploy smoke: module telemetry binding, live", () =>
   }, 1_800_000);
 
   it("the shipped admin-route logic agrees with the settled reads", async () => {
-    // probeTenantModuleReadiness is what GET /api/admin/tenants/:id/module-readiness returns. It is
-    // a SINGLE-SHOT read by design (cp#254), so it is asserted here only AFTER the settle loop above
-    // has established the answer is stable. Running it first would make it a coin toss.
+    // probeTenantModuleReadiness is what GET /api/admin/tenants/:id/module-readiness returns. It
+    // takes a FEW SAMPLES A FEW HUNDRED MILLISECONDS APART (cp#254), which is far short of the 40 to
+    // 50 second convergence window measured on the replace path -- so it is asserted here only AFTER
+    // the settle loop above has established the answer is stable. Running it first would make it a
+    // coin toss, and the route says so itself now via `settled`.
     const obs = await probeTenantModuleReadiness(makeDeps(), TENANT_ID);
     for (const o of obs) {
-      say(`   ${o.module.padEnd(16)} records=${String(o.records_runpod_jobs)} job_log=${String(o.job_log)} status=${o.status}`);
+      say(
+        `   ${o.module.padEnd(16)} records=${String(o.records_runpod_jobs)} job_log=${String(o.job_log)} ` +
+          `settled=${String(o.settled)} reads=${o.readings.join(",")} status=${o.status}`,
+      );
     }
-    // The SHIPPED predicate, character for character (src/index.ts records_unproven). If this line
-    // and that one ever diverge, this gate stops testing the route it exists to test.
-    const unproven = obs.filter((o) => o.records_runpod_jobs && o.job_log !== "ok").map((o) => o.module);
-    expect(unproven, "modules the admin route cannot prove will record").toEqual([]);
+    // THE SHIPPED FUNCTION, CALLED -- not a copy of it. This assertion used to restate the route
+    // predicate "character for character" and warn that the two must not diverge, which is a
+    // hand-maintained duplicate wearing a comment instead of a mechanism. cp#254 gave the route a
+    // named summary function, so the gate now drives the same code the route runs.
+    const { records_unproven, unsettled } = summariseModuleReadiness(obs);
+    expect(records_unproven, "modules the admin route cannot prove will record").toEqual([]);
+    // A settled loop above and an unsettled route read here would mean the route sampled during a
+    // window the smoke had already watched close. That is a fact worth failing on, not smoothing.
+    expect(unsettled, "the route re-read these mid-convergence after the smoke saw them settle").toEqual([]);
   }, 300_000);
 
   it("NEGATIVE CONTROL: the same module re-uploaded WITHOUT the database REACHES false", async () => {
