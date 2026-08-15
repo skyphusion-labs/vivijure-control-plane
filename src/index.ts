@@ -1014,12 +1014,29 @@ async function driveJobIfNeeded(
 }
 
 /**
- * How many provisions one tick will drive. Each drive costs up to PROVISION_INVOCATION_BUDGET_MS
- * (15s) before it yields, and the tick also owns the meter and the RunPod sweep, so this bounds
- * the tick rather than letting a backlog decide how long a cron invocation runs. A backlog drains
- * across ticks; the cron fires every 5 minutes.
+ * WALL BUDGET for the whole provision-drive half of one tick.
+ *
+ * A WALL BUDGET, NOT A DRIVE COUNT. A count is a proxy for time, and it goes wrong the moment step
+ * durations change: five drives is a few seconds on a fast plane and over a minute on a slow one,
+ * so the count would silently mean something different on the day it mattered. Time is the thing
+ * actually being rationed, so time is what is measured.
+ *
+ * SIZED AGAINST THE CRON PERIOD, which is the real constraint. The cron fires every 5 minutes and
+ * this half runs LAST, after the meter and the sweep, so meter + sweep + this must finish inside
+ * 300s or ticks begin to overlap. 120s leaves better than half the period as headroom for the
+ * other two halves. If they ever grow, this is the knob that gives way first, deliberately.
  */
-const MAX_PROVISION_DRIVES_PER_TICK = 5;
+export const PROVISION_DRIVE_TICK_BUDGET_MS = 120_000;
+
+/**
+ * The most wall time ONE tenant may take out of that budget.
+ *
+ * Without it a single long tail eats the whole tick and every other in-flight provision waits 5
+ * more minutes for a turn it never gets. The slice does not make starvation impossible with enough
+ * simultaneous provisions -- nothing here can -- it makes it BOUNDED, and the deferral is logged
+ * rather than silent.
+ */
+export const PROVISION_DRIVE_TENANT_SLICE_MS = 60_000;
 
 /**
  * DRIVE THE PROVISIONS NOBODY IS POLLING (cp#429).
@@ -1059,41 +1076,104 @@ export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<
     candidates.push(...rows);
   }
 
-  let driven = 0;
+  const tickStartedAt = deps.now();
+  const tickSpent = () => deps.now() - tickStartedAt;
+
+  let drives = 0;
   let deferred = 0;
+  let budgetExhausted = false;
+
   for (const tenant of candidates) {
-    if (driven >= MAX_PROVISION_DRIVES_PER_TICK) {
+    if (tickSpent() >= PROVISION_DRIVE_TICK_BUDGET_MS) {
+      budgetExhausted = true;
       deferred += 1;
       continue;
     }
-    const job = await deps.store.getLatestJobForTenant(tenant.id);
-    if (!job) continue;
 
-    // AWAIT, do not waitUntil (the scheduled handler owns its whole invocation). The seam collects
-    // the resume promise so this loop can await it and count a drive that actually happened.
-    const work: Promise<unknown>[] = [];
-    try {
-      const reaped = await driveJobIfNeeded((p) => void work.push(p), deps, tenant, job);
+    // DRIVE THIS JOB UNTIL IT STOPS MOVING, not once and then five minutes of nothing (cp#429).
+    //
+    // A drive buys at most PROVISION_INVOCATION_BUDGET_MS (15s) and then YIELDS, and cp#158 hands
+    // the lease straight back on that yield so the next driver does not wait out a dead lease.
+    // Driving once per tick threw exactly that away: 15s of work per 300s of clock, a 5% duty
+    // cycle, roughly twenty times slower than the poll path this replaces. Looping here is what
+    // spends the hand-back the guard was written to buy.
+    //
+    // Each pass RE-READS the job and goes back through driveJobIfNeeded, so every guard is
+    // re-evaluated on the row as it now stands rather than on a stale copy, and each pass takes
+    // its own claimJob. Nothing about looping widens what may be driven.
+    const sliceStartedAt = deps.now();
+    for (;;) {
+      if (tickSpent() >= PROVISION_DRIVE_TICK_BUDGET_MS) {
+        budgetExhausted = true;
+        break;
+      }
+      if (deps.now() - sliceStartedAt >= PROVISION_DRIVE_TENANT_SLICE_MS) {
+        console.log("scheduled.provision_drive_slice_spent", JSON.stringify({ tenant: tenant.id, drives }));
+        break;
+      }
+
+      const job = await deps.store.getLatestJobForTenant(tenant.id);
+      if (!job) break;
+
+      // AWAIT, do not waitUntil (the scheduled handler owns its whole invocation). The seam
+      // collects the resume promise so this loop can await it and count a drive that HAPPENED.
+      const work: Promise<unknown>[] = [];
+      let reaped: ProvisionJob | null = null;
+      try {
+        reaped = await driveJobIfNeeded((p) => void work.push(p), deps, tenant, job);
+      } catch (e) {
+        // One tenant cannot take the sweep down with it, for the same reason the tick isolates
+        // its halves (cp#290): the symptom would be an absence in every OTHER tenant.
+        console.error("scheduled.provision_drive_threw", JSON.stringify({ tenant: tenant.id, error: String(e) }));
+        break;
+      }
+
       if (reaped) {
+        // Declared lost. Terminal, so there is nothing left to drive on this tenant.
         console.log("scheduled.provision_drive_reaped", JSON.stringify({ tenant: tenant.id, job: job.id }));
+        break;
       }
-      if (work.length) {
-        driven += 1;
-        console.log("scheduled.provision_drive", JSON.stringify({ tenant: tenant.id, job: job.id, step: job.step }));
-        // The provisioner records every outcome on the job row itself; awaiting here is about not
-        // letting the tick finish mid-write, not about reading a result.
+
+      // NOTHING DISPATCHED MEANS A GUARD SAID NO, AND THIS IS THE LOOP TERMINATION PROOF. Every
+      // no-dispatch path is stable under re-reading the same row: terminal job, wrong kind,
+      // cp#132 queued-and-undriven, a lost claim, no provisioner. Retrying any of them would spin
+      // until the budget ran out and burn the tick, so a refusal ends this tenant rather than
+      // being retried. The only path that continues is one that actually drove.
+      if (!work.length) break;
+
+      drives += 1;
+      console.log("scheduled.provision_drive", JSON.stringify({ tenant: tenant.id, job: job.id, step: job.step }));
+      // The provisioner records every outcome on the job row itself; awaiting is about not letting
+      // the tick finish mid-write, not about reading a result.
+      try {
         await Promise.all(work);
+      } catch (e) {
+        console.error("scheduled.provision_drive_threw", JSON.stringify({ tenant: tenant.id, error: String(e) }));
+        break;
       }
-    } catch (e) {
-      // One tenant cannot take the sweep down with it, for the same reason the tick isolates its
-      // halves (cp#290): the symptom would be an absence in every OTHER tenant.
-      console.error("scheduled.provision_drive_threw", JSON.stringify({ tenant: tenant.id, error: String(e) }));
     }
   }
 
-  if (deferred) {
-    console.log("scheduled.provision_drive_deferred", JSON.stringify({ count: deferred, next_tick: true }));
-  }
+  // EVERY TICK SAYS HOW IT ENDED, and the two endings are named rather than inferred (ernst).
+  //
+  // A tick that ran out of budget and a tick that finished everything both go quiet otherwise, and
+  // the quiet one reads as "all done". That is the same self-sealing absence as a truncated page:
+  // the reassuring reading is the one you get for free. So the outcome is EXPLICIT and always
+  // logged, and budget_spent additionally carries how much was left undone.
+  //
+  // budget_spent means work remains that this tick could not reach; the next tick continues it.
+  // drained means every candidate was driven until its own guards stopped it, which is the only
+  // state that actually means there is nothing left to do.
+  console.log(
+    "scheduled.provision_drive_tick",
+    JSON.stringify({
+      outcome: budgetExhausted ? "budget_spent" : "drained",
+      drives,
+      tenants_seen: candidates.length,
+      tenants_deferred: deferred,
+      budget_ms: PROVISION_DRIVE_TICK_BUDGET_MS,
+    }),
+  );
 }
 
 async function provision(
