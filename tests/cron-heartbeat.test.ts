@@ -226,7 +226,7 @@ describe("a half that swallows its own errors must still be able to go RED (cp#4
 
     const row = await heartbeat();
     expect(row?.halves.provision_drive.ok).toBe(false);
-    expect(String(row?.halves.provision_drive.detail)).toMatch(/1 drive failure\(s\) over 1 drive\(s\) across 1 tenant\(s\)/);
+    expect(String(row?.halves.provision_drive.detail)).toMatch(/drive_errors=1 drives=1 tenants_seen=1/);
     expect(row?.ok).toBe(false);
   });
 
@@ -404,7 +404,7 @@ describe("the summary counts DRIVES, not tenants (cp#436 x cp#442)", () => {
     // THE ASSERTION THE MERGE HAD TO SURVIVE. Counters left outside the loop say 2 here.
     expect(summary.drives).toBe(4);
     // And the tenant count did NOT become a drive count in the process.
-    expect(summary.candidates).toBe(2);
-    expect(summary.errors).toBe(0);
+    expect(summary.tenants_seen).toBe(2);
+    expect(summary.drive_errors).toBe(0);
   });
 });

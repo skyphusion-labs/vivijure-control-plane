@@ -251,23 +251,25 @@ export async function runScheduledTick(env: ControlPlaneEnv, deps: ControlPlaneD
     // ok on absence-of-throw would stay green through a total outage of the thing it measures.
     // The error COUNT is what carries the information, so that is what is read.
     halves.provision_drive =
-      drive.errors === 0
+      drive.drive_errors === 0
         ? { ok: true }
         : {
             ok: false,
-            // THREE NUMBERS, EACH WITH ITS OWN UNIT, AND NO RATIO BETWEEN THEM. This used to read
-            // "N of M candidates threw", which was true only while each tenant got exactly one
-            // drive. Under the cp#442 in-tick loop errors are per-DRIVE and candidates are
-            // per-TENANT, so that sentence could print "3 of 2" -- and the times it did NOT look
-            // absurd were the dangerous ones, because it would read plausibly and mean something
-            // other than it said.
+            // NAMED FIELDS, NEVER AN X-of-Y PHRASE (ernst). A ratio phrase ASSERTS a shared unit,
+            // so pairing a drive count with a tenant count is wrong even when both numbers are
+            // right. This read N of M candidates threw, which was true only while each tenant got
+            // exactly one drive.
+            //
+            // The absurd rendering was the LUCKY one: 3-of-2 announces itself, 2-of-3 does not and
+            // is equally wrong. Every number here stands beside its own denominator name, so the
+            // unlucky version cannot be WRITTEN rather than having to be noticed.
             detail:
-              String(drive.errors) +
-              " drive failure(s) over " +
+              "drive_errors=" +
+              String(drive.drive_errors) +
+              " drives=" +
               String(drive.drives) +
-              " drive(s) across " +
-              String(drive.candidates) +
-              " tenant(s)",
+              " tenants_seen=" +
+              String(drive.tenants_seen),
           };
   } catch (e) {
     console.error("scheduled.provision_drive_threw", String(e));
@@ -1153,27 +1155,41 @@ export const PROVISION_DRIVE_TENANT_SLICE_MS = 60_000;
  * signal the half can give, so it is reported rather than left to the log.
  */
 export interface ProvisionDriveSummary {
-  /** Tenants CONSIDERED this tick. A tenant count, not a work count. */
-  candidates: number;
   /**
-   * DISPATCHES across all tenants. NOT a tenant count (cp#442): the in-tick loop drives one tenant
-   * repeatedly until it stops yielding, so this can exceed `candidates` and routinely will.
+   * EVERY NUMBER CARRIES ITS OWN DENOMINATOR IN ITS NAME, and that is the whole design of this
+   * type rather than a naming preference (ernst, cp#436 x cp#442).
+   *
+   * These were once `candidates`, `driven`, `deferred`, `errors`, back when each tenant got exactly
+   * ONE drive and every field was secretly the same unit. The in-tick loop split them apart, and
+   * counting correctly is NOT sufficient: an \"X of Y\" phrase ASSERTS a shared unit, so any report
+   * pairing a drive count with a tenant count is wrong even when both numbers are right.
+   *
+   * \"3 of 2 tenants threw\" was the LUCKY version of that bug -- it announces itself. \"2 of 3\" is
+   * equally wrong and reads fine. Naming the fields for their units is what makes the unlucky
+   * version impossible to WRITE, instead of something a careful reader has to keep noticing.
+   */
+
+  /** Tenants CONSIDERED this tick. A tenant count. */
+  tenants_seen: number;
+  /** Tenants the tick budget never reached. A tenant count. */
+  tenants_deferred: number;
+  /**
+   * DISPATCHES across all tenants. NOT a tenant count: the in-tick loop drives one tenant
+   * repeatedly until it stops yielding, so this can exceed `tenants_seen` and routinely will.
    */
   drives: number;
-  /** Tenants the tick budget did not reach at all. */
-  deferred: number;
   /**
-   * PER-DRIVE failures, not per-tenant breaks. One tenant can contribute several.
+   * Per-DRIVE failures. NOT per-tenant breaks; one tenant can contribute several.
    *
-   * This is the field the cp#436 heartbeat judges the half on, and it is the reason the half
-   * returns anything: runPendingProvisionDrive catches per drive and returns NORMALLY when every
+   * This is the field the cp#436 heartbeat judges the half on, and the reason the half returns
+   * anything at all: runPendingProvisionDrive catches per drive and returns NORMALLY when every
    * drive it attempted failed, so absence-of-throw says nothing about whether it worked.
    */
-  errors: number;
+  drive_errors: number;
 }
 
 export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<ProvisionDriveSummary> {
-  const empty: ProvisionDriveSummary = { candidates: 0, drives: 0, deferred: 0, errors: 0 };
+  const empty: ProvisionDriveSummary = { tenants_seen: 0, tenants_deferred: 0, drives: 0, drive_errors: 0 };
   // No provisioner is a REFUSAL, and it returns zeroes rather than throwing. The heartbeat reads
   // errors, so a plane with no provisioner reports a clean half -- correct, because there is no
   // work it failed to do; cp#436 records configuration gaps at the meter half, which owns that.
@@ -1315,7 +1331,7 @@ export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<
   // Reporting one against the other would produce sentences like "3 of 2 candidates threw", and
   // the version that does NOT print an obvious absurdity is the dangerous one: it reads plausibly
   // and means something other than it says.
-  return { candidates: candidates.length, drives, deferred, errors };
+  return { tenants_seen: candidates.length, tenants_deferred: deferred, drives, drive_errors: errors };
 }
 
 async function provision(
