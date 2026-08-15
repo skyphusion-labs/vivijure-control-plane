@@ -6,6 +6,207 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.24.0 -- 2026-08-15
+
+### fix(admin): module-readiness reports the uncertainty instead of settling it (cp#254)
+
+`GET /api/admin/tenants/:id/module-readiness` sampled `/ready` twice, 250ms apart, returned the
+second sample and discarded the first (PR #349, `bf35182be2`). cp#254 had ruled against settling
+inside the route and for reporting the uncertainty, and the merged change did neither: it settled,
+badly, and reported nothing about it.
+
+Badly, because of the measured numbers. The convergence window on the replace path is 40 to 50
+seconds (reproduced live twice: `TFTFFF` and `FTFFF`), so two samples 250ms apart are two reads of
+one transient. On `FTFFF` the second read is `true`, and the worker it described was a `keyframe`
+re-uploaded with `TELEMETRY_DB` REMOVED -- the negative control, answered wrong, and now wearing the
+appearance of a second opinion. A caller could not tell a mid-convergence answer from a settled one,
+which is the defect cp#254 was filed for.
+
+Both samples are now kept. Each module carries `readings` (what every sample said, in order),
+`reads` (the denominator) and `settled` (every sample agreed). `job_log` is still the last reading,
+and is documented as a reading rather than a conclusion. `records_unproven` no longer counts an
+unsettled `"ok"` as proof, and a new `unsettled` array names the modules whose reads disagreed, so
+an operator re-asks instead of re-provisioning. `settled: true` is deliberately weak (nothing in
+this probe contradicted the value, across a gap far shorter than the window); `settled: false` is
+the strong direction and is positive proof the reading is still moving.
+
+A read that never reached the module is kept apart from a module that answered without the field:
+both are `job_log: null`, and only the per-sample state (`unreachable` versus `absent`) separates a
+control plane that cannot dispatch from a tenant image too old to say.
+
+The pre-deploy smoke now CALLS the shipped summary function instead of restating the route predicate
+"character for character" with a comment asking future readers not to let the two diverge.
+
+### feat(teardown): operator `i_own` to override tombstone-only referrers (cp#106)
+
+The referential guard correctly refuses resources other rows still claim, including tombstones, so
+orphans like the rollins-e2e lineage studio worker and R2 bucket (cp#269 / cp#283) were permanently unreapable
+without inventing silent last-referrer-wins.
+
+**Option C from cp#106:** `POST /api/admin/tenants/:id/teardown` accepts `i_own: "<this tenant id>"`.
+When it matches the row under teardown, referrers that are **all** `status=deleted` no longer block.
+The decision is audited on `tenant.teardown` with the actor. Wrong `i_own` gives a 400. Default
+remains refuse (safe).
+
+**Narrowed by option D (cp#335, merged first).** The hatch now applies to LEGACY rows ONLY, meaning
+rows with no `tenant_resource_ownership` claim at all. Three things still refuse regardless of
+`i_own`, and they are what keeps C from undoing D:
+
+- a LIVE referrer (C is a tiebreak among the dead, never an override of the guard);
+- a recorded owner that is not this tenant (the ownership row wins over an operator assertion);
+- an ownership lookup that FAILED, because could-not-determine is not the same answer as legacy.
+
+The refusal message on a legacy row hands the operator the exact `i_own` value to re-run with.
+
+### feat(teardown): record resource ownership at provision (cp#106 option D)
+
+Physical D1 / R2 bucket / R2 token / studio script ids are now claimed in `tenant_resource_ownership`
+when the provisioner writes them. Teardown allows the **recorded owner** past tombstone-only
+referrers without inventing silent last-referrer-wins. Live referrers still always refuse. Rows with
+no ownership claim (legacy) keep the refuse-all-referrers default until re-provision or operator
+`i_own` (cp#334).
+
+### test(runpod): guard the downstream backend-label copies against a training clause (cp#367)
+
+The backend endpoint purpose/label was hand-copied in three downstream places besides its source
+in `PROVISION_PLAN` (`src/runpod.ts`): `public/onboarding-checks.js`, `public/onboarding-api.js`,
+and `docs/hosted-tier.md`. Only the source was guarded (`tests/runpod.test.ts`), so a re-added
+training clause in any downstream copy stayed green.
+
+`src/runpod.ts` now exports `NO_TRAINING_CLAUSE = /lora|train/i`, single-sourcing what was an
+inline literal in that test file. A new `tests/backend-label-copies-no-training-367.test.ts`
+asserts each downstream copy against the same pattern, reading each purpose/label field through
+the module data itself (never a whole-file text scan, which would wrongly flag the `cp#303`
+comments that document the invariant and contain the word training), plus a test pinning the
+count of downstream copies found.
+
+### feat(ci): fail when STUDIO_RELEASE trails the published studio artifact (cf#372)
+
+`STUDIO_RELEASE` is the single value deciding which studio code a hosted tenant runs, and self-host
+pulls the same tag straight from the vivijure-cf release. When the pin trails, hosted and self-host
+run different code from the same nominal tag, against the absolute hosted/self-host parity
+invariant. Nothing anywhere compared those two numbers, so the parity gate read green at the TAG
+while being violated at the RUNTIME; the pin went stale three times, and twice the remedy was to
+bump the value, which has a 100% recurrence rate.
+
+`scripts/check-studio-pin.mjs` is a sibling of `check-satellite-pins.mjs` and deliberately its
+shape: exit 0 current, 1 real drift, 2 could not be PERFORMED and never a pass. RELEASE mode is
+credential-free and now runs in `deploy.yml` preflight, so **a control-plane deploy refuses while
+its pin trails the latest published studio release** -- advancing the pin stops being a follow-up to
+a release and becomes a precondition of one. It is deliberately not the deployed-binding mode
+there: during a deploy that binding is exactly what is about to change, and a check that fires on
+normal operation is a check somebody mutes.
+
+The second mode is why this is two checks rather than one. The Actions variable is a PROPOSAL:
+`render-wrangler.sh` interpolates it into `[vars]` at DEPLOY time and `deploy.yml` fires on a `v*`
+tag only, so between setting the variable and cutting a tag the variable reads NEW and the deployed
+binding reads OLD. Measured 2026-08-14, control first: variable `v1.26.0`, latest published release
+`v1.26.0`, **deployed binding `v1.20.0`**. A check reading only the variable would have been green
+with hosted six releases behind. `studio-pin-drift.yml` runs daily on `ubuntu-latest` and reads the
+live Worker binding, with a known-positive on the same credential and object class in the same run
+because a scope-limited Cloudflare credential returns `success: true` with an empty result.
+
+No tolerance knob, deliberately: a chosen hosted lag is a legitimate answer and belongs in the
+script as a reviewed change carrying its reason, not as an env var anyone can set to infinity in a
+green run. `tests/workflow-guards.test.py` gains structural assertions so the wiring cannot vanish,
+including an ABSENCE assertion that no workflow redirects the checker's endpoint bases -- the one
+edit that would leave it green while measuring nothing.
+
+### fix(routing): `tenantRefusal` fails CLOSED on an unmodelled tenant status (cp#390)
+
+`tenantRefusal` (`src/routing.ts:148`) switched on `tenant.status` with no `default` arm. In this
+function `null` does not mean "no opinion" -- it MEANS dispatch, and a fall-through returned
+`undefined`, which is falsy at its single call site's `if (refused)`. So a tenant whose status the
+switch does not model was served the studio rather than refused: the most successful-looking
+outcome available, with no error and no log line. That silence is why it survived; from the outside
+an unmodelled status and a healthy `live` tenant behaved identically.
+
+`TenantLifecycle` is a COMPILE-TIME claim about a string D1 hands back, so the type system does not
+close this. typecheck catches someone adding a state (TS2366 fires on this function), but not a
+value arriving at RUNTIME: `tenants.status` is `TEXT NOT NULL` with **no CHECK constraint**, unlike
+`credit_holds.status` and `llm_spend_rollup.status` which both carry one. A hand-run migration, a
+manual UPDATE, or version skew between a deploy that knows a new state and one that does not all
+reach the switch with a value outside the union.
+
+The switch now has an explicit `default` that emits a structured `routing.lifecycle_unmodelled`
+event carrying the tenant id and the unrecognised value, then refuses with a 404 -- loud in the log,
+generic on the wire. This matches the direction `routingStatusFor()` in `tenant-resolver.ts` already
+documents for the same column; two projections of one column falling opposite ways was the defect.
+
+### fix(routing): `routing.lifecycle_unmodelled` gates the status key on PRESENCE, not on type (cp#392)
+
+The cp#392 fix stopped an absent status rendering as the literal string `"undefined"` by including
+the `status` key only when the field is a string. That dropped every non-string too, so a status
+that is PRESENT and holds `7`, `null`, `true` or an object rendered exactly like a column that is
+not there. The event could no longer tell "no status column" from "status held 7", which is the
+same ambiguity cp#392 was opened about, inverted.
+
+The key is now included whenever the field is PRESENT on the row. The value keeps its JSON type,
+so `7` and `"7"` stay different in the log. Values JSON cannot carry faithfully or safely
+(object, array, bigint, symbol, function, a present-but-undefined value, NaN, Infinity) render as
+a bracketed type tag such as `[unloggable object]` rather than a plausible-looking string; the
+bigint case also keeps `JSON.stringify` from throwing on the refusal path. An absent status still
+omits the key entirely, unchanged.
+
+### fix(routing): `routing.lifecycle_unmodelled` no longer renders an absent status as `"undefined"` (cp#392)
+
+The `default` arm added in cp#390 emitted the unrecognised status via
+`String((tenant as { status: unknown }).status)`. When `tenant.status` is absent,
+`String(undefined)` yields the literal string `"undefined"`, a normal-looking JSON value
+indistinguishable from a status column that genuinely holds those six characters. The event exists
+to be the only signal on this fail-closed path, so an absence rendered as a plausible value defeats
+the point of logging it.
+
+The `status` key is now included only when the field is actually a string; an absent status omits
+the key entirely, the same honesty `JSON.stringify` already gives the `tenant` key when
+`tenant.id` is absent. An unmodelled-but-present status (e.g. `"archived"`) is still logged
+verbatim, unchanged.
+
+### fix(legal): AUP 1.1.0 as a new version, and a gate that stops the label and the bytes drifting apart (cp#396)
+
+`AUP_VERSION` names a policy document and `AUP_URL` points at one, and nothing tied the two
+together. On 2026-08-14 `AUP_URL` was repointed at a different document while `AUP_VERSION` stayed
+`1.0.0`. The change sat staged in the repository variables, invisible at runtime, armed to swap the
+accepted policy text on the next deploy of this Worker for any unrelated reason. Nobody had to
+intend it, and nothing would have reported it.
+
+A count against the live control-plane D1 settles what that would have cost: **4 accounts have
+accepted 1.0.0** (2026-07-17, 2026-07-25 twice, 2026-08-01), every row recording sha256
+`1072c782`. Under the first-serve rule in `docs/legal/hosted/README.md`, 1.0.0 froze the moment it
+was served, so the cp#394 correction ships as **`aup/1.1.0.md`**, a new file, rather than as an
+edit to the version those four people agreed to. MINOR and not PATCH: 1.1.0 scopes a claim that
+1.0.0 makes of ALL tenants (that rendering happens on GPU endpoints running on the tenant own
+RunPod account, false for a pooled tenant per `provisioner.ts:202`), which changes what a person
+is agreeing to rather than correcting a typo.
+
+`scripts/check-aup-pin.sh` now runs in both deploy jobs before the render. It fetches `AUP_URL`,
+hashes the bytes, and refuses the deploy unless they match the sha256 recorded for `AUP_VERSION` in
+the new `docs/legal/hosted/aup/SHA256SUMS`. Bump the version without re-pinning the pointer and it
+refuses; move the pointer without cutting a version and it refuses; a version with no recorded sha
+refuses too, because an unverifiable document is exactly what should not reach a signup gate.
+
+**The endpoint could never have caught this, and it looks like it should have.**
+`GET /api/aup/current` returns a `sha256`, but `src/index.ts` computes it at request time from the
+bytes it has just fetched, so it agrees with whatever it serves by construction and has nothing to
+disagree WITH. A checksum computed downstream of the thing it guards is a receipt, not a control.
+The recorded sha is the independent value it can finally be compared against.
+
+Two facts this turned up, recorded in `docs/legal/hosted/README.md` rather than left in a comment
+thread. The version changelog claimed both in-place amendments to 1.0.0 were legitimate because
+they were pre-serve with zero acceptance records; the count shows the 2026-07-28 amendment landed
+after THREE acceptances and the 2026-08-14 one after all four. And no revision of `aup/1.0.0.md` in
+this repository has ever hashed to the served value, across all three of its commits: the document
+four people accepted exists only in `vivijure-cf` at an orphaned commit. **That file has now been restored** from `vivijure-cf@8a5d96b4` and verified to hash to the
+served value. Restoring a frozen version file is not a violation of the freeze: the rule binds
+the bytes that were SERVED, and `AUP_URL` still points at the cf commit, so this corrects the
+record and changes nothing a tenant can reach. `scripts/check-aup-files-immutable.sh` now hashes
+every version file against `SHA256SUMS` on every CI run, which is the check that would have
+caught all three in-place edits.
+
+1.1.0 also drops the `Status: DRAFT, not in force` line. The gate hard-blocks live accounts
+until they accept; asking them to accept a document that disclaims its own force is either a
+false label or a theatrical gate, and it cannot be both.
+
 ## v1.23.0 -- 2026-08-13
 
 ### docs(modules): control-plane.md matches the shipped 15-entry catalog (cp#284)
