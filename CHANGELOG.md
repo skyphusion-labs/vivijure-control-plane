@@ -6,6 +6,196 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.25.0 -- 2026-08-15
+
+**THIS TAG ARMS THE HOSTED SHARED TIER FOR THE FIRST TIME.** Everything below was staged across
+three merges; the tag is what fires it. Recorded plainly because whoever reads this later needs to
+know this was the moment, not one of the releases around it.
+
+Four things happen at once:
+
+1. **The shared tier is OFFERED where it never has been.** `SHARED_RUNPOD_ENDPOINTS` is written
+   with two entries (`backend` and `lipsync`), so `offersSharedTier()` returns true for the first
+   time and `POST /api/admin/tenants/provision` stops answering `503 shared_tier_unavailable`.
+2. **The deploy-time scope gate runs armed for the first time.** It arms itself off the pool
+   variable being non-empty, so that expression has never evaluated true before this deploy. It
+   verifies the shared invoke key reaches every endpoint the pool names, and REFUSES the deploy
+   otherwise.
+3. **Existing accounts get `403 aup_required` until each accepts AUP 1.1.0.** Four accounts exist,
+   all internal; no external account can be interrupted by this.
+4. **The own-iron door pool goes live.** Tenant video and audio upscale reach hardware we operate
+   over Workers VPC bindings rather than RunPod endpoints.
+
+**Why the pool has two entries and not four.** Until the transport split below, a complete pool was
+unwritable: it had to name an endpoint for every plan key, including the two upscale capabilities,
+and the shared invoke key is deliberately scoped with no access to those. The config could be
+complete or reachable, never both. Trimming the pool to the endpoint-backed capabilities is what
+made the variable writable at all, and it is the reason this release can be armed.
+
+**One deliberate regression, recorded rather than discovered.** A dedicated (BYOK) tenant no longer
+receives RunPod endpoints for video or audio upscale; it reaches our own hardware instead. That is
+an accepted, deferred cost of shipping the shared tier first, it affects no live tenant, and the
+full enumeration of what a BYOK tenant loses and what a backport must restore is filed separately.
+
+**Operator note.** Provisioning now requires the own-iron door values to be configured. A
+vpc-backed capability with no door has no transport at all, so the plane refuses at
+`modules_upload` and names the variables to set, rather than provisioning a studio that dies at a
+tenant first render.
+
+### feat(runpod): a vpc-backed capability carries a DOOR POOL, one per GPU box (cp#396)
+
+`vivijure-cf` at the pinned v1.28.0 does not read ONE door per capability. Both `finish-upscale`
+and `speech-upscale` build `doorPool([...])` from a candidate per box and round-robin with
+`pickDoor`: `FINISH_UPSCALE_VPC` + `FINISH_DOOR_TOKEN` for fatmike, and
+`FINISH_UPSCALE_VPC_PROPAGANDHI` + `FINISH_DOOR_TOKEN_PROPAGANDHI` for propagandhi. **Four bindings
+per capability, not two.**
+
+The first cut of the transport split bound only the legacy door. Not wrong -- `pickDoor` is
+`n % pool.length`, so a pool of one is a working pool -- but it would have **concentrated every
+tenant render on one box while the other idled**, diverging from the operator studio that already
+pools both, with no signal attached to the difference.
+
+`PlannedVpcCapability` now carries `doors: PlannedDoor[]`, `resolveVpcDoors` resolves each, and
+`uploadTenantModules` binds every configured one.
+
+**THE REFUSAL LOOSENS TO ZERO DOORS, not fewer-than-all.** A partly-wired plane still provisions and
+simply concentrates on the box it has; only an empty pool has no transport at all. Both-or-neither
+still applies WITHIN a door: a binding without its bearer is dropped and logged naming both vars,
+because attaching it would upload clean and 401 on every render.
+
+**ORDER IS LOAD-BEARING and is asserted.** The legacy door is first and keeps the bare
+`DOOR_ROUTE_NAME`, which is what an in-flight poll token carries; `resolveDoor` is a LOOKUP by that
+name rather than a pick, so polling any door but the one that MINTED a job reports a live job as
+GONE. Reordering the array is the kind of change that looks like tidying and is not.
+
+**`resolveVpcDoors` iterates the PLAN**, so a secret whose name no plan door references is never
+read and never reaches an upload. That is what made it safe to set the second-door values before
+this landed: they sat inert rather than half-attaching anything.
+
+**The failure mode worth knowing:** setting ONLY the propagandhi ids leaves the legacy-named
+capability with no door and refuses every provision at `modules_upload`. The names do not make the
+legacy/second relationship obvious, and the legacy pair is the FATMIKE one.
+
+Test fixtures now derive their doors from the plan (`tests/door-fixture.ts`) rather than listing
+them, so a third box is a plan edit and nothing else. **Watched failing on the real regression:**
+binding only the first door turns both the module-binding and provisioner transport assertions red.
+Each door is also asserted to carry its OWN service id, so a copy-paste pointing both at one box
+fails rather than silently halving the pool back down.
+
+### feat(runpod): PROVISION_PLAN capabilities carry a TRANSPORT, so upscale reaches our own iron (cp#396)
+
+`SHARED_RUNPOD_ENDPOINTS` is all-or-nothing across plan keys, and the shared invoke key was minted
+with NO access to `vivijure-video-upscale` or `vivijure-audio-upscale` because those two run as
+always-on serve containers on GPU hardware we operate. **So the correct pool config could not be
+WRITTEN AT ALL**: four keys demanded, two of which must not exist. The ruling lived in the
+credential and not in the code, and nothing could report the disagreement.
+
+A capability now declares how it is REACHED. `backend` and `lipsync` stay endpoint-backed.
+`upscale` and `audio-upscale` are vpc-backed: the tenant MODULE worker reaches them over a Workers
+VPC service binding. **A capability is never removed from a tenant, only re-routed** -- a shared
+tenant keeps full upscale and reaches our GPU boxes instead of RunPod, consuming no RunPod quota.
+
+`requiredPoolKeys()` now demands coverage for endpoint-backed entries only, which is what makes
+`SHARED_RUNPOD_ENDPOINTS` writable with the key exactly as it is already scoped. That was the
+point of the change.
+
+**THE BINDING GOES ON THE MODULE, NOT THE STUDIO, and getting that wrong is silent.** Upscale is a
+module capability: the studio dispatches to a module worker, and the module worker is what talks to
+RunPod or to a door. The names are not ours to choose -- vivijure-cf declares them (cf#480, shipped
+v1.21.0, present in the pinned v1.28.0): `FINISH_UPSCALE_VPC` + `FINISH_DOOR_TOKEN` on
+`modules/finish-upscale`, `SPEECH_UPSCALE_VPC` + `SPEECH_DOOR_TOKEN` on `speech-upscale`.
+`doorBound()` short-circuits before `credentialProblem`, so a door-bound module is bound NO
+`RUNPOD_ENDPOINT_ID` at all; binding an empty string to satisfy a shape is exactly the first-render
+failure this removes. A binding attached to the studio under a name nothing reads would upload
+clean and change nothing.
+
+**THE GUARD THAT SHOULD HAVE EXISTED, and now does.** `uploadTenantModules` throws when a catalog
+`endpointKey` has no endpoint. Trimming the plan orphaned `finish-upscale` and `speech-upscale`,
+so an earlier attempt at this split **killed every provision, shared and dedicated, at
+`modules_upload`** while typecheck was clean and the suite was fully green. Nothing could see it:
+the provisioner fixtures were hand-written four-entry endpoint literals, so they passed by asserting
+a shape the code could no longer produce. **A fixture that hardcodes what it should derive cannot
+fail when the source of truth moves** -- the same defect class as `requiredPoolKeys()` deriving from
+the plan, inverted.
+
+`tests/module-transport-coupling.test.ts` reads both real lists and asks the question neither can
+answer alone. **Watched failing on the real defect**, not just written: deleting the `upscale`
+capability from `PROVISION_PLAN` turns it red naming `finish-upscale`. It carries a seeded-offender
+control and a disjointness control, so it cannot pass by comparing two empty sets. The guard also
+distinguishes THREE cases where there were two -- no key, key-but-vpc-backed, key-but-missing -- and
+only the third still throws.
+
+Every fixture that hardcoded the four-endpoint world is now DERIVED from the plan, so this class
+cannot recur silently.
+
+**A NEW HARD PRECONDITION, and it is the thing to know before deploying.** A vpc-backed capability
+with no door configured has no transport at all, so `uploadTenantModules` REFUSES and names both
+vars. **Until the door vars are set, no tenant can be provisioned.** That is the correct failure
+direction -- refusing at provision beats dying at a tenant first render -- but it is a precondition
+that did not exist before. Four values, and both halves of each door are required:
+
+| var | contains |
+|---|---|
+| `FINISH_UPSCALE_VPC_SERVICE_ID` | Connectivity Directory service id for the video upscale door |
+| `FINISH_DOOR_TOKEN` | that container LOCAL_FINISH_TOKEN bearer |
+| `SPEECH_UPSCALE_VPC_SERVICE_ID` | Connectivity Directory service id for the audio upscale door |
+| `SPEECH_DOOR_TOKEN` | that container LOCAL_FINISH_TOKEN bearer |
+
+BOTH OR NEITHER per door: a binding without its bearer is not a partial rollout, it is a module that
+switches transport and is then refused 401 on every call. `resolveVpcDoors` drops a half-set door
+and logs both var names, because an operator who set one has no other way to find out.
+
+Also derives the endpoint COUNT in `quotaGuidance` from the plan; it read a hardcoded "4 endpoints"
+in a tenant-facing message, which the split made simply false.
+
+### ci(deploy): refuse a deploy whose shared pool names an endpoint the invoke key cannot reach (cp#396, cp#389)
+
+`SHARED_RUNPOD_ENDPOINTS` is a repository VARIABLE and `SHARED_RUNPOD_INVOKE_KEY` is a SECRET.
+They are set independently, by hand, at different times, and nothing compared them. There is no
+RunPod API that reports a key permission set, so the plane cannot read its own credential scope
+from code.
+
+Every existing check passes while the two disagree: the pool parses, `requiredPoolKeys()` is
+satisfied, provisioning succeeds and the studio is served. The tenant finds it at their FIRST
+RENDER, on whichever capability the key does not cover. It is the same quiet-degrade shape
+`runpod-pool.ts` refuses a partial pool for, one layer up: **a pool can be COMPLETE and still be
+unreachable.**
+
+`src/shared-pool-scope.ts` closes it on the deploy path, and it composes the existing probe rather
+than adding a second one. `verifyInvokeKeyScope` already answers exactly this question at tenant
+paste time (#52 / #60): `GET /v2/<id>/health` returns 200 in scope and 403 out of it, per
+endpoint, ENFORCED by RunPod rather than asserted by us. Two probes that could disagree about one
+key would be worse than none.
+
+**This is not hypothetical, and the gate says so about the CURRENT plan.** A valid pool must name
+an endpoint for the `upscale` plan key, that endpoint is `4q8idwbk6tyqbq`
+(`vivijure-video-upscale`, live on the account), and the shared invoke key is minted with no
+access to it. So arming the shared tier today produces exactly this refusal. That is the gate
+working, and it is what should block cp#389 until either the key scope or the plan changes. The
+refusal names the endpoint and never the key.
+
+**The gate was watched failing on each of its three refusals, not merely written.** Mutating the
+scope branch so it never refuses turns the two refusal tests red and leaves the other seven green,
+so they discriminate rather than decorate. `SHARED_POOL_SCOPE_REQUIRED=1` with nothing configured
+fails and names both absent vars. Setting one half and not the other fails in EVERY mode, which is
+deliberate: gating that check on REQUIRED would have let the misconfiguration nearest this file
+skip silently.
+
+**The out-of-scope fixture is a real endpoint, and that is the point.** A made-up id would also
+produce a refusal, and it would read identically while meaning something else entirely: nothing
+there, rather than there and refused. The live control probes that endpoint on its own, so it
+holds whether or not the pool names it, and asserts the reason is `endpoint_out_of_scope` rather
+than a dead or over-powerful key.
+
+It arms itself off the variable (`SHARED_RUNPOD_ENDPOINTS` non-empty), because an empty pool is a
+legitimate value meaning this plane offers no shared tier. Forcing the gate on would fail a
+correct deploy; leaving it optional would let a declared tier go unproven.
+
+Also, two refusal MESSAGES that misattributed their own cause. `verifyInvokeKeyScope` told an
+operator to scope a key to "your 4 vivijure endpoints" and "all four" from hardcoded literals;
+both now derive from the endpoint list, so a plane whose plan holds a different number stops
+printing a figure that is simply wrong. A refusal naming the wrong knob sends the reader to it.
+
 ## v1.24.0 -- 2026-08-15
 
 ### fix(admin): module-readiness reports the uncertainty instead of settling it (cp#254)
