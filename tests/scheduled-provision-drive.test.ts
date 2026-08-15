@@ -170,4 +170,75 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     expect(resume).toHaveBeenCalledTimes(1);
     expect(tenantRow("ten_6").status).toBe("awaiting_invoke_key");
   });
+
+  // ---- cp#437: the TOTAL-AGE cap ---------------------------------------------------------------
+
+  /** Backdate CREATION, which is the quantity the cap measures and the one re-claiming cannot
+   *  reset. Deliberately separate from noProgressFor above: that moves updated_at, and the whole
+   *  point of the cap is that updated_at is no longer a usable clock under a cron. */
+  const createdAgo = (jobId: string, minutes: number) =>
+    db.prepare("UPDATE provision_jobs SET created_at = datetime(:now, :ago) WHERE id = :id")
+      .run({ now: "now", ago: -minutes + " minutes", id: jobId });
+
+  it("gives up on a job older than the cap, even though it was touched a moment ago", async () => {
+    // THE CASE THE STALENESS RULE CANNOT SEE. updated_at is FRESH here -- claimJob stamps it on
+    // every tick -- so the idle reap will never fire on this row no matter how long it runs.
+    await store.createTenant("ten_old", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_old", "ten_old", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_old");
+    expireLease("job_old");
+    createdAgo("job_old", 3 * 60);
+
+    await runScheduledTick(env(), deps);
+
+    expect(tenantRow("ten_old").status).toBe("failed");
+    expect(jobRow("job_old").status).toBe("failed");
+    expect(jobRow("job_old").error_message).toMatch(/did not complete within/);
+    // and it was REAPED rather than driven: the resume never ran.
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a job INSIDE the cap is still driven, so the cap is not just refusing everything", async () => {
+    // Without this the case above would pass identically against a cap of zero.
+    await store.createTenant("ten_young", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_young", "ten_young", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_young");
+    expireLease("job_young");
+    createdAgo("job_young", 30);
+
+    await runScheduledTick(env(), deps);
+
+    expect(tenantRow("ten_young").status).toBe("awaiting_invoke_key");
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("THE FOREVER LOOP: a job re-claimed every tick is eventually reaped by the cap", async () => {
+    // ernst edge, and the second independent argument for this constant. claimJob stamps
+    // updated_at (store-d1.ts:645), and the cron cadence sits INSIDE the staleness window, so a job
+    // that keeps being claimed keeps resetting the only clock the idle rule reads. Simulated by
+    // ticking repeatedly and letting each tick stamp the row.
+    await store.createTenant("ten_loop", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_loop", "ten_loop", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_loop");
+
+    // A driver that throws AFTER the claim: the row is stamped, nothing progresses, nothing fails.
+    resume.mockImplementation(async () => {
+      throw new Error("driver died after claim");
+    });
+
+    for (let i = 0; i < 3; i += 1) {
+      expireLease("job_loop");
+      await runScheduledTick(env(), deps);
+      // updated_at is fresh after every tick, which is exactly why the idle rule never fires.
+      expect(jobRow("job_loop").status).not.toBe("failed");
+    }
+
+    // Now age it past the cap. THIS is what breaks the loop, and nothing else would.
+    createdAgo("job_loop", 3 * 60);
+    expireLease("job_loop");
+    await runScheduledTick(env(), deps);
+
+    expect(jobRow("job_loop").status).toBe("failed");
+    expect(tenantRow("ten_loop").status).toBe("failed");
+  });
 });

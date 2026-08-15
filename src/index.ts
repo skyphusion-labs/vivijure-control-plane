@@ -846,6 +846,35 @@ async function tenantRoutes(
 const MAX_JOB_STALE_MS = 10 * 60 * 1000;
 
 /**
+ * How old a provision job may get, TOTAL, before it is declared lost.
+ *
+ * WHY A SECOND MEASURE EXISTS ALONGSIDE MAX_JOB_STALE_MS, and it is not belt-and-braces.
+ *
+ * The staleness rule reads IDLE TIME and treats it as evidence a driver died. That inference was
+ * sound while the only driver was a browser poll: a healthy job was being touched constantly, so a
+ * gap meant something had stopped. **The premise expired when the cron became a driver.** Idle time
+ * now measures how long ago the last TICK was, which is a property of the cron schedule and not of
+ * the job at all.
+ *
+ * Worse than uninformative: on a cron-driven job the staleness rule can no longer FIRE. claimJob
+ * sets updated_at = datetime(now) on every successful claim (store-d1.ts:645), and the cron runs
+ * every 5 minutes against a 10-minute window, so each tick resets the clock it is measured by. A
+ * job that throws between claimJob and the provisioner own catch is re-claimed forever, never
+ * reaped, and never reported -- found by ernst on the merged code, independently of the reasoning
+ * above, which is why there are two arguments for one constant.
+ *
+ * TOTAL AGE is the quantity that still carries information once idleness does not: it measures the
+ * job, not the schedule, and no amount of re-claiming can reset it. Two hours is deliberately
+ * generous against a 5-minute cadence -- a healthy provision yields a handful of times and finishes
+ * in tens of minutes -- because this is a runaway guard, not a deadline.
+ *
+ * NOT A FIX FOR cp#438. That is finishJob missing a status predicate, which shares a symptom with
+ * the loop above and has a different cause; a job reaped here still goes through the same
+ * finishJob. Keep them separate.
+ */
+const MAX_PROVISION_JOB_AGE_MS = 2 * 60 * 60 * 1000;
+
+/**
  * One invocation claim on a job. THE store lease length, not a copy of it (cp#148): the poller and
  * the driver heartbeat have to agree on one number, and two 60s literals that agree by luck is how
  * a lease hierarchy drifts.
@@ -896,6 +925,21 @@ async function driveJobIfNeeded(
   // ctx.waitUntil in the admin route) and deliberately has no continuation, so there is nothing
   // here to drive in any case: the correct behavior is to REPORT the job and drive nothing.
   if (job.kind !== "provision") return null;
+
+  // RUNAWAY GUARD, on TOTAL AGE, and it is checked BEFORE the staleness rule because on a
+  // cron-driven job the staleness rule cannot fire at all (see MAX_PROVISION_JOB_AGE_MS).
+  const createdAt = Date.parse(String(job.created_at).replace(" ", "T") + "Z");
+  if (Number.isFinite(createdAt) && deps.now() - createdAt > MAX_PROVISION_JOB_AGE_MS) {
+    await deps.store.finishJob(
+      job.id,
+      "failed",
+      job.step,
+      `provision did not complete within ${Math.round(MAX_PROVISION_JOB_AGE_MS / 60000)} minutes of ` +
+        "being created; giving up rather than driving it forever",
+    );
+    await deps.store.setTenantStatus(tenant.id, "failed");
+    return await deps.store.getJob(job.id);
+  }
 
   // Lost driver: no progress for too long. Fail honestly rather than leave a spinner running.
   const lastProgress = Date.parse(`${job.updated_at.replace(" ", "T")}Z`);
