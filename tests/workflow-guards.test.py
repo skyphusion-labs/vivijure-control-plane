@@ -177,6 +177,76 @@ check("ci pin check names the residual when mirror credentials are absent",
       MIRROR_ABSENT_NOTICE in ci_text,
       "a green without mirror coverage must say so out loud")
 
+# ------------------------------------------------------------------------------------------------
+# cf#372. THE PIN'S FRESHNESS, WHICH EVERY OTHER PIN GATE IS STRUCTURALLY BLIND TO.
+#
+# check-release-modules.py proves the pinned tag RESOLVES. render-wrangler.sh, the -z refusal in
+# preflight, and deps.ts provisionerWiring all refuse an EMPTY pin. Not one of them can fire on a
+# STALE pin, because a six-release-old pin is satisfiable and non-empty in exactly the way a current
+# one is. That gap recurred three times and twice survived being "fixed" by bumping the value.
+#
+# These are SHAPE assertions: the freshness check is credential-free, but this suite does not reach
+# the network, so what is asserted here is that the wiring exists and cannot quietly disappear.
+
+drift_path = root / ".github/workflows/studio-pin-drift.yml"
+check("the scheduled studio-pin drift workflow exists", drift_path.exists(),
+      "the deploy gate cannot observe the window between a cf release and the next deploy")
+
+drift_wf = yaml.safe_load(drift_path.read_text()) if drift_path.exists() else {}
+drift_text = str(drift_wf)
+drift_jobs = drift_wf.get("jobs", {})
+
+check("preflight checks the studio pin is the latest published release",
+      "check:studio-pin" in preflight_text,
+      "preflight run text: " + preflight_text[:300])
+
+# RELEASE mode on the deploy path, mirroring the check:pins/--prod split directly above. `--deployed`
+# reads the LIVE binding, and during a deploy that binding is exactly what is about to change, so it
+# would be red by construction on every release carrying a pin bump. A check that fires on normal
+# operation is a check somebody mutes.
+check("the deploy path uses RELEASE mode, never the deployed-binding read",
+      "check:studio-pin:deployed" not in preflight_text and "--deployed" not in preflight_text,
+      "preflight must not assert against a binding it is in the middle of replacing")
+
+# The drift workflow's whole reason to exist is the surface deploy CANNOT check. If it dropped to
+# release mode it would re-ask the question the deploy gate already answers and the runtime surface
+# would go unmeasured again -- silently, and with a green tick.
+check("the drift workflow reads the DEPLOYED binding, not just the variable",
+      "check:studio-pin:deployed" in drift_text,
+      "the repo variable is a proposal; the deployed binding is what a tenant receives")
+
+check("the drift workflow runs on a schedule", bool((drift_wf.get(True) or drift_wf.get("on") or {}).get("schedule")),
+      "a deploy-triggered check cannot observe a window in which nothing deploys")
+
+check("the drift workflow runs on ubuntu-latest (public repo; fork-safe lane)",
+      all(j.get("runs-on") == "ubuntu-latest" for j in drift_jobs.values()),
+      "runs-on: " + str([j.get("runs-on") for j in drift_jobs.values()]))
+
+# THE ONE EDIT THAT WOULD SILENTLY DISARM THE CHECKER. check-studio-pin.mjs lets its endpoint bases
+# be redirected so the test suite can drive every refusal path locally. The script prints the
+# redirection on every such run, but a workflow setting it would produce a green that measured
+# nothing. Asserting its ABSENCE is what protects the deletion; sync-checking what remains does not.
+for name, text in (("deploy.yml", str(wf)), ("studio-pin-drift.yml", drift_text)):
+    check("no workflow redirects the pin checker's endpoints (" + name + ")",
+          "CHECK_STUDIO_PIN_GH_API" not in text and "CHECK_STUDIO_PIN_CF_API" not in text,
+          "a redirected run is not a measurement of the live estate")
+    # cp#393 added a third test-only override, CHECK_STUDIO_PIN_TIMEOUT_MS, so the abort path is
+    # testable in milliseconds. It belongs under the SAME absence assertion for the same reason: a
+    # deletion is protected by asserting the duplicate is ABSENT, never by sync-checking what
+    # remains. Its failure direction is closed -- a short timeout can only produce a REFUSAL, never
+    # a pass -- but a workflow setting it would still be shortening a live measurement silently.
+    check("no workflow shortens the pin checker's timeout (" + name + ")",
+          "CHECK_STUDIO_PIN_TIMEOUT_MS" not in text,
+          "an abbreviated timeout is not a measurement of the live estate")
+
+# Anchored on the EMITTED string, for the reason recorded above the mirror-notice assertion: a
+# vocabulary match is supplied by unrelated text. A skip here would be an absence reading as OK,
+# and this job never runs from a fork, so an absent credential is a defect and not a fork condition.
+DRIFT_CRED_REFUSAL = "::error::CLOUDFLARE_API_TOKEN is unset"
+check("the drift workflow REFUSES on an absent credential instead of skipping",
+      DRIFT_CRED_REFUSAL in drift_text,
+      "an unperformed check must not look like a check that ran and found nothing")
+
 print("")
 print("  " + str(checks - len(failures)) + " passed, " + str(len(failures)) + " failed")
 sys.exit(1 if failures else 0)

@@ -156,6 +156,9 @@ jobs:
           SMOKE_RENDER_COOLDOWN_SECONDS: ${{ vars.SMOKE_RENDER_COOLDOWN_SECONDS }}
           SMOKE_RENDER_DAILY_CAP: ${{ vars.SMOKE_RENDER_DAILY_CAP }}
           SMOKE_RENDER_INFLIGHT_SECONDS: ${{ vars.SMOKE_RENDER_INFLIGHT_SECONDS }}
+          # cp#48: keep SELFHOST-SKIP fleet blocks (tail_consumers -> vivijure-tail). Self-host
+          # renders strip them by default so a dangling tail name does not fail wrangler deploy.
+          KEEP_FLEET_ONLY: "1"
         run: scripts/render-wrangler.sh wrangler.toml
 
       # ARTIFACT-EXISTENCE GATE (cp#187). Read the step comment on "Deploy control-plane worker"
@@ -246,6 +249,37 @@ jobs:
       # a mystery.
       - name: Satellite image pins resolve at GHCR
         run: npm run check:pins
+
+      # STUDIO PIN FRESHNESS, ON THE DEPLOY PATH (cf#372).
+      #
+      # The "Pinned release is satisfiable by this plane" step above proves the pin RESOLVES -- the
+      # artifact exists, the manifest hashes, the mirror carries the bytes. It cannot report that
+      # the pin is six releases OLD, because a stale pin is satisfiable in exactly the way a current
+      # one is. Every pin gate on this path fires on an EMPTY pin (render-wrangler.sh REQUIRED_VARS,
+      # the -z refusal above, deps.ts provisionerWiring) and NONE of them can fire on a STALE one.
+      #
+      # That gap is cf#372, and it has recurred three times: cp#259 found the pin at v1.12.0, a bump
+      # took it to v1.13.0; a second bump took it to v1.20.0; it was six behind again eleven days
+      # later. Two "bump it" fixes, 100% recurrence -- so the fix is a gate, not a reminder.
+      #
+      # WHAT THIS BUYS, and it is the mechanism rather than the alarm: a control-plane deploy now
+      # REFUSES while its pin trails the latest published studio release. Advancing the pin stops
+      # being a follow-up to a release and becomes a precondition of one.
+      #
+      # Credential-free (public GitHub API), exactly like check:pins, so it costs the deploy token
+      # nothing.
+      #
+      # RELEASE MODE ONLY, deliberately. `--deployed` reads the LIVE Worker binding, and during a
+      # deploy that binding is precisely what is about to change, so it would be red by construction
+      # on every release carrying a pin bump. A check that fires on normal operation is a check
+      # somebody mutes. The deployed comparison runs on its own cadence in studio-pin-drift.yml.
+      #
+      # EXIT 2 IS NOT A PASS here either: an unreadable freshness check is an unverified pin, and a
+      # GitHub API outage failing this deploy is the correct trade in a tag-gated estate.
+      - name: Studio pin is the latest published release
+        env:
+          STUDIO_RELEASE: ${{ vars.STUDIO_RELEASE }}
+        run: npm run check:studio-pin
 
       # Show what a deploy WOULD do. On a clean release this prints the no-op line; anything else
       # is the cue that this tag carries schema change. Read-only: list, never apply.
@@ -345,6 +379,9 @@ jobs:
           SMOKE_RENDER_COOLDOWN_SECONDS: ${{ vars.SMOKE_RENDER_COOLDOWN_SECONDS }}
           SMOKE_RENDER_DAILY_CAP: ${{ vars.SMOKE_RENDER_DAILY_CAP }}
           SMOKE_RENDER_INFLIGHT_SECONDS: ${{ vars.SMOKE_RENDER_INFLIGHT_SECONDS }}
+          # cp#48: keep SELFHOST-SKIP fleet blocks (tail_consumers -> vivijure-tail). Self-host
+          # renders strip them by default so a dangling tail name does not fail wrangler deploy.
+          KEEP_FLEET_ONLY: "1"
         run: scripts/render-wrangler.sh wrangler.toml
 
       # MIGRATE BEFORE DEPLOY, deliberately. This ordering is load-bearing.

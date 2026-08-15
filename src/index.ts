@@ -1084,6 +1084,225 @@ async function provision(
   return json({ tenant_id: tenant.id, job_id: job.id }, 202);
 }
 
+/**
+ * OPERATOR-PROVISIONED TENANT (cp#376): create the account for a named email and build its studio.
+ *
+ * WHY THIS EXISTS. Provisioning gates on session + accepted AUP, so it needs an ACCOUNT; account
+ * creation is the only thing signups_enabled gates (upsertAccountForVerifiedEmail refuses with
+ * signups_closed exactly when `!existing && !allowCreate`); and no operator route created either an
+ * account or a tenant. So "a studio I provision" had no mechanism behind it and the only available
+ * move was to open public registration, which the launch-gate ruling puts LAST on purpose.
+ *
+ * ================================================================================================
+ * THE AUP IS NOT WAIVED HERE, AND IT IS NOT ASSERTED ON THE OWNER'S BEHALF EITHER.
+ * ================================================================================================
+ *
+ * No acceptance row is written by this route. Nothing here claims the person accepted anything. The
+ * operator does not click through for them, because a recorded acceptance the account holder never
+ * made is a false entry in the one record whose entire value is that it holds up later -- the same
+ * defect cp#193's `operator_claimed` was invented to avoid rather than to normalise.
+ *
+ * What makes that safe is STRUCTURAL, not a check this function performs, and it is worth stating
+ * exactly because a future reader will otherwise reasonably assume a guard is missing:
+ *
+ *   - The provisioning job's success paths end at `awaiting_invoke_key` (provisioner.ts) and never
+ *     write `live`.
+ *   - `setTenantStatus(..., "live")` occurs at exactly ONE site in this tree: performInvokeKeyInstall
+ *     below. (Measured: 1 of 15 setTenantStatus call sites across src/.)
+ *   - performInvokeKeyInstall has exactly TWO callers. One is the session route
+ *     POST /api/tenant/<ten>/invoke-key, which sits BELOW the blocking AUP gate in handle(), so the
+ *     owner cannot reach it without having accepted the current version themselves. The other is the
+ *     cp#169 handoff, which requires an operator to mint a one-time token under studio:operate.
+ *   - Until then routing.ts answers `awaiting_invoke_key` with 503 "still being set up", to everyone
+ *     including the owner.
+ *
+ * So the owner's own first sign-in and AUP acceptance is a PRECONDITION of the studio becoming
+ * usable, by construction. This route deliberately adds no new path around that, which is the whole
+ * design: a structural impossibility survives an edit that deletes a test.
+ *
+ * THE ONE THING THIS ROUTE MUST NEVER DO, stated so nobody adds it as a convenience: mint a cp#169
+ * invoke-key handoff. That is the second caller above and it is unauthenticated by design, so a
+ * handoff issued alongside an operator provision would be a path to `live` with no acceptance
+ * recorded anywhere. It stays a separate route under studio:operate and this function does not call
+ * it. tests/operator-provision-376.test.ts pins that the tenant is left short of live and that no
+ * handoff is issued.
+ *
+ * ON "VERIFIED" EMAIL, because upsertAccountForVerifiedEmail's contract demands the caller have
+ * established verification and an operator typing an address has established nothing. The identity
+ * row linked here is byte-identical to the one the first magic-link redemption would have created,
+ * and the account is unusable until a magic link to THAT address is redeemed -- so the verification
+ * still happens, at the owner's first sign-in, which is the same event the studio cannot go live
+ * without. The residual is named rather than papered over: a mistyped address creates an account
+ * nobody asked for, whose studio never goes live, and whose only key is mail to the typo. The audit
+ * rows below name the operator and the address, so it is attributable and reversible.
+ */
+async function operatorProvision(
+  request: Request,
+  ctx: ExecutionContext,
+  deps: ControlPlaneDeps,
+  actor: string,
+): Promise<Response> {
+  const body = (await readJson(request)) as
+    | { email?: string; slug?: string; runpod_api_key?: string }
+    | null;
+
+  const email = normalizeEmail(String(body?.email ?? ""));
+  const slug = String(body?.slug ?? "").toLowerCase();
+
+  if (!looksLikeEmail(email)) return err("invalid_email", 400);
+  const valid = validateSlug(slug);
+  if (!valid.ok) return err("invalid_slug", 400, { message: slugRejectionMessage(valid.reason) });
+
+  // A KEY IS REFUSED, NEVER IGNORED, and the refusal is about custody rather than tidiness.
+  //
+  // Two hard invariants meet here. The shared tier NEVER gets dedicated RunPod endpoints; and a
+  // consumer reaches RunPod through our product or not at all, with BYOK the sole exception --
+  // where BYOK means the TENANT brings their own RunPod account and is RunPod's customer directly.
+  // An operator cannot bring somebody else's account on their behalf: whatever key an operator
+  // pastes here is either ours (which would issue a key on our account to a consumer, the exact
+  // thing forbidden) or a third party's supplied without them (which is not BYOK, it is an operator
+  // holding a customer's credential). There is no third reading, so there is no honest way to
+  // accept this field and it is refused rather than dropped. Silently ignoring it would leave an
+  // operator believing a dedicated tenant had been created.
+  if (body?.runpod_api_key !== undefined) {
+    return err("runpod_key_not_accepted", 400, {
+      message:
+        "an operator-provisioned studio always lands on our shared render capacity and never " +
+        "receives a RunPod key. A tenant who wants their own RunPod account provisions it " +
+        "themselves once they can sign in; that is what BYO means. Nothing was created.",
+    });
+  }
+
+  if (!deps.provisioner) return err("provisioner_unconfigured", 503);
+  // No key is accepted above, so a plane with no shared tier cannot serve this route at all. This is
+  // deliberately NOT `runpod_key_required`: that refusal tells the caller to supply a key, and there
+  // is no key the caller may supply here.
+  if (!deps.provisioner.offersSharedTier()) {
+    return err("shared_tier_unavailable", 503, {
+      message:
+        "this plane does not offer shared render capacity, and this route never accepts a RunPod " +
+        "key, so it cannot provision here. Nothing was created.",
+    });
+  }
+
+  // ---- AUDIT BEFORE ANYTHING EXISTS (cp#219) ---------------------------------------------------
+  //
+  // AWAITED, and FIRST. The requirement is that a failed audit write fails the operation, and the
+  // only ordering that delivers it is this one: every other route here writes then audits, which
+  // leaves a window where the act happened and the trail does not say who caused it. That window is
+  // tolerable for a suspend and is not tolerable for the one route that creates an account holder.
+  //
+  // THE FAILURE DIRECTION IS CHOSEN, not incidental. This can over-record: a row lands, then the
+  // creation fails, and the trail carries a request that produced nothing. That is the safe
+  // direction -- the accounts and tenants tables are the authority for what EXISTS, and a reader
+  // reconciling against them sees an attempt with no result. The other direction is an account
+  // holder created with nothing naming the operator who did it, which is precisely the gap cp#219
+  // closes. The row is named `.requested` rather than the bare verb so it never reads as a completed
+  // act, and the completion row below is a separate fact.
+  //
+  // The target is the EMAIL because no tenant id exists yet, and the act is unauditable without it.
+  await deps.store.recordAdminAction(
+    actor,
+    "tenant.operator_provision.requested",
+    email,
+    JSON.stringify({ slug }),
+  );
+
+  const refuse = async (reason: string, code: string, status: number, extra: Record<string, unknown> = {}) => {
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.operator_provision.refused",
+      email,
+      JSON.stringify({ slug, reason }),
+    );
+    return err(code, status, extra);
+  };
+
+  // ONE account-linking rule, in one place, exactly as auth.ts insists -- not a second copy of the
+  // suspended/deleted checks living here. `allowCreate: true` IS the capability this scope grants:
+  // a deliberate, named, audited creation with signups closed, which is the whole point of the
+  // route. It is not a bypass of the switch; the switch answers "may the PUBLIC create accounts",
+  // and this answers "may this operator create this one".
+  const upserted = await upsertAccountForVerifiedEmail(deps.store, "email", email, email, true);
+  if (!upserted.ok) {
+    return await refuse(upserted.reason, "account_unavailable", 409, {
+      message:
+        "there is already an account for that address which is suspended or deleted, so nothing " +
+        "was created. Resolve that account first.",
+    });
+  }
+  const account = upserted.account;
+
+  // ONE STUDIO PER ACCOUNT, the same rule the owner's own provision route enforces.
+  //
+  // This refusal is also what makes the RECLAIM path unreachable from here, and that is recorded so
+  // nobody adds a branch that cannot fire. checkSlugAvailability returns a reclaim handle only for
+  // TIER_A_STATUSES (pending, provisioning, awaiting_invoke_key, failed), every one of which is
+  // `!= 'deleted'` and therefore returned by getTenantForAccount -- so any row that could be
+  // reclaimed has already been refused on this line. A never-live deleted row lands in Tier C and a
+  // was-live one in Tier B, both unavailable. Reclaim is destructive besides (it tears down leftover
+  // cloud resources), so it belongs to tenants:destroy and to the owner's own path, never here.
+  if (await deps.store.getTenantForAccount(account.id)) {
+    return await refuse("tenant_exists", "tenant_exists", 409, {
+      message:
+        "that account already has a studio. If it is half-built, the owner can retake the name " +
+        "from their own front door, or an operator holding tenants:destroy can tear it down first.",
+    });
+  }
+
+  const claim = await deps.store.checkSlugAvailability(slug, account.id);
+  if (!claim.available) return await refuse("slug_taken", "slug_taken", 409, { message: claim.reason });
+
+  // MODE IS FIXED, not derived. The owner's route reads the mode off the key it was handed, because
+  // there a key may legitimately be present. Here no key can exist -- it was refused above -- so
+  // deriving would be a second expression that can only ever produce one answer, and a job row is
+  // the thing a later reader trusts about which branch ran.
+  const jobFacts: ProvisionJobFacts = { runpodMode: "shared", toRelease: deps.provisioner.currentRelease() };
+
+  const tenant = await deps.store.createTenant(newId("ten"), slug, account.id, "pending");
+  const job = await deps.store.createProvisionJob(newId("job"), tenant.id, "provision", jobFacts);
+
+  // The completion row, awaited before the 202 for the same reason the request row is: the response
+  // must not claim something the trail cannot show. Target is the tenant id now that one exists.
+  await deps.store.recordAdminAction(
+    actor,
+    "tenant.operator_provision",
+    tenant.id,
+    JSON.stringify({
+      email,
+      slug,
+      account_id: account.id,
+      account_created: upserted.created,
+      job_id: job.id,
+      runpod_mode: "shared",
+    }),
+  );
+
+  // `null` is the cp#270 shared path and is the ONLY value this route can pass: an absent key is a
+  // meaningful argument (put this tenant on the shared pool), and it is what keeps the shared tier
+  // off dedicated endpoints.
+  ctx.waitUntil(deps.provisioner.start(job.id, tenant, null));
+
+  // The response states the invariant rather than leaving the operator to infer it, so nobody reads
+  // a 202 here as "the customer has a working studio".
+  return json(
+    {
+      account_id: account.id,
+      account_created: upserted.created,
+      tenant_id: tenant.id,
+      job_id: job.id,
+      runpod_mode: "shared",
+      aup_accepted: false,
+      message:
+        "The account exists and the studio is being built. It will stop at awaiting_invoke_key and " +
+        "stay unreachable until the owner signs in at the front door, accepts the AUP themselves, " +
+        "and completes the invoke-key install. No acceptance has been recorded on their behalf and " +
+        "no RunPod key was issued.",
+    },
+    202,
+  );
+}
+
 async function installInvokeKey(
   request: Request,
   deps: ControlPlaneDeps,
@@ -1403,6 +1622,12 @@ export const ADMIN_REQUIREMENTS: ReadonlyArray<{ method: string; pattern: RegExp
 
   { method: "GET", pattern: /^\/api\/admin\/audit$/, requires: "tenants:read" },
   { method: "GET", pattern: /^\/api\/admin\/tenants$/, requires: "tenants:read" },
+  // cp#376. NOT a ${TEN} route and cannot become one: `provision` is not a tenant id, so it can
+  // never collide with the per-tenant patterns below no matter where this row sits. Its own scope,
+  // for the reasons written at the tenants:provision entry in operator-auth.ts -- the short version
+  // is that it creates an ACCOUNT, which is the one thing signups_enabled gates, so folding it into
+  // any existing scope would hand that scope a way around platform:settings.
+  { method: "POST", pattern: /^\/api\/admin\/tenants\/provision$/, requires: "tenants:provision" },
   { method: "GET", pattern: /^\/api\/admin\/settings$/, requires: "tenants:read" },
   { method: "POST", pattern: /^\/api\/admin\/settings$/, requires: "platform:settings" },
   { method: "GET", pattern: /^\/api\/admin\/r2-usage$/, requires: "tenants:read" },
@@ -1728,6 +1953,15 @@ async function adminRoutes(
       q: url.searchParams.get("q") ?? undefined,
     });
     return json({ tenants: tenants.map((t) => tenantView(t, tenantDomainSuffix(env))) });
+  }
+
+  // ---- OPERATOR-PROVISIONED TENANT (cp#376) --------------------------------------------------
+  //
+  // The launch gate is "measure -> Conrad drives a studio I provision -> invite", with signups LAST
+  // and never a prerequisite, and until this route existed the middle step had no mechanism: the
+  // only way to get a first account was to switch signups on, which is the thing the ruling forbids.
+  if (request.method === "POST" && path === "/api/admin/tenants/provision") {
+    return await operatorProvision(request, ctx, deps, actor);
   }
 
   if (request.method === "GET" && path === "/api/admin/settings") {
@@ -2119,16 +2353,42 @@ async function adminRoutes(
     const modules = await deps.provisioner.moduleReadiness(tenant);
     return json({
       tenant_id: tenant.id,
-      // WHICH BYTES answered. A job_log field that is absent everywhere is a stale release pin far
-      // more often than it is a missing binding, and the two look identical without this.
+      // WHICH BYTES answered.
+      //
+      // THIS COMMENT USED TO NAME THE WRONG CAUSE, and it cost a real diagnosis (cp#378). It said a
+      // job_log absent everywhere is a stale release pin more often than a missing binding. Both
+      // readings were wrong for twelve days: the actual cause of null-on-every-module was that THIS
+      // PLANE could not parse the field. Modules have emitted a tri-state string since vivijure-cf
+      // 815c9ff0 (2026-08-01) and the parser accepted only a boolean, so every module coerced to
+      // null. A reader who trusted this comment went and checked the pin, found it genuinely stale,
+      // and had a confirmed-looking wrong answer -- the pin WAS stale and the pinned release
+      // reported the field correctly, so the two facts were independent and one of them was a decoy.
+      //
+      // SO READ null-EVERYWHERE IN THIS ORDER, cheapest and most recently guilty first:
+      //   1. A PARSER THAT CANNOT READ THE SHAPE. Check what a module actually puts on the wire
+      //      before checking anything about this tenant. Uniform null across every module of every
+      //      tenant is this, not a per-tenant fault -- a pin problem varies with the pin.
+      //   2. An unrecognised value, which each observation reports in `detail`. That is the same
+      //      defect as 1, caught rather than silent.
+      //   3. THEN the release pin below, which is a real cause and the one to suspect when nulls
+      //      track modules_release instead of being uniform.
       modules_release: tenant.modules_release,
       modules,
       // The one summary worth precomputing, named for what it MEANS rather than for a verdict it
       // does not have: these modules submit RunPod jobs and did NOT answer that they can record one.
-      // false and null are both in here on purpose -- "the binding is missing" and "this image is
-      // too old to say" are different problems with the same consequence (rows nobody will get).
+      //
+      // "ok" IS THE ONLY PASS, and the test is written as `!== "ok"` rather than as a list of the
+      // failing values ON PURPOSE. A list has to be maintained against a contract in another repo,
+      // and the day it falls behind, the new value it has never heard of falls through as PROVEN.
+      // Inverting it means an unrecognised state is unproven by default -- the safe direction, and
+      // the one that stays safe without anyone remembering to update this line.
+      //
+      // "unavailable", "unknown" and null are ALL in here on purpose: "the binding is missing",
+      // "the worker could not tell" and "this image is too old to say" are three different problems
+      // with one consequence (rows nobody will get). They are distinguishable per module in the
+      // `modules` array above; this summary deliberately does not try to rank them.
       records_unproven: modules
-        .filter((m) => m.records_runpod_jobs && m.job_log !== true)
+        .filter((m) => m.records_runpod_jobs && m.job_log !== "ok")
         .map((m) => m.module),
     });
   }

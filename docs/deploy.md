@@ -577,25 +577,40 @@ Three legs, and the last two are why a green means anything:
 | leg | what it does | required result |
 | --- | --- | --- |
 | CONTROL | `uploadTenantModules` with a null database id | REFUSES, writes nothing |
-| POSITIVE | the catalog uploaded by this tree | every recording module reports `job_log` true |
-| NEGATIVE | one module re-uploaded WITHOUT the database | that module reports `job_log` false |
+| POSITIVE | the catalog uploaded by this tree | every recording module reports `job_log` `"ok"` |
+| NEGATIVE | one module re-uploaded WITHOUT the database | that module reports `job_log` `"unavailable"` |
 
-Without the negative, a green proves only that something answered true, which a hardcoded `true`
-in a module bundle would also produce.
+Without the negative, a green proves only that something answered positively, which a hardcoded
+value in a module bundle would also produce.
 
-### Three values, three verdicts
+### Five values, five verdicts
 
-`telemetry.job_log` has three states and they do not collapse:
+`telemetry.job_log` is a tri-state STRING (vivijure-cf `JobLogReadiness`), and the gate
+distinguishes five outcomes because each names a different thing to go and do:
 
-- `true` -- the binding resolved in the running worker. The only PASS.
-- `false` -- it did not resolve on a module that CAN report. A real defect in the plane.
+- `"ok"` -- the binding resolved in the running worker. The only PASS.
+- `"unavailable"` -- the worker answered it CANNOT record: no binding, or no table. A real defect
+  in the plane. A pre-815c9ff0 image says `false` for this and is treated identically.
+- `"unknown"` -- the worker PROBED and could not answer. **Not the same as the next one:** this
+  module answered, so bumping the pin will not help. Asserted separately for that reason.
 - `null` -- the module image reports no telemetry field at all, because it predates
   vivijure-cf#279. **This is not a no and not a pass.** It means the gate cannot measure the
   property on this pin, and the run goes red with a message naming the pinned release.
+- UNRECOGNISED -- the module sent a value this plane does not know, so the cf-side union has been
+  renamed and `src/tenant-modules.ts` has not followed. **Asserted FIRST**, because if the
+  vocabulary has moved then every verdict below it is being read through the wrong dictionary.
+  The live smoke is the only instrument in this repo that ever sees a real module, so it is the
+  only place a rename can be caught at all.
 
-That last case is live today, not hypothetical: on 2026-08-01 the pinned `STUDIO_RELEASE` was
+The `null` case is live today, not hypothetical: on 2026-08-01 the pinned `STUDIO_RELEASE` was
 v1.12.0, whose seven module bundles contain zero occurrences of `job_log`, while v1.13.0's five
-recording modules contain two each.
+recording modules contain two each. Twelve of the twenty-seven cf modules emit no `telemetry` key
+at all by design, which is why an absent field can never be read as a refusal.
+
+The gate parses `job_log` through the SHIPPED parser (`parseJobLogReadiness`), not through a copy.
+It carried its own `typeof === "boolean"` test until cp#378, which meant it agreed with the plane
+by construction and was structurally unable to notice the plane and the modules disagreeing --
+which they had, for twelve days.
 
 ### Reads settle, and every read is printed
 
