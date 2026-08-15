@@ -359,6 +359,39 @@ open(path, "w").write("\n".join(lines))
 PY
 }
 
+# A MINIMAL SYNTHETIC changelog (cp#400), never the branch live CHANGELOG.md. An isolated git repo
+# with exactly one released section, so the ONLY thing that can redden the hatch control is the
+# hatch mechanism itself, not any other defect the branch changelog happens to carry. $1 is the
+# target dir, $2 is the tag to cut (the allowlisted version).
+mk_synthetic_hatch_fixture() {
+  git init -q "$1"
+  git -C "$1" config user.email "cp400-fixture@example.com"
+  git -C "$1" config user.name "cp400 fixture"
+  mkdir -p "$1/scripts"
+  printf "%s\n" "$2  synthetic corrected section for the cp#400 hatch control" \
+    > "$1/scripts/changelog-corrections.txt"
+  printf "%s\n" "## Unreleased" "" "## $2 -- 2020-01-01" "" \
+    "### feat(synthetic): a minimal released section built only for the hatch control" "" \
+    > "$1/CHANGELOG.md"
+  git -C "$1" add -A
+  git -C "$1" commit -q -m "synthetic fixture for cp#400"
+  git -C "$1" tag "$2"
+}
+
+# Add the reader-facing CORRECTED AFTER PUBLICATION declaration to the section for $2 in $1, AFTER
+# the tag above was already cut, and left UNCOMMITTED -- the same shape as a real post-tag
+# correction: the git object at the tag does not carry it, the working tree does.
+declare_marker() {
+  python3 - "$1" "$2" <<"PY"
+import sys
+path, tag = sys.argv[1], sys.argv[2]
+lines = open(path).read().split("\n")
+i = next(n for n, l in enumerate(lines) if l.startswith("## " + tag))
+lines.insert(i + 2, "**CORRECTED AFTER PUBLICATION (synthetic, cp#400 hatch fixture).**\n")
+open(path, "w").write("\n".join(lines))
+PY
+}
+
 latest_tag="$(git -C "$here" tag --list "v*" --sort=-v:refname | head -1)"
 # The first version in the allowlist: the one section that IS allowed to drift. Read from the file
 # rather than hardcoded, so these controls follow the allowlist instead of drifting from it.
@@ -431,12 +464,16 @@ else
 fi
 rm -rf "$undeclared_tmp"
 
-# POSITIVE CONTROL: the hatch still OPENS. Every control above is a refusal, and a guard that simply
-# refused everything would pass all of them while making a legitimate in-place correction
-# impossible. The allowlisted section already declares its correction, so planting drift there must
-# be PERMITTED.
+# POSITIVE CONTROL (cp#400): the hatch still OPENS. Every control above is a refusal, and a guard
+# that simply refused everything would pass all of them while making a legitimate in-place
+# correction impossible. Built from a MINIMAL SYNTHETIC changelog, not mk_cl_copy: the branch live
+# CHANGELOG.md can carry an unrelated immutability violation of its own, and before cp#400 that
+# alone made this control print "the hatch no longer opens" for a reason it never tested (the
+# cp#335/cp#334 misdiagnosis). With a synthetic, single-section fixture the only thing that can
+# redden this control is the hatch mechanism itself.
 hatch_tmp="$(mktemp -d)"
-mk_cl_copy "$hatch_tmp"
+mk_synthetic_hatch_fixture "$hatch_tmp" "$allowed_tag"
+declare_marker "$hatch_tmp/CHANGELOG.md" "$allowed_tag"
 plant_entry "$hatch_tmp/CHANGELOG.md" "$allowed_tag"
 hatch_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$hatch_tmp" 2>&1)" && hatch_rc=0 || hatch_rc=1
 if [ "$hatch_rc" -eq 0 ] && printf "%s" "$hatch_out" | grep -q "${allowed_tag} is an allowlisted post-publication correction"; then
@@ -446,7 +483,76 @@ else
   echo "  FAILED CONTROL: the hatch no longer opens, so a legitimate correction is now impossible"
   fail=$((fail + 1))
 fi
-rm -rf "$hatch_tmp"
+
+# MUTATION CONTROL (cp#400): a check that can only ever pass is not proof of anything -- this
+# control must also go RED when the hatch is genuinely broken. Mutate a COPY of the script to
+# disable the allowlist mechanism itself (force the corrections set empty, regardless of the file)
+# and run it against the SAME clean fixture: the section just permitted above must now be refused.
+mutant_tmp="$(mktemp -d)"
+mutant_py="$mutant_tmp/changelog-released-immutable.mutant.py"
+sed "s/corrections, corrections_present = declared_corrections(root)/corrections, corrections_present = set(), True/" \
+  "$here/scripts/changelog-released-immutable.py" > "$mutant_py"
+if diff -q "$here/scripts/changelog-released-immutable.py" "$mutant_py" >/dev/null 2>&1; then
+  echo "  FAILED CONTROL: the mutation did not change the script, so this control tested nothing"
+  fail=$((fail + 1))
+else
+  mutant_out="$(python3 "$mutant_py" "$hatch_tmp" 2>&1)" && mutant_rc=0 || mutant_rc=1
+  if [ "$mutant_rc" -ne 0 ] && printf "%s" "$mutant_out" | grep -q "the ${allowed_tag} section has CHANGED"; then
+    echo "  ok   MUTATION CONTROL: disabling the allowlist mechanism turns the hatch control RED"
+    pass=$((pass + 1))
+  else
+    echo "  FAILED CONTROL: a disabled allowlist mechanism went unremarked by this control"
+    fail=$((fail + 1))
+  fi
+fi
+
+# Restore: rerun the REAL script, unmutated, against the SAME fixture right after. This proves the
+# red above came from the mutation and not from a fixture the mutant pass left corrupted.
+restore_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$hatch_tmp" 2>&1)" && restore_rc=0 || restore_rc=1
+if [ "$restore_rc" -eq 0 ] && printf "%s" "$restore_out" | grep -q "${allowed_tag} is an allowlisted post-publication correction"; then
+  echo "  ok   MUTATION CONTROL: the real script is green again on the same fixture right after the mutant reddened it"
+  pass=$((pass + 1))
+else
+  echo "  FAILED CONTROL: the fixture was left in a state the real script no longer permits"
+  fail=$((fail + 1))
+fi
+rm -rf "$hatch_tmp" "$mutant_tmp"
+
+# MUTATION CONTROL (cp#400, the historical shape): reconstruct cp#335/cp#334 directly and watch the
+# fix stop conflating them. Poison a COPY of the branch live CHANGELOG.md (mk_cl_copy is the RIGHT
+# tool here, and only here: this is deliberately the OLD fixture provenance) with an UNRELATED
+# violation under $latest_tag, and ALSO plant a genuine drift under $allowed_tag in that SAME root,
+# the old hatch fixture in one artifact. Before cp#400 the control asked one question of this root
+# (is the exit code zero) and got the wrong answer for the right-looking reason. The script itself
+# was always right per version: it still says $allowed_tag is permitted even while the aggregate run
+# is red for $latest_tag. Assert BOTH are true in the SAME output.
+poison_tmp="$(mktemp -d)"
+mk_cl_copy "$poison_tmp"
+plant_entry "$poison_tmp/CHANGELOG.md" "$latest_tag"
+plant_entry "$poison_tmp/CHANGELOG.md" "$allowed_tag"
+poison_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$poison_tmp" 2>&1)" && poison_rc=0 || poison_rc=1
+if [ "$poison_rc" -ne 0 ] \
+  && printf "%s" "$poison_out" | grep -q "the ${latest_tag} section has CHANGED" \
+  && printf "%s" "$poison_out" | grep -q "${allowed_tag} is an allowlisted post-publication correction"; then
+  echo "  ok   MUTATION CONTROL: an unrelated violation reddens the run while the per-version hatch message still permits its own section, what the old control conflated"
+  pass=$((pass + 1))
+else
+  echo "  FAILED CONTROL: could not reconstruct the cp#335/cp#334 shape, so this proves nothing"
+  fail=$((fail + 1))
+fi
+rm -rf "$poison_tmp"
+
+# And the rebuilt POSITIVE CONTROL above never read $poison_tmp at all -- hatch_rc was computed
+# against an isolated synthetic fixture before this block even ran, so an unrelated violation
+# anywhere in the branch changelog has no path to it. That independence, not a smarter assertion, is
+# the actual fix: two separate roots instead of one shared exit code.
+if [ "$hatch_rc" -eq 0 ]; then
+  echo "  ok   MUTATION CONTROL: the rebuilt hatch control stayed green through that same unrelated violation"
+  pass=$((pass + 1))
+else
+  echo "  FAILED CONTROL: the rebuilt hatch control was not actually isolated from the branch live changelog"
+  fail=$((fail + 1))
+fi
 
 # CONTROL: the other half. Allowlisted but with the reader-facing declaration REMOVED must refuse:
 # the allowlist is for this script, the marker is for the person reading the changelog, and a
