@@ -6,6 +6,8 @@ import {
   canAdvance,
   resumeStep,
   slugVerdict,
+  planCanProvision,
+  invokeRequirement,
   costCeilingUsd,
   formatUsd,
   keyShapeHint,
@@ -400,18 +402,6 @@ describe("canAdvance (the gates)", () => {
     expect(canAdvance("name", { slugValid: true, slugAvailable: true })).toBe(true);
   });
 
-  it("blocks the key step until a key is present", () => {
-    expect(canAdvance("key", { keyPresent: false })).toBe(false);
-    expect(canAdvance("key", {})).toBe(false);
-    expect(canAdvance("key", { keyPresent: true })).toBe(true);
-  });
-
-  it("blocks the capacity step on a failed OR missing capacity check", () => {
-    expect(canAdvance("capacity", { capacity: null })).toBe(false);
-    expect(canAdvance("capacity", {})).toBe(false);
-    expect(canAdvance("capacity", { capacity: quotaFit(5, 4, PLAN) })).toBe(false);
-    expect(canAdvance("capacity", { capacity: quotaFit(10, 0, PLAN) })).toBe(true);
-  });
 
   it("blocks the review step until create is explicitly confirmed", () => {
     expect(canAdvance("review", { confirmed: false })).toBe(false);
@@ -433,21 +423,26 @@ describe("canAdvance (the gates)", () => {
 });
 
 describe("STEPS / stepIndex", () => {
-  it("orders the flow: understand and consent BEFORE the key is asked for", () => {
+  it("orders the flow: understand and consent BEFORE anything is created (cp#427)", () => {
+    // SEVEN steps since the BYOK purge. Setup key and Your capacity retired with the path they
+    // served: the first asked for a RunPod key the plane no longer accepts, and the second
+    // probed the CUSTOMER own quota, which is meaningless when the capacity is ours. Capacity
+    // additionally POSTed to a route that never existed (cp#467), so it was a hard stop.
     expect(STEPS.map((s) => s.key)).toEqual([
-      "what", "rules", "name", "key", "capacity", "review", "build", "invoke", "done",
+      "what", "rules", "name", "review", "build", "invoke", "done",
     ]);
-    // The slug is required by POST /api/tenant/provision, so it must be
-    // collected before the build.
+    // The invariants that SURVIVE the purge, and they are the ones that mattered.
+    //
+    // The slug is required by POST /api/tenant/provision, so it is collected before the build.
     expect(stepIndex("name")).toBeLessThan(stepIndex("build"));
-    // Two-phase custody (#52): key B can only be minted once the endpoints it
-    // scopes to exist, so the invoke step MUST sit after the build.
+    // Going live can only happen once the endpoints exist, so it sits after the build.
     expect(stepIndex("build")).toBeLessThan(stepIndex("invoke"));
     expect(stepIndex("invoke")).toBeLessThan(stepIndex("done"));
-    expect(stepIndex("what")).toBeLessThan(stepIndex("key"));
-    expect(stepIndex("rules")).toBeLessThan(stepIndex("key"));
-    // Nothing is created on the tenant's account before an explicit review.
+    // NOTHING IS CREATED ON ANYBODY BEHALF BEFORE AN EXPLICIT REVIEW. This is the load-bearing
+    // one and it is unchanged by the purge.
     expect(stepIndex("review")).toBeLessThan(stepIndex("build"));
+    // Consent still precedes naming, which is the first thing that can take a slug.
+    expect(stepIndex("rules")).toBeLessThan(stepIndex("name"));
   });
 
   it("returns -1 for an unknown step", () => {
@@ -762,5 +757,64 @@ describe("resumeStep (cp#455)", () => {
     const r = resumeStep(at("reticulating"));
     expect(r.step).toBeNull();
     expect(r.reason).toBe("not_in_setup");
+  });
+});
+
+// cp#439: THE TIER DECIDES WHETHER A KEY IS A QUESTION, AT TWO DIFFERENT MOMENTS.
+//
+// A shared-tier tenant hit a wall at step 4 (the wizard would not advance without a pasted key)
+// and again at step 8 (the plane REFUSES a pasted key and the winning request carries none). Both
+// walls came from the same assumption -- everyone is BYOK -- and neither step could know better,
+// because the tier was not projected anywhere the client could read.
+//
+// The two facts are deliberately NOT the same field, and that is the load-bearing part: at step 4
+// no tenant exists yet (createTenant runs inside the provision this step leads to), so only a
+// PLATFORM flag can answer it; at step 8 the tenant exists and carries its own mode.
+describe("the tier questions after the BYOK purge (cp#427, cp#439)", () => {
+  // These replace the optional-key tests. Under cp#427 there is no key to make optional and no
+  // second tier to select, so the PLATFORM question widened from is a key optional to can this
+  // plane provision at all, and the TENANT question lost its byok answer.
+
+  it("says a pooling plane can provision", () => {
+    expect(planCanProvision({ shared_tier_available: true })).toBe(true);
+  });
+
+  it("says a plane with no pool CANNOT, and defaults to cannot on a payload that does not say", () => {
+    // Fail toward refusing. The provision route refuses a poolless plane, so a wizard that
+    // assumed otherwise would walk somebody through naming a studio it could never build.
+    expect(planCanProvision({ shared_tier_available: false })).toBe(false);
+    expect(planCanProvision({})).toBe(false);
+    expect(planCanProvision(null)).toBe(false);
+  });
+
+  it("does not accept a truthy accident as capacity", () => {
+    expect(planCanProvision({ shared_tier_available: 1 as unknown as boolean })).toBe(false);
+  });
+
+  it("treats a pooled tenant as the supported shape", () => {
+    expect(invokeRequirement({ runpod_mode: "shared" })).toBe("pooled");
+  });
+
+  it("treats a legacy dedicated row as UNSUPPORTED, not as a BYO path to walk", () => {
+    // The invoke-key route refuses a non-shared row by name after the purge. Offering key
+    // instructions would send somebody to make a credential nothing will accept, which is the
+    // same confidently-wrong screen this whole line of work has been removing.
+    expect(invokeRequirement({ runpod_mode: "dedicated" })).toBe("unsupported");
+  });
+
+  it("NEVER reads an absent mode as a tier", () => {
+    // runpod_mode is withheld until the endpoints exist, so absent means NOT DECIDED YET.
+    expect(invokeRequirement({ runpod_mode: null })).toBe("undecided");
+    expect(invokeRequirement({})).toBe("undecided");
+    expect(invokeRequirement(null)).toBe("undecided");
+    expect(invokeRequirement({ runpod_mode: "pooled" })).toBe("undecided");
+  });
+
+  it("has no key gate left to open or close", () => {
+    // canAdvance had a key branch and a capacity branch. Both retired with their steps; the
+    // trailing default is what an unknown key now hits, and that is correct because there is no
+    // longer any such step to gate.
+    expect(STEPS.map((s) => s.key)).not.toContain("key");
+    expect(STEPS.map((s) => s.key)).not.toContain("capacity");
   });
 });

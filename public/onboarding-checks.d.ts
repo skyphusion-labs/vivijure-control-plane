@@ -44,7 +44,6 @@ export interface QuotaFit {
 
 export interface OnboardingState {
   rulesAccepted?: boolean;
-  keyPresent?: boolean;
   capacity?: QuotaFit | null;
   confirmed?: boolean;
   invokeVerified?: boolean;
@@ -182,6 +181,19 @@ export interface SlugVerdict {
 
 /** cp#435: three outcomes, never two. A reclaimable slug is the account own studio. */
 export function slugVerdict(res: SlugAvailability | null | undefined, slug: string): SlugVerdict;
+export interface PlatformConfigView {
+  shared_tier_available?: boolean;
+}
+
+export interface TenantModeView {
+  runpod_mode?: string | null;
+}
+
+/** cp#439 step 4: a PLATFORM fact, asked before any tenant exists. */
+export function planCanProvision(config: PlatformConfigView | null | undefined): boolean;
+
+/** cp#439 step 8: a TENANT fact. A pooled tenant is REFUSED a key; going live is an empty POST. */
+export function invokeRequirement(tenant: TenantModeView | null | undefined): "pooled" | "unsupported" | "undecided";
 
 /**
  * The provision job payload as GET /api/tenant/:id/job reports it (cp#43).
