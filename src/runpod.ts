@@ -58,6 +58,11 @@ const pinned = (key: SatelliteKey) => ({
   tag: SATELLITE_PINS[key].tag,
 });
 
+// cp#367: single source for "this endpoint does not do cast-LoRA training" so every downstream
+// copy of the backend purpose or label can be asserted against the same pattern the test in
+// this file already uses, instead of a hand-duplicated literal that can silently drift.
+export const NO_TRAINING_CLAUSE = /lora|train/i;
+
 export const PROVISION_PLAN: PlannedEndpoint[] = [
   {
     ...pinned("backend"),
