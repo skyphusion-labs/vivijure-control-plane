@@ -18,6 +18,16 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { StudioBundleSource } from "../src/provisioner";
 
+// `@cloudflare/workers-types` declares a GLOBAL `Buffer` whose `toString()` takes no arguments, and
+// it wins over @types/node's in this project's global scope. So `someNodeBuffer.toString("utf8")`
+// stopped type-checking (TS2554 "Expected 0 arguments, but got 1") purely from a types bump -- the
+// runtime behaviour never changed and these are Node buffers in Node-only test helpers.
+//
+// Importing Buffer explicitly from "node:buffer" and routing through `Buffer.from(...)` names which
+// Buffer is meant, rather than casting the error away. A cast would silence the same message for a
+// value that genuinely IS the Workers type, which is the case worth keeping loud.
+import { Buffer } from "node:buffer";
+
 interface ReleaseManifest {
   tag: string;
   main_module: string;
@@ -63,12 +73,12 @@ export function localStudioBundleSource(dir: string): StudioBundleSource {
         if (mSha !== m.sha256) {
           throw new Error(`migration integrity failure for ${m.name}: sha256 ${mSha} != manifest ${m.sha256}`);
         }
-        return { name: m.name, sql: mb.toString("utf8") };
+        return { name: m.name, sql: Buffer.from(mb).toString("utf8") };
       });
 
       return {
         mainModule: manifest.main_module,
-        moduleText: bytes.toString("utf8"),
+        moduleText: Buffer.from(bytes).toString("utf8"),
         compatibilityDate: manifest.compatibility_date,
         compatibilityFlags: manifest.compatibility_flags,
         // Verbatim, including {}: an empty object means the release was built with CF defaults and
@@ -76,7 +86,7 @@ export function localStudioBundleSource(dir: string): StudioBundleSource {
         assetsConfig: manifest.assets_config,
         assets: manifest.assets.map((a) => ({
           path: a.path,
-          base64: readFileSync(join(dir, "assets", a.hash)).toString("base64"),
+          base64: Buffer.from(readFileSync(join(dir, "assets", a.hash))).toString("base64"),
           contentType: a.content_type,
           hash: a.hash,
           size: a.size,
