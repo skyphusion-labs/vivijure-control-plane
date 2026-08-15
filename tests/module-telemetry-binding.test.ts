@@ -42,10 +42,20 @@ function deps(over: Partial<TenantModuleDeps> = {}): {
   namespaceCreates: number;
 } {
   const uploads: Upload[] = [];
+  // cp#464: anything landing here means the module upload used the GENERAL credential. It must stay
+  // empty; that is the assertion the credential split exists for.
+  const wrongCredential: Upload[] = [];
   const counters = { namespaceCreates: 0 };
   const d = {
     cf: {
       createDispatchNamespace: vi.fn(async () => void (counters.namespaceCreates += 1)),
+      uploadUserWorker: vi.fn(async (a: Upload) => void wrongCredential.push(a)),
+    },
+    // cp#464: module uploads run on the SCRIPT UPLOAD credential, not the general one. These are
+    // SEPARATE recorders on purpose: pointing both at one array would let every assertion below
+    // pass whichever client the source actually used, which is the thing under test.
+    scriptUploadCf: {
+      createDispatchNamespace: vi.fn(async () => undefined),
       uploadUserWorker: vi.fn(async (a: Upload) => void uploads.push(a)),
     },
     moduleNamespace: "vivijure-tenant-modules",
