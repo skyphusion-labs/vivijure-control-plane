@@ -971,8 +971,9 @@ dispatch is not wired at all.
 
 ### `GET /api/admin/tenants/:id/module-readiness` (cp#248)
 
-One unauthenticated `GET /ready` per catalog module, one pass, no retry. Read-only: no GPU, no
-spend, no tenant credential, nothing mutated. Gated `tenants:read` and audited as a tenant read
+A small fixed number of unauthenticated `GET /ready` probes per catalog module (two, a few hundred
+milliseconds apart), no retry loop and no waiting. Read-only: no GPU, no spend, no tenant
+credential, nothing mutated. Gated `tenants:read` and audited as a tenant read
 (`tenant.read.module_readiness`).
 
 It exists for the field that gates nothing. `telemetry.job_log` says whether the version the edge
@@ -981,8 +982,9 @@ recording nothing reports healthy indefinitely and no existing route ever mentio
 route the only code that read a module `/ready` was the key-install probe, which waits on
 credentials and would have to be re-run to see anything.
 
-Per module it reports `status`, `ok`, `credentials`, `records_runpod_jobs`, and `job_log`, plus the
-tenant `modules_release`.
+Per module it reports `status`, `ok`, `credentials`, `records_runpod_jobs`, and `job_log`, plus
+`readings`, `reads` and `settled` (below), plus the tenant `modules_release`. The response carries
+two summaries: `records_unproven` and `unsettled`.
 
 **Read a whole-fleet `null` as a PARSE failure first, not as a stale pin.** This sentence used to
 say the opposite and it cost a real diagnosis (cp#378): from 2026-08-01 to 2026-08-13 every module
@@ -991,10 +993,39 @@ plane still accepted only a boolean. The pin was independently stale at the time
 pin produced a confirmed-looking wrong answer. A pin problem VARIES WITH THE PIN; a parse problem
 is uniform across every tenant and every module, which is the cheap thing to check first.
 
-**Two samples, short gap (cp#254).** Right after a module upload, `/ready` can be served by a stale
-isolate still on the previous version. The route probes twice (~250ms apart) and reports the second
-sample. That is not the multi-second key-install wait; it only reduces the post-upgrade race. A
-reading taken within a couple of minutes of an upgrade can still be mid-convergence across isolates.
+**Two samples, both reported, neither discarded (cp#254).** Soon after a module version REPLACES
+another, `/ready` can be served by an isolate still on the previous version, and the reads go
+non-monotonic. Measured live, twice: `TFTFFF` (stable after 50s) and `FTFFF` (stable after 40s), on
+a `keyframe` worker re-uploaded with `TELEMETRY_DB` REMOVED. That worker could not record anything
+and its first read said it could.
+
+The route does NOT try to settle that. It cannot: the window is 40 to 50 seconds and the gap
+between samples is 250ms, so any two samples this route can afford land inside the same transient.
+What two samples CAN do is disagree, and a disagreement is proof the reading is mid-convergence. So
+each module carries:
+
+| field | meaning |
+| --- | --- |
+| `readings` | what every sample said, in order, e.g. `["unavailable","ok"]` |
+| `reads` | how many samples were taken, the denominator `settled` rests on |
+| `settled` | every sample agreed. NOT "converged" -- see below |
+
+`job_log` is the LAST reading. It is a reading, not a conclusion: `["unavailable","ok"]` and
+`["ok","ok"]` produce the same `job_log` and mean completely different things.
+
+**`settled: true` is the weak direction; `settled: false` is the strong one.** True means only that
+nothing in this probe contradicted the reported value, across a gap far shorter than the window. It
+is NOT the pre-deploy smoke's notion of settled, which polls until the answer stops changing over
+tens of seconds (`docs/deploy.md`). False is positive proof the reading is still moving, and is the
+one an operator should act on: re-ask after the window rather than re-provisioning.
+
+**This supersedes the earlier behaviour, which returned the second sample and discarded the first**
+(PR #349, `bf35182be2`). Two reads inside one transient are two reads of the same transient;
+returning the later one and dropping the earlier one removed the only evidence that they differed,
+and on the measured `FTFFF` sequence it reported `"ok"` for a worker with no database bound. cp#254
+had ruled for reporting the uncertainty rather than settling inside the route, for the reason that
+still holds: a bounded settle either returns an arbitrary value or fails in exactly the case that
+needs it.
 
 `job_log` has FOUR values and collapsing any two of them re-creates the defect. The three non-null
 values are the vivijure-cf `JobLogReadiness` union, carried through verbatim rather than mapped:
@@ -1023,9 +1054,17 @@ only signal available if the cf-side union is ever renamed: absent-field and unr
 both parse to `null`, and without the raw string beside it an operator cannot tell "the pin is
 old" from "the contract moved".
 
-`records_unproven` lists the modules that submit RunPod jobs and did not answer `true`. Both `false`
-and `null` are in it on purpose: "the binding is missing" and "this image is too old to say" are
-different problems with the same consequence, which is rows nobody will ever get.
+`records_unproven` lists the modules that submit RunPod jobs and were NOT SHOWN to be able to
+record one: anything whose `job_log` is not `"ok"`, plus anything whose `"ok"` was not `settled`.
+`"unavailable"`, `"unknown"`, `null` and unsettled are all in it on purpose: "the binding is
+missing", "the worker could not tell", "this image is too old to say" and "the reading is still
+moving" are four different problems with one consequence for an operator about to act. They stay
+distinguishable per module in the `modules` array; the summary does not rank them.
+
+`unsettled` lists the modules whose samples disagreed. Unlike `records_unproven` it is NOT filtered
+to the recording modules: a module flapping between unreachable and answering says the probe itself
+is not settled, which is worth seeing whether or not that module records anything. An `unsettled`
+module is a reason to re-ask, never a reason to re-provision.
 
 The answer covers the modules this plane PROVISIONS: every catalog entry that `reachesRunpod`
 (fourteen today, including the eight cost-door modules and `finish-rife`). `plan-enhance` is

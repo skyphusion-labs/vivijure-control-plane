@@ -1,0 +1,42 @@
+name: check-name-collision
+
+# cp#372. Two producers emitted the same check names on the same commit, so a red leg and a
+# green leg of the same name occupied one line in every name-keyed view. The structural half
+# of the fix lives in codeql.yml (job names that cannot be auto-suffixed into the scheme
+# producer B uses); this is the assertion that says so out loud and keeps saying it.
+#
+# Scheduled rather than push-triggered on purpose: a job that inspects the check runs of its
+# own commit while they are still in flight measures timing, not collisions.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "commit sha to inspect (default: current main head)"
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+
+concurrency:
+  group: check-name-collision-vivijure-control-plane
+  cancel-in-progress: true
+
+jobs:
+  assert-unique-check-names:
+    name: assert-unique-check-names
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Assert one producer per check name
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ inputs.ref }}
+        run: ./scripts/assert-unique-check-names.sh
