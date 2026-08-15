@@ -48,10 +48,30 @@ backend computed the distinction correctly and simply did not project it. Both w
 UI side by someone who could not write honest copy with what the route returned. Worth auditing the
 remaining projections for a third.
 
+## The SECOND wall, on the same missing-projection pattern
+
+The key step of the wizard sits BEFORE provisioning and gated advance on a non-empty key, so a
+shared-tier tenant could not even PROVISION, let alone go live. Same root cause, different moment,
+and `tenantView.runpod_mode` cannot fix it: at that point no tenant row exists yet.
+
+The deciding fact is plane-level. `POST /api/tenant/provision` refuses a keyless provision only when
+`!offersSharedTier()`, but that predicate was projected on NO client surface at all --
+`/api/platform/config` carried `signups_enabled`, `aup_version` and `auth_methods` and nothing about
+the tier. So no client could know a key was optional. That is the same defect as cp#433 and the
+tenant half of cp#439, for the THIRD time: a distinction the backend computes correctly and does not
+project.
+
+`shared_tier_available` now rides on `/api/platform/config`. It is asserted TRUE (the non-default
+value; the wiring double returns false) and FALSE, and then asserted to AGREE WITH THE PROVISION
+ROUTE in both directions -- a boolean a client renders from is worthless unless it predicts the
+refusal it exists to prevent, so the test drives the config route and the provision route together
+rather than trusting they read the same predicate.
+
 **Scoped, NOT fixed here: `handoffInstall` has the same hole.** It refuses an empty key up front
 (`invoke_key_required`) and calls `performInvokeKeyInstall` directly, skipping the shared branch
 entirely, so the pool path is structurally unreachable through the operator handoff and a shared
 tenant owner who follows a handoff link has no way to succeed. Not fixed here because there are two
 defensible fixes with different blast radii (accept an empty key on the handoff route for shared
 tenants, or refuse to ISSUE a handoff for a shared tenant at all), and choosing between them is a
-product decision on a custody path, not a defect fix.
+product decision on a custody path, not a defect fix. Filed as cp#454, so the deferral has an
+enumerating issue rather than living in a PR comment.

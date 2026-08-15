@@ -351,6 +351,52 @@ describe("GET /api/platform/config", () => {
     expect(await res.json()).toMatchObject({ auth_methods: ["email"], aup_version: AUP });
   });
 
+  // cp#439, the SECOND wall. The wizard key step sits BEFORE provisioning and gated advance on
+  // a non-empty key, so a shared-tier tenant could not provision at all -- a wall EARLIER than the
+  // invoke-key one. tenantView.runpod_mode cannot answer it: at that moment no tenant row exists.
+  // This is the plane-level fact, and it was projected nowhere before this.
+  //
+  // NON-DEFAULT PROBE: the wiring double returns false by default, so the TRUE case is the
+  // load-bearing one -- a projection hardcoded to false, or one reading a field that does not
+  // exist, is byte-identical to the correct answer on the default.
+  it("projects shared_tier_available TRUE when this plane offers a pool", async () => {
+    wiring.offersSharedTier.mockReturnValue(true);
+    const res = await handle(req("/api/platform/config"), env(), ctx, deps);
+    expect(await res.json()).toMatchObject({ shared_tier_available: true });
+  });
+
+  it("projects it FALSE when it does not (the control)", async () => {
+    wiring.offersSharedTier.mockReturnValue(false);
+    const res = await handle(req("/api/platform/config"), env(), ctx, deps);
+    expect(await res.json()).toMatchObject({ shared_tier_available: false });
+  });
+
+  it("AGREES with what the provision route actually does, in both directions", async () => {
+    // THE POINT. A boolean the client renders from is worthless unless it predicts the refusal it
+    // is meant to prevent, so this asserts the projection and the ROUTE together rather than
+    // trusting that they read the same predicate. If someone rewires one, this fails.
+    const keyless = async () => {
+      const s = await signedIn();
+      await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
+      return await handle(jsonReq("/api/tenant/provision", { slug: "hero" }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    };
+
+    wiring.offersSharedTier.mockReturnValue(false);
+    const advertisedOff = (await (await handle(req("/api/platform/config"), env(), ctx, deps)).json()) as { shared_tier_available: boolean };
+    const refused = await keyless();
+    expect(advertisedOff.shared_tier_available).toBe(false);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ error: "runpod_key_required" });
+
+    store = new MemoryStore();
+    deps = { ...deps, store };
+    wiring.offersSharedTier.mockReturnValue(true);
+    const advertisedOn = (await (await handle(req("/api/platform/config"), env(), ctx, deps)).json()) as { shared_tier_available: boolean };
+    const accepted = await keyless();
+    expect(advertisedOn.shared_tier_available).toBe(true);
+    expect(accepted.status).toBe(202);
+  });
+
   it("offers a provider only when BOTH its id and secret exist (half-config = absent, not broken)", async () => {
     const half = env({ GOOGLE_OAUTH_CLIENT_ID: "id" });
     expect((await (await handle(req("/api/platform/config"), half, ctx, deps)).json())).toMatchObject({

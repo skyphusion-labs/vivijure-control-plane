@@ -38,6 +38,16 @@ export interface PlatformConfig {
   aup_version?: string;
   auth_methods?: string[];
   tenant_domain_suffix?: string;
+  /**
+   * cp#439. True when this deploy can provision a tenant with NO RunPod key.
+   *
+   * When true the key input is OPTIONAL and a blank one must still be allowed to advance and to
+   * submit: the provision route refuses a keyless provision only when this is false. A key that
+   * IS supplied stays honoured either way (the BYO dedicated path).
+   *
+   * Absent from an older plane, so treat absent as false rather than as unknown.
+   */
+  shared_tier_available?: boolean;
 }
 
 export interface TenantEndpoint {
