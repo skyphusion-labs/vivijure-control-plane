@@ -1,6 +1,7 @@
 // Tenant identity rules (#52). The provisioner itself is #53; this owns slugs and the status machine.
 
 import type { Tenant, TenantLifecycle, TenantStatus } from "./store";
+import { readRunPodMode, type RunPodMode } from "./runpod-pool";
 
 /**
  * A slug is BOTH a DNS label (<slug>.studio.vivijure.com) and a Workers-for-Platforms script name,
@@ -82,6 +83,25 @@ export interface TenantView {
   created_at: string;
   live_at: string | null;
   suspended_reason: string | null;
+  /**
+   * Which RunPod shape this tenant is on (cp#439), or NULL while that is not yet decided.
+   *
+   * The two tiers need DIFFERENT SCREENS, and without this the front door could not tell them
+   * apart at all. The concrete wall: every operator-provisioned tenant is shared, and the shared
+   * invoke-key branch succeeds only on an EMPTY-bodied POST, so a wizard that cannot see the tier
+   * cannot know to send one.
+   *
+   * NULL IS NOT A THIRD TIER, and it is not the column being nullable. tenants.runpod_mode is NOT
+   * NULL DEFAULT dedicated and is written INSIDE the runpod_endpoints provisioning step, so
+   * before that step every row reads dedicated whether or not it is one (the tree says so itself
+   * at store.ts, on ProvisionJob.runpod_mode). Projecting the raw column would therefore ship the
+   * exact defect this issue is about: a value that collapses "genuinely dedicated" and "not
+   * decided yet" into one string a client picks a screen from.
+   *
+   * So the untrustworthy region is made UNREPRESENTABLE rather than documented. A consumer that
+   * treats null as dedicated re-introduces cp#439; treat it as "do not claim a tier yet".
+   */
+  runpod_mode: RunPodMode | null;
 }
 
 export function tenantView(tenant: Tenant, domainSuffix: string): TenantView {
@@ -106,6 +126,17 @@ export function tenantView(tenant: Tenant, domainSuffix: string): TenantView {
     created_at: tenant.created_at,
     live_at: tenant.live_at,
     suspended_reason: tenant.suspended_reason,
+    // SETTLED-NESS IS INFERRED FROM endpoints_json, and the direction of that inference is the
+    // whole reason it is safe. The provisioner writes the MODE BEFORE the endpoint list on both
+    // branches, deliberately (a crash between the two must not leave pool endpoint ids under the
+    // default mode). So endpoints present IMPLIES the mode was written, while the reverse does
+    // not hold. Reading it this way can therefore only ever under-claim -- report "not decided"
+    // for a tenant whose mode is in fact settled, in the crash window -- and can never assert a
+    // tier that was not written. Fail toward claiming less, exactly as readRunPodMode does.
+    runpod_mode:
+      tenant.endpoints_json === null || tenant.endpoints_json === ""
+        ? null
+        : readRunPodMode(tenant.runpod_mode),
   };
 }
 

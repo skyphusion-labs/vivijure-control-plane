@@ -351,6 +351,52 @@ describe("GET /api/platform/config", () => {
     expect(await res.json()).toMatchObject({ auth_methods: ["email"], aup_version: AUP });
   });
 
+  // cp#439, the SECOND wall. The wizard key step sits BEFORE provisioning and gated advance on
+  // a non-empty key, so a shared-tier tenant could not provision at all -- a wall EARLIER than the
+  // invoke-key one. tenantView.runpod_mode cannot answer it: at that moment no tenant row exists.
+  // This is the plane-level fact, and it was projected nowhere before this.
+  //
+  // NON-DEFAULT PROBE: the wiring double returns false by default, so the TRUE case is the
+  // load-bearing one -- a projection hardcoded to false, or one reading a field that does not
+  // exist, is byte-identical to the correct answer on the default.
+  it("projects shared_tier_available TRUE when this plane offers a pool", async () => {
+    wiring.offersSharedTier.mockReturnValue(true);
+    const res = await handle(req("/api/platform/config"), env(), ctx, deps);
+    expect(await res.json()).toMatchObject({ shared_tier_available: true });
+  });
+
+  it("projects it FALSE when it does not (the control)", async () => {
+    wiring.offersSharedTier.mockReturnValue(false);
+    const res = await handle(req("/api/platform/config"), env(), ctx, deps);
+    expect(await res.json()).toMatchObject({ shared_tier_available: false });
+  });
+
+  it("AGREES with what the provision route actually does, in both directions", async () => {
+    // THE POINT. A boolean the client renders from is worthless unless it predicts the refusal it
+    // is meant to prevent, so this asserts the projection and the ROUTE together rather than
+    // trusting that they read the same predicate. If someone rewires one, this fails.
+    const keyless = async () => {
+      const s = await signedIn();
+      await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
+      return await handle(jsonReq("/api/tenant/provision", { slug: "hero" }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    };
+
+    wiring.offersSharedTier.mockReturnValue(false);
+    const advertisedOff = (await (await handle(req("/api/platform/config"), env(), ctx, deps)).json()) as { shared_tier_available: boolean };
+    const refused = await keyless();
+    expect(advertisedOff.shared_tier_available).toBe(false);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ error: "runpod_key_required" });
+
+    store = new MemoryStore();
+    deps = { ...deps, store };
+    wiring.offersSharedTier.mockReturnValue(true);
+    const advertisedOn = (await (await handle(req("/api/platform/config"), env(), ctx, deps)).json()) as { shared_tier_available: boolean };
+    const accepted = await keyless();
+    expect(advertisedOn.shared_tier_available).toBe(true);
+    expect(accepted.status).toBe(202);
+  });
+
   it("offers a provider only when BOTH its id and secret exist (half-config = absent, not broken)", async () => {
     const half = env({ GOOGLE_OAUTH_CLIENT_ID: "id" });
     expect((await (await handle(req("/api/platform/config"), half, ctx, deps)).json())).toMatchObject({
@@ -1276,6 +1322,103 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     t.script_name = script;
     return s;
   }
+
+  // ---- cp#439: the SHARED branch, which had ZERO test coverage in either direction ----
+  //
+  // Verified before writing these: neither invoke_key_not_accepted nor shared_pool_unconfigured
+  // appeared anywhere under tests/ (bare grep, exit 1), while 20+ sibling refusal codes did. So
+  // the zero was a real gap and not a wrong pattern. This is the tier EVERY operator-provisioned
+  // tenant is on, and its only success path is an EMPTY-bodied POST, which is why 1900 passing
+  // tests never saw that the wizard could not reach it.
+
+  // The pool key is a SENTINEL, and non-default in two ways: the wiring double returns null by
+  // default (so the success path cannot pass by accident), and the value is distinguishable from
+  // anything a test could paste (so "the plane supplied its own key" and "the plane echoed mine"
+  // are not byte-identical).
+  const POOL_KEY = "rpa_pool_sentinel_not_pasted";
+
+  async function sharedTenantReady() {
+    const s = await tenantReady(JSON.stringify([{ key: "backend", label: "Render", id: "ep1", name: "vivijure-hero-backend" }]));
+    const t = store.tenants.get("ten_abc123");
+    if (t) t.runpod_mode = "shared";
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    return s;
+  }
+
+  it("REFUSES a pasted key on a SHARED tenant, and stores nothing", async () => {
+    const { cookie } = await sharedTenantReady();
+    wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_customer" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invoke_key_not_accepted" });
+    // REFUSED, not quietly ignored: no install ran and the tenant did not move.
+    expect(wiring.installInvokeKey).not.toHaveBeenCalled();
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+    expect(JSON.stringify([...store.tenants.values()])).not.toContain("rpa_customer");
+  });
+
+  it("an EMPTY-bodied POST on a SHARED tenant installs the POOL key and goes live", async () => {
+    // THE PATH THE WIZARD COULD NOT REACH. The button was wired `if (invokeKey) run()`, so the
+    // one request that succeeds was never sent: type nothing and nothing happens, type anything
+    // and you are told there is no key for you to provide.
+    const { cookie } = await sharedTenantReady();
+    wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: "live", modules_ready: true });
+    // The key installed is the PLANE own pool key, never something the caller supplied.
+    expect(wiring.installInvokeKey).toHaveBeenCalledTimes(1);
+    const [, key] = wiring.installInvokeKey.mock.calls[0] as [{ id: string }, string];
+    expect(key).toBe(POOL_KEY);
+    expect(store.tenants.get("ten_abc123")?.status).toBe("live");
+    // The pool key is not persisted onto the tenant row either.
+    expect(JSON.stringify([...store.tenants.values()])).not.toContain(POOL_KEY);
+  });
+
+  it("REFUSES with shared_pool_unconfigured when this deploy has no pool key", async () => {
+    // Asserted as a CONTRAST inside one test rather than alone, because null is the wiring
+    // double default: a lone assertion here would pass against a route that could never install
+    // a pool key at all. The configured leg proves the refusal is about CONFIG, not capability.
+    const { cookie } = await sharedTenantReady();
+
+    // UNCONFIGURED leg FIRST, because it changes no tenant state and so leaves the same tenant
+    // usable for the control. (The reverse order needs a second tenant and collides on the slug
+    // UNIQUE constraint, which the fake enforces -- it caught this while the test was being written.)
+    wiring.sharedPoolInvokeKey = vi.fn(() => null);
+    const unconfigured = await handle(jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }), env(), ctx, deps);
+    expect(unconfigured.status).toBe(503);
+    expect(await unconfigured.json()).toMatchObject({ error: "shared_pool_unconfigured" });
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+
+    // CONTROL: the very same request succeeds once a pool key exists, so the 503 above is about
+    // deploy CONFIG and not about the route being incapable of installing a pool key at all.
+    wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
+    const configured = await handle(jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }), env(), ctx, deps);
+    expect(configured.status).toBe(200);
+  });
+
+  it("a DEDICATED tenant still REQUIRES a key on an empty body (the tier control)", async () => {
+    // Without this, the empty-body success above would read identically against a route that had
+    // simply stopped requiring a key for everybody.
+    const { cookie } = await sharedTenantReady();
+    const t = store.tenants.get("ten_abc123");
+    if (t) t.runpod_mode = "dedicated";
+    wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
+    const res = await handle(jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }), env(), ctx, deps);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invoke_key_required" });
+    expect(wiring.installInvokeKey).not.toHaveBeenCalled();
+  });
 
   it("REFUSES a key before endpoints exist: there is nothing to scope to", async () => {
     const { cookie } = await tenantReady(null);

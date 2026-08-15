@@ -38,6 +38,16 @@ export interface PlatformConfig {
   aup_version?: string;
   auth_methods?: string[];
   tenant_domain_suffix?: string;
+  /**
+   * cp#439. True when this deploy can provision a tenant with NO RunPod key.
+   *
+   * When true the key input is OPTIONAL and a blank one must still be allowed to advance and to
+   * submit: the provision route refuses a keyless provision only when this is false. A key that
+   * IS supplied stays honoured either way (the BYO dedicated path).
+   *
+   * Absent from an older plane, so treat absent as false rather than as unknown.
+   */
+  shared_tier_available?: boolean;
 }
 
 export interface TenantEndpoint {
@@ -53,6 +63,18 @@ export interface TenantView {
   status: string;
   url?: string;
   endpoints?: TenantEndpoint[];
+  /**
+   * cp#439. Which render tier this tenant is on, or null while that is not yet decided.
+   *
+   * The two tiers need different screens. A SHARED tenant has no RunPod account and no key to
+   * paste: its invoke-key install succeeds only on an EMPTY-bodied POST, and a posted key is
+   * refused with invoke_key_not_accepted. A DEDICATED tenant must paste one.
+   *
+   * NULL means the tier is not settled yet, NOT dedicated. Treating null as dedicated is exactly
+   * the bug cp#439 fixes. Optional here because an older plane does not send the field at all, so
+   * absent and null must be handled the same way.
+   */
+  runpod_mode?: "shared" | "dedicated" | null;
 }
 
 export interface MeResponse {
