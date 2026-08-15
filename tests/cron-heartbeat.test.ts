@@ -25,7 +25,7 @@ import {
 } from "../src/cron-heartbeat";
 import type { ControlPlaneDeps, ProvisionerWiring } from "../src/deps";
 import type { ControlPlaneEnv } from "../src/env";
-import { handle, runScheduledTick } from "../src/index";
+import { handle, runPendingProvisionDrive, runScheduledTick } from "../src/index";
 import { D1Store } from "../src/store-d1";
 import { d1Over, freshMigratedDb as freshDb } from "./sqlite-d1";
 
@@ -211,7 +211,12 @@ describe("a half that swallows its own errors must still be able to go RED (cp#4
       store,
       mailer: { send: async () => {} },
       fetch: vi.fn(async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
-      now: () => NOW,
+      // WALL CLOCK, not the fixed NOW the reader tests use. The lease guard compares lease_until
+      // (stamped by SQLite datetime(now), i.e. REAL time) against deps.now(), so a pinned 2025
+      // clock puts every real lease in the FUTURE: the guard correctly defers and no drive ever
+      // happens. Same trap as the routes.test expireLease helper -- a test clock and a DB clock
+      // that disagree make a guard look broken when it is the FIXTURE that is wrong.
+      now: () => Date.now(),
       provisioner: { resume } as unknown as ProvisionerWiring,
     } as unknown as ControlPlaneDeps;
 
@@ -221,7 +226,7 @@ describe("a half that swallows its own errors must still be able to go RED (cp#4
 
     const row = await heartbeat();
     expect(row?.halves.provision_drive.ok).toBe(false);
-    expect(String(row?.halves.provision_drive.detail)).toMatch(/1 of 1 candidates threw/);
+    expect(String(row?.halves.provision_drive.detail)).toMatch(/1 drive failure\(s\) over 1 drive\(s\) across 1 tenant\(s\)/);
     expect(row?.ok).toBe(false);
   });
 
@@ -322,5 +327,84 @@ describe("GET /api/admin/cron serves what the tick actually wrote (cp#436)", () 
 
     const authorized = await get(deps);
     expect(authorized.status).toBe(200);
+  });
+});
+
+describe("the summary counts DRIVES, not tenants (cp#436 x cp#442)", () => {
+  let db: DatabaseSync;
+  let store: D1Store;
+
+  const expireLease = (jobId: string) =>
+    db
+      .prepare("UPDATE provision_jobs SET lease_until = datetime(:now, :ago) WHERE id = :id")
+      .run({ now: "now", ago: "-120 seconds", id: jobId });
+
+  beforeEach(async () => {
+    db = freshDb();
+    store = new D1Store(d1Over(db));
+    await store.createAccount("acct_1", "owner@example.com");
+  });
+
+  // THE FALSIFIER FOR THE MERGE ITSELF.
+  //
+  // Before the in-tick loop each tenant got exactly ONE drive, so drives and tenants were the same
+  // number and nothing could tell which a counter meant. They are different quantities now, and a
+  // resolution that left the counters OUTSIDE the loop still compiles, still passes every other
+  // test, and reports 2/2 for the run below.
+  //
+  // That is the failure worth a test rather than careful reading: it does not crash, it does not
+  // look absurd, it just quietly means something else. An asymmetric fixture is what makes it
+  // catchable -- with one drive each, every wrong answer and the right one agree.
+  it("FOUR drives across TWO tenants: one yields twice then completes, one completes at once", async () => {
+    // Tenant A: yields, yields, completes = THREE drives.
+    await store.createTenant("ten_a", "slow", "acct_1", "provisioning");
+    await store.createProvisionJob("job_a", "ten_a", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_a");
+    expireLease("job_a");
+
+    // Tenant B: completes on its first drive = ONE drive.
+    await store.createTenant("ten_b", "quick", "acct_1", "provisioning");
+    await store.createProvisionJob("job_b", "ten_b", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_b");
+    expireLease("job_b");
+
+    const seen: Record<string, number> = { job_a: 0, job_b: 0 };
+    const resume = vi.fn(async (jobId: string, tenant: { id: string }) => {
+      seen[jobId] = (seen[jobId] ?? 0) + 1;
+      const done = async () => {
+        await store.finishJob(jobId, "succeeded", null, null);
+        await store.setTenantStatus(tenant.id, "awaiting_invoke_key");
+      };
+      if (jobId === "job_b") return void (await done());
+      if (seen[jobId] < 3) {
+        // A real yield: persist progress and hand the lease back (cp#158), so the next pass of
+        // the loop can claim it. Without the hand-back the loop stops and the fixture would be
+        // measuring contention rather than drives.
+        await store.updateJobProgress(jobId, "wfp_upload", JSON.stringify(["wfp_upload"]));
+        await store.releaseJobLease(jobId);
+        return;
+      }
+      await done();
+    });
+
+    const deps = {
+      store,
+      mailer: { send: async () => {} },
+      fetch: vi.fn(async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
+      now: () => Date.now(),
+      provisioner: { resume } as unknown as ProvisionerWiring,
+    } as unknown as ControlPlaneDeps;
+
+    const summary = await runPendingProvisionDrive(deps);
+
+    // The asymmetry is the point: 3 + 1.
+    expect(seen.job_a).toBe(3);
+    expect(seen.job_b).toBe(1);
+
+    // THE ASSERTION THE MERGE HAD TO SURVIVE. Counters left outside the loop say 2 here.
+    expect(summary.drives).toBe(4);
+    // And the tenant count did NOT become a drive count in the process.
+    expect(summary.candidates).toBe(2);
+    expect(summary.errors).toBe(0);
   });
 });

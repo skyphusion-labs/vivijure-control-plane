@@ -62,9 +62,15 @@ function fakeCf(over: Record<string, unknown> = {}) {
 }
 
 function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionDeps {
+  // cp#464: module uploads now run on the SCRIPT UPLOAD credential. This suite is about upgrade
+  // ORCHESTRATION (counts, ordering, lease, failure containment), NOT which credential carries the
+  // bytes, so it deliberately ALIASES the two and lets a test inject one fake. Credential
+  // SEPARATION is proven in the module-binding suites, which give each client its own recorder and
+  // assert the general one stays untouched. Aliasing here is a scoping choice, stated not accidental.
+  const generalCf = over.cf ?? fakeCf();
   return {
     store,
-    cf: fakeCf(),
+    cf: generalCf,
     moduleBundle: {
       fetch: vi.fn(async (release: string, name: string) => ({
         mainModule: "i.js",
@@ -94,6 +100,7 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     vpcDoors: TEST_VPC_DOORS,
     log: () => undefined,
     ...over,
+    scriptUploadCf: over.scriptUploadCf ?? generalCf,
   } as unknown as ProvisionDeps;
 }
 

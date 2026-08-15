@@ -29,7 +29,7 @@ import {
 } from "./payment-rail";
 import type { CreditStore, OperatorCredential } from "./store";
 import { ApiTokenError } from "./tenant-api-token";
-import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt } from "./aup";
+import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt, lastAcceptance } from "./aup";
 import {
   clearedSessionCookie,
   endSession,
@@ -86,16 +86,8 @@ import { handleProxyPoll } from "./runpod-proxy-poll-routes";
 import { runRunpodJobSweep } from "./runpod-job-sweep";
 import { ABUSE_REPORT_URL_VAR } from "./tenant-abuse-report";
 import type { StorageQuotaIntent } from "./tenant-storage-quota";
-import {
-  HANDOFF_TOKEN_PARAM,
-  burnInvokeKeyHandoff,
-  mintInvokeKeyHandoff,
-  resolveInvokeKeyHandoff,
-  type HandoffDeps,
-} from "./invoke-key-handoff";
 import { JOB_LEASE_SECONDS, RECLAIM_LEASE_SECONDS, jobAwaitsFirstDriver, jobHasLiveDriver } from "./store";
 import { StudioBindingError } from "./tenant-studio-bindings";
-import { ReprovisionError } from "./tenant-runpod-reprovision";
 import type { PreservationHoldKind } from "./store";
 import type { Account, Tenant, ProvisionJob, ProvisionJobFacts, SmokeRender } from "./store";
 import {
@@ -261,7 +253,22 @@ export async function runScheduledTick(env: ControlPlaneEnv, deps: ControlPlaneD
     halves.provision_drive =
       drive.errors === 0
         ? { ok: true }
-        : { ok: false, detail: String(drive.errors) + " of " + String(drive.candidates) + " candidates threw" };
+        : {
+            ok: false,
+            // THREE NUMBERS, EACH WITH ITS OWN UNIT, AND NO RATIO BETWEEN THEM. This used to read
+            // "N of M candidates threw", which was true only while each tenant got exactly one
+            // drive. Under the cp#442 in-tick loop errors are per-DRIVE and candidates are
+            // per-TENANT, so that sentence could print "3 of 2" -- and the times it did NOT look
+            // absurd were the dangerous ones, because it would read plausibly and mean something
+            // other than it said.
+            detail:
+              String(drive.errors) +
+              " drive failure(s) over " +
+              String(drive.drives) +
+              " drive(s) across " +
+              String(drive.candidates) +
+              " tenant(s)",
+          };
   } catch (e) {
     console.error("scheduled.provision_drive_threw", String(e));
     halves.provision_drive = { ok: false, detail: "threw: " + String(e) };
@@ -383,6 +390,22 @@ export async function handle(
         aup_version: env.AUP_VERSION,
         // Projected from what is actually configured, never hardcoded. Joan renders from this.
         auth_methods: ["email", ...configuredProviders(env)],
+        // cp#439: whether THIS DEPLOY can provision a tenant with no RunPod key of its own.
+        //
+        // The provision route already branches on exactly this fact -- a keyless provision is
+        // refused with runpod_key_required ONLY when the plane offers no shared tier -- but the
+        // fact itself was projected nowhere, so no client could know a key was optional. The
+        // wizard therefore gated its key step on a non-empty key and a shared-tier tenant could
+        // not provision at all.
+        //
+        // BELONGS HERE rather than on the tenant: this is decided BEFORE any tenant row exists,
+        // so tenantView.runpod_mode (the cp#439 field) cannot answer it. Two different questions,
+        // asked at two different moments: "can this plane do keyless" and "which tier did this
+        // tenant get".
+        //
+        // False when the provisioner is unwired at all, which is the same answer for the client:
+        // do not offer keyless here.
+        shared_tier_available: deps.provisioner?.offersSharedTier() ?? false,
       });
     }
 
@@ -445,25 +468,6 @@ export async function handle(
     if (request.method === "POST" && path === "/api/auth/logout") {
       await endSession(deps.store, request, deps.now());
       return new Response(null, { status: 204, headers: { "set-cookie": clearedSessionCookie(sessionCookieDomain(env.CONTROL_PLANE_HOST)) } });
-    }
-
-    // ---- cp#169: the owner-completed invoke-key handoff (unauthenticated by design) ----
-    //
-    // WHY IT SITS ABOVE THE SESSION GATE. The whole point of the ruling is that the owner does not
-    // have to sign in: an operator repaired their studio and handed them a link. Requiring a session
-    // here would put the flow back exactly where cp#169 found it. What replaces the session is not
-    // "nothing" -- it is a one-time 256-bit token bound to ONE tenant and ONE set of endpoint ids,
-    // and a key that still has to pass verifyInvokeKeyScope against endpoints living in the
-    // customer's own RunPod account. Holding the link without a credential to that account installs
-    // nothing.
-    //
-    // THE TOKEN TRAVELS IN THE BODY ON THE WRITE, and in the query only on the read the page cannot
-    // avoid (it arrives as a URL). Same shape as the magic link, and the write is where a token in a
-    // query string would otherwise end up in an access log next to a credential.
-    if (path === "/api/handoff/invoke-key") {
-      if (request.method === "GET") return await handoffContext(request, deps, url);
-      if (request.method === "POST") return await handoffInstall(request, deps);
-      return err("not_found", 404);
     }
 
     // ---- cp#290: the plane-side RunPod proxy (bearer, not session) ----
@@ -641,11 +645,24 @@ async function finishSso(
 
 async function me(env: ControlPlaneEnv, deps: ControlPlaneDeps, account: Account): Promise<Response> {
   const tenant = await deps.store.getTenantForAccount(account.id);
+  // cp#433: `accepted` ALONE collapsed two different people into one false -- somebody who has
+  // never accepted anything, and somebody who accepted an earlier version that has since been
+  // superseded. They were byte-identical here, so the front door rendered the same first-run
+  // setup gate at both, telling an owner with a RUNNING studio that they were about to start.
+  //
+  // last_accepted is the discriminator: null means never, present means the policy moved under
+  // them. It is projected UNCONDITIONALLY rather than only when refused, so a client never has to
+  // know which branch it is in to read it. Nothing here touches who gets through the gate.
+  const [accepted, last] = await Promise.all([
+    hasAcceptedCurrent(deps.store, account.id, env.AUP_VERSION),
+    lastAcceptance(deps.store, account.id),
+  ]);
   return json({
     account: { id: account.id, email: account.email, created_at: account.created_at },
     aup: {
       required_version: env.AUP_VERSION,
-      accepted: await hasAcceptedCurrent(deps.store, account.id, env.AUP_VERSION),
+      accepted,
+      last_accepted: last,
     },
     tenant: tenant ? tenantView(tenant, tenantDomainSuffix(env)) : null,
   });
@@ -918,6 +935,35 @@ async function tenantRoutes(
 const MAX_JOB_STALE_MS = 10 * 60 * 1000;
 
 /**
+ * How old a provision job may get, TOTAL, before it is declared lost.
+ *
+ * WHY A SECOND MEASURE EXISTS ALONGSIDE MAX_JOB_STALE_MS, and it is not belt-and-braces.
+ *
+ * The staleness rule reads IDLE TIME and treats it as evidence a driver died. That inference was
+ * sound while the only driver was a browser poll: a healthy job was being touched constantly, so a
+ * gap meant something had stopped. **The premise expired when the cron became a driver.** Idle time
+ * now measures how long ago the last TICK was, which is a property of the cron schedule and not of
+ * the job at all.
+ *
+ * Worse than uninformative: on a cron-driven job the staleness rule can no longer FIRE. claimJob
+ * sets updated_at = datetime(now) on every successful claim (store-d1.ts:645), and the cron runs
+ * every 5 minutes against a 10-minute window, so each tick resets the clock it is measured by. A
+ * job that throws between claimJob and the provisioner own catch is re-claimed forever, never
+ * reaped, and never reported -- found by ernst on the merged code, independently of the reasoning
+ * above, which is why there are two arguments for one constant.
+ *
+ * TOTAL AGE is the quantity that still carries information once idleness does not: it measures the
+ * job, not the schedule, and no amount of re-claiming can reset it. Two hours is deliberately
+ * generous against a 5-minute cadence -- a healthy provision yields a handful of times and finishes
+ * in tens of minutes -- because this is a runaway guard, not a deadline.
+ *
+ * NOT A FIX FOR cp#438. That is finishJob missing a status predicate, which shares a symptom with
+ * the loop above and has a different cause; a job reaped here still goes through the same
+ * finishJob. Keep them separate.
+ */
+const MAX_PROVISION_JOB_AGE_MS = 2 * 60 * 60 * 1000;
+
+/**
  * One invocation claim on a job. THE store lease length, not a copy of it (cp#148): the poller and
  * the driver heartbeat have to agree on one number, and two 60s literals that agree by luck is how
  * a lease hierarchy drifts.
@@ -969,17 +1015,58 @@ async function driveJobIfNeeded(
   // here to drive in any case: the correct behavior is to REPORT the job and drive nothing.
   if (job.kind !== "provision") return null;
 
+  // A LIVE DRIVER OWNS ITS JOB, AND NEITHER REAP BELOW MAY TERMINALIZE IT (cp#451, found by ernst).
+  //
+  // renewJobLease bumps lease_until ALONE and never updated_at, and both reaps below read only
+  // updated_at. So a driver heartbeating correctly every 20s while sitting inside ONE long step has
+  // a LIVE lease and a STALE updated_at, and to the only code that can kill it that is
+  // indistinguishable from a driver that died. It reaps, writes failed, and the still-living driver
+  // then writes its own terminal status over the row: job succeeded, tenant failed.
+  //
+  // THIS IS NOT A NEW CHECK, IT IS THE CHECK THIS FILE ALREADY APPLIES EVERYWHERE ELSE.
+  // jobHasLiveDriver guards eight admin routes here; the reap was the one terminalizer ignoring it.
+  //
+  // DEFER RATHER THAN REFUSE: returning null drives nothing and writes nothing, so the next tick
+  // re-examines it. If the driver really is dead its lease lapses within JOB_LEASE_SECONDS and the
+  // reaps below fire on the following pass, which costs one cycle and cannot cost a live provision.
+  //
+  // The total-age cap makes this MORE necessary, not less: an honest slow provision is old but
+  // ALIVE, and a runaway guard that cannot tell a runaway from a working driver is worse than the
+  // idle rule it supplements. claimJob refuses a live lease too, so the DRIVE path was already
+  // protected; only the terminalizers ran ahead of it.
+  if (jobHasLiveDriver(job, deps.now())) return null;
+
+  // RUNAWAY GUARD, on TOTAL AGE, and it is checked BEFORE the staleness rule because on a
+  // cron-driven job the staleness rule cannot fire at all (see MAX_PROVISION_JOB_AGE_MS).
+  const createdAt = Date.parse(String(job.created_at).replace(" ", "T") + "Z");
+  if (Number.isFinite(createdAt) && deps.now() - createdAt > MAX_PROVISION_JOB_AGE_MS) {
+    const closed = await deps.store.finishJob(
+      job.id,
+      "failed",
+      job.step,
+      `provision did not complete within ${Math.round(MAX_PROVISION_JOB_AGE_MS / 60000)} minutes of ` +
+        "being created; giving up rather than driving it forever",
+    );
+    // CONDITIONAL, and this is cp#443. The reap is two writes; if the job write refused because
+    // another driver already closed the row, flipping the tenant anyway would report a studio that
+    // provisioned correctly as failed, beside a job row saying succeeded. Two records disagreeing
+    // is worse than either being wrong alone.
+    if (closed) await deps.store.setTenantStatus(tenant.id, "failed");
+    return await deps.store.getJob(job.id);
+  }
+
   // Lost driver: no progress for too long. Fail honestly rather than leave a spinner running.
   const lastProgress = Date.parse(`${job.updated_at.replace(" ", "T")}Z`);
   if (Number.isFinite(lastProgress) && deps.now() - lastProgress > MAX_JOB_STALE_MS) {
-    await deps.store.finishJob(
+    const closed = await deps.store.finishJob(
       job.id,
       "failed",
       job.step,
       `invocation lost: no progress for over ${Math.round(MAX_JOB_STALE_MS / 60000)} minutes; ` +
         "the provision did not complete",
     );
-    await deps.store.setTenantStatus(tenant.id, "failed");
+    // Conditional for the same reason as the cap reap above (cp#443).
+    if (closed) await deps.store.setTenantStatus(tenant.id, "failed");
     return await deps.store.getJob(job.id);
   }
 
@@ -1014,12 +1101,29 @@ async function driveJobIfNeeded(
 }
 
 /**
- * How many provisions one tick will drive. Each drive costs up to PROVISION_INVOCATION_BUDGET_MS
- * (15s) before it yields, and the tick also owns the meter and the RunPod sweep, so this bounds
- * the tick rather than letting a backlog decide how long a cron invocation runs. A backlog drains
- * across ticks; the cron fires every 5 minutes.
+ * WALL BUDGET for the whole provision-drive half of one tick.
+ *
+ * A WALL BUDGET, NOT A DRIVE COUNT. A count is a proxy for time, and it goes wrong the moment step
+ * durations change: five drives is a few seconds on a fast plane and over a minute on a slow one,
+ * so the count would silently mean something different on the day it mattered. Time is the thing
+ * actually being rationed, so time is what is measured.
+ *
+ * SIZED AGAINST THE CRON PERIOD, which is the real constraint. The cron fires every 5 minutes and
+ * this half runs LAST, after the meter and the sweep, so meter + sweep + this must finish inside
+ * 300s or ticks begin to overlap. 120s leaves better than half the period as headroom for the
+ * other two halves. If they ever grow, this is the knob that gives way first, deliberately.
  */
-const MAX_PROVISION_DRIVES_PER_TICK = 5;
+export const PROVISION_DRIVE_TICK_BUDGET_MS = 120_000;
+
+/**
+ * The most wall time ONE tenant may take out of that budget.
+ *
+ * Without it a single long tail eats the whole tick and every other in-flight provision waits 5
+ * more minutes for a turn it never gets. The slice does not make starvation impossible with enough
+ * simultaneous provisions -- nothing here can -- it makes it BOUNDED, and the deferral is logged
+ * rather than silent.
+ */
+export const PROVISION_DRIVE_TENANT_SLICE_MS = 60_000;
 
 /**
  * DRIVE THE PROVISIONS NOBODY IS POLLING (cp#429).
@@ -1049,18 +1153,31 @@ const MAX_PROVISION_DRIVES_PER_TICK = 5;
  * signal the half can give, so it is reported rather than left to the log.
  */
 export interface ProvisionDriveSummary {
+  /** Tenants CONSIDERED this tick. A tenant count, not a work count. */
   candidates: number;
-  driven: number;
+  /**
+   * DISPATCHES across all tenants. NOT a tenant count (cp#442): the in-tick loop drives one tenant
+   * repeatedly until it stops yielding, so this can exceed `candidates` and routinely will.
+   */
+  drives: number;
+  /** Tenants the tick budget did not reach at all. */
   deferred: number;
+  /**
+   * PER-DRIVE failures, not per-tenant breaks. One tenant can contribute several.
+   *
+   * This is the field the cp#436 heartbeat judges the half on, and it is the reason the half
+   * returns anything: runPendingProvisionDrive catches per drive and returns NORMALLY when every
+   * drive it attempted failed, so absence-of-throw says nothing about whether it worked.
+   */
   errors: number;
 }
 
 export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<ProvisionDriveSummary> {
-  const summary: ProvisionDriveSummary = { candidates: 0, driven: 0, deferred: 0, errors: 0 };
+  const empty: ProvisionDriveSummary = { candidates: 0, drives: 0, deferred: 0, errors: 0 };
   // No provisioner is a REFUSAL, and it returns zeroes rather than throwing. The heartbeat reads
   // errors, so a plane with no provisioner reports a clean half -- correct, because there is no
   // work it failed to do; cp#436 records configuration gaps at the meter half, which owns that.
-  if (!deps.provisioner) return summary;
+  if (!deps.provisioner) return empty;
 
   // The two lifecycle states an unfinished provision can be sitting in: both routes CREATE the
   // tenant "pending", and the first driver moves it to "provisioning". Everything later has a
@@ -1076,47 +1193,129 @@ export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<
     candidates.push(...rows);
   }
 
-  let driven = 0;
+  const tickStartedAt = deps.now();
+  const tickSpent = () => deps.now() - tickStartedAt;
+
+  let drives = 0;
+  let errors = 0;
   let deferred = 0;
+  let budgetExhausted = false;
+
   for (const tenant of candidates) {
-    if (driven >= MAX_PROVISION_DRIVES_PER_TICK) {
+    if (tickSpent() >= PROVISION_DRIVE_TICK_BUDGET_MS) {
+      budgetExhausted = true;
       deferred += 1;
       continue;
     }
-    const job = await deps.store.getLatestJobForTenant(tenant.id);
-    if (!job) continue;
 
-    // AWAIT, do not waitUntil (the scheduled handler owns its whole invocation). The seam collects
-    // the resume promise so this loop can await it and count a drive that actually happened.
-    const work: Promise<unknown>[] = [];
-    try {
-      const reaped = await driveJobIfNeeded((p) => void work.push(p), deps, tenant, job);
+    // DRIVE THIS JOB UNTIL IT STOPS MOVING, not once and then five minutes of nothing (cp#429).
+    //
+    // A drive buys at most PROVISION_INVOCATION_BUDGET_MS (15s) and then YIELDS, and cp#158 hands
+    // the lease straight back on that yield so the next driver does not wait out a dead lease.
+    // Driving once per tick threw exactly that away: 15s of work per 300s of clock, a 5% duty
+    // cycle, roughly twenty times slower than the poll path this replaces. Looping here is what
+    // spends the hand-back the guard was written to buy.
+    //
+    // Each pass RE-READS the job and goes back through driveJobIfNeeded, so every guard is
+    // re-evaluated on the row as it now stands rather than on a stale copy, and each pass takes
+    // its own claimJob. Nothing about looping widens what may be driven.
+    const sliceStartedAt = deps.now();
+    for (;;) {
+      if (tickSpent() >= PROVISION_DRIVE_TICK_BUDGET_MS) {
+        budgetExhausted = true;
+        break;
+      }
+      if (deps.now() - sliceStartedAt >= PROVISION_DRIVE_TENANT_SLICE_MS) {
+        console.log("scheduled.provision_drive_slice_spent", JSON.stringify({ tenant: tenant.id, drives }));
+        break;
+      }
+
+      const job = await deps.store.getLatestJobForTenant(tenant.id);
+      if (!job) break;
+
+      // AWAIT, do not waitUntil (the scheduled handler owns its whole invocation). The seam
+      // collects the resume promise so this loop can await it and count a drive that HAPPENED.
+      const work: Promise<unknown>[] = [];
+      let reaped: ProvisionJob | null = null;
+      try {
+        reaped = await driveJobIfNeeded((p) => void work.push(p), deps, tenant, job);
+      } catch (e) {
+        // One tenant cannot take the sweep down with it, for the same reason the tick isolates
+        // its halves (cp#290): the symptom would be an absence in every OTHER tenant.
+        //
+        // COUNTED (cp#436): a drive that never dispatched is still a drive that failed, and the
+        // heartbeat judges this half on its error count. Breaking without counting is how a
+        // half that failed on every tenant reports itself healthy.
+        errors += 1;
+        console.error("scheduled.provision_drive_threw", JSON.stringify({ tenant: tenant.id, error: String(e) }));
+        break;
+      }
+
       if (reaped) {
+        // Declared lost. Terminal, so there is nothing left to drive on this tenant.
         console.log("scheduled.provision_drive_reaped", JSON.stringify({ tenant: tenant.id, job: job.id }));
+        break;
       }
-      if (work.length) {
-        driven += 1;
-        console.log("scheduled.provision_drive", JSON.stringify({ tenant: tenant.id, job: job.id, step: job.step }));
-        // The provisioner records every outcome on the job row itself; awaiting here is about not
-        // letting the tick finish mid-write, not about reading a result.
+
+      // NOTHING DISPATCHED MEANS A GUARD SAID NO, AND THIS IS THE LOOP TERMINATION PROOF. Every
+      // no-dispatch path is stable under re-reading the same row: terminal job, wrong kind,
+      // cp#132 queued-and-undriven, a lost claim, no provisioner. Retrying any of them would spin
+      // until the budget ran out and burn the tick, so a refusal ends this tenant rather than
+      // being retried. The only path that continues is one that actually drove.
+      if (!work.length) break;
+
+      drives += 1;
+      console.log("scheduled.provision_drive", JSON.stringify({ tenant: tenant.id, job: job.id, step: job.step }));
+      // The provisioner records every outcome on the job row itself; awaiting is about not letting
+      // the tick finish mid-write, not about reading a result.
+      try {
         await Promise.all(work);
+      } catch (e) {
+        // Counted for the same reason as the sibling above. This one ALREADY incremented
+        // drives, so a failed dispatch appears in both numbers -- correctly: it was dispatched
+        // and it failed.
+        errors += 1;
+        console.error("scheduled.provision_drive_threw", JSON.stringify({ tenant: tenant.id, error: String(e) }));
+        break;
       }
-    } catch (e) {
-      // One tenant cannot take the sweep down with it, for the same reason the tick isolates its
-      // halves (cp#290): the symptom would be an absence in every OTHER tenant.
-      summary.errors += 1;
-      console.error("scheduled.provision_drive_threw", JSON.stringify({ tenant: tenant.id, error: String(e) }));
     }
   }
 
-  if (deferred) {
-    console.log("scheduled.provision_drive_deferred", JSON.stringify({ count: deferred, next_tick: true }));
-  }
+  // EVERY TICK SAYS HOW IT ENDED, and the two endings are named rather than inferred (ernst).
+  //
+  // A tick that ran out of budget and a tick that finished everything both go quiet otherwise, and
+  // the quiet one reads as "all done". That is the same self-sealing absence as a truncated page:
+  // the reassuring reading is the one you get for free. So the outcome is EXPLICIT and always
+  // logged, and budget_spent additionally carries how much was left undone.
+  //
+  // budget_spent means work remains that this tick could not reach; the next tick continues it.
+  // drained means every candidate was driven until its own guards stopped it, which is the only
+  // state that actually means there is nothing left to do.
+  console.log(
+    "scheduled.provision_drive_tick",
+    JSON.stringify({
+      outcome: budgetExhausted ? "budget_spent" : "drained",
+      drives,
+      errors,
+      tenants_seen: candidates.length,
+      tenants_deferred: deferred,
+      budget_ms: PROVISION_DRIVE_TICK_BUDGET_MS,
+    }),
+  );
 
-  summary.candidates = candidates.length;
-  summary.driven = driven;
-  summary.deferred = deferred;
-  return summary;
+  // THE COUNTERS ARE BUILT HERE AND THEIR UNITS ARE NOT THE SAME (cp#436 x cp#442).
+  //
+  // Before the in-tick loop, each tenant got exactly ONE drive, so drives and tenants were the
+  // same number and it did not matter which a caller read. They are now different quantities:
+  //
+  //   drives      dispatches across ALL tenants -- one tenant can contribute several
+  //   errors      per-DRIVE failures, NOT per-tenant breaks
+  //   candidates  tenant count, unchanged
+  //
+  // Reporting one against the other would produce sentences like "3 of 2 candidates threw", and
+  // the version that does NOT print an obvious absurdity is the dangerous one: it reads plausibly
+  // and means something other than it says.
+  return { candidates: candidates.length, drives, deferred, errors };
 }
 
 async function provision(
@@ -1125,7 +1324,7 @@ async function provision(
   deps: ControlPlaneDeps,
   account: Account,
 ): Promise<Response> {
-  const body = (await readJson(request)) as { slug?: string; runpod_api_key?: string } | null;
+  const body = (await readJson(request)) as { slug?: string } | null;
   const slug = String(body?.slug ?? "").toLowerCase();
 
   const valid = validateSlug(slug);
@@ -1142,45 +1341,29 @@ async function provision(
   const claim = await deps.store.checkSlugAvailability(slug, account.id);
   if (!claim.available) return err("slug_taken", 409, { message: claim.reason });
 
-  // EVERY CHEAP REFUSAL HAPPENS BEFORE ANYTHING DESTRUCTIVE. These two used to sit below, which was
-  // harmless while provision only ever CREATED. The reclaim path below DELETES a customer half-built
-  // studio, so discovering a missing key or an unconfigured provisioner after the teardown would
-  // leave them strictly worse off than before they asked: resources gone, nothing provisioned, and
-  // the refusal they should have got for free up front. Order is load-bearing, not stylistic.
-  // cp#270: a RunPod key is required ONLY when this plane cannot put the tenant on the shared
-  // pool. Order matters and is why the provisioner check moved ABOVE this one: whether a key is
-  // needed is a question about the PLANE's configuration, so it cannot be answered before we know
-  // the plane is configured at all.
-  //
-  // A key that IS supplied is still honoured on a plane with a pool: that is the BYO power-user
-  // path, it keeps dedicated endpoints because the tenant brings the account, and it is correct.
-  // Only the ABSENCE of a key changes meaning here.
+  // cp#396: this plane has ONE tier. A tenant rides the shared pool or it is not provisioned, so
+  // the only question left is whether the plane HAS a pool. The BYOK branch that used to accept a
+  // tenant own RunPod key is gone; see the purge notes in CHANGELOG.
   if (!deps.provisioner) return err("provisioner_unconfigured", 503);
-  if (!body?.runpod_api_key && !deps.provisioner.offersSharedTier()) {
+  if (!deps.provisioner.offersSharedTier()) {
+    // Same code as before, narrower meaning: it no longer says "bring a key", it says this deploy
+    // has no shared render capacity at all. Kept rather than renamed because it is the refusal a
+    // front door already branches on.
     return err("runpod_key_required", 400);
   }
-
-  // ONE read of the key, used for BOTH the recorded mode and the value handed to the driver.
-  //
-  // THIS IS THE POINT OF THE VARIABLE, not tidiness. The mode is a claim about which branch
-  // runProvisionJob will take, and that branch is decided by the key it receives. Deriving the two
-  // from separate expressions would let them disagree on any edge the two expressions treat
-  // differently (an empty string is the obvious one), and a job row asserting `dedicated` over a
-  // provision that took the shared branch is a lie no reader could detect.
-  const runpodApiKey = body?.runpod_api_key ?? null;
 
   // The two facts a later resume cannot reconstruct (cp#301). Derived here, ONCE, above both
   // createProvisionJob call sites, so the reclaim path and the fresh path cannot record different
   // things for the same request.
   //
-  // MODE COMES FROM THE KEY, never from whether the plane offers a pool. A plane with a pool armed
-  // still serves BYO dedicated tenants -- that is what the refusal above is careful to allow -- so
-  // "a pool exists" would put a tenant who brought their own RunPod account onto ours.
+  // MODE IS FIXED at shared: it is the only mode a tenant can be created in now. The column stays
+  // because 13 historical rows carry the other value and reconcile still reads it to decide whose
+  // endpoint ids a row names.
   //
   // RELEASE IS THE PIN NOW, because the pin moves. A poll-driven resume reads it at poll time, and
   // STUDIO_RELEASE went v1.13.0 to v1.19.3 in a single day on 2026-08-03.
   const jobFacts: ProvisionJobFacts = {
-    runpodMode: runpodApiKey ? "dedicated" : "shared",
+    runpodMode: "shared",
     toRelease: deps.provisioner.currentRelease(),
   };
   // A GRANTED RECLAIM CANNOT GO THROUGH THIS ROUTE, and that refusal is deliberate rather than a
@@ -1263,7 +1446,7 @@ async function provision(
     // THIS row: createTenant would hit the UNIQUE constraint, and a second row would orphan the
     // first. No getTenantForAccount check here: the reclaimed row IS this account tenant.
     const job = await deps.store.createProvisionJob(newId("job"), reclaimed.id, "provision", jobFacts);
-    ctx.waitUntil(deps.provisioner.start(job.id, reclaimed, runpodApiKey));
+    ctx.waitUntil(deps.provisioner.start(job.id, reclaimed));
     return json({ tenant_id: reclaimed.id, job_id: job.id, reclaimed: true }, 202);
   }
 
@@ -1282,7 +1465,7 @@ async function provision(
   // `?? null` is the cp#270 shared path, not defensive typing: an absent key is now a MEANINGFUL
   // argument (put this tenant on the shared pool), and the provisioner distinguishes it from a
   // present one to choose the shape. The route already refused above if neither is possible.
-  ctx.waitUntil(deps.provisioner.start(job.id, tenant, runpodApiKey));
+  ctx.waitUntil(deps.provisioner.start(job.id, tenant));
   return json({ tenant_id: tenant.id, job_id: job.id }, 202);
 }
 
@@ -1311,10 +1494,14 @@ async function provision(
  *     write `live`.
  *   - `setTenantStatus(..., "live")` occurs at exactly ONE site in this tree: performInvokeKeyInstall
  *     below. (Measured: 1 of 15 setTenantStatus call sites across src/.)
- *   - performInvokeKeyInstall has exactly TWO callers. One is the session route
+ *   - performInvokeKeyInstall has exactly ONE caller after cp#396: the session route
  *     POST /api/tenant/<ten>/invoke-key, which sits BELOW the blocking AUP gate in handle(), so the
- *     owner cannot reach it without having accepted the current version themselves. The other is the
- *     cp#169 handoff, which requires an operator to mint a one-time token under studio:operate.
+ *     owner cannot reach it without having accepted the current version themselves. The cp#169
+ *     handoff was a second caller and is GONE (an unauthenticated surface no remaining tier can
+ *     complete is a liability, not a spare door), and the tenant-paste branch was a third.
+ *
+ *     ONE is a STRONGER argument than two, which is why this line is worth keeping accurate rather
+ *     than approximately right: every path to live now passes through a single gate.
  *   - Until then routing.ts answers `awaiting_invoke_key` with 503 "still being set up", to everyone
  *     including the owner.
  *
@@ -1483,7 +1670,7 @@ async function operatorProvision(
   // `null` is the cp#270 shared path and is the ONLY value this route can pass: an absent key is a
   // meaningful argument (put this tenant on the shared pool), and it is what keeps the shared tier
   // off dedicated endpoints.
-  ctx.waitUntil(deps.provisioner.start(job.id, tenant, null));
+  ctx.waitUntil(deps.provisioner.start(job.id, tenant));
 
   // The response states the invariant rather than leaving the operator to infer it, so nobody reads
   // a 202 here as "the customer has a working studio".
@@ -1545,8 +1732,15 @@ async function installInvokeKey(
     return (await performInvokeKeyInstall(deps, tenant, poolKey)).response;
   }
 
-  if (!pasted) return err("invoke_key_required", 400);
-  return (await performInvokeKeyInstall(deps, tenant, pasted)).response;
+  // cp#396: THIS ROUTE IS SHARED-ONLY. The tenant-paste half went with the BYOK path, so a row that
+  // is not recorded shared has no key this plane could install and no endpoints of its own to scope
+  // one to. Those are the 13 legacy rows, all dead; refused by name rather than dropped through, so
+  // the reason appears in the response instead of a 404-shaped silence.
+  return err("tenant_not_on_shared_tier", 409, {
+    message:
+      "this studio predates the shared render tier and cannot be completed on this plane. " +
+      "Nothing was changed; please get in touch.",
+  });
 }
 
 /**
@@ -1721,73 +1915,6 @@ async function performInvokeKeyInstall(
   };
 }
 
-/** The handoff seam, assembled in one place so both routes and the admin mint share a clock. */
-const handoffDeps = (deps: ControlPlaneDeps): HandoffDeps => ({ store: deps.store, now: deps.now });
-
-/**
- * What the owner needs to SEE before they can act: which studio, which four endpoints to scope a key
- * to, and how long the link is good for. Reads the handoff; never consumes it.
- *
- * It returns endpoint ids and a slug and nothing else about the tenant. Both are identifiers the
- * owner already holds (the slug is their studio hostname, the ids are rows in their own RunPod
- * console), which is what makes this safe to serve to a bare token: a stranger who guessed a
- * 256-bit token would learn two facts they cannot act on without a credential we do not hold.
- */
-async function handoffContext(request: Request, deps: ControlPlaneDeps, url: URL): Promise<Response> {
-  const token = url.searchParams.get(HANDOFF_TOKEN_PARAM) ?? "";
-  const outcome = await resolveInvokeKeyHandoff(handoffDeps(deps), token);
-  if (!outcome.ok) {
-    return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
-  }
-  const { handoff, tenant } = outcome.context;
-  return json({
-    handoff_id: handoff.id,
-    slug: tenant.slug,
-    status: tenant.status,
-    expires_at: handoff.expires_at,
-    // The RECIPE data, in the shape the onboarding screen already renders: the owner is doing the
-    // same console work they did at signup, so they should be reading the same list. Projected from
-    // the TENANT row rather than copied onto the handoff, so there is one source of truth for what
-    // this studio's endpoints are, and the staleness check above is what guarantees they agree.
-    endpoints: tenantEndpointRecipe(tenant),
-  });
-}
-
-/**
- * The owner pastes their key. Same install as the session route, by identity, then burn the link.
- *
- * THE BURN IS AFTER, AND ONLY ON A COMPLETED INSTALL. A rejected key must leave the link usable (a
- * typo would otherwise re-strand the customer, which is the failure this whole issue is about), and
- * so must the 202, whose own instruction is to retry. `installed` comes back from the install rather
- * than being inferred from the status code here, so the two cannot drift.
- */
-async function handoffInstall(request: Request, deps: ControlPlaneDeps): Promise<Response> {
-  const body = (await readJson(request)) as { token?: unknown; runpod_invoke_key?: unknown } | null;
-  const token = typeof body?.token === "string" ? body.token : "";
-  const key = typeof body?.runpod_invoke_key === "string" ? body.runpod_invoke_key : "";
-  if (!key) return err("invoke_key_required", 400);
-
-  const outcome = await resolveInvokeKeyHandoff(handoffDeps(deps), token);
-  if (!outcome.ok) {
-    return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
-  }
-  const { handoff, tenant } = outcome.context;
-
-  const { response, installed } = await performInvokeKeyInstall(deps, tenant, key);
-  if (!installed) return response;
-
-  const burned = await burnInvokeKeyHandoff(handoffDeps(deps), handoff);
-  // CONSUMPTION IS AUDITED, and it is audited as the OWNER acting, not the operator: the actor
-  // records which handoff was used and who issued it, so an install has a person on both ends. The
-  // key is not here and never was -- the fields are ids and a boolean.
-  await deps.store.recordAdminAction(
-    `handoff:${handoff.id}`,
-    "tenant.install_invoke_key_via_handoff",
-    tenant.id,
-    JSON.stringify({ handoff_id: handoff.id, issued_by: handoff.issued_by, burned }),
-  );
-  return response;
-}
 
 /**
  * WHAT EACH ADMIN ROUTE REQUIRES (cp#219). ONE table, consulted BEFORE dispatch, and the fallback is
@@ -1875,8 +2002,6 @@ export const ADMIN_REQUIREMENTS: ReadonlyArray<{ method: string; pattern: RegExp
   { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/upgrade-modules$`), requires: "studio:operate" },
   { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/upgrade-studio$`), requires: "studio:operate" },
   { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/refresh-studio-bindings$`), requires: "studio:operate" },
-  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/invoke-key-handoff$`), requires: "studio:operate" },
-  { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/reprovision-runpod$`), requires: "studio:operate" },
   // Spends GPU, so it sits with the operate scope rather than with the reads beside it.
   { method: "POST", pattern: new RegExp(`^/api/admin/tenants/${TEN}/smoke-render$`), requires: "studio:operate" },
   { method: "GET", pattern: new RegExp(`^/api/admin/tenants/${TEN}/smoke-render/smk_[a-f0-9]+$`), requires: "tenants:read" },
@@ -3362,172 +3487,6 @@ async function adminRoutes(
     );
   }
 
-  // ---- cp#169: hand the OWNER a one-time link to install a fresh invoke key -------------------
-  //
-  // WHY THIS ROUTE EXISTS SEPARATELY from the reprovision that mints one automatically. A tenant can
-  // be stranded at awaiting_invoke_key by a repair that happened before this existed, by a link that
-  // expired in a support queue, or by a second reprovision that made an outstanding link stale. All
-  // three need a fresh link WITHOUT re-running a repair, and re-running a repair to obtain one would
-  // rebuild four endpoints to solve a paperwork problem.
-  //
-  // WHY IT IS A LINK AND NOT AN ADMIN INSTALL (option 2 on cp#169, deliberately declined): an
-  // admin-gated install would let an operator credential place a RunPod key on a customer studio.
-  // The ruling keeps the credential decision with the owner and moves only the initiative.
-  //
-  // WHAT THE OPERATOR GETS BACK is the ONLY time the token exists outside this function. It is not
-  // logged, not audited, and cannot be re-read: a lost link is re-minted, never recovered.
-  const handoffMint = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/invoke-key-handoff$/.exec(path);
-  if (request.method === "POST" && handoffMint) {
-    const tenant = await deps.store.getTenantById(handoffMint[1]);
-    if (!tenant) return err("not_found", 404);
-
-    const outcome = await mintInvokeKeyHandoff(handoffDeps(deps), tenant, actor, publicOrigin(env));
-    if (!outcome.ok) return err(outcome.refusal.code, outcome.refusal.status, { message: outcome.refusal.message });
-
-    // IDS AND AN EXPIRY. The token is deliberately absent from the audit row: a credential-bearing
-    // URL in an audit table is a credential in an audit table.
-    await deps.store.recordAdminAction(
-      actor,
-      "tenant.issue_invoke_key_handoff",
-      tenant.id,
-      JSON.stringify({
-        handoff_id: outcome.minted.id,
-        expires_at: outcome.minted.expires_at,
-        endpoints: outcome.minted.endpoints,
-      }),
-    );
-    return json({ tenant_id: tenant.id, slug: tenant.slug, ...outcome.minted });
-  }
-
-  // ---- cp#137: rebuild a tenant's RunPod endpoints, through a plane mechanism ------------------
-  //
-  // WHY THIS ROUTE EXISTS AT ALL. cp#137's detection half proved a live tenant can point at four
-  // endpoints that no longer exist, and the standing ruling on that issue is that the fix goes
-  // through a plane mechanism rather than an UPDATE against D1. Correcting the record by hand would
-  // move the ids without making them real; this rebuilds the endpoints, re-points every consumer of
-  // their ids, and writes the record as a consequence of having done so.
-  //
-  // WHY confirm_slug, unlike refresh-studio-bindings: this pass REVOKES a live R2 credential and
-  // replaces the wiring of a running studio. It is not destructive of customer data, but it is not
-  // the kind of thing to run against the tenant one row above the one you meant, and the ids are
-  // opaque where the slug is recognisable. Same reasoning, and the same shape, as teardown.
-  //
-  // KEY A NEVER LANDS ANYWHERE. It arrives in this body, is passed as an argument, and is held by
-  // nothing afterwards: no job row (this route deliberately has none), no audit detail, no log line.
-  // The audit row below records ids and counts. A failure carries a message the module has already
-  // scrubbed of every secret it was holding.
-  const reprovisionRunPod = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/reprovision-runpod$/.exec(path);
-  if (request.method === "POST" && reprovisionRunPod) {
-    if (!deps.provisioner) return err("provisioner_unconfigured", 503);
-    const tenant = await deps.store.getTenantById(reprovisionRunPod[1]);
-    if (!tenant) return err("not_found", 404);
-
-    const body = (await readJson(request)) as { confirm_slug?: unknown; runpod_api_key?: unknown } | null;
-    if (typeof body?.confirm_slug !== "string" || body.confirm_slug.trim() !== tenant.slug) {
-      return err("slug_confirmation_required", 400, { slug: tenant.slug });
-    }
-    // Checked BEFORE anything else that could change state, for the reason the provision route
-    // states out loud: discovering a missing key after the first write leaves the caller strictly
-    // worse off than the refusal they should have had for free.
-    const runpodApiKey = typeof body.runpod_api_key === "string" ? body.runpod_api_key.trim() : "";
-    if (!runpodApiKey) {
-      return err("runpod_key_required", 400, {
-        message:
-          "this needs the tenant's own RunPod key A (graphql read/write) to create endpoints on their " +
-          "account. It is used once and stored nowhere.",
-      });
-    }
-
-    // One writer at a time on this row: a provision, module upgrade or studio upgrade with a live
-    // driver is already PUTting at these scripts, and a bindings patch landing mid-upload races the
-    // upload that owns the binding set.
-    const latest = await deps.store.getLatestJobForTenant(tenant.id);
-    if (latest && jobHasLiveDriver(latest, deps.now())) {
-      return err("job_in_progress", 409, { job_id: latest.id, kind: latest.kind });
-    }
-
-    // Preflight FIRST and separately: a refusal here has written nothing at all, which is what lets
-    // the honest refusals (not serving, bundle missing, no recorded module release) be cheap.
-    const pre = await deps.provisioner.preflightReprovisionRunPod(tenant);
-    if (!pre.ok) return err(pre.refusal.code, pre.refusal.status, { message: pre.refusal.message });
-
-    let result;
-    try {
-      result = await deps.provisioner.reprovisionRunPod(tenant, pre.context, runpodApiKey);
-    } catch (e) {
-      if (e instanceof ReprovisionError) {
-        // The tenant is at awaiting_invoke_key and its studio is still serving. Say which step died
-        // and stop; the message is already scrubbed, and a re-run of this same route is the retry.
-        await deps.store.recordAdminAction(
-          actor,
-          "tenant.reprovision_runpod.failed",
-          tenant.id,
-          JSON.stringify({ step: e.step, message: e.message }),
-        );
-        return err("reprovision_failed", 409, { step: e.step, message: e.message });
-      }
-      throw e;
-    }
-
-    await deps.store.recordAdminAction(
-      actor,
-      "tenant.reprovision_runpod",
-      tenant.id,
-      // IDS AND COUNTS ONLY. Endpoint ids and an R2 token id are identifiers the plane already
-      // stores; neither key A nor the minted credential value appears here or anywhere else.
-      JSON.stringify({
-        endpoints_before: result.endpoints_before.map((e) => e.id),
-        endpoints_after: result.endpoints_after.map((e) => e.id),
-        templates_changed: result.templates.filter((t) => t.changed).length,
-        r2_token_id: result.r2_token_id,
-        previous_r2_token_revoked: result.previous_r2_token_revoked,
-        modules_release: result.modules_release,
-        missing_bindings: result.missing_bindings,
-        missing_secrets: result.missing_secrets,
-      }),
-    );
-
-    // cp#169: THE REPAIR EMITS ITS OWN LAST STEP. Every reprovision ends at awaiting_invoke_key by
-    // construction (new endpoints, new ids, the stored key B scoped to the ones just replaced), and
-    // until now the operator had no way to complete or to delegate that step: the install route
-    // resolves a session. So the successful repair now mints the one-time link in the same response
-    // that reports it, bound to the endpoints THIS run created, and the operator hands it to the
-    // customer through their support channel.
-    //
-    // A MINT FAILURE MUST NOT UNDO A SUCCESSFUL REPAIR. The endpoints are rebuilt and the record is
-    // written by the time we get here; failing the whole call over a link would report a repair that
-    // did happen as a repair that did not, and invite a re-run that rebuilds four endpoints again.
-    // So the link is reported as ABSENT with the reason attached, and the standalone mint route above
-    // is the retry.
-    let handoff: Record<string, unknown> | null = null;
-    let handoffRefusal: string | null = null;
-    const reread = await deps.store.getTenantById(tenant.id);
-    const minted = reread
-      ? await mintInvokeKeyHandoff(handoffDeps(deps), reread, actor, publicOrigin(env))
-      : null;
-    if (minted?.ok) {
-      handoff = { ...minted.minted };
-      await deps.store.recordAdminAction(
-        actor,
-        "tenant.issue_invoke_key_handoff",
-        tenant.id,
-        JSON.stringify({
-          handoff_id: minted.minted.id,
-          expires_at: minted.minted.expires_at,
-          endpoints: minted.minted.endpoints,
-          via: "reprovision",
-        }),
-      );
-    } else {
-      handoffRefusal = minted ? minted.refusal.code : "tenant_missing";
-    }
-
-    // 200 with the readback attached, and NO summary boolean (cp#20): reaching this line already
-    // means the studio census came back whole, because a short readback throws at studio_bindings and
-    // is answered above as a 409 naming that step. The facts a caller should branch on are `status`
-    // (awaiting_invoke_key, every time) and the endpoint ids in `endpoints_after`.
-    return json({ ...result, invoke_key_handoff: handoff, invoke_key_handoff_refusal: handoffRefusal });
-  }
 
   // ---- cp#95: STUDIO_TOKEN_KEK rotation -------------------------------------------------------
   //

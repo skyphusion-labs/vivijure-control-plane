@@ -44,12 +44,17 @@ export interface QuotaFit {
 
 export interface OnboardingState {
   rulesAccepted?: boolean;
-  keyPresent?: boolean;
   capacity?: QuotaFit | null;
   confirmed?: boolean;
   invokeVerified?: boolean;
+  /** The name currently in the field. The gate compares consent against THIS. */
+  slug?: string;
   slugValid?: boolean;
   slugAvailable?: boolean;
+  // cp#435: available and reclaimable are different answers; the second is destructive to act on.
+  slugReclaimable?: boolean;
+  /** The slug the destruction was acknowledged FOR. Consent names its studio, so it cannot carry. */
+  slugReclaimConfirmedFor?: string | null;
 }
 
 export const STEPS: OnboardingStep[];
@@ -162,6 +167,34 @@ export function formatUsd(amount: number | null | undefined): string | null;
 export function stepIndex(key: string): number;
 export function canAdvance(key: string, state: OnboardingState | null | undefined): boolean;
 
+export interface SlugAvailability {
+  available?: boolean;
+  reclaimable?: boolean;
+  reason?: string;
+}
+
+export interface SlugVerdict {
+  state: "free" | "reclaim" | "taken";
+  level: "ok" | "warn" | "bad";
+  text: string;
+}
+
+/** cp#435: three outcomes, never two. A reclaimable slug is the account own studio. */
+export function slugVerdict(res: SlugAvailability | null | undefined, slug: string): SlugVerdict;
+export interface PlatformConfigView {
+  shared_tier_available?: boolean;
+}
+
+export interface TenantModeView {
+  runpod_mode?: string | null;
+}
+
+/** cp#439 step 4: a PLATFORM fact, asked before any tenant exists. */
+export function planCanProvision(config: PlatformConfigView | null | undefined): boolean;
+
+/** cp#439 step 8: a TENANT fact. A pooled tenant is REFUSED a key; going live is an empty POST. */
+export function invokeRequirement(tenant: TenantModeView | null | undefined): "pooled" | "unsupported" | "undecided";
+
 /**
  * The provision job payload as GET /api/tenant/:id/job reports it (cp#43).
  * `step`, `steps_done` and `error_step` carry the provisioner OWN step names.
@@ -205,3 +238,18 @@ export function provisionRows(job: ProvisionJobView | null | undefined): Provisi
 export function provisionWaitNote(totalMs?: number | null): string;
 export function provisionWaitCopy(remainingMs: number | null | undefined): string;
 export function provisionTimeoutCopy(): string;
+
+export interface MeForResume {
+  account?: { id: string; email: string } | null;
+  aup?: { required_version: string; accepted: boolean } | null;
+  tenant?: { id: string; slug: string; status: string } | null;
+}
+
+export interface ResumeTarget {
+  /** The step a fresh load belongs on, or null when the wizard is not the right place at all. */
+  step: string | null;
+  reason: string;
+}
+
+/** cp#455: read /api/me on boot and land somebody where their tenant actually is. */
+export function resumeStep(me: MeForResume | null | undefined): ResumeTarget;

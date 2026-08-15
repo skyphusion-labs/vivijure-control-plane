@@ -73,6 +73,17 @@ function recordingDeps() {
     // is production's fallback when no upload credential is configured -- so `uploads` still
     // captures the bindings this file exists to assert on.
     scriptUploadCf: cf,
+    // cp#396: this plane has one tier, so the fixture must carry a pool or every case fails on a
+    // refusal none of them is about. Ids mirror the endpoint-backed plan keys.
+    sharedPool: {
+      endpoints: [
+        { key: "backend", label: "Render", id: "pool-1", name: "vivijure-prod-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
+        { key: "lipsync", label: "Lip sync", id: "pool-3", name: "vivijure-prod-lipsync", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+      ],
+      ids: new Set(["pool-1", "pool-3"]),
+      names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync"]),
+    },
+    sharedPoolInvokeKey: "rpa_poolkey",
     videoFinishServiceId: null,
     vpcDoors: TEST_VPC_DOORS,
     runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
@@ -124,7 +135,7 @@ async function provisionAndCaptureStudioBindings(over: Partial<ProvisionDeps> = 
   const tenant = await store.createTenant("ten_1", "hero", "acct_1", "pending");
   const job = await store.createProvisionJob("job_1", tenant.id, "provision", TEST_PROVISION_FACTS);
 
-  const res = await runProvisionJob(deps, job.id, tenant, "rpa_keyA");
+  const res = await runProvisionJob(deps, job.id, tenant);
   expect(res, "provision should succeed in the fake").toMatchObject({ ok: true });
 
   const studio = uploads.find((u) => u.scriptName === "tenant-hero-studio");
@@ -217,7 +228,7 @@ describe("the tenant studio platform-env contract (#116)", () => {
     await store.createAccount("acct_1", "a@b.com");
     const tenant = await store.createTenant("ten_1", "hero", "acct_1", "pending");
     const job = await store.createProvisionJob("job_1", tenant.id, "provision", TEST_PROVISION_FACTS);
-    const res = await runProvisionJob(deps, job.id, tenant, "rpa_keyA");
+    const res = await runProvisionJob(deps, job.id, tenant);
     expect(res).toMatchObject({ ok: true });
     const studio = uploads.find((u) => u.scriptName === "tenant-hero-studio");
     expect(studio).toBeTruthy();

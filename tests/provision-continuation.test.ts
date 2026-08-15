@@ -94,6 +94,17 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     cf,
     // Same object as cf: the fallback path, so a test asserting on cf's log sees the upload.
     scriptUploadCf: cf,
+    // cp#396: this plane has one tier, so the fixture must carry a pool or every case fails on a
+    // refusal none of them is about. Ids mirror the endpoint-backed plan keys.
+    sharedPool: {
+      endpoints: [
+        { key: "backend", label: "Render", id: "pool-1", name: "vivijure-prod-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
+        { key: "lipsync", label: "Lip sync", id: "pool-3", name: "vivijure-prod-lipsync", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+      ],
+      ids: new Set(["pool-1", "pool-3"]),
+      names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync"]),
+    },
+    sharedPoolInvokeKey: "rpa_poolkey",
     videoFinishServiceId: null,
     // cp#396: both own-iron doors configured, which is what a wired plane looks like. Absent, every
     // case in this file would die at modules_upload on the vpc-backed modules refusing to upload
@@ -245,7 +256,7 @@ describe("runProvisionJob budget yielding", () => {
     const t = await seedTenant(store);
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     // Clock jumps a full budget per reading, so the first mark() is already over.
-    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(20_000), 15_000);
+    const res = await runProvisionJob(deps(store), job.id, t, fakeClock(20_000), 15_000);
 
     expect(res).toMatchObject({ ok: false, yielded: true });
     const after = store.jobs.get("job_1")!;
@@ -259,7 +270,7 @@ describe("runProvisionJob budget yielding", () => {
     const t = await seedTenant(store);
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
-    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(0), 15_000);
+    const res = await runProvisionJob(deps(store), job.id, t, fakeClock(0), 15_000);
 
     expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
     expect(store.jobs.get("job_1")!.status).toBe("succeeded");
@@ -290,7 +301,7 @@ describe("cp#158: a yielding driver HANDS THE LEASE BACK instead of leaving it t
     await store.setJobRunning(control.id);
     expect(await store.claimJob(control.id, 60)).toBe(false);
 
-    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(20_000), 15_000);
+    const res = await runProvisionJob(deps(store), job.id, t, fakeClock(20_000), 15_000);
     expect(res).toMatchObject({ ok: false, yielded: true });
 
     const after = store.jobs.get("job_1")!;
@@ -327,7 +338,7 @@ describe("cp#158: a yielding driver HANDS THE LEASE BACK instead of leaving it t
       const t = await seedTenant(store);
       const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
-      const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(20_000), 15_000);
+      const res = await runProvisionJob(deps(store), job.id, t, fakeClock(20_000), 15_000);
       expect(res).toMatchObject({ ok: false, yielded: true });
 
       // Three heartbeat intervals past the yield. A timer that outlived its driver shows up here.
@@ -873,15 +884,14 @@ describe("continueProvisionJob", () => {
     // mean assuming the tier is still there.
     it("REFUSES when the plane no longer offers the pool the job was created for", async () => {
       const { store, job, tenant } = await at(E.E2, "shared");
-      const res = await continueProvisionJob(deps(store), job.id, tenant, E.E2, fakeClock(0), 15_000);
+      const res = await continueProvisionJob(deps(store, { sharedPool: null } as Partial<ProvisionDeps>), job.id, tenant, E.E2, fakeClock(0), 15_000);
       expect(res).toMatchObject({ ok: false, step: "runpod_endpoints" });
       expect((res as { message: string }).message).toBe("runpod_key_required");
     });
   });
 
-  it("REFUSES honestly when the job never reached the studio upload (key A is unrecoverable)", async () => {
-    // A continuation cannot mint endpoints: key A lives only in the request that carried it. Saying
-    // so beats waiting forever for a driver that can never succeed.
+  it("LEGACY ROW: a job recorded dedicated still refuses before the studio upload", async () => {
+    // cp#396: no NEW job can be recorded dedicated, but 13 historical rows carry that value and a    // stuck job of theirs must still refuse rather than wait for a driver that can never succeed.    // The fact is stated EXPLICITLY here rather than inherited from the default, which is now shared.
     const store = new MemoryStore();
     const t0 = await seedTenant(store);
     // THE D1 ID IS PART OF THE FIXTURE, not decoration (cp#301 item 2). This case claims progress
@@ -891,7 +901,7 @@ describe("continueProvisionJob", () => {
     // check added by item 2 refuses it first -- correctly, which is how this was found.
     await store.setTenantD1(t0.id, "d1-uuid-hero");
     const t = (await store.getTenantById(t0.id))!;
-    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
+    const job = await store.createProvisionJob("job_1", t.id, "provision", { runpodMode: "dedicated", toRelease: "v1.0.0" });
     const stepsDone = ["d1_create", "d1_migrate"];
 
     const res = await continueProvisionJob(deps(store), job.id, t, stepsDone, fakeClock(0), 15_000);
@@ -936,24 +946,6 @@ describe("the runpod_endpoints -> wfp_upload yield strand (cp#18)", () => {
   // Under 15s through r2_token, over 15s at runpod_endpoints: the budget is crossed in the window.
   const CROSS_AT_RUNPOD = [0, 100, 200, 300, 400, 20_000, 20_100, 20_200, 20_300, 20_400, 20_500];
 
-  it("never yields in the unresumable window: a yield past runpod_endpoints carries wfp_upload too", async () => {
-    const store = new MemoryStore();
-    const t = await seedTenant(store);
-    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
-    const d = deps(store);
-
-    const res = await runProvisionJob(d, job.id, t, "rpa_keyA", scriptedClock(CROSS_AT_RUNPOD), 15_000);
-
-    // The budget WAS crossed and the billable endpoints WERE created: this is genuinely the window.
-    expect(res).toMatchObject({ ok: false, yielded: true });
-    expect((d as unknown as { runpod: { createEndpoints: ReturnType<typeof vi.fn> } }).runpod.createEndpoints).toHaveBeenCalledTimes(1);
-    const done = JSON.parse(store.jobs.get("job_1")!.steps_done) as string[];
-    expect(done).toContain("runpod_endpoints");
-    // THE INVARIANT: endpoints created implies the studio was uploaded, because only from wfp_upload
-    // onward can a keyless continueProvisionJob carry the job forward. RED on today code (yield lands
-    // right after runpod_endpoints, wfp_upload absent).
-    expect(done).toContain("wfp_upload");
-  });
 
   it("the yielded job is RESUMABLE to succeeded by a keyless poll", async () => {
     const store = new MemoryStore();
@@ -961,7 +953,7 @@ describe("the runpod_endpoints -> wfp_upload yield strand (cp#18)", () => {
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
     // First invocation crosses the budget at the runpod_endpoints boundary and yields.
-    const first = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", scriptedClock(CROSS_AT_RUNPOD), 15_000);
+    const first = await runProvisionJob(deps(store), job.id, t, scriptedClock(CROSS_AT_RUNPOD), 15_000);
     expect(first).toMatchObject({ ok: false, yielded: true });
 
     // A poll picks it up with NO key A, exactly as production polls never carry one.
@@ -1002,7 +994,7 @@ describe("cp#248e: provision RECORDS the module release", () => {
     // fixture that was already carrying the value.
     expect(store.tenants.get(t.id)!.modules_release).toBeNull();
 
-    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(0), 15_000);
+    const res = await runProvisionJob(deps(store), job.id, t, fakeClock(0), 15_000);
 
     expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
     expect(store.tenants.get(t.id)!.modules_release).toBe("v1.0.0");
@@ -1031,7 +1023,7 @@ describe("cp#248e: provision RECORDS the module release", () => {
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
 
     // A clock that burns the whole budget on every reading forces a yield at the first boundary.
-    const res = await runProvisionJob(deps(store), job.id, t, "rpa_keyA", fakeClock(60_000), 15_000);
+    const res = await runProvisionJob(deps(store), job.id, t, fakeClock(60_000), 15_000);
 
     expect(res).toMatchObject({ ok: false, yielded: true });
     expect(store.tenants.get(t.id)!.modules_release).toBeNull();
@@ -1091,7 +1083,6 @@ describe("per-step provision timing (cp#18)", () => {
       deps(store, { log: (event, fields) => void logs.push({ event, fields }) }),
       job.id,
       t,
-      "rpa_keyA",
       // A budget nothing can exhaust: this run must SUCCEED, because success is the path that
       // previously produced no timing at all.
       scriptedClock([0]),
@@ -1119,7 +1110,6 @@ describe("per-step provision timing (cp#18)", () => {
       deps(store, { log: (event, fields) => void logs.push({ event, fields }) }),
       job.id,
       t,
-      "rpa_keyA",
       scriptedClock(times),
       10_000_000,
     );
@@ -1144,7 +1134,6 @@ describe("per-step provision timing (cp#18)", () => {
       deps(store, { log: (event, fields) => void logs.push({ event, fields }) }),
       job.id,
       t,
-      "rpa_keyA",
       scriptedClock([0]),
       10_000_000,
     );
@@ -1172,7 +1161,6 @@ describe("per-step provision timing (cp#18)", () => {
       deps(store, { log: (event, fields) => void logs.push({ event, fields }) }),
       job.id,
       t,
-      "rpa_keyA",
       scriptedClock([0, 20_000]),
       15_000,
     );
@@ -1218,7 +1206,7 @@ describe("per-step provision timing (cp#18)", () => {
     let reads = 0;
     const counting = { now: () => (reads++, 0) };
 
-    await runProvisionJob(deps(store), job.id, t, "rpa_keyA", counting, 10_000_000);
+    await runProvisionJob(deps(store), job.id, t, counting, 10_000_000);
 
     const marks = JSON.parse(store.jobs.get("job_1")!.steps_done).length;
     // 1 read for startedAt + exactly 1 per mark. If instrumentation ever adds its own read, this
@@ -1261,12 +1249,16 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
       const slowRunPod = new Promise<void>((r) => {
         release = r;
       });
-      const createEndpoints = vi.fn(async () => {
+      // cp#396: the long step used to be createEndpoints. That seam is gone, so the slow await is
+      // now the STUDIO UPLOAD, which is the same shape: one uninterrupted await with no mark inside
+      // it. The cp#148 claim is unchanged -- a lease means a driver is ALIVE, not that a step
+      // boundary happened recently.
+      const scriptUploadCf = fakeCf();
+      scriptUploadCf.uploadUserWorker = vi.fn(async () => {
         entered();
         await slowRunPod;
-        return ENDPOINTS;
       });
-      const d = deps(store, { runpod: { createEndpoints, convergeTemplateImages: vi.fn(async () => []) } });
+      const d = deps(store, { scriptUploadCf } as Partial<ProvisionDeps>);
 
       // THE POSITIVE CONTROL, and it is the point of the whole test: a second job, driven by nobody,
       // takes the same 60s lease at the same instant. If 90 seconds of this harness clock did not
@@ -1274,11 +1266,11 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
       const idle = await store.createProvisionJob("job_control", "ten_1", "provision", TEST_PROVISION_FACTS);
       await store.setJobRunning(idle.id);
 
-      const run = runProvisionJob(d, job.id, tenant, "key-A", fakeClock(1));
+      const run = runProvisionJob(d, job.id, tenant, fakeClock(1));
 
       // The CF prefix (d1 .. r2_token) runs on its own; park until the driver is inside RunPod.
       await inRunPod;
-      expect(createEndpoints).toHaveBeenCalledTimes(1);
+      expect(scriptUploadCf.uploadUserWorker).toHaveBeenCalledTimes(1);
 
       // 90s: the cp#124 first poll, a full 30s past the lease the last mark left behind.
       await vi.advanceTimersByTimeAsync(90_000);
@@ -1300,52 +1292,6 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
     }
   });
 
-  it("the provision CARRIES THROUGH runpod_endpoints to wfp_upload despite the slow step", async () => {
-    // The outcome the issue asks for: the boundary is reachable regardless of prefix duration,
-    // rather than the prefix being made faster and hoped about.
-    vi.useFakeTimers();
-    try {
-      const store = new MemoryStore();
-      const tenant = await seedTenant(store);
-      const job = await store.createProvisionJob("job_1", "ten_1", "provision", TEST_PROVISION_FACTS);
-
-      // TWO promises, not a spin loop. The test has to wait for the driver to be INSIDE the RunPod
-      // step, and polling for it (drain microtasks, check the spy) is both flaky and self-defeating:
-      // r2_token awaits crypto.subtle.digest, which settles on the event loop, so a tight loop
-      // starves the very thing it is waiting for. CI proved it, on a slower runner than this box.
-      // The step announces its own entry instead, and the test parks on that.
-      let entered!: () => void;
-      const inRunPod = new Promise<void>((r) => {
-        entered = r;
-      });
-      let release!: () => void;
-      const slowRunPod = new Promise<void>((r) => {
-        release = r;
-      });
-      const createEndpoints = vi.fn(async () => {
-        entered();
-        await slowRunPod;
-        return ENDPOINTS;
-      });
-      const d = deps(store, { runpod: { createEndpoints, convergeTemplateImages: vi.fn(async () => []) } });
-
-      const run = runProvisionJob(d, job.id, tenant, "key-A", fakeClock(1));
-      await inRunPod;
-      expect(createEndpoints).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(110_000);
-      release();
-      const outcome = await run;
-
-      expect(outcome).toEqual({ ok: true, status: "awaiting_invoke_key" });
-      const finished = (await store.getJob(job.id)) as ProvisionJob;
-      expect(finished.status).toBe("succeeded");
-      expect(JSON.parse(finished.steps_done) as string[]).toContain("wfp_upload");
-      // A finished job releases its lease, so the next caller is not locked out by a dead heartbeat.
-      expect(finished.lease_until).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 
   it("a heartbeat CANNOT resurrect a job somebody else already finished", async () => {
     const store = new MemoryStore();
@@ -1415,7 +1361,7 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
       const cf = fakeCf({ uploadUserWorker });
       const d = deps(store, { cf, scriptUploadCf: cf });
 
-      const run = runProvisionJob(d, job.id, tenant, "key-A", fakeClock(1));
+      const run = runProvisionJob(d, job.id, tenant, fakeClock(1));
       await inUpload;
 
       // The prod row, reproduced: five steps recorded, the sixth in flight.

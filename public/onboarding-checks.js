@@ -33,15 +33,21 @@
   // collapsed into one paste, and account-wide invoke as a shortcut was
   // rejected for launch: we hold other people's keys, so minimal stored blast
   // radius beats one screen of friction.
+  // SEVEN STEPS, not nine (cp#427 purge). Setup key and Your capacity were both BYOK-only:
+  // the first asked for a RunPod key the plane no longer accepts, and the second probed the
+  // CUSTOMER own RunPod quota, which is meaningless when the capacity is ours.
+  //
+  // Capacity had to go WITH the key step rather than after it. It POSTed to /api/tenant/capacity,
+  // a route the plane has never served (cp#467), so it 404d and its gate demanded fits === true,
+  // which the error path never sets. Removing the key gate alone would have moved everybody from
+  // the first wall onto the second and read as a regression introduced by the fix.
   const STEPS = [
     { key: "what", title: "What you get" },
     { key: "rules", title: "The rules" },
     { key: "name", title: "Name it" },
-    { key: "key", title: "Setup key" },
-    { key: "capacity", title: "Your capacity" },
     { key: "review", title: "Review" },
     { key: "build", title: "Building" },
-    { key: "invoke", title: "Render key" },
+    { key: "invoke", title: "Go live" },
     { key: "done", title: "Done" },
   ];
 
@@ -395,14 +401,135 @@
   // Can the flow advance past `key` given what the user has done so far?
   // Gates are honest: the rules gate is blocking (#57), and the review gate
   // will not open on a capacity check that failed or never ran.
+  // THE SLUG PREVIEW ANSWERS TWO QUESTIONS, AND THE SECOND ONE IS DESTRUCTIVE (cp#435).
+  //
+  // GET /api/tenant/slug-available returns available AND reclaimable, and the second is not
+  // decoration: it means the name is free TO YOU because the row behind it is YOUR OWN unfinished
+  // studio. Provisioning over it does not resume that studio. It runs a full teardown with
+  // deleteData true and rebuilds from scratch.
+  //
+  // This UI read only availability and printed is free, which is how an operator-provisioned owner
+  // could be told his own studio name was available and then destroy it by clicking Continue. The
+  // plane computes the distinction and projects it on purpose; the client dropped it on the floor.
+  // THREE outcomes now, never two.
+  function slugVerdict(res, slug) {
+    const r = res || {};
+    const name = JSON.stringify(String(slug || ""));
+    if (r.available !== true) {
+      return {
+        state: "taken",
+        level: "warn",
+        text: name + " is taken" + (r.reason ? " (" + r.reason + ")" : "") + ". Try another.",
+      };
+    }
+    if (r.reclaimable === true) {
+      return {
+        state: "reclaim",
+        level: "bad",
+        text: name + " is a studio you already have. Continuing DELETES it and builds a new one.",
+      };
+    }
+    return { state: "free", level: "ok", text: name + " is free." };
+  }
+
+  // WHERE A FRESH ARRIVAL BELONGS (cp#455).
+  //
+  // init() called show("what") unconditionally and never read /api/me, so every step after the
+  // first assumed you had walked the previous one and kept what it needed in page memory a fresh
+  // arrival does not have. That single fact produced five separate defects, because a self-served
+  // tenant PASSES THROUGH these screens while an operator-provisioned one ARRIVES at them.
+  //
+  // The front door already computes this correctly from the same payload and then hands off to a
+  // page that throws it away. This is that decision, kept pure so it can be tested without a DOM,
+  // and deliberately shaped the same way: total, no cheerful default, and an unrecognised state
+  // returns null rather than a guess.
+  //
+  // step null means THE WIZARD IS NOT THE RIGHT PLACE. Suspended, deleting, deleted and anything
+  // unmodelled are real states the front door has screens for and this page does not; starting a
+  // setup wizard for a deleted studio would be the same species of confidently-wrong screen the
+  // rest of this issue is about.
+  function resumeStep(me) {
+    if (!me || !me.account) return { step: "what", reason: "signed_out" };
+    if (!me.aup || me.aup.accepted !== true) return { step: "what", reason: "aup_required" };
+
+    const tenant = me.tenant;
+    if (!tenant) return { step: "what", reason: "no_tenant" };
+
+    switch (tenant.status) {
+      case "pending":
+      case "provisioning":
+        return { step: "build", reason: "provisioning" };
+      case "awaiting_invoke_key":
+        return { step: "invoke", reason: "awaiting_invoke_key" };
+      case "failed":
+        // The build screen is where progress and errors render, and error_step and error_message
+        // are on the job row. This is what makes See what happened able to show what happened.
+        return { step: "build", reason: "failed" };
+      case "live":
+        return { step: "done", reason: "live" };
+      default:
+        return { step: null, reason: "not_in_setup" };
+    }
+  }
+
+  // CAN THIS PLANE PROVISION AT ALL (cp#427 purge widened this question).
+  //
+  // shared_tier_available was introduced to answer a narrower one -- is a setup key optional --
+  // back when a pasted key still selected a dedicated tier. With BYOK removed there is no other
+  // tier, so the pool IS the product: a plane without one cannot provision anybody. The field is
+  // the same, the question it answers is bigger, and the name still fits.
+  //
+  // Said UP FRONT rather than discovered at the end. The provision route refuses a poolless plane,
+  // so without this the wizard would walk somebody through naming a studio it could never build.
+  function planCanProvision(config) {
+    return (config || {}).shared_tier_available === true;
+  }
+
+  // THREE ANSWERS, because NULL IS NOT A TIER (cp#439, and the contract tenants.ts states in as
+  // many words: a consumer that treats null as dedicated re-introduces this very issue).
+  //
+  // tenants.runpod_mode is NOT NULL DEFAULT dedicated and is written INSIDE the runpod_endpoints
+  // step, so before that step every row READS dedicated whether or not it is one. The projection
+  // therefore withholds the value until endpoints exist, and null means NOT DECIDED YET, never
+  // BYO. Collapsing it into byok here would hand a pooled tenant the key-paste screen again, which
+  // is the wall this whole issue is about.
+  // WHAT THIS TENANT NEEDS TO GO LIVE (cp#427 purge).
+  //
+  // pooled is now the ONLY supported shape: the plane installs its own key on an empty-bodied
+  // POST. A row still recording dedicated is a LEGACY tenant from before the purge, and the
+  // invoke-key route refuses it by name (tenant_not_on_shared_tier), so the honest UI answer is
+  // not BYO instructions -- those would send somebody to make a key nothing will accept -- it is
+  // to say this studio is on a path we no longer run.
+  //
+  // NULL IS STILL NOT A TIER. runpod_mode is withheld until the endpoints exist, so absent means
+  // NOT DECIDED YET and must not be read as either answer.
+  function invokeRequirement(tenant) {
+    const mode = (tenant || {}).runpod_mode;
+    if (mode === "shared") return "pooled";
+    if (mode === "dedicated") return "unsupported";
+    return "undecided";
+  }
+
   function canAdvance(key, state) {
     const s = state || {};
     if (key === "rules") return s.rulesAccepted === true;
     // The server owns slug availability; the UI will not advance on a local
     // regex pass alone.
-    if (key === "name") return !!(s.slugValid === true && s.slugAvailable === true);
-    if (key === "key") return typeof s.keyPresent === "boolean" ? s.keyPresent : false;
-    if (key === "capacity") return !!(s.capacity && s.capacity.fits === true);
+    // cp#435: availability alone is NOT consent. A reclaimable slug is the owner OWN studio, and
+    // advancing over it destroys that studio, so the gate additionally demands an explicit
+    // acknowledgement. Unchanged for the ordinary free-name case, which is what most people hit.
+    if (key === "name") {
+      if (!(s.slugValid === true && s.slugAvailable === true)) return false;
+      if (s.slugReclaimable !== true) return true;
+      // CONSENT NAMES THE STUDIO IT DESTROYS (cp#446 review).
+      //
+      // A boolean would be consent to whatever the box happened to be next to. Recording WHICH
+      // name was acknowledged makes the revocation a property of this function rather than of a
+      // reset running somewhere else: consent for one name cannot open the gate for another, and
+      // deleting the DOM reset cannot silently re-enable a destruction, because the recorded name
+      // still has to equal the one about to be torn down.
+      return typeof s.slug === "string" && s.slug.length > 0 && s.slugReclaimConfirmedFor === s.slug;
+    }
     if (key === "review") return s.confirmed === true;
     // Nothing goes live on a key whose scope we did not verify.
     if (key === "invoke") return !!(s.invokeVerified === true);
@@ -718,6 +845,10 @@
     formatUsd: formatUsd,
     stepIndex: stepIndex,
     canAdvance: canAdvance,
+    resumeStep: resumeStep,
+    slugVerdict: slugVerdict,
+    planCanProvision: planCanProvision,
+    invokeRequirement: invokeRequirement,
     PROVISION_RESUME_BOUNDARY: PROVISION_RESUME_BOUNDARY,
     PROVISION_FIRST_POLL_MS: PROVISION_FIRST_POLL_MS,
     PROVISION_PRE_BOUNDARY_POLL_MS: PROVISION_PRE_BOUNDARY_POLL_MS,

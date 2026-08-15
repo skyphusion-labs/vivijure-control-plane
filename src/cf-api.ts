@@ -31,6 +31,53 @@ export class CfApiError extends Error {
  * tenant namespace and the tenant-module namespace.
  */
 export const CF_SCRIPT_NOT_FOUND = 10007;
+/**
+ * Cloudflare code for a `vpc_service` binding refused on credential grounds (cf#118).
+ *
+ * ONE definition, exported. It previously existed as TWO independent copies, in provisioner.ts and
+ * tenant-studio-bindings.ts, feeding three call sites -- so a correction could reach some consumers
+ * and not others. That is not hypothetical: the value below is currently believed WRONG (cp#462),
+ * and a fix applied to one copy would have left the other silently inert.
+ */
+export const CF_VPC_BINDING_UNAUTHORIZED = 10196;
+
+export type VpcBindingFailure =
+  /** Not a VPC-binding refusal: either no vpc_service was attached, or this is not a CF API error. */
+  | { kind: "unrelated" }
+  /** A VPC attachment failed AND the known code matched. The caller may speak in its own words. */
+  | { kind: "refused" }
+  /**
+   * A VPC attachment failed and the code did NOT match. THIS IS THE INTERESTING ONE: it is the
+   * exact state in which the guard is inert, and it carries what Cloudflare actually said so the
+   * guard can report its own obsolescence instead of silently doing nothing.
+   */
+  | { kind: "unmatched"; codes: (number | undefined)[]; messages: string[] };
+
+/**
+ * Classify a failed worker upload that was attaching a `vpc_service` binding.
+ *
+ * WHY THIS RETURNS A THIRD STATE RATHER THAN A BOOLEAN, which is the whole point of the function.
+ *
+ * A predicate keyed on a vendor constant has an EXPIRY DATE THAT NOBODY WROTE DOWN. When the vendor
+ * renumbers, a boolean guard silently answers false forever: the operator gets raw vendor prose
+ * instead of the sentence written for them, and nothing anywhere reports that the guard stopped
+ * working. That is precisely what happened here (cp#462) -- a guard written for this exact failure,
+ * sitting directly above the failing call, read by every reviewer as coverage, and inert.
+ *
+ * So the miss is a VALUE, not a fall-through. A caller that receives `unmatched` is obliged to log
+ * the codes, which turns the first silent failure into a loud one. **A guard that can tell you it
+ * has stopped matching is the only kind that survives its vendor.**
+ */
+export function classifyVpcBindingFailure(e: unknown, attachingVpc: boolean): VpcBindingFailure {
+  if (!attachingVpc || !(e instanceof CfApiError)) return { kind: "unrelated" };
+  if (e.cfErrors.some((c) => c.code === CF_VPC_BINDING_UNAUTHORIZED)) return { kind: "refused" };
+  return {
+    kind: "unmatched",
+    codes: e.cfErrors.map((c) => c.code),
+    messages: e.cfErrors.map((c) => c.message),
+  };
+}
+
 
 /**
  * True ONLY for a response that PROVES the script is already gone.

@@ -38,6 +38,16 @@ export interface PlatformConfig {
   aup_version?: string;
   auth_methods?: string[];
   tenant_domain_suffix?: string;
+  /**
+   * cp#439. True when this deploy can provision a tenant with NO RunPod key.
+   *
+   * When true the key input is OPTIONAL and a blank one must still be allowed to advance and to
+   * submit: the provision route refuses a keyless provision only when this is false. A key that
+   * IS supplied stays honoured either way (the BYO dedicated path).
+   *
+   * Absent from an older plane, so treat absent as false rather than as unknown.
+   */
+  shared_tier_available?: boolean;
 }
 
 export interface TenantEndpoint {
@@ -53,11 +63,33 @@ export interface TenantView {
   status: string;
   url?: string;
   endpoints?: TenantEndpoint[];
+  /**
+   * cp#439. Which render tier this tenant is on, or null while that is not yet decided.
+   *
+   * The two tiers need different screens. A SHARED tenant has no RunPod account and no key to
+   * paste: its invoke-key install succeeds only on an EMPTY-bodied POST, and a posted key is
+   * refused with invoke_key_not_accepted. A DEDICATED tenant must paste one.
+   *
+   * NULL means the tier is not settled yet, NOT dedicated. Treating null as dedicated is exactly
+   * the bug cp#439 fixes. Optional here because an older plane does not send the field at all, so
+   * absent and null must be handled the same way.
+   */
+  runpod_mode?: "shared" | "dedicated" | null;
 }
 
 export interface MeResponse {
   account?: { id: string; email: string };
-  aup?: { required_version?: string; accepted?: boolean };
+  aup?: {
+    required_version?: string;
+    accepted?: boolean;
+    /**
+     * cp#433. NULL means this account has never accepted any version; PRESENT alongside
+     * accepted:false means the policy moved after they accepted, which is a returning owner
+     * rather than a new signup. Optional here because an older plane does not send it, so a
+     * client must treat ABSENT and NULL as the same unknown-or-never case.
+     */
+    last_accepted?: { version: string; accepted_at: string } | null;
+  };
   tenant?: TenantView | null;
 }
 
@@ -121,8 +153,7 @@ export interface PlatformApi {
   acceptAup(version: string | null): Promise<AcceptAupResult>;
   slugAvailable(slug: string): Promise<{ available: boolean; reason?: string }>;
   plan(): Promise<ProvisionPlan>;
-  capacity(key: string): Promise<CapacityResponse>;
-  provision(slug: string, key: string): Promise<ProvisionStarted>;
+  provision(slug: string): Promise<ProvisionStarted>;
   job(tenantId: string): Promise<JobStatus>;
   retry(tenantId: string, key?: string): Promise<{ job_id: string }>;
   invokeKey(tenantId: string, key: string): Promise<InvokeKeyTransportResult>;
@@ -137,7 +168,6 @@ export const mockResponses: {
   me(): MeResponse;
   slugAvailable(slug: string): { available: boolean; reason?: string };
   plan(): ProvisionPlan;
-  capacity(): CapacityResponse;
   provision(): ProvisionStarted;
   job(): JobStatus;
   invokeKey(): InvokeKeyTransportResult;

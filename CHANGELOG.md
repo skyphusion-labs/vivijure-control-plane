@@ -6,6 +6,387 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.27.0 -- 2026-08-15
+
+### fix(readiness): a module that does not reach RunPod at an endpoint of ours can be READY (cp#396)
+
+The first complete shared-tier provision reached `awaitingInvokeKey` and could not go live.
+`finish-upscale` answered `/ready` with `door.bound:true`, `door.token:true`, `route:"vpc"` -- a
+healthy module on our own hardware -- and `classifyReadyResponse` called it `misconfigured`, which
+is explicitly not retryable, so the install threw.
+
+The classifier required BOTH `runpod_api_key` and `runpod_endpoint_id` as booleans. That encodes an
+assumption that every probed module reaches RunPod at an endpoint of ours. **Two whole families do
+not, and both were in the probe population for every tenant.**
+
+**DOOR-BACKED** (`finish-upscale`, `speech-upscale`). Runs on our own iron through a door, so the
+plane binds no endpoint id BY DESIGN -- `PlannedVpcCapability` says "no endpoint id to bind ... on
+purpose rather than by omission". It reported `runpod_endpoint_id:false` and fell to the final
+`misconfigured`. The emitting module already says this in its own source: requiring RunPod
+credentials of it *"would make a correctly-configured on-iron module report NOT READY, which is the
+readiness probe reporting the opposite of the truth"*. cf#480 fixed that half; this is the half
+that never followed.
+
+**PUBLIC-SLUG** (the eight cost-door modules). Reaches RunPod at a fixed public vendor url baked
+into the image, so it OMITS `runpod_endpoint_id` entirely. It failed one line EARLIER, on the
+typeof guard. Every one of the eight carries `publicEndpoint` in the catalog and `reachesRunpod`
+includes them, so they are probed for every tenant going live. **Fixing only the door would have
+unblocked nothing.**
+
+The predicate is now "does this module have the credentials ITS OWN route requires", read off what
+the module reports rather than any list this repo maintains -- a second hand-maintained enumeration
+would drift from the first exactly as the upload path drifted from this one.
+
+**A FALSE PASS CLOSED IN THE OTHER DIRECTION.** Before this, a door-backed module with a DEAD door
+(`token:false`) but healthy-looking RunPod credentials classified `ready`. The gate was wrong both
+ways: it failed healthy on-iron modules and passed broken ones. Pinned by a test whose credentials
+are deliberately both true, so only the door can produce the verdict.
+
+**THREE FIXTURES THIS COULD HAVE BEEN WRITTEN WITH ARE IMPOSSIBLE ON THE WIRE**, and the contract
+was read in the emitting repo rather than inferred from the captured sample:
+
+- `door.bound:false` cannot occur. The module spreads the whole `door` key away when no door is
+  bound, so `bound` is the literal `true` whenever the object exists. Absence is the signal.
+- `door.route:"runpod"` cannot occur. There is no such value; on the RunPod path the object is
+  absent.
+- `route === "vpc"` is NOT a valid discriminator. `route` is a door LABEL, and its values are
+  `"vpc"` and `"vpc-<host>"`. A deploy serving only the propagandhi door reports
+  `"vpc-propagandhi"` and is perfectly healthy. **The first version of this fix compared route to
+  "vpc" and would have failed that deploy**, passing every test written from the captured sample.
+  There is now a test for it.
+
+So `parseDoorBacking` narrows to ONE field, `token`, and ignores `bound`, `route` and `routes`.
+Every field a narrowing insists on is a field whose rename in the other repo turns a healthy tenant
+into a failed provision, and there is no shared type between the repos to keep them in step.
+
+An UNREADABLE door falls through to the credentials rather than failing, deliberately choosing the
+quieter option: this gate blocks every tenant going live, and cp#323 is the precedent where an
+improvement in the other repo turned a benign verdict fatal and nobody could provision. Tolerating
+it silently would be ignoring it, so the door is now reported on the OBSERVATION surface
+(`TenantModuleObservation.door`), which also fixes an operator reading a healthy door-backed module
+as broken because its `runpod_endpoint_id` is false.
+
+Tests: every fixture is a body checked against the emitting source. Three mutations were planted
+(door passes anything, public-slug ignores its key, the absent-endpoint branch removed) and each
+produced a distinct red, because a test that only ever passes is decoration. **One dead test was
+caught this way during development**: an `unreadable`-door assertion passed for the wrong reason,
+since the fallthrough happened to yield the same verdict. It was rewritten to discriminate.
+
+### fix(api): /api/me reports WHICH AUP version was accepted, so a re-gated owner is not shown a first-run screen (cp#433)
+
+`GET /api/me` reported the AUP as `{ required_version, accepted }`, and `accepted` is an exact-version
+match against an append-only table. That is correct and deliberate: bumping `AUP_VERSION` re-gates
+every account by construction, with no migration and no grandfathering. Nothing here changes it.
+
+What it could not do is tell two people apart. Somebody who has NEVER accepted anything and somebody
+who accepted 1.0.0 while the plane moved to 1.1.0 both read `accepted: false`, and the payloads were
+byte-identical, so the front door rendered the same screen at both: *One thing before you start. You
+need to accept the acceptable-use policy before you can set up a studio.* For the second person that
+is wrong on both halves. They are not starting, and they are not setting up a studio; they may have a
+running one. This is live: the plane serves 1.1.0 and four accounts accepted 1.0.0 (see
+`changelog.d/396-aup-1.1.0-and-pin-gate.md`, which counted them).
+
+`aup.last_accepted` is added, additively, and is populated unconditionally rather than only when
+refused, so no client has to know which branch it is in before it can read it:
+
+    aup: { required_version, accepted, last_accepted: { version, accepted_at } | null }
+
+`null` means never accepted anything. Present alongside `accepted: false` means the policy moved under
+them, which is a returning owner rather than a new signup, and the panel can finally say the true
+thing.
+
+**The UI copy is NOT in this change, and it is tracked at cp#452.** That issue carries the enabling
+sentence (the policy changed since you accepted version X on DATE; your studio keeps running;
+review and accept to continue) and the note that the offline mock in public/onboarding-api.js is
+populated only for its own accepted:true state, so a mock STALE state is a one-line addition left
+deliberately to the copy PR rather than guessed at from the backend side.
+
+**This closes an asymmetry the tree already held itself to.** `acceptAup` refuses a stale submission
+precisely so nobody is recorded agreeing to wording they were never shown, and the client says
+outright that *the policy changed while this page was open*. That honesty existed for the rare
+mid-session case and was missing for the common between-sessions one.
+
+Two design points worth stating, because both are places a plausible implementation goes wrong.
+
+Ordering is `ORDER BY id DESC`, never by the version label. `AUP_VERSION` is a free-form string:
+production has served `1.0.0` and `1.1.0`, test configuration uses date-shaped labels like
+`2026-07-17`, and even inside semver `1.10.0` sorts before `1.9.0` lexicographically. `accepted_at` is second-granularity and ties. The row id
+is the only column recording the order the rows arrived in, and the test uses a label pair where
+every wrong ordering disagrees with the right one.
+
+`accepted_at` is NORMALIZED to ISO-8601 UTC at the store boundary. The column is written only by the
+SQLite `datetime(now)` default, which emits `2026-08-15 18:25:24`: space-separated, no zone. That was
+measured against the real engine, not read off the schema, and the raw value is a trap rather than
+merely ugly. Kotlin and Swift reject it outright, which is recoverable, but JavaScript `new Date()`
+ACCEPTS it and reads it as LOCAL time, so a browser west of UTC would render a consent record hours
+before it happened. An unrecognized value is returned raw rather than thrown on, because `/api/me` is
+the route a re-gated account uses to discover why it is blocked and a display field must not be able
+to 500 it.
+
+Only `version` and `accepted_at` are projected. The row also carries `ip_hash`, `user_agent` and
+`aup_sha256`; the caller being entitled to see their own row is not the same claim as needing every
+column in it, and a test asserts the serialized payload carries none of them.
+
+### fix(onboarding): read reclaimable, so nobody destroys their own studio by clicking Continue (cp#435)
+
+GET /api/tenant/slug-available answers **available AND reclaimable**. The second is not decoration:
+it means the name is free TO THIS ACCOUNT because the row behind it is that account own unfinished
+studio. Provisioning over it is not a resume. It runs a teardown with deleteData true and rebuilds
+from scratch.
+
+**The client read only availability and printed "is free".** So an operator-provisioned owner,
+following the front door own Finish setup link, landed on step 1 of a wizard that did not know his
+studio existed, typed the name he already had, was told it was free, and by clicking Continue
+deleted the D1 database, the R2 bucket, the R2 token and the studio worker that had been built for
+him. No confirmation, no warning, no mention that a studio was there.
+
+**The plane was never at fault.** It computes the distinction, projects it deliberately, and its own
+route comment says the preview answers exactly two questions: can I take this name, and if so is it
+fresh or my own unfinished studio. The client dropped the second answer on the floor.
+
+Three outcomes now, never two. slugVerdict returns free, taken, or **reclaim**, and reclaim names
+the consequence in the verb rather than hinting at it. The page carries a block that says the
+database, the storage and the worker exist right now and that continuing deletes them, plus the
+honest aside that somebody sent here to FINISH a studio is in the wrong place entirely.
+
+**The gate demands an act, not a click.** canAdvance(name) is unchanged for an ordinary free name;
+for a reclaimable one it additionally requires an explicit acknowledgement, and it will not accept a
+truthy accident as consent to destroy a studio.
+
+**Consent does not survive a slug edit.** A ticked box is consent to destroy ONE named studio, so
+changing the name revokes it. Carrying it forward would let somebody acknowledge the deletion of one
+studio and then provision over a different one, which is consent to something they were never shown.
+
+**Watched red first:** 8 reds across two suites against merged main, controls green. The gate tests
+fail there with "expected true to be false" -- main really does let you advance over your own studio
+with no acknowledgement. Then driven in a REAL BROWSER against the shipped assets, probing with the
+non-default value (reclaimable true): warning shown, Continue disabled; acknowledge, Continue
+enabled; retype the name, acknowledgement revoked and Continue disabled again. The ordinary
+free-name path was re-checked in the same session and is byte-for-byte the old behaviour.
+
+**Review follow-up (ernst): the revocation was claimed, implemented and UNTESTED.** resetReclaimAck
+existed and checkSlug called it, and deleting it broke nothing red. A behaviour only the prose
+asserts is one the next refactor removes in silence.
+
+So the revocation stopped being a side effect and became a PROPERTY: **consent records WHICH name it
+was given for**, and the gate compares that against the name about to be destroyed. A boolean was
+consent to whatever the box happened to sit next to. Now consent for one studio cannot open the gate
+for another, the guard survives every DOM reset in the file being deleted, and it is testable
+without a DOM.
+
+The reset still runs, because it is what stops a stale TICK sitting on screen next to a name it no
+longer applies to, and both halves of its wiring are now asserted against the shipped file: it
+clears the flag, the recorded consent and the checkbox, and it runs BEFORE the request rather than
+after, so a slow answer cannot leave an old tick standing through the whole round trip.
+
+**Each new test was probed by breaking what it guards**, not by reading it: dropping the consent
+clear turns the wiring test red, moving the reset after the fetch turns the order test red, and
+reverting the gate to a plain boolean turns all three behavioural tests red. Then re-driven in a
+browser, including the exact residual review named: acknowledge alpha, edit to beta, come BACK to
+alpha without re-ticking. Continue stays disabled.
+
+### fix(api): tenantView projects the render tier, and the shared invoke-key branch finally has tests (cp#439)
+
+`tenantView` projected ten fields and not the tier, so the front door could not tell a SHARED tenant
+from a DEDICATED one. The two need different screens, and the consequence was a hard wall rather
+than a cosmetic gap.
+
+Every operator-provisioned tenant is shared (`operatorProvision` fixes `runpodMode: "shared"`). The
+shared branch of `installInvokeKey` is correct and complete: a POST carrying a key is refused with
+`invoke_key_not_accepted` (*there is no key for you to provide*), and a POST with NO key makes the
+plane supply its own pool key and promote the tenant to live. So **the only request that succeeds is
+an empty-bodied POST** -- and a wizard that cannot see the tier cannot know to send one. Type
+nothing and the button is inert; type anything and you are told there is no key for you to provide.
+A shared tenant could not go live through the UI at all.
+
+**NULL is the part that matters, and it is not the column being nullable.** `tenants.runpod_mode` is
+`NOT NULL DEFAULT dedicated` (migration 0018) and is written INSIDE the `runpod_endpoints` step, so
+before that step every row reads `dedicated` whether or not it is one -- this tree already says so,
+in `store.ts`, on `ProvisionJob.runpod_mode`. Projecting the raw column would have shipped the exact
+defect being fixed: a value collapsing "genuinely dedicated" and "not decided yet" into one string a
+client picks a screen from. So the projection is `RunPodMode | null`, and the untrustworthy region
+is unrepresentable rather than merely documented.
+
+Settled-ness is read off `endpoints_json`, and the DIRECTION of that inference is why it is safe:
+the provisioner writes the mode BEFORE the endpoint list on both branches, deliberately, so
+endpoints present implies the mode was written while the reverse does not hold. Reading it this way
+can only under-claim (report not-decided for a tenant whose mode is settled, in the crash window)
+and can never assert a tier nobody wrote. Fail toward claiming less, as `readRunPodMode` does.
+
+**The coverage half.** Neither `invoke_key_not_accepted` nor `shared_pool_unconfigured` appeared
+anywhere under `tests/` (bare grep, exit 1) while 20+ sibling refusal codes did, so the zero was a
+real gap and not a wrong pattern. Precisely scoped: the PROVISION route recording
+`provision_jobs.runpod_mode` was already covered; the INSTALL route shared branch was not, in either
+direction. That is why 1900 passing tests never saw the wall. Now covered: the refusal, the
+`shared_pool_unconfigured` 503 asserted as a CONTRAST against a configured leg (null is the wiring
+double default, so a lone assertion would pass against a route that could never install a pool key
+at all), the empty-body success asserting the installed key is the plane own sentinel and not
+anything a caller supplied, and a DEDICATED control proving the empty-body path did not simply stop
+requiring keys for everybody. These tests pass on `main` as well: the branch works and was merely
+unwitnessed, so they are regression coverage rather than proof of a fix. They were confirmed
+load-bearing by planting a mutation that disables the shared branch and watching them go red.
+
+Note for anyone writing more of these: `dedicated` is the DEFAULT, so `shared` is the non-default
+probe value. A test asserting `dedicated` can pass by accident; one asserting `shared` cannot.
+
+**The pattern, because this is the second instance in one night.** cp#433 and cp#439 are the same
+bug in different clothes: a payload that collapses two states needing different screens, where the
+backend computed the distinction correctly and simply did not project it. Both were found from the
+UI side by someone who could not write honest copy with what the route returned. Worth auditing the
+remaining projections for a third.
+
+## The SECOND wall, on the same missing-projection pattern
+
+The key step of the wizard sits BEFORE provisioning and gated advance on a non-empty key, so a
+shared-tier tenant could not even PROVISION, let alone go live. Same root cause, different moment,
+and `tenantView.runpod_mode` cannot fix it: at that point no tenant row exists yet.
+
+The deciding fact is plane-level. `POST /api/tenant/provision` refuses a keyless provision only when
+`!offersSharedTier()`, but that predicate was projected on NO client surface at all --
+`/api/platform/config` carried `signups_enabled`, `aup_version` and `auth_methods` and nothing about
+the tier. So no client could know a key was optional. That is the same defect as cp#433 and the
+tenant half of cp#439, for the THIRD time: a distinction the backend computes correctly and does not
+project.
+
+`shared_tier_available` now rides on `/api/platform/config`. It is asserted TRUE (the non-default
+value; the wiring double returns false) and FALSE, and then asserted to AGREE WITH THE PROVISION
+ROUTE in both directions -- a boolean a client renders from is worthless unless it predicts the
+refusal it exists to prevent, so the test drives the config route and the provision route together
+rather than trusting they read the same predicate.
+
+**Scoped, NOT fixed here: `handoffInstall` has the same hole.** It refuses an empty key up front
+(`invoke_key_required`) and calls `performInvokeKeyInstall` directly, skipping the shared branch
+entirely, so the pool path is structurally unreachable through the operator handoff and a shared
+tenant owner who follows a handoff link has no way to succeed. Not fixed here because there are two
+defensible fixes with different blast radii (accept an empty key on the handoff route for shared
+tenants, or refuse to ISSUE a handoff for a shared tenant at all), and choosing between them is a
+product decision on a custody path, not a defect fix. Filed as cp#454, so the deferral has an
+enumerating issue rather than living in a PR comment.
+
+### fix(provision): cap a provision job on TOTAL AGE, because idle time stopped meaning anything (cp#437)
+
+**The premise expired, the rule did not.** `MAX_JOB_STALE_MS` reads IDLE TIME and treats it as
+evidence a driver died. That inference was sound while the only driver was a browser poll: a healthy
+job was being touched constantly, so a gap meant something had stopped. **Once the cron became a
+driver, idle time measures how long ago the last TICK was** -- a property of the cron schedule, not
+of the job.
+
+**Worse than uninformative: on a cron-driven job the staleness rule can no longer FIRE at all.**
+`claimJob` sets `updated_at = datetime(now)` on every successful claim
+(`store-d1.ts:645`, verified at source), and the cron runs every 5 minutes against a 10-minute
+window. **Every tick resets the clock the rule is measured by.**
+
+So a job that throws between `claimJob` and the provisioner own catch is re-claimed forever, never
+reaped and never reported. **ernst found that edge on the merged code independently of the reasoning
+above**, which is why one constant has two arguments behind it: the rule stopped carrying
+information, AND there is a concrete loop it can no longer catch.
+
+TOTAL AGE is the quantity that still means something once idleness does not: it measures the job
+rather than the schedule, and no amount of re-claiming resets it. Checked BEFORE the staleness rule,
+since on a cron-driven job the staleness rule is the one that cannot fire.
+
+The cap is two hours, deliberately generous against a five-minute cadence, and **the number is a
+consequence rather than the point** -- a healthy provision yields a handful of times and finishes in
+tens of minutes. This is a runaway guard, not a deadline; move it freely, the argument above is what
+matters.
+
+**The staleness rule STAYS.** It still catches a job nothing is touching at all, which is a state
+that survives the cron existing. This adds a second measure rather than replacing a broken one.
+
+**NOT a fix for cp#438.** That is `finishJob` missing a status predicate. It shares a symptom with
+the loop described above and has a different cause, and a job reaped here goes through that same
+`finishJob`. Kept separate deliberately so neither looks solved by the other.
+
+Three tests on the existing real-SQLite harness, asserting committed rows: a job past the cap is
+reaped **while its `updated_at` is fresh** (the case the idle rule structurally cannot see), a
+CONTROL that a job inside the cap is still driven, and a reproduction of the forever loop that ticks
+three times without the row ever failing before the cap ends it. **Watched red** with the cap
+disabled: both cap tests fail, the control stays green.
+
+## Also here: cp#438 and cp#443, one change because half of it is a trap
+
+finishJob had no status predicate, so a driver that lost its job could overwrite the terminal row
+(cp#438). But the reap is TWO writes, and adding the predicate ALONE means the job write refuses
+while the tenant write runs anyway -- a studio that provisioned correctly reading failed beside a
+job row reading succeeded. A partial guard on a multi-write operation converts a wrong-but-
+consistent state into an inconsistent one (cp#443).
+
+So finishJob gains the predicate and reports whether it changed a row, and both reap sites branch on
+it. The memory double mirrors both properties.
+
+The test for this nearly shipped unable to fail: the first version pre-closed the job, which never
+reaches the reap at all (driveJobIfNeeded returns early on a terminal job), and it passed with the
+conditional removed. Now simulated at the store seam and verified to fail without it.
+
+**The reap could kill a driver that was still alive, and the cap made that sharper (cp#451, found by
+ernst).** renewJobLease bumps lease_until alone and never updated_at, and both reaps read updated_at
+alone, so a driver heartbeating correctly every 20s inside one long step is indistinguishable from a
+dead one to the only code that can terminalize it. An age-based guard makes it worse: an honest slow
+provision is old but ALIVE, and a runaway guard that cannot tell a runaway from a working driver is
+worse than the idle rule it supplements.
+
+The fix is not a new check. jobHasLiveDriver already guards eight admin routes in this file; the reap
+was the one terminalizer ignoring it. Both reaps now DEFER while the lease is live: drive nothing,
+write nothing, re-examine next pass. A dead driver lapses within JOB_LEASE_SECONDS, so it costs one
+cycle and cannot cost a live provision.
+
+### fix(onboarding): boot from the account, so a fresh load lands where the tenant actually is (cp#455)
+
+init() called show("what") unconditionally and never read GET /api/me. That single fact is the root
+under five separate defects, because a self-served tenant PASSES THROUGH these screens while an
+operator-provisioned one ARRIVES at them, and every step after the first kept what it needed in
+page memory a fresh arrival does not have.
+
+The front door already computes the right destination from the same payload, routes people here on
+purpose (finish your setup, watch the progress, see what happened), and then hands off to a page
+that throws all of it away.
+
+**What a fresh load does now**, from the account rather than from nothing: no tenant goes to step 1
+exactly as today; pending or provisioning resumes the real build; awaiting_invoke_key lands on the
+render-key step; failed shows the failure; live shows the finished screen.
+
+**And a state the wizard has no screen for returns NULL rather than a guess.** Suspended, deleting,
+deleted and anything unmodelled are real states the FRONT DOOR has screens for; starting a setup
+wizard for a deleted studio would be exactly the confidently-wrong screen this issue is about.
+
+**It recovers the state the later steps assumed they had.** state.tenantId had exactly ONE
+assignment, inside runProvision, which is why a fresh arrival POSTed to /api/tenant/null/invoke-key
+and was then told its key was rejected (cp#447). Endpoints come off the payload too, so the list is
+populated rather than sitting on a literal loading... forever (cp#449) -- and that fake loading
+state is gone from the markup, because a spinner-shaped word hides the honest reading.
+
+**The wizard still OPENS at step 1 and the resume runs after, deliberately.** The self-served
+visitor is the common case, must see no delay, and must not have a screen swapped under them for a
+tenant they do not have.
+
+**NO NEW BACKEND FIELD.** /api/me already carried the account, the tenant, its status and its
+endpoints. The information was there the whole time; only the page refused to look.
+
+**Watched red first: 12 against merged main, controls green.** Then driven in a real browser on the
+shipped assets against a plane serving each state: awaiting_invoke_key lands on the render-key step
+with the endpoints rendered from the payload; failed shows invocation lost: no progress for over 10
+minutes and no longer pitches a fresh studio; and the regression control, an account with NO tenant,
+still lands on step 1 with Continue enabled and nothing swapped under it.
+
+### One credential now uploads every script that attaches a VPC binding (cp#464)
+
+Module worker uploads move onto the SCRIPT UPLOAD credential, the same one the studio upload has
+used since cf#118. Before this, two different credentials uploaded worker scripts and only one of
+them had ever been granted the Connectivity Directory access a vpc_service binding requires. The
+door pool attaches those bindings to MODULE workers, so it was uploading with a credential that
+could not attach them; nothing stated the two had to match, and nothing detected that they had
+diverged. The first symptom was a provision dying on it.
+
+The module upload also gains the cf#118 guard, which it never had: a refusal now arrives as a
+sentence naming the plane credential rather than as raw Cloudflare prose about the caller.
+
+And the guard now reports its own obsolescence. A predicate keyed on a vendor error code has an
+expiry date nobody wrote down: when the vendor renumbers, a boolean guard answers false forever and
+nothing anywhere says it stopped working. When a VPC binding fails and the known code does NOT
+match, the codes Cloudflare actually returned are logged, which turns the first silent miss into a
+loud one. The code itself is now defined ONCE rather than in two independent copies feeding three
+call sites.
+
 ## v1.26.0 -- 2026-08-15
 
 ### fix(front-door): signing in and signing up are two different questions (cp#428)

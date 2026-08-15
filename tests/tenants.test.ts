@@ -123,9 +123,56 @@ describe("tenantView", () => {
 
   it("projects EXACTLY the agreed key set, in both directions", () => {
     expect(Object.keys(tenantView(tenant({}), ".studio.vivijure.com")).sort()).toEqual([
-      "created_at", "id", "lifecycle", "live_at", "modules_release", "slug", "status", "studio_release",
-      "suspended_reason", "url",
+      "created_at", "id", "lifecycle", "live_at", "modules_release", "runpod_mode", "slug", "status",
+      "studio_release", "suspended_reason", "url",
     ]);
+  });
+
+  // ---- cp#439: the render tier, and the state where it is not known yet ----
+  //
+  // NOTE ON WHICH VALUE IS THE NON-DEFAULT ONE. tenants.runpod_mode is NOT NULL DEFAULT
+  // dedicated (migration 0018) and the fixture mirrors that, so "dedicated" is the value a
+  // projection would produce BY ACCIDENT and "shared" is the one that can only come from the
+  // row. The shared assertions below are therefore the load-bearing ones; the dedicated one is
+  // the control that stops "always shared" from reading green.
+
+  it("reports SHARED once the endpoints step has settled the tier", () => {
+    const view = tenantView(
+      tenant({ runpod_mode: "shared", endpoints_json: JSON.stringify([{ id: "ep1" }]) }),
+      ".studio.vivijure.com",
+    );
+    expect(view.runpod_mode).toBe("shared");
+  });
+
+  it("reports DEDICATED for a settled dedicated tenant (the control)", () => {
+    const view = tenantView(
+      tenant({ runpod_mode: "dedicated", endpoints_json: JSON.stringify([{ id: "ep1" }]) }),
+      ".studio.vivijure.com",
+    );
+    expect(view.runpod_mode).toBe("dedicated");
+  });
+
+  it("reports NULL, not dedicated, before the endpoints step has run", () => {
+    // THE POINT OF THE WHOLE FIELD. The column already reads "dedicated" here because that is
+    // its NOT NULL default, not because anything decided it, and this tenant may well be
+    // destined for the shared pool. Projecting the raw column would hand the front door a
+    // confident wrong answer -- which is cp#439 itself, one route over.
+    const view = tenantView(tenant({ runpod_mode: "dedicated", endpoints_json: null }), ".studio.vivijure.com");
+    expect(view.runpod_mode).toBeNull();
+  });
+
+  it("under-claims rather than over-claims in the crash window", () => {
+    // The provisioner writes the MODE before the endpoint list, so this row (mode written,
+    // endpoints not) is reachable. Reporting null here is losing information we technically
+    // have; asserting a tier from a row that may have died mid-step is claiming one we do not.
+    // Fail toward claiming less, as readRunPodMode does.
+    const view = tenantView(tenant({ runpod_mode: "shared", endpoints_json: null }), ".studio.vivijure.com");
+    expect(view.runpod_mode).toBeNull();
+  });
+
+  it("treats an EMPTY endpoints blob as unsettled too", () => {
+    expect(tenantView(tenant({ runpod_mode: "shared", endpoints_json: "" }), ".studio.vivijure.com").runpod_mode)
+      .toBeNull();
   });
 
   it("keeps modules_release readable on a SUSPENDED tenant (a release is a fact, not a link)", () => {

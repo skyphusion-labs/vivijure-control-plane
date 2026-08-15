@@ -4,6 +4,10 @@ import {
   KEY_PREFIX,
   STEPS,
   canAdvance,
+  resumeStep,
+  slugVerdict,
+  planCanProvision,
+  invokeRequirement,
   costCeilingUsd,
   formatUsd,
   keyShapeHint,
@@ -398,18 +402,6 @@ describe("canAdvance (the gates)", () => {
     expect(canAdvance("name", { slugValid: true, slugAvailable: true })).toBe(true);
   });
 
-  it("blocks the key step until a key is present", () => {
-    expect(canAdvance("key", { keyPresent: false })).toBe(false);
-    expect(canAdvance("key", {})).toBe(false);
-    expect(canAdvance("key", { keyPresent: true })).toBe(true);
-  });
-
-  it("blocks the capacity step on a failed OR missing capacity check", () => {
-    expect(canAdvance("capacity", { capacity: null })).toBe(false);
-    expect(canAdvance("capacity", {})).toBe(false);
-    expect(canAdvance("capacity", { capacity: quotaFit(5, 4, PLAN) })).toBe(false);
-    expect(canAdvance("capacity", { capacity: quotaFit(10, 0, PLAN) })).toBe(true);
-  });
 
   it("blocks the review step until create is explicitly confirmed", () => {
     expect(canAdvance("review", { confirmed: false })).toBe(false);
@@ -431,21 +423,26 @@ describe("canAdvance (the gates)", () => {
 });
 
 describe("STEPS / stepIndex", () => {
-  it("orders the flow: understand and consent BEFORE the key is asked for", () => {
+  it("orders the flow: understand and consent BEFORE anything is created (cp#427)", () => {
+    // SEVEN steps since the BYOK purge. Setup key and Your capacity retired with the path they
+    // served: the first asked for a RunPod key the plane no longer accepts, and the second
+    // probed the CUSTOMER own quota, which is meaningless when the capacity is ours. Capacity
+    // additionally POSTed to a route that never existed (cp#467), so it was a hard stop.
     expect(STEPS.map((s) => s.key)).toEqual([
-      "what", "rules", "name", "key", "capacity", "review", "build", "invoke", "done",
+      "what", "rules", "name", "review", "build", "invoke", "done",
     ]);
-    // The slug is required by POST /api/tenant/provision, so it must be
-    // collected before the build.
+    // The invariants that SURVIVE the purge, and they are the ones that mattered.
+    //
+    // The slug is required by POST /api/tenant/provision, so it is collected before the build.
     expect(stepIndex("name")).toBeLessThan(stepIndex("build"));
-    // Two-phase custody (#52): key B can only be minted once the endpoints it
-    // scopes to exist, so the invoke step MUST sit after the build.
+    // Going live can only happen once the endpoints exist, so it sits after the build.
     expect(stepIndex("build")).toBeLessThan(stepIndex("invoke"));
     expect(stepIndex("invoke")).toBeLessThan(stepIndex("done"));
-    expect(stepIndex("what")).toBeLessThan(stepIndex("key"));
-    expect(stepIndex("rules")).toBeLessThan(stepIndex("key"));
-    // Nothing is created on the tenant's account before an explicit review.
+    // NOTHING IS CREATED ON ANYBODY BEHALF BEFORE AN EXPLICIT REVIEW. This is the load-bearing
+    // one and it is unchanged by the purge.
     expect(stepIndex("review")).toBeLessThan(stepIndex("build"));
+    // Consent still precedes naming, which is the first thing that can take a slug.
+    expect(stepIndex("rules")).toBeLessThan(stepIndex("name"));
   });
 
   it("returns -1 for an unknown step", () => {
@@ -612,5 +609,212 @@ describe("the waiting screen says what it is doing", () => {
     const minutes = Math.floor((PROVISION_FIRST_POLL_MS + PROVISION_WATCH_MS) / 60000);
     expect(copy).toContain(String(minutes));
     expect(copy).toContain("reload this page");
+  });
+});
+
+// cp#435: THE SLUG PREVIEW AND THE DESTRUCTIVE CASE.
+//
+// GET /api/tenant/slug-available answers available AND reclaimable. reclaimable means the name is
+// free TO THIS ACCOUNT because the row behind it is that account own unfinished studio, and
+// provisioning over it is a teardown with deleteData true, not a resume. The client used to read
+// only availability and print is free, so an operator-provisioned owner could be told his own
+// studio name was available and then destroy it by clicking Continue.
+//
+// RED ON MAIN: slugVerdict does not exist there, and canAdvance(name) opens on availability alone.
+describe("slugVerdict / the reclaim gate (cp#435)", () => {
+  it("prints a plain free for a name nobody holds", () => {
+    const v = slugVerdict({ available: true, reclaimable: false }, "fresh");
+    expect(v.state).toBe("free");
+    expect(v.level).toBe("ok");
+    expect(v.text).toMatch(/is free/);
+  });
+
+  it("NEVER says free about a studio the account already has", () => {
+    // The exact sentence that preceded a silent teardown.
+    const v = slugVerdict({ available: true, reclaimable: true }, "conrad");
+    expect(v.state).toBe("reclaim");
+    expect(v.text).not.toMatch(/is free/);
+    // And it must name the consequence, not merely decline to reassure.
+    expect(v.text).toMatch(/DELETES/);
+    expect(v.level).toBe("bad");
+  });
+
+  it("still reports a taken name with the plane own reason", () => {
+    const v = slugVerdict({ available: false, reason: "that name is taken" }, "mine");
+    expect(v.state).toBe("taken");
+    expect(v.text).toMatch(/that name is taken/);
+  });
+
+  it("treats a missing reclaimable as NOT reclaimable, so an old payload cannot open the gate", () => {
+    expect(slugVerdict({ available: true }, "x").state).toBe("free");
+  });
+
+  it("opens the name gate on an ordinary free slug, unchanged", () => {
+    expect(canAdvance("name", { slugValid: true, slugAvailable: true })).toBe(true);
+  });
+
+  it("REFUSES to advance over the account own studio without an explicit acknowledgement", () => {
+    const s = { slugValid: true, slugAvailable: true, slugReclaimable: true };
+    expect(canAdvance("name", s)).toBe(false);
+    expect(canAdvance("name", { ...s, slug: "conrad", slugReclaimConfirmedFor: "conrad" })).toBe(true);
+  });
+
+  it("does not accept a truthy accident as consent to destroy a studio", () => {
+    const s = {
+      slugValid: true,
+      slugAvailable: true,
+      slugReclaimable: true,
+      slug: "conrad",
+      slugReclaimConfirmedFor: 1 as unknown as string,
+    };
+    expect(canAdvance("name", s)).toBe(false);
+  });
+
+  // CONSENT DOES NOT CARRY (cp#446 review). Ernst caught that the revocation was claimed,
+  // implemented and UNTESTED: resetReclaimAck existed, checkSlug called it, and deleting it broke
+  // nothing red. A behaviour only the prose asserts is one the next refactor removes in silence.
+  //
+  // So the revocation stopped being a side effect and became a PROPERTY: consent records WHICH
+  // name it was given for, and the gate compares that to the name about to be destroyed. Now the
+  // guard holds even if every DOM reset in the file is deleted, and it is testable without a DOM.
+  it("NEVER lets consent for one studio open the gate for a different one", () => {
+    const s = { slugValid: true, slugAvailable: true, slugReclaimable: true, slugReclaimConfirmedFor: "alpha" };
+    // Acknowledged alpha, now standing on beta: this is the edit-away case, and it must refuse.
+    expect(canAdvance("name", { ...s, slug: "beta" })).toBe(false);
+    // Same consent, back on the name it was actually given for.
+    expect(canAdvance("name", { ...s, slug: "alpha" })).toBe(true);
+  });
+
+  it("treats an empty or missing slug as nothing to consent to", () => {
+    // Guards the degenerate pair: a blank recorded name must not match a blank current one and
+    // wave the destruction through on two absences agreeing with each other.
+    expect(canAdvance("name", { slugValid: true, slugAvailable: true, slugReclaimable: true, slug: "", slugReclaimConfirmedFor: "" })).toBe(false);
+    expect(canAdvance("name", { slugValid: true, slugAvailable: true, slugReclaimable: true })).toBe(false);
+  });
+});
+
+// cp#455: WHERE A FRESH ARRIVAL BELONGS.
+//
+// init() showed step 1 unconditionally and never read /api/me, which is the single root under five
+// separate defects: the wizard did not know a tenant existed (cp#435), a control labelled Back
+// advanced into a step with a null tenant id (cp#447), the endpoint list sat on a literal
+// loading... forever (cp#449), and See what happened delivered a sales pitch to somebody whose
+// studio had just failed.
+//
+// RED ON MAIN: resumeStep does not exist there.
+describe("resumeStep (cp#455)", () => {
+  const ok = { id: "acct_1", email: "a@b.c" };
+  const aup = { required_version: "1.1.0", accepted: true };
+  const at = (status: string) => ({ account: ok, aup: aup, tenant: { id: "ten_1", slug: "s", status: status } });
+
+  it("leaves a signed-out or un-accepted visitor at the start, exactly as today", () => {
+    expect(resumeStep(null).step).toBe("what");
+    expect(resumeStep({}).step).toBe("what");
+    expect(resumeStep({ account: ok, aup: { required_version: "1.1.0", accepted: false } }).step).toBe("what");
+  });
+
+  it("sends an account with NO tenant to step 1, which is the self-served path and must not move", () => {
+    // The regression control. Most people who reach this page are creating a studio, and that
+    // flow is the one thing this change must leave alone.
+    const r = resumeStep({ account: ok, aup: aup, tenant: null });
+    expect(r.step).toBe("what");
+    expect(r.reason).toBe("no_tenant");
+  });
+
+  it("resumes a build in flight instead of offering to start a new one", () => {
+    expect(resumeStep(at("pending")).step).toBe("build");
+    expect(resumeStep(at("provisioning")).step).toBe("build");
+  });
+
+  it("lands an awaiting_invoke_key tenant on the render-key step, which was unreachable on a fresh load", () => {
+    const r = resumeStep(at("awaiting_invoke_key"));
+    expect(r.step).toBe("invoke");
+    expect(r.reason).toBe("awaiting_invoke_key");
+  });
+
+  it("shows a FAILED studio its failure, rather than five minutes to your own studio", () => {
+    // The link says See what happened. Landing on step 1 makes that label a false promise, and a
+    // link label is a contract with whoever clicks it.
+    const r = resumeStep(at("failed"));
+    expect(r.step).toBe("build");
+    expect(r.reason).toBe("failed");
+  });
+
+  it("sends a live studio to the finished screen", () => {
+    expect(resumeStep(at("live")).step).toBe("done");
+  });
+
+  it("REFUSES to start a wizard for a studio that is not in setup at all", () => {
+    // Suspended, deleting and deleted are real states the FRONT DOOR has screens for and this
+    // page does not. Offering setup for a deleted studio is the same confidently-wrong screen
+    // this whole issue is about, so step is null and the page says so.
+    for (const s of ["suspended", "deleting", "deleted"]) {
+      expect(resumeStep(at(s)).step, s).toBeNull();
+    }
+  });
+
+  it("does not guess on a status it has never heard of", () => {
+    const r = resumeStep(at("reticulating"));
+    expect(r.step).toBeNull();
+    expect(r.reason).toBe("not_in_setup");
+  });
+});
+
+// cp#439: THE TIER DECIDES WHETHER A KEY IS A QUESTION, AT TWO DIFFERENT MOMENTS.
+//
+// A shared-tier tenant hit a wall at step 4 (the wizard would not advance without a pasted key)
+// and again at step 8 (the plane REFUSES a pasted key and the winning request carries none). Both
+// walls came from the same assumption -- everyone is BYOK -- and neither step could know better,
+// because the tier was not projected anywhere the client could read.
+//
+// The two facts are deliberately NOT the same field, and that is the load-bearing part: at step 4
+// no tenant exists yet (createTenant runs inside the provision this step leads to), so only a
+// PLATFORM flag can answer it; at step 8 the tenant exists and carries its own mode.
+describe("the tier questions after the BYOK purge (cp#427, cp#439)", () => {
+  // These replace the optional-key tests. Under cp#427 there is no key to make optional and no
+  // second tier to select, so the PLATFORM question widened from is a key optional to can this
+  // plane provision at all, and the TENANT question lost its byok answer.
+
+  it("says a pooling plane can provision", () => {
+    expect(planCanProvision({ shared_tier_available: true })).toBe(true);
+  });
+
+  it("says a plane with no pool CANNOT, and defaults to cannot on a payload that does not say", () => {
+    // Fail toward refusing. The provision route refuses a poolless plane, so a wizard that
+    // assumed otherwise would walk somebody through naming a studio it could never build.
+    expect(planCanProvision({ shared_tier_available: false })).toBe(false);
+    expect(planCanProvision({})).toBe(false);
+    expect(planCanProvision(null)).toBe(false);
+  });
+
+  it("does not accept a truthy accident as capacity", () => {
+    expect(planCanProvision({ shared_tier_available: 1 as unknown as boolean })).toBe(false);
+  });
+
+  it("treats a pooled tenant as the supported shape", () => {
+    expect(invokeRequirement({ runpod_mode: "shared" })).toBe("pooled");
+  });
+
+  it("treats a legacy dedicated row as UNSUPPORTED, not as a BYO path to walk", () => {
+    // The invoke-key route refuses a non-shared row by name after the purge. Offering key
+    // instructions would send somebody to make a credential nothing will accept, which is the
+    // same confidently-wrong screen this whole line of work has been removing.
+    expect(invokeRequirement({ runpod_mode: "dedicated" })).toBe("unsupported");
+  });
+
+  it("NEVER reads an absent mode as a tier", () => {
+    // runpod_mode is withheld until the endpoints exist, so absent means NOT DECIDED YET.
+    expect(invokeRequirement({ runpod_mode: null })).toBe("undecided");
+    expect(invokeRequirement({})).toBe("undecided");
+    expect(invokeRequirement(null)).toBe("undecided");
+    expect(invokeRequirement({ runpod_mode: "pooled" })).toBe("undecided");
+  });
+
+  it("has no key gate left to open or close", () => {
+    // canAdvance had a key branch and a capacity branch. Both retired with their steps; the
+    // trailing default is what an unknown key now hits, and that is correct because there is no
+    // longer any such step to gate.
+    expect(STEPS.map((s) => s.key)).not.toContain("key");
+    expect(STEPS.map((s) => s.key)).not.toContain("capacity");
   });
 });
