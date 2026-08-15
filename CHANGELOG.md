@@ -6,6 +6,96 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.26.0 -- 2026-08-15
+
+### fix(front-door): signing in and signing up are two different questions (cp#428)
+
+With `signups_enabled: false` -- which is the LIVE setting today, and correct, because signups ship
+last by ruling -- the hosted front door replaced its entire signed-out screen with a closed notice.
+That notice carries no sign-in control. **An account that already existed had no way back into a
+studio it already owned.**
+
+Measured on https://studio.vivijure.com before the fix: the whole document had four interactive
+elements (brand, self-host link, report-abuse, abuse mailto). No email field, no button.
+
+**The plane was never the problem and is unchanged.** `POST /api/auth/email/start` mails the link to
+an address that already has an account while the switch is off, and `src/index.ts` states the rule
+in as many words: signups_enabled means can NEW accounts be created, full stop. Only the UI
+conflated that with can a KNOWN person get back in.
+
+**Signups stay CLOSED. `signups_enabled` is not touched.**
+
+`shellRoute` no longer takes the platform config AT ALL. The route is a fact about the SESSION; the
+switch is a fact about new accounts, answered separately by `signupsOpen(config)`. Keeping the
+switch out of the routing function is what stops the two being conflated again, and the test asserts
+the arity so a future edit cannot quietly re-admit it.
+
+The signed-out screen is now ONE panel. The switch changes its COPY: a different title and lede, and
+the closed-signups callout in place of the pricing one. **The closed copy keeps its voice**, self-host
+link and all, down to the line about it not being a consolation prize. The copy was never the bug;
+arriving INSTEAD of the way in was.
+
+**Enumeration safety is preserved and asserted.** The 202 is still uninformative, the submit still
+lands on the same link-sent screen for every outcome, and the closed-signups text is a fact about the
+PLANE that reads identically for every visitor, so it reveals nothing about any address.
+
+**`onboarding.js` carried the same defect one page over**, and worse: a closed switch disabled every
+`[data-next]` on the page, freezing exactly the person the plane goes out of its way not to strand.
+An operator-provisioned tenant reaches that page to hand over its render key, so a disabled Next is
+the difference between a studio that finishes and one that cannot. The banner and the disable now
+follow the SESSION, and a `/api/me` failure that is not 401/403 leaves the flow alone rather than
+inventing a refusal the plane never made.
+
+**Watched failing first.** Against `main`: 7 reds across the two suites, with every positive control
+green (a renamed or empty asset cannot pass these by matching nothing). Then driven in a real
+browser against the LIVE plane answer, not jsdom: sign-in reachable with the switch off, submitted,
+and the same link-sent screen.
+
+### fix(provision): the cron drives the provisions nobody is polling (cp#429)
+
+The poll was the ONLY engine. Both provision routes fire exactly one driver under `ctx.waitUntil`
+and return 202; that driver spends its `PROVISION_INVOCATION_BUDGET_MS` (15s), persists progress,
+hands the lease back and yields. **Every step after it needed an inbound `GET /api/tenant/:id/job`.**
+
+That holds up for a tenant sitting on the onboarding page. It does not hold up at all for an
+operator-provisioned tenant, who has no client: nothing polls, so nothing drives, and the studio
+never builds.
+
+**And it never failed honestly either, which is the worse half.** The `MAX_JOB_STALE_MS` reap that
+declares a lost driver lives INSIDE `driveJobIfNeeded`, which only runs on a poll. An unpolled job
+was therefore never reaped: no progress, no terminal state, no signal. It read `provisioning`
+forever, which is indistinguishable from a provision that is simply taking a while.
+
+`runScheduledTick` grows a THIRD isolated half, `runPendingProvisionDrive`. The cron already runs
+every 5 minutes and already isolates its halves for exactly this reason (cp#290): a throw in one
+must not silently skip the others, and the symptom of that coupling is an absence.
+
+**IT ADDS NO GUARDS AND WEAKENS NONE.** The cron does not get its own driver; it reaches the SAME
+`driveJobIfNeeded` through a dispatch seam. A cron copy of those guards is a copy that drifts on the
+path nobody exercises until something has already gone wrong. So the cron inherits, unchanged:
+terminal jobs skipped, the cp#43 kind guard, the cp#132 refusal to claim a job no driver has taken,
+the stale reap, and `claimJob` picking a single winner -- which is what makes a cron drive racing a
+live tenant poll safe rather than a double-mint.
+
+The seam is the only structural change to the driver: the request path passes `ctx.waitUntil`, the
+cron path AWAITS, because a scheduled handler IS its work and `waitUntil` there lets the runtime
+call the tick finished mid-write (the same reasoning already written above the handler).
+
+Work is found with the existing `listTenants({status})` over `pending` and `provisioning`; **no new
+store surface**. Both bounds are LOGGED rather than silent: a full `TENANT_PAGE_LIMIT` page means
+there may be work this tick could not see, and a backlog past `MAX_PROVISION_DRIVES_PER_TICK` says
+so and drains on the next tick. A silent cap reads exactly like covered everything.
+
+**The evidence is a row that moved, not a spy that was called.** `tests/scheduled-provision-drive`
+builds the REAL `D1Store` over a REAL migrated SQLite, drives the SAME exported tick body the cron
+drives, and reads the tenant and job rows back through raw SQL. Against `main` the two that matter
+go red for the right reason -- the tenant stays `provisioning`, the abandoned job stays `running` --
+and the positive control shows the driver double could have moved the row, so the four refusals are
+not vacuous.
+
+**Not yet observed on the live plane.** The fix is unproven against a deployed worker until it ships;
+the post-deploy observable is the stuck tenant leaving `provisioning` in `GET /api/admin/tenants`.
+
 ## v1.25.0 -- 2026-08-15
 
 **THIS TAG ARMS THE HOSTED SHARED TIER FOR THE FIRST TIME.** Everything below was staged across
