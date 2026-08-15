@@ -23,6 +23,25 @@ manifest="$dir/SHA256SUMS"
 
 [ -f "$manifest" ] || { echo "::error::no manifest at $manifest" >&2; exit 1; }
 
+# EXACT-STRING lookup, not a regex (ernst, cp#414 review). Interpolating a version into a regex
+# makes its dots wildcards, so 1.0.0 would also match 1x0x0, and a pathological label could
+# cross-match a neighbouring line. This compares field 1 as a STRING, so the lookup means what it
+# says. Cosmetic at this manifest size, and exactly the kind of thing that stops being cosmetic
+# once the manifest grows.
+#
+# It also removes the set -e hazard the first draft carried: grep exits 1 on no match, which under
+# set -e killed the script at the assignment before it could say why. A read loop cannot do that.
+# tests/aup-pin-gate.test.sh case 4 still asserts the MESSAGE rather than the exit code, so a
+# silent refusal cannot come back by another route.
+lookup_sha() {
+  local want="$1" file="$2" v h rest
+  while read -r v h rest; do
+    case "$v" in "#"*|"") continue ;; esac
+    if [ "$v" = "$want" ]; then printf %s "$h"; return 0; fi
+  done < "$file"
+  return 0
+}
+
 bad=0
 seen=0
 for f in "$dir"/*.md; do
@@ -30,7 +49,7 @@ for f in "$dir"/*.md; do
   base="$(basename "$f")"
   ver="${base%.md}"
   seen=$((seen + 1))
-  expected="$(grep -v "^#" "$manifest" | grep -E "^$ver " | head -1 | cut -d" " -f2 || true)"
+  expected="$(lookup_sha "$ver" "$manifest")"
   actual="$(sha256sum "$f" | cut -d" " -f1)"
   if [ -z "$expected" ]; then
     echo "::error::$base has no sha recorded in SHA256SUMS (found $actual)" >&2

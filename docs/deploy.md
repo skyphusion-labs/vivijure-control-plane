@@ -734,7 +734,7 @@ A second, hermetic half runs in CI: `scripts/check-aup-files-immutable.sh` hashe
 stopped matching its label; this catches a version FILE edited in place, which happened three
 times here undetected because the file was never the artifact anyone was served.
 
-Negative tests: `npm run guards:aup` (`tests/aup-pin-gate.test.sh`), hermetic, twelve cases,
+Negative tests: `npm run guards:aup` (`tests/aup-pin-gate.test.sh`), hermetic, thirteen cases,
 including a positive control for each script and a reconstruction of the 2026-08-14 incident.
 
 ## Zone security

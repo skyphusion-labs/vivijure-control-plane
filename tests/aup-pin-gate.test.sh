@@ -85,6 +85,31 @@ run fail "an empty AUP_VERSION is refused" "" "file://$tmp/1.0.0.md" "AUP_VERSIO
 run fail "an empty AUP_URL is refused" "1.0.0" "" "AUP_URL is unset"
 
 
+
+# ernst, cp#414: the manifest lookup must be an EXACT STRING match on the version field.
+#
+# This case is what makes that claim checkable rather than asserted. The decoy label 1x0x0 differs
+# from 1.0.0 only where a regex dot is a wildcard, and it is placed BEFORE the real line, so a
+# lookup built on grep -E "^$ver " plus head -1 returns the DECOY sha and the gate then compares
+# the real document against a hash nobody recorded. Expected PASS: with a string comparison the
+# decoy is simply a different label. This case goes red against the old lookup and green against
+# the new one, which is the only reason it is worth having.
+decoy="$tmp/SHA256SUMS.decoy"
+{
+  echo "# fixture with a regex-crossmatching decoy FIRST"
+  echo "1x0x0 0000000000000000000000000000000000000000000000000000000000000000"
+  echo "1.0.0 $sha_100"
+} > "$decoy"
+decoy_out="$(AUP_VERSION=1.0.0 AUP_URL="file://$tmp/1.0.0.md" bash "$gate" "$decoy" 2>&1)" && decoy_rc=0 || decoy_rc=1
+if [ "$decoy_rc" -eq 0 ] && printf %s "$decoy_out" | grep -qF "AUP pin OK"; then
+  echo "  ok   a decoy label a regex would cross-match is not used for 1.0.0"
+  pass=$((pass + 1))
+else
+  echo "  FAILED the manifest lookup matched a decoy label (regex, not exact string)"
+  printf %s "$decoy_out" | sed "s/^/       /"
+  fail=$((fail + 1))
+fi
+
 # ---- scripts/check-aup-files-immutable.sh -------------------------------------------------
 #
 # The in-repo half. The gate above catches a POINTER that stopped matching its label; this catches

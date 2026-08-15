@@ -36,11 +36,25 @@ url="${AUP_URL:-}"
 [ -n "$url" ] || { echo "::error::AUP_URL is unset or empty -- cannot verify the AUP pin" >&2; exit 1; }
 [ -f "$manifest" ] || { echo "::error::AUP manifest not found: $manifest" >&2; exit 1; }
 
-# NOTE the trailing || true. grep exits 1 on no match, and under set -e a failing command
-# substitution in an assignment kills the script THERE -- refusing correctly but printing
-# nothing, so an unrecorded version would fail silently instead of saying why. Caught by
-# tests/aup-pin-gate.test.sh case 4 and finding rc=1 with an empty message.
-expected="$(grep -v "^#" "$manifest" | grep -E "^$ver " | head -1 | cut -d" " -f2 || true)"
+# EXACT-STRING lookup, not a regex (ernst, cp#414 review). Interpolating a version into a regex
+# makes its dots wildcards, so 1.0.0 would also match 1x0x0, and a pathological label could
+# cross-match a neighbouring line. This compares field 1 as a STRING, so the lookup means what it
+# says. Cosmetic at this manifest size, and exactly the kind of thing that stops being cosmetic
+# once the manifest grows.
+#
+# It also removes the set -e hazard the first draft carried: grep exits 1 on no match, which under
+# set -e killed the script at the assignment before it could say why. A read loop cannot do that.
+# tests/aup-pin-gate.test.sh case 4 still asserts the MESSAGE rather than the exit code, so a
+# silent refusal cannot come back by another route.
+lookup_sha() {
+  local want="$1" file="$2" v h rest
+  while read -r v h rest; do
+    case "$v" in "#"*|"") continue ;; esac
+    if [ "$v" = "$want" ]; then printf %s "$h"; return 0; fi
+  done < "$file"
+  return 0
+}
+expected="$(lookup_sha "$ver" "$manifest")"
 if [ -z "$expected" ]; then
   echo "::error::no sha256 recorded for AUP_VERSION $ver in $manifest" >&2
   echo "  A version with no recorded hash cannot be verified, and this gate refuses what it" >&2
