@@ -104,7 +104,7 @@ import {
   tenantView,
   validateSlug,
 } from "./tenants";
-import { TenantModuleError, type ModuleReadiness } from "./tenant-modules";
+import { TenantModuleError, summariseModuleReadiness, type ModuleReadiness } from "./tenant-modules";
 import { CONTROL_PLANE_VERSION } from "./version";
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -2341,9 +2341,12 @@ async function adminRoutes(
   // RunPod job is unrecoverable the moment it ends: RunPod cannot enumerate jobs, so there is no
   // backfill and no second chance to look.
   //
-  // TWO SHORT SAMPLES, NOT A WAIT (cp#254). This is still a question, not a promotion gate; the
-  // key-install probe is the one that waits on credentials. The double sample only buys a brief gap
-  // so a post-upgrade stale isolate is less likely to be the only reading.
+  // TWO SAMPLES, BOTH REPORTED, NEITHER DISCARDED (cp#254). This is still a question, not a
+  // promotion gate; the key-install probe is the one that waits on credentials. The samples do NOT
+  // settle the answer -- the measured convergence window is 40 to 50 seconds and the gap is 250ms,
+  // so both reads land inside one transient. What two reads CAN do is disagree, and a disagreement
+  // is proof the value is mid-convergence. Each module carries `readings`, `reads` and `settled`,
+  // and `records_unproven` below refuses to count an unsettled "ok" as proof.
   const moduleReadiness = /^\/api\/admin\/tenants\/(ten_[a-f0-9]+)\/module-readiness$/.exec(path);
   if (request.method === "GET" && moduleReadiness) {
     if (!deps.provisioner) return err("provisioner_unconfigured", 503);
@@ -2374,22 +2377,11 @@ async function adminRoutes(
       //      track modules_release instead of being uniform.
       modules_release: tenant.modules_release,
       modules,
-      // The one summary worth precomputing, named for what it MEANS rather than for a verdict it
-      // does not have: these modules submit RunPod jobs and did NOT answer that they can record one.
-      //
-      // "ok" IS THE ONLY PASS, and the test is written as `!== "ok"` rather than as a list of the
-      // failing values ON PURPOSE. A list has to be maintained against a contract in another repo,
-      // and the day it falls behind, the new value it has never heard of falls through as PROVEN.
-      // Inverting it means an unrecognised state is unproven by default -- the safe direction, and
-      // the one that stays safe without anyone remembering to update this line.
-      //
-      // "unavailable", "unknown" and null are ALL in here on purpose: "the binding is missing",
-      // "the worker could not tell" and "this image is too old to say" are three different problems
-      // with one consequence (rows nobody will get). They are distinguishable per module in the
-      // `modules` array above; this summary deliberately does not try to rank them.
-      records_unproven: modules
-        .filter((m) => m.records_runpod_jobs && m.job_log !== "ok")
-        .map((m) => m.module),
+      // The summaries worth precomputing, named for what they MEAN rather than for verdicts they do
+      // not have. Both live in tenant-modules.ts beside the probe that produces their input, so the
+      // probe and the summary can be driven as ONE chain with nothing stubbed between them: the
+      // defect cp#254 was reopened for was invisible at each half and only visible in the pair.
+      ...summariseModuleReadiness(modules),
     });
   }
 
