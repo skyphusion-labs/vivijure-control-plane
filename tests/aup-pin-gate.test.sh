@@ -84,6 +84,77 @@ run fail "an unfetchable AUP_URL is refused" \
 run fail "an empty AUP_VERSION is refused" "" "file://$tmp/1.0.0.md" "AUP_VERSION is unset"
 run fail "an empty AUP_URL is refused" "1.0.0" "" "AUP_URL is unset"
 
+
+# ---- scripts/check-aup-files-immutable.sh -------------------------------------------------
+#
+# The in-repo half. The gate above catches a POINTER that stopped matching its label; this catches
+# a version FILE edited in place, which is what actually happened three times in this repository
+# and what nothing detected, because the file was never the artifact anyone was served.
+
+echo ""
+echo "scripts/check-aup-files-immutable.sh"
+
+imm="$here/scripts/check-aup-files-immutable.sh"
+idir="$tmp/aupdir"
+mkdir -p "$idir"
+printf %s "frozen text" > "$idir/1.0.0.md"
+{ echo "# fixture"; echo "1.0.0 $(sha256sum "$idir/1.0.0.md" | cut -d" " -f1)"; } > "$idir/SHA256SUMS"
+
+icheck() {
+  local expect="$1" desc="$2" needle="${3:-}"
+  local out rc
+  out="$(bash "$imm" "$idir" 2>&1)" && rc=0 || rc=1
+  local ok=1
+  if [ "$expect" = "pass" ] && [ "$rc" -ne 0 ]; then ok=0; fi
+  if [ "$expect" = "fail" ] && [ "$rc" -eq 0 ]; then ok=0; fi
+  if [ -n "$needle" ] && ! printf %s "$out" | grep -qF "$needle"; then ok=0; fi
+  if [ "$ok" -eq 1 ]; then
+    echo "  ok   $desc"
+    pass=$((pass + 1))
+  else
+    echo "  FAILED $desc (rc=$rc, expected $expect)"
+    printf %s "$out" | sed "s/^/       /"
+    fail=$((fail + 1))
+  fi
+}
+
+# POSITIVE CONTROL first, same reason as above.
+icheck pass "CONTROL: a file matching its recorded sha passes" "match their recorded sha256"
+
+# THE DEFECT THAT ACTUALLY HAPPENED: a served version file edited in place.
+printf %s "frozen text, quietly amended" > "$idir/1.0.0.md"
+icheck fail "a version file edited in place is refused" "has CHANGED since it was recorded"
+printf %s "frozen text" > "$idir/1.0.0.md"
+
+# A policy document nobody recorded must not sit in the directory unnoticed.
+printf %s "a version nobody recorded" > "$idir/2.0.0.md"
+icheck fail "an unrecorded version file is refused" "no sha recorded in SHA256SUMS"
+rm -f "$idir/2.0.0.md"
+
+# A clean run over NOTHING reads identically to a clean run over everything, and a wrong directory
+# argument is exactly how this check would silently stop checking.
+mkdir -p "$tmp/emptydir"
+cp "$idir/SHA256SUMS" "$tmp/emptydir/SHA256SUMS"
+empty_out="$(bash "$imm" "$tmp/emptydir" 2>&1)" && empty_rc=0 || empty_rc=1
+if [ "$empty_rc" -ne 0 ] && printf %s "$empty_out" | grep -qF "refusing to report a clean run over nothing"; then
+  echo "  ok   a directory with no version files is refused, not reported clean"
+  pass=$((pass + 1))
+else
+  echo "  FAILED an empty directory was reported clean"
+  fail=$((fail + 1))
+fi
+
+# And the REAL repository, because a fixture proves the script and only the repo proves the repo.
+real_out="$(bash "$imm" 2>&1)" && real_rc=0 || real_rc=1
+if [ "$real_rc" -eq 0 ]; then
+  echo "  ok   the real docs/legal/hosted/aup files match their recorded shas"
+  pass=$((pass + 1))
+else
+  echo "  FAILED the real AUP files do not match SHA256SUMS"
+  printf %s "$real_out" | sed "s/^/       /"
+  fail=$((fail + 1))
+fi
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ] || exit 1

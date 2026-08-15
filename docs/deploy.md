@@ -729,8 +729,13 @@ names a version whose recorded sha does not match the document the stale `AUP_UR
 at. That is the whole point of the gate -- the ordering is enforced by the pipeline failing,
 not by a runbook line somebody reads.
 
-Negative tests: `npm run guards:aup` (`tests/aup-pin-gate.test.sh`), hermetic, seven cases,
-including a positive control and a reconstruction of the 2026-08-14 incident.
+A second, hermetic half runs in CI: `scripts/check-aup-files-immutable.sh` hashes every
+`aup/<version>.md` in the repository against `SHA256SUMS`. The pin gate catches a POINTER that
+stopped matching its label; this catches a version FILE edited in place, which happened three
+times here undetected because the file was never the artifact anyone was served.
+
+Negative tests: `npm run guards:aup` (`tests/aup-pin-gate.test.sh`), hermetic, twelve cases,
+including a positive control for each script and a reconstruction of the 2026-08-14 incident.
 
 ## Zone security
 

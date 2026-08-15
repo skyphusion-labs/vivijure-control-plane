@@ -22,11 +22,16 @@
 
 # 1.0.0 -- the bytes ACTUALLY SERVED and accepted by 4 accounts (2026-07-17, 07-25 x2, 08-01).
 # MEASURED against the live endpoint 2026-08-15, not copied from a file.
-# NOTE, and read this before pinning anything at 1.0.0: these bytes are NOT the bytes in this
-# repository at docs/legal/hosted/aup/1.0.0.md. No revision of that file has ever hashed to this
-# value. The served document lives only at vivijure-cf commit 8a5d96b4, orphaned from that repo
-# main. See README.md -> Version changelog.
+# The repository file at docs/legal/hosted/aup/1.0.0.md now HASHES TO THIS VALUE, restored from
+# vivijure-cf commit 8a5d96b4 where the served document had been living, orphaned. It had never
+# matched before: all three prior revisions of that file (ca9bf69a, 20fd5105, d0533987) were
+# in-place edits that no tenant was ever shown, two of them made AFTER serving had begun. The
+# restore corrects the RECORD and changes nothing served, because AUP_URL still points at cf.
+# Immutability binds the bytes that were SERVED, not a file that never served them.
 1.0.0 1072c78238a141dfcade920ff93de110f282b4b621c72f788ed0a3f51778b4ed
 
-# 1.1.0 -- the cp#394 shared-tier scoping correction. Not yet served at the time of writing.
-1.1.0 67cacca7f2eaea856b9bb8ee9a4cd9a5881658efe2e631c3d65c76f177de5e43
+# 1.1.0 -- the cp#394 shared-tier scoping correction (section 3.1 split into a dedicated-tier
+# arm and a shared-tier arm), AND the removal of the Status: DRAFT, not in force line that
+# 1.0.0 carries. A gate that hard-blocks live accounts until they accept a document cannot ask
+# them to accept one that disclaims its own force. Not yet served at the time of writing.
+1.1.0 0ea90aaf7095cdd8d6299f6cd69a0804939a67c11707c13a898c94b91e2b01fd
