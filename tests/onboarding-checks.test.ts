@@ -4,6 +4,7 @@ import {
   KEY_PREFIX,
   STEPS,
   canAdvance,
+  provisionFailureCopy,
   resumeStep,
   slugVerdict,
   planCanProvision,
@@ -816,5 +817,67 @@ describe("the tier questions after the BYOK purge (cp#427, cp#439)", () => {
     // longer any such step to gate.
     expect(STEPS.map((s) => s.key)).not.toContain("key");
     expect(STEPS.map((s) => s.key)).not.toContain("capacity");
+  });
+});
+
+// cp#448: WHAT ACTUALLY WENT WRONG, from the code rather than the status.
+//
+// handleProvisionError read err.status === 409 and called every one of them a key problem. The
+// provision route serves at least four distinct 409s and only one was ever about a key. Worse, it
+// rendered err.message -- which the transport sets to body.error, the CODE -- so the plane's own
+// sentence was dropped, and because it believed a key was needed it advised provisioning the same
+// name again, which is the cp#435 teardown.
+//
+// RED ON MAIN: provisionFailureCopy does not exist there.
+describe("provisionFailureCopy (cp#448)", () => {
+  const withBody = (status: number, error: string, message: string | null) => ({ status, message: error, body: { error, message } });
+
+  it("NEVER calls a name collision a key problem", () => {
+    // The exact misclassification: any 409 became "Setup needs your key again".
+    const c = provisionFailureCopy(withBody(409, "tenant_exists", "you already have a studio"));
+    expect(c.headline).not.toMatch(/key/i);
+    expect(c.headline).toBe("You already have a studio");
+  });
+
+  it("prefers the plane's own sentence over anything the client could infer", () => {
+    const stuck = "some of the old studio pieces could not be removed; contact us";
+    const c = provisionFailureCopy(withBody(409, "reclaim_teardown_failed", stuck));
+    expect(c.detail).toBe(stuck);
+    // And the bare code never reaches the reader when the plane spoke.
+    expect(c.detail).not.toBe("reclaim_teardown_failed");
+    expect(c.spoken).toBe(true);
+  });
+
+  it("falls back to the CODE, and says it is a fallback, when the plane sent no message", () => {
+    const c = provisionFailureCopy({ status: 409, message: "slug_taken", body: { error: "slug_taken" } });
+    expect(c.detail).toBe("slug_taken");
+    expect(c.spoken).toBe(false);
+  });
+
+  it("distinguishes every 409 the route actually serves", () => {
+    // The whole defect in one assertion: four codes, four different headlines, one status.
+    const codes = ["tenant_exists", "slug_taken", "slug_reclaim_in_progress", "reclaim_teardown_failed"];
+    const heads = codes.map((c) => provisionFailureCopy(withBody(409, c, null)).headline);
+    expect(new Set(heads).size).toBe(4);
+  });
+
+  it("reads runpod_key_required with its NARROWED meaning, not as bring a key", () => {
+    // cp#427 kept the code and changed what it means: this deploy has no shared render capacity.
+    // A client still reading it as "paste a key" would send somebody after a key that no longer
+    // exists anywhere in the product.
+    const c = provisionFailureCopy(withBody(400, "runpod_key_required", null));
+    expect(c.headline).toMatch(/cannot build studios/i);
+    expect(c.headline).not.toMatch(/key/i);
+  });
+
+  it("says something honest about a code it has never heard of", () => {
+    const c = provisionFailureCopy(withBody(409, "reticulating_splines", null));
+    expect(c.headline).toBe("Setup could not finish");
+    expect(c.detail).toBe("reticulating_splines");
+  });
+
+  it("survives an error with no body at all", () => {
+    expect(provisionFailureCopy({ message: "boom" }).detail).toBe("boom");
+    expect(provisionFailureCopy(null).headline).toBe("Setup could not finish");
   });
 });

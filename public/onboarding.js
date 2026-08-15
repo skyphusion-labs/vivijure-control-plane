@@ -570,38 +570,39 @@
     p.className = "small muted";
     p.textContent =
       "Nothing is half-built on your account that we know of; the step above is where it stopped. " +
-      "You can go back and try again.";
+      "You can start again with a different name, or tell us and we will look at this one.";
     ol.appendChild(p);
-    const cont = $("#build-continue");
-    if (cont) { cont.hidden = false; cont.textContent = "Back to the key step"; }
+    // cp#447: the control that used to appear here was labelled "Back to the key step" and was a
+    // data-next button, so it advanced BY INDEX into the render-key step -- forward, past its own
+    // gate, on a page that had none of the state that step needs. The key step no longer exists at
+    // all (cp#427), so the label pointed at nothing as well as going the wrong way. A failure
+    // screen that cannot offer a correct action offers none.
   }
 
   function handleProvisionError(err) {
-    // Ruled on #52: because we never store key A, a failure in the RunPod steps
-    // cannot self-resume. Retry answers 409 runpod_key_required and the tenant
-    // re-pastes. Say that plainly instead of a dead end.
-    const needsKey = err.status === 409 ||
-      /runpod_key_required/.test((err.body && err.body.error) || err.message || "");
+    // CLASSIFIED ON THE CODE, and the plane's own sentence is what the owner reads (cp#448).
+    const copy = checks.provisionFailureCopy(err);
     renderProgress([{
       key: "start",
-      label: needsKey ? "Setup needs your key again" : "Setup could not finish",
+      label: copy.headline,
       status: "failed",
-      error: err.message,
+      error: copy.detail,
     }]);
-    if (needsKey) {
+    // WHEN THE PLANE DID NOT SPEAK, say so rather than inventing a reason. A bare code is not an
+    // explanation, and pretending otherwise is how somebody goes hunting for a problem that is
+    // ours. Deliberately no re-provision advice on any path: under cp#427 there is no key to
+    // re-paste, and the destroy route belongs behind the cp#435 acknowledgement, never in a hint.
+    if (!copy.spoken) {
       const ol = $("#build-progress");
       if (ol) {
         const p = document.createElement("p");
         p.className = "small muted";
         p.textContent =
-          "We never stored your setup key, so we cannot retry this on our own. That is the " +
-          "tradeoff for not holding it. Go back and paste it again to start over: provisioning " +
-          "the same name again destroys the partial environment and rebuilds from scratch.";
+          "That is the code we were given and nothing more, which is our gap rather than yours. " +
+          "Please tell us you saw it and we will find out what it means.";
         ol.appendChild(p);
       }
     }
-    const cont = $("#build-continue");
-    if (cont) { cont.hidden = false; cont.textContent = "Back to the key step"; }
   }
 
   // Key B: install it LIVE, then report what the control plane actually did.

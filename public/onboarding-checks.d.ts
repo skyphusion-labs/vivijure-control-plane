@@ -253,3 +253,22 @@ export interface ResumeTarget {
 
 /** cp#455: read /api/me on boot and land somebody where their tenant actually is. */
 export function resumeStep(me: MeForResume | null | undefined): ResumeTarget;
+
+export interface ProvisionFailure {
+  status?: number;
+  message?: string;
+  body?: { error?: string; message?: string | null } | null;
+}
+
+export interface ProvisionFailureCopy {
+  code: string;
+  headline: string;
+  detail: string;
+  /** True when the PLANE sent a message; false means the detail is a bare code. */
+  spoken: boolean;
+}
+
+export const PROVISION_FAILURE_HEADLINE: Record<string, string>;
+
+/** cp#448: classify on the CODE, and prefer the plane own sentence over anything inferred. */
+export function provisionFailureCopy(err: ProvisionFailure | null | undefined): ProvisionFailureCopy;
