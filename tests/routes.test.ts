@@ -712,6 +712,122 @@ describe("the AUP gate", () => {
   });
 });
 
+// ---- what /api/me SAYS about the AUP (cp#433) ----
+
+describe("the AUP projection on /api/me (cp#433)", () => {
+  // THE DEFECT: `accepted: false` alone made two different people byte-identical to the front
+  // door -- somebody who never accepted anything, and somebody who accepted 1.0.0 while the plane
+  // moved to 1.1.0 -- so both were shown "One thing before you start", which is wrong on both
+  // halves for the second: they are not starting, and they may already have a running studio.
+  //
+  // Every case below asserts DISTINGUISHABILITY, not just a field value. Asserting the states one
+  // at a time would have passed against the broken payload too, because the broken payload was
+  // never wrong about `accepted` -- it was wrong about having nothing else to say.
+
+  const NEXT = "1.1.0";
+  const meBody = async (cookie: string, e = env()) => {
+    const res = await handle(req("/api/me", { headers: { cookie } }), e, ctx, deps);
+    expect(res.status).toBe(200);
+    return (await res.json()) as { aup: { required_version: string; accepted: boolean; last_accepted: { version: string; accepted_at: string } | null } };
+  };
+
+  it("NEVER accepted anything -> last_accepted is null", async () => {
+    const { cookie } = await signedIn();
+    const body = await meBody(cookie);
+    expect(body.aup).toMatchObject({ required_version: AUP, accepted: false, last_accepted: null });
+  });
+
+  it("accepted an OLDER version -> last_accepted names that version and when", async () => {
+    const { cookie } = await signedIn();
+    await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie } }), env(), ctx, deps);
+    // A NON-DEFAULT stored timestamp. Against now(), or against the version label this test
+    // already serves, "carried through from the row" and "computed at projection time" would be
+    // byte-identical; this value is neither the clock nor anything else in scope.
+    store.aup[0].accepted_at = "2026-07-12T09:31:04Z";
+
+    const body = await meBody(cookie, env({ AUP_VERSION: NEXT }));
+    expect(body.aup).toMatchObject({
+      required_version: NEXT,
+      accepted: false,
+      last_accepted: { version: AUP, accepted_at: "2026-07-12T09:31:04Z" },
+    });
+  });
+
+  it("THE DEFECT: the two refused states are no longer identical to a client", async () => {
+    // Both accounts are refused, both read accepted:false, and BEFORE cp#433 the two payloads
+    // below were equal. That equality is the bug, so this asserts on it directly rather than on
+    // either state alone.
+    const fresh = await signedIn();
+    const neverAccepted = (await meBody(fresh.cookie, env({ AUP_VERSION: NEXT }))).aup;
+
+    store = new MemoryStore();
+    deps = { ...deps, store };
+    const returning = await signedIn();
+    await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie: returning.cookie } }), env(), ctx, deps);
+    const wasRegated = (await meBody(returning.cookie, env({ AUP_VERSION: NEXT }))).aup;
+
+    // The half that must still MATCH: the gate treats them the same, and cp#433 does not change
+    // that. If this ever diverges, somebody softened the gate rather than the projection.
+    expect(neverAccepted.accepted).toBe(false);
+    expect(wasRegated.accepted).toBe(false);
+    expect(neverAccepted.required_version).toBe(wasRegated.required_version);
+
+    // The half that must DIFFER: what the client is able to say about them.
+    expect(neverAccepted).not.toEqual(wasRegated);
+    expect(neverAccepted.last_accepted).toBeNull();
+    expect(wasRegated.last_accepted).not.toBeNull();
+    expect(wasRegated.last_accepted?.version).toBe(AUP);
+  });
+
+  it("accepted the CURRENT version -> last_accepted is still populated, not mode-dependent", async () => {
+    // A field that only appears when refused would force every client to know which branch it is
+    // in before it can read it, and absent-vs-null would then mean two different things.
+    const { cookie } = await signedIn();
+    await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie } }), env(), ctx, deps);
+    const body = await meBody(cookie);
+    expect(body.aup.accepted).toBe(true);
+    expect(body.aup.last_accepted?.version).toBe(AUP);
+  });
+
+  it("projects ONLY version and accepted_at -- never ip_hash, user_agent or the sha", async () => {
+    // The row is the callers own, which is why projecting it at all is fine. That is not a
+    // licence to project every column: ip_hash is a hash of an address and user_agent is a device
+    // fingerprint, and neither is needed to write honest copy.
+    const { cookie } = await signedIn();
+    await handle(
+      jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie, "cf-connecting-ip": "203.0.113.9", "user-agent": "curl/8.0" } }),
+      env(), ctx, deps,
+    );
+    const body = await meBody(cookie);
+    expect(Object.keys(body.aup.last_accepted ?? {}).sort()).toEqual(["accepted_at", "version"]);
+
+    // Asserted on the SERIALIZED payload too, because a nested key set says nothing about what
+    // some other part of the response might be carrying the same values under.
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain("203.0.113.9");
+    expect(raw).not.toContain(await sha256Hex("203.0.113.9"));
+    expect(raw).not.toContain("curl/8.0");
+    expect(raw).not.toContain(await sha256Hex(AUP_TEXT));
+  });
+
+  it("scopes to the SESSION account -- another accounts acceptance is never projected", async () => {
+    // Seeded FIRST, so it is the OLDEST row present. A projection that ignored the account id and
+    // simply took the newest row would still pass the null assertion below, which is why the
+    // positive control at the end is not a formality.
+    const other = await store.createAccount("acct_other", "other@b.com");
+    await store.recordAupAcceptance(other.id, "0.9.0", "sha-other", null, null);
+
+    const { cookie } = await signedIn();
+    expect((await meBody(cookie)).aup.last_accepted).toBeNull();
+
+    // POSITIVE CONTROL. Without it, toBeNull() above passes just as well against a method that
+    // returns null unconditionally -- a green that proves the projection is absent, not scoped.
+    const { token } = await startSession(store, other.id, deps.now());
+    const theirs = await meBody(`${SESSION_COOKIE}=${token}`);
+    expect(theirs.aup.last_accepted?.version).toBe("0.9.0");
+  });
+});
+
 describe("sessions", () => {
   it("REFUSES an unauthenticated gated route", async () => {
     expect((await handle(req("/api/me"), env(), ctx, deps)).status).toBe(401);

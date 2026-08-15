@@ -10,7 +10,7 @@
 // recorded, versioned acceptance by a known account. Ernst owns the words (#57); we own the gate.
 
 import { sha256Hex } from "./crypto";
-import type { ControlPlaneStore } from "./store";
+import type { AupAcceptance, ControlPlaneStore } from "./store";
 
 /**
  * Fetch the served AUP bytes and hash them.
@@ -41,6 +41,26 @@ export async function hasAcceptedCurrent(
   version: string,
 ): Promise<boolean> {
   return await store.hasAcceptedAup(accountId, version);
+}
+
+/**
+ * What this account last accepted, if anything (cp#433).
+ *
+ * PAIRED WITH hasAcceptedCurrent, never a replacement for it. The gate is still an exact-version
+ * lookup; this answers what to SAY to somebody the gate refused. The two must not be collapsed,
+ * because the moment the gate starts consulting a prior acceptance is the moment versioned
+ * acceptance stops meaning anything.
+ *
+ * Existing honesty this closes the gap in: acceptAup already REFUSES a stale submission so that
+ * nobody is recorded agreeing to wording they were never shown, and the client says outright that
+ * the policy changed while the page was open. That standard held for the mid-session case and not
+ * for the between-sessions case, which is the far more common one.
+ */
+export async function lastAcceptance(
+  store: ControlPlaneStore,
+  accountId: string,
+): Promise<AupAcceptance | null> {
+  return await store.getLastAupAcceptance(accountId);
 }
 
 /**

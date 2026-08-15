@@ -79,7 +79,17 @@ export interface TenantView {
 
 export interface MeResponse {
   account?: { id: string; email: string };
-  aup?: { required_version?: string; accepted?: boolean };
+  aup?: {
+    required_version?: string;
+    accepted?: boolean;
+    /**
+     * cp#433. NULL means this account has never accepted any version; PRESENT alongside
+     * accepted:false means the policy moved after they accepted, which is a returning owner
+     * rather than a new signup. Optional here because an older plane does not send it, so a
+     * client must treat ABSENT and NULL as the same unknown-or-never case.
+     */
+    last_accepted?: { version: string; accepted_at: string } | null;
+  };
   tenant?: TenantView | null;
 }
 
