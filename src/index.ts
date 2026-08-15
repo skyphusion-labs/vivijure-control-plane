@@ -29,7 +29,7 @@ import {
 } from "./payment-rail";
 import type { CreditStore, OperatorCredential } from "./store";
 import { ApiTokenError } from "./tenant-api-token";
-import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt } from "./aup";
+import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt, lastAcceptance } from "./aup";
 import {
   clearedSessionCookie,
   endSession,
@@ -562,11 +562,24 @@ async function finishSso(
 
 async function me(env: ControlPlaneEnv, deps: ControlPlaneDeps, account: Account): Promise<Response> {
   const tenant = await deps.store.getTenantForAccount(account.id);
+  // cp#433: `accepted` ALONE collapsed two different people into one false -- somebody who has
+  // never accepted anything, and somebody who accepted an earlier version that has since been
+  // superseded. They were byte-identical here, so the front door rendered the same first-run
+  // setup gate at both, telling an owner with a RUNNING studio that they were about to start.
+  //
+  // last_accepted is the discriminator: null means never, present means the policy moved under
+  // them. It is projected UNCONDITIONALLY rather than only when refused, so a client never has to
+  // know which branch it is in to read it. Nothing here touches who gets through the gate.
+  const [accepted, last] = await Promise.all([
+    hasAcceptedCurrent(deps.store, account.id, env.AUP_VERSION),
+    lastAcceptance(deps.store, account.id),
+  ]);
   return json({
     account: { id: account.id, email: account.email, created_at: account.created_at },
     aup: {
       required_version: env.AUP_VERSION,
-      accepted: await hasAcceptedCurrent(deps.store, account.id, env.AUP_VERSION),
+      accepted,
+      last_accepted: last,
     },
     tenant: tenant ? tenantView(tenant, tenantDomainSuffix(env)) : null,
   });

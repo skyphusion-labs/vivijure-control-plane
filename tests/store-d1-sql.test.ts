@@ -18,7 +18,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { D1Store } from "../src/store-d1";
+import { D1Store, isoFromSqliteUtc } from "../src/store-d1";
 // The shim + migrated-db helpers live in sqlite-d1.ts so the #38 reclaim SEQUENCE rehearsal drives
 // the SAME store harness these store-half proofs do.
 import { d1Over, freshMigratedDb as freshDb } from "./sqlite-d1";
@@ -520,5 +520,99 @@ describe("renewJobLease and the terminal-job guard (cp#148)", () => {
     expect(after.step).toBe("r2_token");
     expect(after.steps_done).not.toContain("wfp_upload");
     expect(after.lease_until).toBeNull();
+  });
+});
+
+// ---- cp#433: the AUP projection, against the REAL engine ----
+//
+// This block exists because the question it answers cannot be answered by MemoryStore even in
+// principle. accepted_at is written ONLY by the column DEFAULT, so the FORMAT of the value the
+// projection has to normalize is a fact about SQLite, and any fixture asserting it would just be
+// re-encoding the assumption under test.
+describe("getLastAupAcceptance (cp#433)", () => {
+  let db: DatabaseSync;
+  let store: D1Store;
+
+  beforeEach(async () => {
+    db = freshDb();
+    store = new D1Store(d1Over(db));
+    await store.createAccount("acct_1", "a@b.com");
+    await store.createAccount("acct_2", "b@b.com");
+  });
+
+  it("answers null for an account that has never accepted anything", async () => {
+    expect(await store.getLastAupAcceptance("acct_1")).toBeNull();
+  });
+
+  it("answers the row once there is one (the control for the null above)", async () => {
+    await store.recordAupAcceptance("acct_1", "1.0.0", "sha", null, null);
+    expect((await store.getLastAupAcceptance("acct_1"))?.version).toBe("1.0.0");
+  });
+
+  it("takes the MOST RECENT by append order, not by the version label", async () => {
+    // These two labels are chosen so that every plausible WRONG ordering disagrees with the right
+    // one: "1.10.0" sorts BEFORE "1.9.0" lexicographically, which is the sort a SQL ORDER BY on
+    // the version column would apply. Both rows also land inside the same second, so accepted_at
+    // cannot break the tie either. Only the row id can.
+    await store.recordAupAcceptance("acct_1", "1.9.0", "sha1", null, null);
+    await store.recordAupAcceptance("acct_1", "1.10.0", "sha2", null, null);
+    expect((await store.getLastAupAcceptance("acct_1"))?.version).toBe("1.10.0");
+  });
+
+  it("scopes to the account, with the other account seeded LATER so a global read would win", async () => {
+    await store.recordAupAcceptance("acct_1", "1.0.0", "sha1", null, null);
+    await store.recordAupAcceptance("acct_2", "2.0.0", "sha2", null, null);
+    expect((await store.getLastAupAcceptance("acct_1"))?.version).toBe("1.0.0");
+    expect((await store.getLastAupAcceptance("acct_2"))?.version).toBe("2.0.0");
+  });
+});
+
+describe("accepted_at normalization (cp#433)", () => {
+  let db: DatabaseSync;
+  let store: D1Store;
+
+  beforeEach(async () => {
+    db = freshDb();
+    store = new D1Store(d1Over(db));
+    await store.createAccount("acct_1", "a@b.com");
+  });
+
+  // PINS THE PREMISE. The normalizer only makes sense if the engine really does write a
+  // space-separated, zoneless value; if SQLite ever changes that, this is the test that says so
+  // rather than the normalizer silently falling through to its passthrough branch.
+  it("the raw column really is space-separated and zoneless", async () => {
+    await store.recordAupAcceptance("acct_1", "1.0.0", "sha", null, null);
+    const raw = db.prepare("SELECT accepted_at FROM aup_acceptances WHERE account_id = ?").get("acct_1") as {
+      accepted_at: string;
+    };
+    expect(raw.accepted_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("projects it as ISO-8601 UTC instead", async () => {
+    await store.recordAupAcceptance("acct_1", "1.0.0", "sha", null, null);
+    const last = await store.getLastAupAcceptance("acct_1");
+    expect(last?.accepted_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  });
+
+  // THE REASON THIS MATTERS, asserted rather than described. The raw value is not merely
+  // unparseable in JavaScript -- it parses to a DIFFERENT INSTANT, silently, in any zone but UTC.
+  // Run under TZ=UTC these two would be equal and the test would prove nothing, so it asserts the
+  // property that holds everywhere: the normalized value is unambiguous.
+  it("the normalized value pins the instant, which the raw one does not", async () => {
+    const raw = "2026-07-12 09:31:04";
+    const iso = isoFromSqliteUtc(raw);
+    expect(iso).toBe("2026-07-12T09:31:04Z");
+    expect(Date.parse(iso)).toBe(Date.UTC(2026, 6, 12, 9, 31, 4));
+  });
+
+  it("passes an already-zoned value through untouched", async () => {
+    expect(isoFromSqliteUtc("2026-07-12T09:31:04Z")).toBe("2026-07-12T09:31:04Z");
+    expect(isoFromSqliteUtc("2026-07-12T09:31:04+02:00")).toBe("2026-07-12T09:31:04+02:00");
+  });
+
+  it("returns an UNRECOGNIZED value raw rather than throwing", async () => {
+    // /api/me is the route a re-gated account uses to find out why it is blocked (cp#396). A
+    // display field must not be able to 500 that path.
+    expect(isoFromSqliteUtc("not a timestamp")).toBe("not a timestamp");
   });
 });
