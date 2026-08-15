@@ -5,6 +5,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   PROVISION_PLAN,
+  NO_TRAINING_CLAUSE,
   createTenantEndpoints,
   parseQuotaError,
   planWorkerTotal,
@@ -70,7 +71,7 @@ describe("the provisioning plan", () => {
   it("backend label does not promise cast LoRA training (cp#303)", () => {
     const backend = PROVISION_PLAN.find((e) => e.key === "backend");
     expect(backend?.label).toBe("Render (keyframes, video)");
-    expect(backend?.label).not.toMatch(/lora|train/i);
+    expect(backend?.label).not.toMatch(NO_TRAINING_CLAUSE);
   });
 });
 
