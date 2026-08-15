@@ -219,6 +219,18 @@ export async function runScheduledTick(env: ControlPlaneEnv, deps: ControlPlaneD
   } catch (e) {
     console.error("scheduled.runpod_sweep_threw", String(e));
   }
+  try {
+    // cp#431: the half that makes an operator-provisioned tenant able to finish. ISOLATED like the
+    // other two: a throw here must not silently skip the tick, and its symptom would be an absence
+    // (a tenant that never leaves provisioning) which is exactly what a healthy plane looks like
+    // from the outside.
+    const swept = await sweepStuckProvisions(deps);
+    if (swept.driven.length || swept.lost.length) {
+      console.log("scheduled.provision_sweep", JSON.stringify(swept));
+    }
+  } catch (e) {
+    console.error("scheduled.provision_sweep_threw", String(e));
+  }
 }
 
 /**
@@ -851,6 +863,108 @@ const JOB_CLAIM_SECONDS = JOB_LEASE_SECONDS;
  * and race each other's writes. claimJob is a conditional UPDATE, so exactly one poll wins; every
  * other poll returns the current state and does nothing.
  */
+/**
+ * How old a provision job may get before the sweep stops driving it and declares it lost.
+ *
+ * NOT the same measurement as MAX_JOB_STALE_MS, and the difference is the whole point of this
+ * sweep. That constant measures IDLE TIME and treats it as evidence the driver died, which was
+ * sound only while a poller existed to notice promptly. With no session in existence nothing polls,
+ * so idleness is the NORMAL state of a healthy operator-provisioned job between cron ticks, and
+ * reading it as death would declare every such tenant lost on first contact.
+ *
+ * TOTAL AGE is the honest runaway guard here: a provision that has genuinely stopped progressing
+ * will keep failing to advance, and this caps how long we keep trying. Two hours is deliberately
+ * generous against a five-minute cadence, since a healthy provision yields a handful of times and
+ * finishes in tens of minutes.
+ */
+const MAX_PROVISION_JOB_AGE_MS = 2 * 60 * 60 * 1000;
+
+/** What one sweep tick actually did. Counts, not a boolean: an operator forcing a tick must be
+ *  able to read WHAT happened rather than infer it from a green log. Same reason the llm meter
+ *  route returns its outcome. */
+export interface ProvisionSweepOutcome {
+  examined: number;
+  driven: string[];
+  lost: string[];
+  skipped: number;
+}
+
+/**
+ * DRIVE STUCK PROVISIONS (cp#431): the cron half that lets an operator-provisioned tenant finish.
+ *
+ * THE DEFECT. The poll IS the engine was true and complete while every tenant was self-provisioned:
+ * the owner browser polled, and each poll advanced the job. Operator-provision has no browser. The
+ * route returns 202, its own driver runs until the invocation budget yields, and then NOTHING EVER
+ * POLLS, so the tenant sits at provisioning forever. Since the BYOK purge that route is the only
+ * way a tenant comes into existence, so this was every tenant, permanently.
+ *
+ * Measured before this was written: tenant ten_cafd0eb9e802104d988778c0 stuck 36 minutes at
+ * provisioning with url and studio_release null, while GET /api/tenant/<id>/job answered 401 to an
+ * operator token and no admin equivalent existed. There was no path to advance it by hand.
+ *
+ * IT SWEEPS TENANTS, NOT JOBS, because listTenants already filters by status and no store method
+ * lists jobs. Not a workaround: a tenant stuck at provisioning IS the condition being repaired, and
+ * reading it that way needs no new store surface and no migration.
+ *
+ * BOTH GUARDS FROM THE POLL PATH ARE KEPT. A job no driver has ever taken is left alone (cp#132:
+ * claiming it races the driver that is starting), and only the lease winner drives.
+ */
+export async function sweepStuckProvisions(
+  deps: ControlPlaneDeps,
+): Promise<ProvisionSweepOutcome> {
+  const out: ProvisionSweepOutcome = { examined: 0, driven: [], lost: [], skipped: 0 };
+  if (!deps.provisioner) return out;
+
+  const stuck = await deps.store.listTenants({ status: "provisioning" });
+  for (const tenant of stuck) {
+    out.examined += 1;
+    const job = await deps.store.getLatestJobForTenant(tenant.id);
+    // No job, a finished one, or a non-provision one: nothing here to drive. Counted rather than
+    // silently passed over, so an operator reading a tick can tell an empty sweep from a busy one.
+    if (!job || job.kind !== "provision" || job.status === "succeeded" || job.status === "failed") {
+      out.skipped += 1;
+      continue;
+    }
+    // cp#132, unchanged: a job whose first driver has not arrived is not ours to claim.
+    if (jobAwaitsFirstDriver(job)) {
+      out.skipped += 1;
+      continue;
+    }
+
+    // THE RUNAWAY GUARD, on TOTAL AGE rather than idle time. See MAX_PROVISION_JOB_AGE_MS: idle
+    // time is meaningless once nothing polls, so reusing the poll path staleness rule here would
+    // declare every healthy operator-provisioned tenant lost the first time this ran.
+    const created = Date.parse(String(job.created_at).replace(" ", "T") + "Z");
+    if (Number.isFinite(created) && deps.now() - created > MAX_PROVISION_JOB_AGE_MS) {
+      await deps.store.finishJob(
+        job.id,
+        "failed",
+        job.step,
+        "provision did not complete within " +
+          String(Math.round(MAX_PROVISION_JOB_AGE_MS / 60000)) +
+          " minutes of being created; giving up rather than driving it forever",
+      );
+      await deps.store.setTenantStatus(tenant.id, "failed");
+      out.lost.push(tenant.id);
+      continue;
+    }
+
+    // Only the winner drives. A lost claim means a real driver is alive on this job right now,
+    // which is the normal case while a provision is mid-flight.
+    if (!(await deps.store.claimJob(job.id, JOB_CLAIM_SECONDS))) {
+      out.skipped += 1;
+      continue;
+    }
+    const stepsDone = JSON.parse(job.steps_done) as string[];
+    // AWAITED, not waitUntil, and that is deliberate. There is no response to return promptly from
+    // a cron, so waiting is free; and awaiting is what lets the outcome below report what actually
+    // happened rather than what was merely scheduled. A resume is bounded by its own invocation
+    // budget and yields, so one await cannot run away.
+    await deps.provisioner.resume(job.id, tenant, stepsDone);
+    out.driven.push(tenant.id);
+  }
+  return out;
+}
 async function driveJobIfNeeded(
   ctx: ExecutionContext,
   deps: ControlPlaneDeps,
@@ -1637,6 +1751,7 @@ export const ADMIN_REQUIREMENTS: ReadonlyArray<{ method: string; pattern: RegExp
   // The LLM meter (cp#185, merged while this table was being written). The RUN forces an ingest and
   // moves the watermark; the READ answers for ONE tenant, so it sits with the other tenant reads.
   { method: "POST", pattern: /^\/api\/admin\/llm-meter\/run$/, requires: "meter:operate" },
+  { method: "POST", pattern: /^\/api\/admin\/provision-sweep\/run$/, requires: "studio:operate" },
   // cp#195's settlement runner, gated the same way and for the same reason: it is the second half of
   // the metering pipeline, operator-runnable so a settlement can be forced and its ACTUAL result
   // read. It is deliberately NOT credits:write -- that scope mints money from nothing on the manual
@@ -1983,6 +2098,27 @@ async function adminRoutes(
   // cron drives, so an operator can force a tick and READ WHAT IT ACTUALLY DID rather than infer it
   // from a green cron log. The READ route is the cp#195 billing contract, exposed so the number a
   // statement is built from can be checked by hand against the gateway.
+
+  // cp#431: force a provision sweep and READ WHAT IT DID.
+  //
+  // Same shape and same reason as the llm meter run route above: the cron drives this body every
+  // five minutes, and an operator needs to be able to run it NOW and see the counts, rather than
+  // infer from an absence that it worked. It is also the only way to unstick a tenant between
+  // ticks, which mattered on the day this was written.
+  //
+  // studio:operate, not tenants:write: it advances a provision, which is running the studio.
+  if (request.method === "POST" && path === "/api/admin/provision-sweep/run") {
+    const swept = await sweepStuckProvisions(deps);
+    // PLATFORM action, not a tenant read: it can advance or fail several tenants at once, so who
+    // forced it and what it did must be reconstructable.
+    await deps.store.recordAdminAction(
+      actor,
+      "provision.sweep",
+      "provision_sweep",
+      JSON.stringify(swept),
+    );
+    return json(swept);
+  }
 
   if (request.method === "POST" && path === "/api/admin/llm-meter/run") {
     const outcome = await runLlmMeterTick(env, deps);
