@@ -18,7 +18,7 @@ import type { CfApi } from "./cf-api";
 import { CfApiError, isScriptAbsent } from "./cf-api";
 import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
-import type { TemplateConvergence, TenantR2Creds } from "./runpod";
+import type { TemplateConvergence, TenantR2Creds, ResolvedDoor } from "./runpod";
 import type { SharedRunPodPool } from "./runpod-pool";
 import { readRunPodMode, type RunPodMode } from "./runpod-pool";
 import { harvestTenantJobLog, HARVEST_ROW_CAP } from "./runpod-job-index";
@@ -233,7 +233,7 @@ export interface ProvisionDeps {
    * video-finish-availability.ts genuinely read. These are MODULE bindings. Both are doors onto the
    * same fleet; they are attached to different workers because different code reads them.
    */
-  vpcDoors: Record<string, { serviceId: string; token: string }>;
+  vpcDoors: Record<string, ResolvedDoor[]>;
   /**
    * Clock, sleep and fetch, injected rather than reached for globally (#23 / cf#72).
    *

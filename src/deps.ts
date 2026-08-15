@@ -37,6 +37,7 @@ import {
   type TeardownOutcome,
 } from "./provisioner";
 import { convergeTenantTemplateImages, createTenantEndpoints, vpcBackedPlan } from "./runpod";
+import type { ResolvedDoor } from "./runpod";
 import { parseSharedPool, readRunPodMode } from "./runpod-pool";
 import type { SharedRunPodPool } from "./runpod-pool";
 import type { ControlPlaneStore, CreditStore, Tenant } from "./store";
@@ -429,41 +430,52 @@ export function llmMeterReader(env: ControlPlaneEnv): GatewayLogReader | undefin
  */
 const TENANT_STUDIO_FETCH_TIMEOUT_MS = 5_000;
 
-/** Exported for the wiring test: the same construction production takes. */
-
 /**
- * Resolve the own-iron doors from the environment (cp#396).
+ * Resolve the own-iron door POOL from the environment (cp#396).
  *
- * Derived from the PLAN, never from a hand-written list: each vpc-backed capability declares which
- * two vars carry its service id and its bearer, so this function stays correct when a capability is
- * added and cannot silently disagree with what the modules are bound to.
+ * DERIVED FROM THE PLAN, never a hand-written list: each vpc-backed capability declares its doors
+ * and each door declares which two vars fill it, so this stays correct when a door or a capability
+ * is added and cannot silently disagree with what the modules are bound to.
  *
- * BOTH OR NEITHER. A door with one half set is REFUSED and logged naming both vars. Attaching the
- * binding without the bearer would upload clean and 401 on every render; attaching neither while
- * pretending otherwise is the quiet degrade. The refusal surfaces again at modules_upload, which is
- * where an operator can act on it.
+ * IT ITERATES THE PLAN, WHICH IS WHY UNKNOWN SECRETS ARE HARMLESS. A secret whose name no plan door
+ * references is never read here and never reaches an upload. That is what makes it safe to set the
+ * second door values BEFORE the plan names them: they sit inert rather than half-attaching
+ * anything. Stated because the next person to find inert secrets should not have to re-derive it.
+ *
+ * BOTH OR NEITHER, PER DOOR. A door with one half set is dropped and logged naming both vars --
+ * attaching a binding without its bearer uploads clean and 401s on every render. A capability keeps
+ * whatever OTHER doors are whole, because a pool of one is a working pool; losing every door is the
+ * case modules_upload refuses, and it refuses there rather than here so the operator sees it at
+ * provision time.
  */
-export function resolveVpcDoors(env: ControlPlaneEnv): Record<string, { serviceId: string; token: string }> {
-  const out: Record<string, { serviceId: string; token: string }> = {};
+export function resolveVpcDoors(env: ControlPlaneEnv): Record<string, ResolvedDoor[]> {
+  const out: Record<string, ResolvedDoor[]> = {};
   const read = (name: string): string | null =>
     (env as unknown as Record<string, string | undefined>)[name]?.trim() || null;
   for (const capability of vpcBackedPlan()) {
-    const serviceId = read(capability.serviceIdVar);
-    const token = read(capability.doorTokenVar);
-    if (serviceId && token) {
-      out[capability.key] = { serviceId, token };
-      continue;
+    const resolved: ResolvedDoor[] = [];
+    for (const door of capability.doors) {
+      const serviceId = read(door.serviceIdVar);
+      const token = read(door.doorTokenVar);
+      if (serviceId && token) {
+        resolved.push({ bindingName: door.bindingName, doorTokenBinding: door.doorTokenBinding, serviceId, token });
+        continue;
+      }
+      if (serviceId || token) {
+        console.error(
+          "vpc_door.refused",
+          `${capability.key} door ${door.bindingName}: set BOTH ${door.serviceIdVar} and ` +
+            `${door.doorTokenVar}; a door binding without its bearer is refused 401 on every render`,
+        );
+      }
     }
-    if (serviceId || token) {
-      console.error(
-        "vpc_door.refused",
-        `${capability.key}: set BOTH ${capability.serviceIdVar} and ${capability.doorTokenVar}; ` +
-          "a door binding without its bearer is refused 401 on every render",
-      );
-    }
+    // ORDER PRESERVED, and it is load-bearing: the legacy door is first and carries the bare route
+    // name an in-flight poll token names. See PlannedDoor.
+    if (resolved.length) out[capability.key] = resolved;
   }
   return out;
 }
+
 export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore): ProvisionerWiring | undefined {
   const {
     CF_PROVISIONER_TOKEN,

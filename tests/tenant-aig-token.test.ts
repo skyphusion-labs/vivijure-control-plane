@@ -1,3 +1,4 @@
+import { TEST_VPC_DOORS } from "./door-fixture";
 // cf#56: the per-tenant AI Gateway credential on the plan-enhance module.
 //
 // What these assert is the SILENT-DEGRADE class, not the happy path. Every failure mode here reads
@@ -58,10 +59,7 @@ function deps(over: Partial<TenantModuleDeps> = {}): { d: TenantModuleDeps; uplo
     },
     callTenantModule: vi.fn(async () => ({ status: 200, text: "{}" })),
     callTenantStudio: vi.fn(async () => ({ status: 201, text: "{}" })),
-    vpcDoors: {
-      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
-      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
-    },
+    vpcDoors: TEST_VPC_DOORS,
     log: vi.fn((event: string) => void logs.push(event)),
     ...over,
   } as unknown as TenantModuleDeps;

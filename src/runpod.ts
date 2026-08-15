@@ -64,21 +64,45 @@ export interface PlannedEndpoint extends PlannedCapabilityBase {
 }
 
 /**
+ * ONE DOOR onto one GPU box. A vpc-backed capability has a POOL of these, one per box that serves
+ * it, because that is what the module reads: vivijure-cf builds `doorPool([...])` from a candidate
+ * per box and round-robins with `pickDoor`.
+ *
+ * The FIRST entry is the LEGACY door and its ordering is load-bearing, not cosmetic. Its binding
+ * carries the bare `DOOR_ROUTE_NAME`, which is what an in-flight poll token carries, and
+ * `resolveDoor` is a LOOKUP by name rather than a pick -- polling any door but the one that minted
+ * a job reports a live job as GONE. So the legacy door must keep its position and its name.
+ */
+export interface PlannedDoor {
+  /** The vpc_service binding name the MODULE worker reads. */
+  bindingName: string;
+  /** The secret binding name this door bearer is read from. */
+  doorTokenBinding: string;
+  /** Plane env var holding the Connectivity Directory service id for this door. */
+  serviceIdVar: string;
+  /** Plane env var holding this door bearer (the container LOCAL_FINISH_TOKEN). */
+  doorTokenVar: string;
+}
+
+/**
  * A capability served by hardware we own and operate, reached by the tenant MODULE WORKER over a
  * Workers VPC service binding instead of RunPod.
  *
  * THE BINDING GOES ON THE MODULE, NOT ON THE STUDIO, and that is the whole contract. Upscale is a
  * module capability: the studio dispatches to a module worker, and the module worker is what talks
- * to RunPod or to a door. A binding attached to the studio script under a name nothing reads would
- * upload clean and change nothing.
+ * to RunPod or to a door. A binding attached to the studio under a name nothing reads would upload
+ * clean and change nothing.
  *
  * The names are NOT ours to choose. They are what vivijure-cf modules already declare (cf#480,
- * shipped in v1.21.0 and present in the pinned v1.28.0):
+ * present in the pinned v1.28.0), and at that tag BOTH modules build a POOL rather than a single
+ * route:
  *
- *   modules/finish-upscale   FINISH_UPSCALE_VPC + FINISH_DOOR_TOKEN
- *   modules/speech-upscale   SPEECH_UPSCALE_VPC + SPEECH_DOOR_TOKEN
+ *   modules/finish-upscale   FINISH_UPSCALE_VPC + FINISH_DOOR_TOKEN            (legacy, fatmike)
+ *                            FINISH_UPSCALE_VPC_PROPAGANDHI + _TOKEN_PROPAGANDHI
+ *   modules/speech-upscale   SPEECH_UPSCALE_VPC + SPEECH_DOOR_TOKEN            (legacy, fatmike)
+ *                            SPEECH_UPSCALE_VPC_PROPAGANDHI + _TOKEN_PROPAGANDHI
  *
- * modules/_shared/finish-door.ts branches on the binding being BOUND, never on RunPod failing: a
+ * modules/_shared/finish-door.ts branches on the pool being NON-EMPTY, never on RunPod failing: a
  * door-to-RunPod failover would silently re-rent the GPU this change exists to stop renting, with
  * every signal still green. Same rule as the cp#288 proxy pair.
  *
@@ -88,17 +112,21 @@ export interface PlannedEndpoint extends PlannedCapabilityBase {
  */
 export interface PlannedVpcCapability extends PlannedCapabilityBase {
   backing: "vpc";
-  /** The vpc_service binding name the MODULE worker reads. */
-  bindingName: string;
-  /** The secret binding name the module reads the door bearer from. */
-  doorTokenBinding: string;
-  /** Plane env var holding the Connectivity Directory service id for this door. */
-  serviceIdVar: string;
-  /** Plane env var holding the door bearer (the container LOCAL_FINISH_TOKEN). */
-  doorTokenVar: string;
+  /** Every door onto this capability, legacy first. At least one must be configured to provision. */
+  doors: PlannedDoor[];
 }
 
 export type PlannedCapability = PlannedEndpoint | PlannedVpcCapability;
+
+/** One door, RESOLVED: the module binding names from the plan plus the values that fill them.
+ *  Lives here beside PlannedDoor rather than in deps.ts, so provisioner and tenant-modules can name
+ *  it without importing the wiring module and creating a cycle. */
+export interface ResolvedDoor {
+  bindingName: string;
+  doorTokenBinding: string;
+  serviceId: string;
+  token: string;
+}
 
 /**
  * The narrowing every consumer that needs an endpoint id must go through. A type guard rather than
@@ -150,15 +178,29 @@ export const PROVISION_PLAN: PlannedCapability[] = [
   },
   {
     ...pinned("upscale"),
-    // OWN IRON (cp#396). Runs as an always-on serve container on propagandhi and fatmike, reached
-    // by the finish-upscale MODULE worker over a Workers VPC service binding. NOT dropped: a
-    // tenant keeps the full capability and only the TRANSPORT changes.
+    // OWN IRON (cp#396). Always-on serve containers on BOTH fatmike and propagandhi, reached by the
+    // finish-upscale MODULE worker over a Workers VPC binding. NOT dropped: a tenant keeps the full
+    // capability and only the TRANSPORT changes.
+    //
+    // TWO DOORS, legacy first. The tenant module pools them exactly as the operator studio does;
+    // binding one would concentrate every tenant render on one box while the other idled, with no
+    // signal attached to the difference.
     backing: "vpc",
     label: "Video upscale",
-    bindingName: "FINISH_UPSCALE_VPC",
-    doorTokenBinding: "FINISH_DOOR_TOKEN",
-    serviceIdVar: "FINISH_UPSCALE_VPC_SERVICE_ID",
-    doorTokenVar: "FINISH_DOOR_TOKEN",
+    doors: [
+      {
+        bindingName: "FINISH_UPSCALE_VPC",
+        doorTokenBinding: "FINISH_DOOR_TOKEN",
+        serviceIdVar: "FINISH_UPSCALE_VPC_SERVICE_ID",
+        doorTokenVar: "FINISH_DOOR_TOKEN",
+      },
+      {
+        bindingName: "FINISH_UPSCALE_VPC_PROPAGANDHI",
+        doorTokenBinding: "FINISH_DOOR_TOKEN_PROPAGANDHI",
+        serviceIdVar: "FINISH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID",
+        doorTokenVar: "FINISH_DOOR_TOKEN_PROPAGANDHI",
+      },
+    ],
   },
   {
     ...pinned("lipsync"),
@@ -170,13 +212,23 @@ export const PROVISION_PLAN: PlannedCapability[] = [
   },
   {
     ...pinned("audio-upscale"),
-    // OWN IRON, same ruling and same credential posture as the upscale entry above.
+    // OWN IRON, same ruling, same credential posture and the same two boxes as the upscale entry.
     backing: "vpc",
     label: "Audio upscale",
-    bindingName: "SPEECH_UPSCALE_VPC",
-    doorTokenBinding: "SPEECH_DOOR_TOKEN",
-    serviceIdVar: "SPEECH_UPSCALE_VPC_SERVICE_ID",
-    doorTokenVar: "SPEECH_DOOR_TOKEN",
+    doors: [
+      {
+        bindingName: "SPEECH_UPSCALE_VPC",
+        doorTokenBinding: "SPEECH_DOOR_TOKEN",
+        serviceIdVar: "SPEECH_UPSCALE_VPC_SERVICE_ID",
+        doorTokenVar: "SPEECH_DOOR_TOKEN",
+      },
+      {
+        bindingName: "SPEECH_UPSCALE_VPC_PROPAGANDHI",
+        doorTokenBinding: "SPEECH_DOOR_TOKEN_PROPAGANDHI",
+        serviceIdVar: "SPEECH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID",
+        doorTokenVar: "SPEECH_DOOR_TOKEN_PROPAGANDHI",
+      },
+    ],
   },
 ];
 

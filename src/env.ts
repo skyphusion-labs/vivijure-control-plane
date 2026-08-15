@@ -162,6 +162,12 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   FINISH_DOOR_TOKEN?: string;
   SPEECH_UPSCALE_VPC_SERVICE_ID?: string;
   SPEECH_DOOR_TOKEN?: string;
+  /** cp#396 second door: the propagandhi box. Same pair shape; see PlannedDoor for why the legacy
+   *  pair above keeps its position and its bare binding name. */
+  FINISH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID?: string;
+  FINISH_DOOR_TOKEN_PROPAGANDHI?: string;
+  SPEECH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID?: string;
+  SPEECH_DOOR_TOKEN_PROPAGANDHI?: string;
 
   /**
    * The SHARED RunPod endpoint pool for the hosted shared tier (cp#270), as JSON keyed by
@@ -443,6 +449,10 @@ export const ENV_SECRETS = [
   "FINISH_DOOR_TOKEN",
   "SPEECH_UPSCALE_VPC_SERVICE_ID",
   "SPEECH_DOOR_TOKEN",
+  "FINISH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID",
+  "FINISH_DOOR_TOKEN_PROPAGANDHI",
+  "SPEECH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID",
+  "SPEECH_DOOR_TOKEN_PROPAGANDHI",
   // cp#185, classified from the tracked evidence rather than from the name: docs/deploy.md records
   // it as "worker secret, wrangler secret put" and its owners row says it is not yet installed on
   // the Worker. So the delivery mechanism is out of band, and the census must NOT ask for it in a

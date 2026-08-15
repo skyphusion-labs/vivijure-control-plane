@@ -1,3 +1,4 @@
+import { TEST_VPC_DOORS } from "./door-fixture";
 // cp#288 / cf#394 item 1: the pair that makes the plane-side RunPod proxy REACHABLE from a tenant
 // module worker, and the pre-proxy credential that must survive alongside it.
 //
@@ -73,10 +74,7 @@ function deps(over: Partial<TenantModuleDeps> = {}): { d: TenantModuleDeps; uplo
     },
     callTenantModule: vi.fn(async () => ({ status: 200, text: "{}" })),
     callTenantStudio: vi.fn(async () => ({ status: 201, text: "{}" })),
-    vpcDoors: {
-      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
-      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
-    },
+    vpcDoors: TEST_VPC_DOORS,
     log: vi.fn((...a: unknown[]) => void logs.push(a)),
     ...over,
   } as unknown as TenantModuleDeps;
@@ -422,47 +420,75 @@ describe("the bound base round-trips through the plane's own matcher", () => {
 // ---- cp#396: the OWN-IRON DOOR, on the module worker -------------------------------------------
 
 describe("a vpc-backed capability gets a DOOR instead of an endpoint id", () => {
-  it("binds the door pair and NO RUNPOD_ENDPOINT_ID", async () => {
+  it("binds EVERY door in the pool, and NO RUNPOD_ENDPOINT_ID", async () => {
     const { d, uploads } = deps();
     await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG");
     expect(DOOR_BACKED.length, "denominator is empty; this asserts nothing").toBeGreaterThan(0);
     for (const m of DOOR_BACKED) {
       const u = forModule(uploads, m);
       const capability = vpcBackedPlan().find((c) => TENANT_MODULE_CATALOG.find((s) => s.module === m)?.endpointKey === c.key)!;
-      const door = named(u, capability.bindingName);
-      expect(door, m).toBeDefined();
-      expect(door!.type, m).toBe("vpc_service");
-      const bearer = named(u, capability.doorTokenBinding);
-      expect(bearer, m).toBeDefined();
-      // secret_text, never plain_text: a bearer readable from the dashboard is a shared secret
-      // nobody rotated.
-      expect(bearer!.type, m).toBe("secret_text");
+      // EVERY door, not just the first. Binding one would halve tenant capacity against an
+      // operator studio that pools both, with no signal attached to the difference.
+      expect(capability.doors.length, m).toBeGreaterThan(1);
+      for (const d2 of capability.doors) {
+        const door = named(u, d2.bindingName);
+        expect(door, m + " " + d2.bindingName).toBeDefined();
+        expect(door!.type, m).toBe("vpc_service");
+        const bearer = named(u, d2.doorTokenBinding);
+        expect(bearer, m + " " + d2.doorTokenBinding).toBeDefined();
+        // secret_text, never plain_text: a bearer readable from the dashboard is a shared secret
+        // nobody rotated.
+        expect(bearer!.type, m).toBe("secret_text");
+      }
+      // Each door gets its OWN service id, so a copy-paste that pointed both at one box would
+      // fail here rather than silently halving the pool back down again.
+      const ids = capability.doors.map((x) => (named(u, x.bindingName) as unknown as { service_id: string }).service_id);
+      expect(new Set(ids).size, m + " doors share a service id").toBe(capability.doors.length);
       // THE ABSENCE THAT MATTERS. An empty or stale endpoint id here binds clean and dies at the
       // tenant first render, which is the failure the transport split exists to remove.
       expect(named(u, "RUNPOD_ENDPOINT_ID"), m).toBeUndefined();
     }
   });
 
-  it("REFUSES the upload when a vpc-backed capability has NO door configured, naming both vars", async () => {
-    // The other half of the transport rule. A door-bound module with no door has NO transport at
-    // all: no endpoint id and no binding. Uploading it would produce a studio that provisions green
-    // and dies at the first upscale, which is the exact failure this whole change removes.
+  it("REFUSES the upload when a vpc-backed capability has ZERO doors, naming EVERY pair", async () => {
+    // A door-bound module with no door has NO transport at all: no endpoint id and no binding.
+    // Uploading it would produce a studio that provisions green and dies at the first upscale.
     //
-    // The refusal must NAME THE KNOBS. A message saying only that something is unconfigured sends
-    // an operator to the wrong file; these two vars are the fix.
-    const { d } = deps({ vpcDoors: {} } as Partial<TenantModuleDeps>);
+    // ZERO doors, not fewer-than-all: a pool of one is a working pool, so a plane that has wired
+    // one box and not the other still provisions. Only the empty pool is a refusal.
+    //
+    // The refusal must NAME EVERY PAIR. An operator who set only the SECOND door would otherwise be
+    // told to set vars they have already set, with nothing pointing at the legacy pair that is
+    // actually missing -- a refusal that misattributes its own cause.
     const capability = vpcBackedPlan()[0];
-    await expect(
-      uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG"),
-    ).rejects.toThrow(new RegExp(capability.serviceIdVar));
-    const { d: d2 } = deps({ vpcDoors: {} } as Partial<TenantModuleDeps>);
-    await expect(
-      uploadTenantModules(d2, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG"),
-    ).rejects.toThrow(new RegExp(capability.doorTokenVar));
+    for (const door of capability.doors) {
+      const { d } = deps({ vpcDoors: {} } as Partial<TenantModuleDeps>);
+      await expect(
+        uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG"),
+      ).rejects.toThrow(new RegExp(door.serviceIdVar));
+      const { d: d2 } = deps({ vpcDoors: {} } as Partial<TenantModuleDeps>);
+      await expect(
+        uploadTenantModules(d2, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG"),
+      ).rejects.toThrow(new RegExp(door.doorTokenVar));
+    }
+  });
+
+  it("a pool of ONE door still provisions: a partly-wired plane is not a refusal", async () => {
+    // The other side of the rule above, and the reason it is ZERO doors rather than fewer-than-all.
+    // vivijure-cf pickDoor is n % pool.length, so one door is always index 0 and serves every job.
+    const capability = vpcBackedPlan()[0];
+    const onlyLegacy = { [capability.key]: [TEST_VPC_DOORS[capability.key][0]] };
+    const { d, uploads } = deps({ vpcDoors: { ...TEST_VPC_DOORS, ...onlyLegacy } } as Partial<TenantModuleDeps>);
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG");
+    const m = DOOR_BACKED.find((x) => TENANT_MODULE_CATALOG.find((s) => s.module === x)?.endpointKey === capability.key)!;
+    const u = forModule(uploads, m);
+    expect(named(u, capability.doors[0].bindingName), m).toBeDefined();
+    // ...and the door that was NOT configured is simply absent, rather than bound empty.
+    expect(named(u, capability.doors[1].bindingName), m).toBeUndefined();
   });
 
   it("CONTROL: endpoint-backed modules still get the endpoint id and NO door", async () => {
-    // Without this, the assertion above would also pass on a build that bound doors to everything.
+    // Without this, the assertions above would also pass on a build that bound doors to everything.
     const { d, uploads } = deps();
     await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG");
     expect(ENDPOINT_BACKED.length).toBeGreaterThan(0);
@@ -470,8 +496,10 @@ describe("a vpc-backed capability gets a DOOR instead of an endpoint id", () => 
       const u = forModule(uploads, m);
       expect(named(u, "RUNPOD_ENDPOINT_ID"), m).toBeDefined();
       for (const capability of vpcBackedPlan()) {
-        expect(named(u, capability.bindingName), m).toBeUndefined();
-        expect(named(u, capability.doorTokenBinding), m).toBeUndefined();
+        for (const door of capability.doors) {
+          expect(named(u, door.bindingName), m).toBeUndefined();
+          expect(named(u, door.doorTokenBinding), m).toBeUndefined();
+        }
       }
     }
   });

@@ -1,3 +1,4 @@
+import { TEST_VPC_DOORS } from "./door-fixture";
 // The TENANT R2 bucket binding, and the catalog facts it rests on (cp#284 / cf#394 wave 1).
 //
 // WHY THIS FILE EXISTS. A catalog row for a cost-door module without an R2_RENDERS binding does not
@@ -45,10 +46,7 @@ function deps(over: Partial<TenantModuleDeps> = {}) {
     moduleBundle: { fetch: vi.fn(async () => ({ mainModule: "i.js", moduleText: "export default {}", compatibilityDate: "2026-06-01" })) },
     callTenantModule: vi.fn(async () => ({ status: 200, text: "{}" })),
     callTenantStudio: vi.fn(async () => ({ status: 200, text: "{}" })),
-    vpcDoors: {
-      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
-      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
-    },
+    vpcDoors: TEST_VPC_DOORS,
     log: () => undefined,
     ...over,
   } as unknown as TenantModuleDeps;

@@ -1,3 +1,5 @@
+import { vpcBackedPlan } from "../src/runpod";
+import { TEST_VPC_DOORS } from "./door-fixture";
 // Provisioner behavior (#53). Fakes stand in for Cloudflare and RunPod, so what these prove is the
 // STEP MACHINE: ordering, idempotency, honest failure, custody, teardown. They are NOT evidence
 // that the CF calls themselves are shaped right; only a real provision against real CF proves that,
@@ -102,10 +104,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     // cp#396: the DEFAULT fixture configures BOTH own-iron doors, because a fully-wired plane is
     // what a deploy is. uploadTenantModules refuses a vpc-backed module with no door, so an absent
     // default would fail every case in this file for a reason none of them are about.
-    vpcDoors: {
-      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
-      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
-    },
+    vpcDoors: TEST_VPC_DOORS,
     // cp#270: the DEFAULT fixture is a plane with NO shared pool, so every pre-existing case
     // still exercises the dedicated path exactly as it did. The pooled cases override both.
     sharedPool: null,
@@ -1137,24 +1136,26 @@ describe("cf#99 tenant module bridge", () => {
       byScript.get(script)!.find((b) => b.name === name) as
         | { type: string; name: string; text?: string; service_id?: string }
         | undefined;
-    expect(bindOf(pre("finish-upscale"), "FINISH_UPSCALE_VPC")).toMatchObject({
-      type: "vpc_service",
-      service_id: "svc-finish-upscale",
-    });
-    expect(bindOf(pre("finish-upscale"), "FINISH_DOOR_TOKEN")).toMatchObject({
-      type: "secret_text",
-      text: "door-token-test",
-    });
-    expect(bindOf(pre("finish-upscale"), "RUNPOD_ENDPOINT_ID")).toBeUndefined();
-    expect(bindOf(pre("speech-upscale"), "SPEECH_UPSCALE_VPC")).toMatchObject({
-      type: "vpc_service",
-      service_id: "svc-speech-upscale",
-    });
-    expect(bindOf(pre("speech-upscale"), "SPEECH_DOOR_TOKEN")).toMatchObject({
-      type: "secret_text",
-      text: "door-token-test",
-    });
-    expect(bindOf(pre("speech-upscale"), "RUNPOD_ENDPOINT_ID")).toBeUndefined();
+    // DERIVED from the same fixture the deps carry, over EVERY door in the pool. Hardcoding a
+    // service id here would re-create the defect this suite already tripped over: a fixture that
+    // states a value the code no longer produces.
+    const moduleFor: Record<string, string> = { upscale: "finish-upscale", "audio-upscale": "speech-upscale" };
+    for (const capability of vpcBackedPlan()) {
+      const script = pre(moduleFor[capability.key]);
+      expect(capability.doors.length, capability.key).toBeGreaterThan(1);
+      for (const door of capability.doors) {
+        const want = TEST_VPC_DOORS[capability.key].find((r) => r.bindingName === door.bindingName)!;
+        expect(bindOf(script, door.bindingName), door.bindingName).toMatchObject({
+          type: "vpc_service",
+          service_id: want.serviceId,
+        });
+        expect(bindOf(script, door.doorTokenBinding), door.doorTokenBinding).toMatchObject({
+          type: "secret_text",
+          text: want.token,
+        });
+      }
+      expect(bindOf(script, "RUNPOD_ENDPOINT_ID"), capability.key).toBeUndefined();
+    }
     // Key B is NOT present at upload -- it lands in installInvokeKey (custody: the key never rides
     // the module upload, only a rotate-in-place secret PUT after it is verified).
     for (const bindings of byScript.values()) {
