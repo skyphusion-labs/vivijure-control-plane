@@ -487,8 +487,10 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     db.prepare("UPDATE provision_jobs SET created_at = datetime(:now, :ago) WHERE id = :id")
       .run({ now: "now", ago: "-7180 seconds", id: "job_cross" });
 
-    // A drive that makes real progress and burns two minutes doing it, which is what carries the
-    // job over the line. The lease hand-back is what lets the next pass reach the reap at all.
+    // A drive that makes real progress and burns THIRTY SECONDS doing it, which is what carries
+    // the job over the line at 7180s + 30s > the 7200s cap. Thirty and not more: the burn has to
+    // cross the cap while staying INSIDE the 60s slice, or the loop exits on the slice before it
+    // ever takes the second read. The lease hand-back is what lets that next pass reach the reap.
     resume = vi.fn(async (jobId: string) => {
       await store.updateJobProgress(jobId, "wfp_upload", JSON.stringify(["wfp_upload"]));
       await store.releaseJobLease(jobId);
