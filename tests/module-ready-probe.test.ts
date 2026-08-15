@@ -15,6 +15,7 @@ import {
   TENANT_MODULE_CATALOG,
   MODULE_READY_PROBE_DEADLINE_MS,
   reachesRunpod,
+  parseDoorBacking,
   type TenantModuleDeps,
 } from "../src/tenant-modules";
 
@@ -277,6 +278,170 @@ describe("awaitTenantModulesReady: nothing answers /ready at a script (404)", ()
 // The module ECHO is the only thing standing between "this module is ready" and "SOME module is
 // ready". Script names are tenant-prefixed and derived, so a naming bug reads a healthy neighbour as
 // proof about the wrong module unless the echo is checked.
+// ---- cp#396: the two module families that do NOT reach RunPod at an endpoint of ours ----
+//
+// EVERY FIXTURE BELOW IS A BODY THE MODULES ACTUALLY EMIT, checked against the emitting source in
+// vivijure-cf rather than invented here. That is not ceremony: the previous instance of this exact
+// bug (cp#323, plan-enhance) was GREEN IN TEST because the fixture fed the classifier a body
+// production cannot produce, and a hand-rolled envelope would have repeated it. Two fixtures this
+// suite would plausibly have used are impossible on the wire and are called out where they sit.
+
+/** The live body from the first complete shared-tier provision, captured from the browser. */
+const LIVE_DOOR_BODY = {
+  ok: true,
+  module: "finish-upscale",
+  credentials: { runpod_api_key: true, runpod_endpoint_id: false },
+  runpod_proxied: true,
+  door: { bound: true, token: true, route: "vpc", routes: [{ name: "vpc", token: true }] },
+  telemetry: { job_log: "ok" },
+};
+
+/** A public-vendor-slug module: reports the key and OMITS runpod_endpoint_id entirely. */
+const publicSlugBody = (module: string, key: boolean) =>
+  JSON.stringify({
+    ok: key,
+    module,
+    credentials: { runpod_api_key: key },
+    runpod_proxied: true,
+    telemetry: { job_log: "ok" },
+  });
+
+describe("classifyReadyResponse: DOOR-BACKED modules run on our own iron (cp#396)", () => {
+  it("THE BLOCKER: the exact live body from the first shared-tier provision is READY", () => {
+    // It classified `misconfigured` before this change -- not retryable, so it THREW and the
+    // tenant could never leave awaiting_invoke_key. The module was healthy throughout.
+    expect(classifyReadyResponse(200, JSON.stringify(LIVE_DOOR_BODY), "finish-upscale")).toBe("ready");
+  });
+
+  it("READY on a NON-LEGACY door label, which a route===vpc test would have missed", () => {
+    // `door.route` reports whichever door is legacy-or-first, and the names are "vpc" and
+    // "vpc-<host>". A deploy serving only the propagandhi door is healthy and reports
+    // "vpc-propagandhi". An implementation comparing route to the literal "vpc" passes every test
+    // written from the captured sample and fails this real deploy, so it is pinned here.
+    const propagandhiOnly = JSON.stringify({
+      ...LIVE_DOOR_BODY,
+      door: {
+        bound: true, token: true, route: "vpc-propagandhi",
+        routes: [{ name: "vpc-propagandhi", token: true }],
+      },
+    });
+    expect(classifyReadyResponse(200, propagandhiOnly, "finish-upscale")).toBe("ready");
+  });
+
+  it("MISCONFIGURED: a door is bound but no bearer is readable", () => {
+    // The real broken shape, and the emitting module reports exactly this: bound with token:false
+    // when the secret is missing OR still the installer placeholder. NOTE the RunPod credentials
+    // are UNTOUCHED and healthy-looking here, so nothing but the door can produce this verdict.
+    const noBearer = JSON.stringify({
+      ...LIVE_DOOR_BODY,
+      ok: false,
+      credentials: { runpod_api_key: true, runpod_endpoint_id: true },
+      door: { bound: true, token: false, route: "vpc", routes: [{ name: "vpc", token: false }] },
+    });
+    expect(classifyReadyResponse(200, noBearer, "finish-upscale")).toBe("misconfigured");
+  });
+
+  it("does NOT demand RunPod credentials of a module that reaches our own iron", () => {
+    // cp#290: requiring a credential the chosen transport does not use invents a fatal state the
+    // system has never had.
+    const noRunpodAtAll = JSON.stringify({
+      ...LIVE_DOOR_BODY,
+      credentials: { runpod_api_key: false, runpod_endpoint_id: false },
+    });
+    expect(classifyReadyResponse(200, noRunpodAtAll, "finish-upscale")).toBe("ready");
+  });
+
+  it("IMPOSSIBLE ON THE WIRE, and deliberately not asserted: door.bound false", () => {
+    // The emitting module spreads the whole `door` key away when no door is bound, so bound is the
+    // literal true whenever the object exists. A test asserting a bound:false verdict would be
+    // asserting against a state production cannot reach -- the cp#323 mistake. What IS asserted is
+    // that an ABSENT door means not-door-backed, which is the real signal.
+    const noDoor = JSON.stringify({
+      ok: true, module: "keyframe",
+      credentials: { runpod_api_key: true, runpod_endpoint_id: true },
+    });
+    expect(classifyReadyResponse(200, noDoor, "keyframe")).toBe("ready");
+    expect(parseDoorBacking(undefined)).toBeNull();
+  });
+});
+
+describe("classifyReadyResponse: PUBLIC-SLUG modules have no endpoint id to see (cp#396)", () => {
+  it("a module that OMITS runpod_endpoint_id is READY on its key alone", () => {
+    // The eight cost-door modules reach RunPod at a fixed public vendor url baked into the image,
+    // so there is no per-tenant endpoint id and they do not report one. They failed on the typeof
+    // guard, one line EARLIER than the door family, and every one of them is in the probe
+    // population for every tenant.
+    expect(classifyReadyResponse(200, publicSlugBody("seedance", true), "seedance")).toBe("ready");
+  });
+
+  it("its key not yet visible is PROPAGATION, not a defect", () => {
+    // Same reasoning as the endpoint-backed propagation shape: the credential is written after
+    // upload, so waiting can resolve it.
+    expect(classifyReadyResponse(200, publicSlugBody("seedance", false), "seedance")).toBe("not_visible_yet");
+  });
+
+  it("ABSENT and FALSE stay different things", () => {
+    // The distinction the fix rests on. Absent means "no such credential exists for this module";
+    // false means "this module should have one and cannot see it", which is still a real defect.
+    expect(classifyReadyResponse(200, publicSlugBody("keyframe", true), "keyframe")).toBe("ready");
+    expect(classifyReadyResponse(200, readyBody("keyframe", true, false), "keyframe")).toBe("misconfigured");
+  });
+});
+
+describe("classifyReadyResponse: RUNPOD-BACKED is unchanged (the control)", () => {
+  it("keeps all three endpoint-backed verdicts on the same inputs", () => {
+    expect(classifyReadyResponse(200, readyBody("keyframe", true, true), "keyframe")).toBe("ready");
+    expect(classifyReadyResponse(200, readyBody("keyframe", false, true), "keyframe")).toBe("not_visible_yet");
+    expect(classifyReadyResponse(200, readyBody("keyframe", true, false), "keyframe")).toBe("misconfigured");
+    expect(classifyReadyResponse(200, readyBody("keyframe", false, false), "keyframe")).toBe("misconfigured");
+  });
+
+  it("still refuses a body with no credentials block at all", () => {
+    expect(classifyReadyResponse(200, JSON.stringify({ ok: true, module: "keyframe" }), "keyframe"))
+      .toBe("misconfigured");
+    expect(classifyReadyResponse(200, JSON.stringify({ ok: true, module: "keyframe", credentials: {} }), "keyframe"))
+      .toBe("misconfigured");
+  });
+
+  it("the ECHO check still applies to a door-backed body", () => {
+    expect(classifyReadyResponse(200, JSON.stringify(LIVE_DOOR_BODY), "speech-upscale")).toBe("misconfigured");
+  });
+});
+
+describe("parseDoorBacking: minimal by design", () => {
+  it("absent reads null, so a module with no door is judged by its credentials", () => {
+    expect(parseDoorBacking(undefined)).toBeNull();
+    expect(parseDoorBacking(null)).toBeNull();
+  });
+
+  it("reads token and IGNORES bound, route and routes", () => {
+    // Every field this insisted on would be a field whose rename in the other repo turns a healthy
+    // tenant into a failed provision. It depends on one.
+    expect(parseDoorBacking({ bound: true, token: true, route: "vpc-propagandhi", routes: [] }))
+      .toEqual({ token: true });
+    expect(parseDoorBacking({ token: false })).toEqual({ token: false });
+  });
+
+  it("a door with no readable token field is UNREADABLE, never guessed", () => {
+    for (const bad of ["vpc", 0, true, [], { bound: true }, { token: "yes" }]) {
+      expect(parseDoorBacking(bad), JSON.stringify(bad)).toBe("unreadable");
+    }
+  });
+
+  it("an UNREADABLE door falls through to the credentials rather than failing the tenant", () => {
+    // DELIBERATE, and the quieter of the two options. This gate blocks every tenant going live,
+    // and cp#323 is the precedent: a change in the OTHER repo that was an improvement turned a
+    // benign verdict fatal here and nobody could provision. An unrecognised door shape must not
+    // rebuild that trap. The body below would be READY on its credentials, and is.
+    const garbledDoor = JSON.stringify({
+      ok: true, module: "keyframe",
+      credentials: { runpod_api_key: true, runpod_endpoint_id: true },
+      door: { shape: "moved" },
+    });
+    expect(classifyReadyResponse(200, garbledDoor, "keyframe")).toBe("ready");
+  });
+});
+
 describe("classifyReadyResponse: the module echo must MATCH (wrong-script defence)", () => {
   it("a perfectly healthy answer from the WRONG module is a hard failure, not a pass", () => {
     expect(classifyReadyResponse(200, readyBody("own-gpu", true, true), "keyframe")).toBe("misconfigured");
