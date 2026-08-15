@@ -446,14 +446,17 @@ export class D1Store implements ControlPlaneStore, CreditStore {
 
   async setTenantD1(id: string, databaseId: string): Promise<void> {
     await this.db.prepare("UPDATE tenants SET d1_database_id = ?2 WHERE id = ?1").bind(id, databaseId).run();
+    await this.claimResourceOwnership("d1", databaseId, id);
   }
 
   async setTenantBucket(id: string, bucket: string): Promise<void> {
     await this.db.prepare("UPDATE tenants SET r2_bucket_name = ?2 WHERE id = ?1").bind(id, bucket).run();
+    await this.claimResourceOwnership("r2_bucket", bucket, id);
   }
 
   async setTenantR2Token(id: string, tokenId: string): Promise<void> {
     await this.db.prepare("UPDATE tenants SET r2_token_id = ?2 WHERE id = ?1").bind(id, tokenId).run();
+    await this.claimResourceOwnership("r2_token", tokenId, id);
   }
 
   async setTenantEndpoints(id: string, endpointsJson: string): Promise<void> {
@@ -469,6 +472,7 @@ export class D1Store implements ControlPlaneStore, CreditStore {
       .prepare("UPDATE tenants SET script_name = ?2, studio_release = ?3 WHERE id = ?1")
       .bind(id, scriptName, release)
       .run();
+    await this.claimResourceOwnership("worker", scriptName, id);
   }
 
   async setTenantStudioRelease(id: string, release: string | null): Promise<void> {
@@ -954,8 +958,63 @@ export class D1Store implements ControlPlaneStore, CreditStore {
   async clearTenantResource(id: string, resource: TenantResourceKind): Promise<void> {
     const column = D1Store.RESOURCE_COLUMN[resource];
     if (!column) throw new Error(`unknown tenant resource kind: ${resource}`);
+    // Read the key before blanking so ownership can be released (cp#106 D).
+    const row = await this.db
+      .prepare(`SELECT ${column} AS k FROM tenants WHERE id = ?1`)
+      .bind(id)
+      .first<{ k: string | null }>();
+    const key = row?.k ?? null;
     // Column name is looked up from a closed literal map, never interpolated from caller input.
     await this.db.prepare(`UPDATE tenants SET ${column} = NULL WHERE id = ?1`).bind(id).run();
+    if (key) {
+      await this.db
+        .prepare(
+          "DELETE FROM tenant_resource_ownership WHERE resource_kind = ?1 AND resource_key = ?2 AND owner_tenant_id = ?3",
+        )
+        .bind(resource, key, id)
+        .run();
+    }
+  }
+
+  async claimResourceOwnership(
+    kind: TenantResourceKind,
+    resourceKey: string,
+    ownerTenantId: string,
+  ): Promise<void> {
+    if (!resourceKey) return;
+    // cp#106 D: do not silently steal from a LIVE owner. Slug reuse re-claims after the prior
+    // tenant is deleted/failed (tombstone); a live tenant still pointing at the same physical id
+    // must keep ownership so a half-built claim cannot re-point the guard.
+    const prior = await this.getResourceOwner(kind, resourceKey);
+    if (prior && prior !== ownerTenantId) {
+      const priorRow = await this.getTenantById(prior);
+      if (priorRow && priorRow.status !== "deleted" && priorRow.status !== "failed") {
+        // Keep prior owner; the column write on `tenants` still happened (caller already wrote it).
+        // Teardown will refuse the non-owner via getResourceOwner.
+        return;
+      }
+    }
+    await this.db
+      .prepare(
+        "INSERT INTO tenant_resource_ownership (resource_kind, resource_key, owner_tenant_id, provisioned_at) " +
+          "VALUES (?1, ?2, ?3, datetime('now')) " +
+          "ON CONFLICT(resource_kind, resource_key) DO UPDATE SET " +
+          "owner_tenant_id = excluded.owner_tenant_id, " +
+          "provisioned_at = excluded.provisioned_at",
+      )
+      .bind(kind, resourceKey, ownerTenantId)
+      .run();
+  }
+
+  async getResourceOwner(kind: TenantResourceKind, resourceKey: string): Promise<string | null> {
+    if (!resourceKey) return null;
+    const row = await this.db
+      .prepare(
+        "SELECT owner_tenant_id FROM tenant_resource_ownership WHERE resource_kind = ?1 AND resource_key = ?2",
+      )
+      .bind(kind, resourceKey)
+      .first<{ owner_tenant_id: string }>();
+    return row?.owner_tenant_id ?? null;
   }
 
   async setApiTokenRotatedAt(id: string): Promise<void> {
