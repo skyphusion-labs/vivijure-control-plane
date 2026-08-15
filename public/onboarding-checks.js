@@ -510,6 +510,49 @@
     return "undecided";
   }
 
+  // WHAT ACTUALLY WENT WRONG, from the CODE rather than the status (cp#448).
+  //
+  // This read err.status === 409 and called every one of them a key problem. The provision route
+  // serves at least four distinct 409s and only one was ever about a key, so tenant_exists,
+  // slug_taken, slug_reclaim_in_progress and reclaim_teardown_failed all rendered as
+  // "Setup needs your key again".
+  //
+  // Two things made that worse than a wrong headline. The client rendered err.message, which the
+  // transport sets to body.error -- the CODE -- so the plane's own carefully written sentence was
+  // dropped; the owner of a genuinely stuck teardown saw the bare string reclaim_teardown_failed
+  // and never the words telling them to stop retrying and get in touch. And because it believed a
+  // key was needed, it advised provisioning the same name again, which is the cp#435 teardown. The
+  // one paragraph in the product that describes the destruction appeared as INSTRUCTIONS in cases
+  // where destruction is not the answer.
+  //
+  // THE PLANE'S MESSAGE WINS whenever it sent one. It is written for the owner, it knows which
+  // refusal this is, and nothing the client can infer beats it. The code is a last resort, and a
+  // headline is chosen only where we can say something true without one.
+  const PROVISION_FAILURE_HEADLINE = {
+    tenant_exists: "You already have a studio",
+    slug_taken: "That name is taken",
+    slug_reclaim_in_progress: "That name is being reset",
+    reclaim_teardown_failed: "We could not free that name",
+    runpod_key_required: "This deploy cannot build studios right now",
+    invalid_slug: "That name will not work",
+    provisioner_unconfigured: "We cannot build studios right now",
+  };
+
+  function provisionFailureCopy(err) {
+    const e = err || {};
+    const code = (e.body && e.body.error) || e.message || "";
+    const message = e.body && typeof e.body.message === "string" ? e.body.message : null;
+    return {
+      code: code,
+      headline: PROVISION_FAILURE_HEADLINE[code] || "Setup could not finish",
+      // The plane's sentence, or the code as the honest last resort. Never a guess dressed as an
+      // explanation: if we do not have words for it, we show what we were told.
+      detail: message || code || "Something went wrong and we were not told what.",
+      // NO CASE ADVISES RE-PROVISIONING. Under cp#427 there is no key to re-paste, and the destroy
+      // path belongs behind the cp#435 acknowledgement rather than in a failure hint.
+      spoken: Boolean(message),
+    };
+  }
   function canAdvance(key, state) {
     const s = state || {};
     if (key === "rules") return s.rulesAccepted === true;
@@ -845,6 +888,8 @@
     formatUsd: formatUsd,
     stepIndex: stepIndex,
     canAdvance: canAdvance,
+    provisionFailureCopy: provisionFailureCopy,
+    PROVISION_FAILURE_HEADLINE: PROVISION_FAILURE_HEADLINE,
     resumeStep: resumeStep,
     slugVerdict: slugVerdict,
     planCanProvision: planCanProvision,
