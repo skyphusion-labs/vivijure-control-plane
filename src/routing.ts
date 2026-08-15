@@ -138,6 +138,33 @@ function stripSessionCookie(headers: Headers): void {
 }
 
 /**
+ * Render an unmodelled `status` for the log without lying about it and without throwing.
+ *
+ * PRESENCE IS DECIDED BY THE CALLER; THIS ONLY DECIDES SHAPE. JSON-native scalars pass through
+ * with their TYPE intact, so `7` and `"7"` stay different values in the event. `String()`
+ * collapsed both to `"7"`, which is the ambiguity cp#392 was opened about.
+ *
+ * Anything JSON cannot carry faithfully or safely (object, array, bigint, symbol, function, a
+ * present-but-undefined value, NaN, Infinity) becomes a BRACKETED TYPE TAG. A bracketed tag is
+ * chosen over a plain string on purpose: no TEXT column plausibly holds it, so it cannot be
+ * mistaken for a real status the way `String(undefined)` produced the entirely plausible
+ * `"undefined"`.
+ *
+ * NOT THROWING MATTERS MORE THAN IT LOOKS. This runs on the refusal path. `JSON.stringify` throws
+ * on a BigInt and on a circular structure, which would turn a deliberate 404 into an unhandled
+ * error at the exact moment the system is trying to tell us something is wrong -- the loudest
+ * possible way to lose the signal the event exists to carry.
+ */
+function loggableStatus(value: unknown): string | number | boolean | null {
+  if (value === null) return null;
+  if (typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : `[unloggable number ${String(value)}]`;
+  }
+  return `[unloggable ${typeof value}]`;
+}
+
+/**
  * Map a tenant record to a refusal, or null when it should be dispatched.
  *
  * SUSPENSION IS CHECKED FIRST AND OFF THE LIFECYCLE. `suspended_at` is an orthogonal axis: the
@@ -177,11 +204,17 @@ export function tenantRefusal(tenant: Tenant): Response | null {
       // Direction matches `routingStatusFor()` in tenant-resolver.ts, which projects the SAME
       // column and already documents fail-closed as "the correct direction for a mistake to fall".
       // Two projections of one column falling opposite ways was the defect; this is cp#390.
-      const unmodelledStatus = (tenant as { status?: unknown }).status;
+      //
+      // cp#392 wanted an ABSENT status to READ absent. Gating the key on `typeof === "string"`
+      // bought that by dropping every non-string too, so a status that is PRESENT and holds `7`
+      // renders exactly like a column that is not there -- the same defect inverted, reassuring in
+      // the other direction. cp#392 named this axis as the upgrade condition. Gate on PRESENCE,
+      // and let `loggableStatus()` decide the shape, so the two states stay distinguishable.
+      const tenantRow = tenant as { status?: unknown };
       console.error(JSON.stringify({
         ev: "routing.lifecycle_unmodelled",
         tenant: tenant.id,
-        ...(typeof unmodelledStatus === "string" ? { status: unmodelledStatus } : {}),
+        ...("status" in tenantRow ? { status: loggableStatus(tenantRow.status) } : {}),
         msg: "tenant status outside TenantLifecycle -- refusing. Loud in the log, generic on the wire.",
       }));
       return refusal(404, "No studio at this address.");
