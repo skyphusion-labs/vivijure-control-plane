@@ -4,6 +4,7 @@ import {
   KEY_PREFIX,
   STEPS,
   canAdvance,
+  resumeStep,
   slugVerdict,
   costCeilingUsd,
   formatUsd,
@@ -694,5 +695,72 @@ describe("slugVerdict / the reclaim gate (cp#435)", () => {
     // wave the destruction through on two absences agreeing with each other.
     expect(canAdvance("name", { slugValid: true, slugAvailable: true, slugReclaimable: true, slug: "", slugReclaimConfirmedFor: "" })).toBe(false);
     expect(canAdvance("name", { slugValid: true, slugAvailable: true, slugReclaimable: true })).toBe(false);
+  });
+});
+
+// cp#455: WHERE A FRESH ARRIVAL BELONGS.
+//
+// init() showed step 1 unconditionally and never read /api/me, which is the single root under five
+// separate defects: the wizard did not know a tenant existed (cp#435), a control labelled Back
+// advanced into a step with a null tenant id (cp#447), the endpoint list sat on a literal
+// loading... forever (cp#449), and See what happened delivered a sales pitch to somebody whose
+// studio had just failed.
+//
+// RED ON MAIN: resumeStep does not exist there.
+describe("resumeStep (cp#455)", () => {
+  const ok = { id: "acct_1", email: "a@b.c" };
+  const aup = { required_version: "1.1.0", accepted: true };
+  const at = (status: string) => ({ account: ok, aup: aup, tenant: { id: "ten_1", slug: "s", status: status } });
+
+  it("leaves a signed-out or un-accepted visitor at the start, exactly as today", () => {
+    expect(resumeStep(null).step).toBe("what");
+    expect(resumeStep({}).step).toBe("what");
+    expect(resumeStep({ account: ok, aup: { required_version: "1.1.0", accepted: false } }).step).toBe("what");
+  });
+
+  it("sends an account with NO tenant to step 1, which is the self-served path and must not move", () => {
+    // The regression control. Most people who reach this page are creating a studio, and that
+    // flow is the one thing this change must leave alone.
+    const r = resumeStep({ account: ok, aup: aup, tenant: null });
+    expect(r.step).toBe("what");
+    expect(r.reason).toBe("no_tenant");
+  });
+
+  it("resumes a build in flight instead of offering to start a new one", () => {
+    expect(resumeStep(at("pending")).step).toBe("build");
+    expect(resumeStep(at("provisioning")).step).toBe("build");
+  });
+
+  it("lands an awaiting_invoke_key tenant on the render-key step, which was unreachable on a fresh load", () => {
+    const r = resumeStep(at("awaiting_invoke_key"));
+    expect(r.step).toBe("invoke");
+    expect(r.reason).toBe("awaiting_invoke_key");
+  });
+
+  it("shows a FAILED studio its failure, rather than five minutes to your own studio", () => {
+    // The link says See what happened. Landing on step 1 makes that label a false promise, and a
+    // link label is a contract with whoever clicks it.
+    const r = resumeStep(at("failed"));
+    expect(r.step).toBe("build");
+    expect(r.reason).toBe("failed");
+  });
+
+  it("sends a live studio to the finished screen", () => {
+    expect(resumeStep(at("live")).step).toBe("done");
+  });
+
+  it("REFUSES to start a wizard for a studio that is not in setup at all", () => {
+    // Suspended, deleting and deleted are real states the FRONT DOOR has screens for and this
+    // page does not. Offering setup for a deleted studio is the same confidently-wrong screen
+    // this whole issue is about, so step is null and the page says so.
+    for (const s of ["suspended", "deleting", "deleted"]) {
+      expect(resumeStep(at(s)).step, s).toBeNull();
+    }
+  });
+
+  it("does not guess on a status it has never heard of", () => {
+    const r = resumeStep(at("reticulating"));
+    expect(r.step).toBeNull();
+    expect(r.reason).toBe("not_in_setup");
   });
 });
