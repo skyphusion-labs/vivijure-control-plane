@@ -226,3 +226,18 @@ export function provisionRows(job: ProvisionJobView | null | undefined): Provisi
 export function provisionWaitNote(totalMs?: number | null): string;
 export function provisionWaitCopy(remainingMs: number | null | undefined): string;
 export function provisionTimeoutCopy(): string;
+
+export interface MeForResume {
+  account?: { id: string; email: string } | null;
+  aup?: { required_version: string; accepted: boolean } | null;
+  tenant?: { id: string; slug: string; status: string } | null;
+}
+
+export interface ResumeTarget {
+  /** The step a fresh load belongs on, or null when the wizard is not the right place at all. */
+  step: string | null;
+  reason: string;
+}
+
+/** cp#455: read /api/me on boot and land somebody where their tenant actually is. */
+export function resumeStep(me: MeForResume | null | undefined): ResumeTarget;

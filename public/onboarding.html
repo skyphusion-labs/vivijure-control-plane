@@ -272,7 +272,10 @@
           Tick exactly these in the console, and set each to Read/Write. The names are here so you
           can match them instead of guessing.
         </p>
-        <div class="rows" id="created-endpoints" aria-live="polite">loading...</div>
+        <!-- cp#449: NO fake loading state in static markup. renderCreatedEndpoints fills this, and says
+             so honestly when it has nothing, rather than leaving a spinner-shaped word that
+             nothing ever replaces. -->
+        <div class="rows" id="created-endpoints" aria-live="polite"></div>
 
         <h3>The click path</h3>
         <ol class="small muted" id="invoke-steps">
@@ -305,6 +308,18 @@
       </section>
 
       <!-- STEP 8: done --------------------------------------------------->
+
+      <!-- cp#455: the wizard is not the right place for every state a tenant can be in. Suspended,
+           deleting, deleted and anything unmodelled are real states the FRONT DOOR has screens
+           for; offering setup for a deleted studio would be a confidently-wrong screen. -->
+      <section class="panel" data-step="not-in-setup" hidden>
+        <h2>This studio is not in setup</h2>
+        <p class="lede">There is nothing to finish here. Your studio is in a state this page does
+        not handle, and we would rather say that than walk you through a setup you do not need.</p>
+        <div class="actions">
+          <a class="row-name" href="/">Back to your studio</a>
+        </div>
+      </section>
       <section class="panel" data-step="done" hidden>
         <h2>Your studio is live</h2>
         <p class="lede">Go make something.</p>
