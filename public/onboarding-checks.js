@@ -395,12 +395,97 @@
   // Can the flow advance past `key` given what the user has done so far?
   // Gates are honest: the rules gate is blocking (#57), and the review gate
   // will not open on a capacity check that failed or never ran.
+  // THE SLUG PREVIEW ANSWERS TWO QUESTIONS, AND THE SECOND ONE IS DESTRUCTIVE (cp#435).
+  //
+  // GET /api/tenant/slug-available returns available AND reclaimable, and the second is not
+  // decoration: it means the name is free TO YOU because the row behind it is YOUR OWN unfinished
+  // studio. Provisioning over it does not resume that studio. It runs a full teardown with
+  // deleteData true and rebuilds from scratch.
+  //
+  // This UI read only availability and printed is free, which is how an operator-provisioned owner
+  // could be told his own studio name was available and then destroy it by clicking Continue. The
+  // plane computes the distinction and projects it on purpose; the client dropped it on the floor.
+  // THREE outcomes now, never two.
+  function slugVerdict(res, slug) {
+    const r = res || {};
+    const name = JSON.stringify(String(slug || ""));
+    if (r.available !== true) {
+      return {
+        state: "taken",
+        level: "warn",
+        text: name + " is taken" + (r.reason ? " (" + r.reason + ")" : "") + ". Try another.",
+      };
+    }
+    if (r.reclaimable === true) {
+      return {
+        state: "reclaim",
+        level: "bad",
+        text: name + " is a studio you already have. Continuing DELETES it and builds a new one.",
+      };
+    }
+    return { state: "free", level: "ok", text: name + " is free." };
+  }
+
+  // WHERE A FRESH ARRIVAL BELONGS (cp#455).
+  //
+  // init() called show("what") unconditionally and never read /api/me, so every step after the
+  // first assumed you had walked the previous one and kept what it needed in page memory a fresh
+  // arrival does not have. That single fact produced five separate defects, because a self-served
+  // tenant PASSES THROUGH these screens while an operator-provisioned one ARRIVES at them.
+  //
+  // The front door already computes this correctly from the same payload and then hands off to a
+  // page that throws it away. This is that decision, kept pure so it can be tested without a DOM,
+  // and deliberately shaped the same way: total, no cheerful default, and an unrecognised state
+  // returns null rather than a guess.
+  //
+  // step null means THE WIZARD IS NOT THE RIGHT PLACE. Suspended, deleting, deleted and anything
+  // unmodelled are real states the front door has screens for and this page does not; starting a
+  // setup wizard for a deleted studio would be the same species of confidently-wrong screen the
+  // rest of this issue is about.
+  function resumeStep(me) {
+    if (!me || !me.account) return { step: "what", reason: "signed_out" };
+    if (!me.aup || me.aup.accepted !== true) return { step: "what", reason: "aup_required" };
+
+    const tenant = me.tenant;
+    if (!tenant) return { step: "what", reason: "no_tenant" };
+
+    switch (tenant.status) {
+      case "pending":
+      case "provisioning":
+        return { step: "build", reason: "provisioning" };
+      case "awaiting_invoke_key":
+        return { step: "invoke", reason: "awaiting_invoke_key" };
+      case "failed":
+        // The build screen is where progress and errors render, and error_step and error_message
+        // are on the job row. This is what makes See what happened able to show what happened.
+        return { step: "build", reason: "failed" };
+      case "live":
+        return { step: "done", reason: "live" };
+      default:
+        return { step: null, reason: "not_in_setup" };
+    }
+  }
+
   function canAdvance(key, state) {
     const s = state || {};
     if (key === "rules") return s.rulesAccepted === true;
     // The server owns slug availability; the UI will not advance on a local
     // regex pass alone.
-    if (key === "name") return !!(s.slugValid === true && s.slugAvailable === true);
+    // cp#435: availability alone is NOT consent. A reclaimable slug is the owner OWN studio, and
+    // advancing over it destroys that studio, so the gate additionally demands an explicit
+    // acknowledgement. Unchanged for the ordinary free-name case, which is what most people hit.
+    if (key === "name") {
+      if (!(s.slugValid === true && s.slugAvailable === true)) return false;
+      if (s.slugReclaimable !== true) return true;
+      // CONSENT NAMES THE STUDIO IT DESTROYS (cp#446 review).
+      //
+      // A boolean would be consent to whatever the box happened to be next to. Recording WHICH
+      // name was acknowledged makes the revocation a property of this function rather than of a
+      // reset running somewhere else: consent for one name cannot open the gate for another, and
+      // deleting the DOM reset cannot silently re-enable a destruction, because the recorded name
+      // still has to equal the one about to be torn down.
+      return typeof s.slug === "string" && s.slug.length > 0 && s.slugReclaimConfirmedFor === s.slug;
+    }
     if (key === "key") return typeof s.keyPresent === "boolean" ? s.keyPresent : false;
     if (key === "capacity") return !!(s.capacity && s.capacity.fits === true);
     if (key === "review") return s.confirmed === true;
@@ -718,6 +803,8 @@
     formatUsd: formatUsd,
     stepIndex: stepIndex,
     canAdvance: canAdvance,
+    resumeStep: resumeStep,
+    slugVerdict: slugVerdict,
     PROVISION_RESUME_BOUNDARY: PROVISION_RESUME_BOUNDARY,
     PROVISION_FIRST_POLL_MS: PROVISION_FIRST_POLL_MS,
     PROVISION_PRE_BOUNDARY_POLL_MS: PROVISION_PRE_BOUNDARY_POLL_MS,

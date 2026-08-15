@@ -164,6 +164,7 @@ export class MemoryStore implements ControlPlaneStore {
     aup_sha256: string;
     ip_hash: string | null;
     user_agent: string | null;
+    accepted_at: string;
   }[] = [];
   async hasAcceptedAup(account_id: string, version: string) {
     return this.aup.some((r) => r.account_id === account_id && r.aup_version === version);
@@ -182,8 +183,25 @@ export class MemoryStore implements ControlPlaneStore {
     user_agent: string | null,
   ) {
     if (!(await this.hasAcceptedAup(account_id, aup_version))) {
-      this.aup.push({ account_id, aup_version, aup_sha256, ip_hash, user_agent });
+      // SECOND granularity, matching what the real column stores (the SQLite datetime(now)
+      // default). The fake honours the store CONTRACT -- ISO-8601 UTC -- because normalizing the
+      // engine format is D1Store business; a fake that stored the raw SQLite shape would be
+      // asserting on a detail no caller of the interface is entitled to see.
+      const accepted_at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+      this.aup.push({ account_id, aup_version, aup_sha256, ip_hash, user_agent, accepted_at });
     }
+  }
+
+  async getLastAupAcceptance(account_id: string) {
+    // LAST MATCHING ROW, mirroring the real ORDER BY id DESC: the array order IS the insertion
+    // order, so both stores answer "most recent" by the same rule. Sorting on the version label
+    // or on accepted_at here would make the fake disagree with the shipped store on exactly the
+    // case this projection exists for, and the suite would go green on the disagreement.
+    for (let i = this.aup.length - 1; i >= 0; i--) {
+      const r = this.aup[i];
+      if (r.account_id === account_id) return { version: r.aup_version, accepted_at: r.accepted_at };
+    }
+    return null;
   }
 
   async getTenantById(id: string) {
@@ -841,15 +859,19 @@ export class MemoryStore implements ControlPlaneStore {
     j.updated_at = this.stamp(Date.now());
     j.lease_until = this.stamp(Date.now() + JOB_LEASE_SECONDS * 1000);
   }
+  /** Mirrors the SQL exactly on BOTH properties that carry meaning (cp#438, cp#443): a terminal job
+   *  refuses, and the result says whether a row changed. A double that always succeeded would let
+   *  every conditional built on it pass while the shipped store refused. */
   async finishJob(id: string, status: "succeeded" | "failed", errorStep: string | null, errorMessage: string | null) {
     const j = this.jobs.get(id);
-    if (j) {
-      j.status = status;
-      j.error_step = errorStep;
-      j.error_message = errorMessage;
-      j.finished_at = new Date().toISOString();
-      j.lease_until = null;
-    }
+    if (!j) return false;
+    if (j.status !== "queued" && j.status !== "running") return false;
+    j.status = status;
+    j.error_step = errorStep;
+    j.error_message = errorMessage;
+    j.finished_at = new Date().toISOString();
+    j.lease_until = null;
+    return true;
   }
 
   async getLatestJobForTenant(tenant_id: string) {

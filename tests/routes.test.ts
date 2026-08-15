@@ -339,6 +339,52 @@ describe("GET /api/platform/config", () => {
     expect(await res.json()).toMatchObject({ auth_methods: ["email"], aup_version: AUP });
   });
 
+  // cp#439, the SECOND wall. The wizard key step sits BEFORE provisioning and gated advance on
+  // a non-empty key, so a shared-tier tenant could not provision at all -- a wall EARLIER than the
+  // invoke-key one. tenantView.runpod_mode cannot answer it: at that moment no tenant row exists.
+  // This is the plane-level fact, and it was projected nowhere before this.
+  //
+  // NON-DEFAULT PROBE: the wiring double returns false by default, so the TRUE case is the
+  // load-bearing one -- a projection hardcoded to false, or one reading a field that does not
+  // exist, is byte-identical to the correct answer on the default.
+  it("projects shared_tier_available TRUE when this plane offers a pool", async () => {
+    wiring.offersSharedTier.mockReturnValue(true);
+    const res = await handle(req("/api/platform/config"), env(), ctx, deps);
+    expect(await res.json()).toMatchObject({ shared_tier_available: true });
+  });
+
+  it("projects it FALSE when it does not (the control)", async () => {
+    wiring.offersSharedTier.mockReturnValue(false);
+    const res = await handle(req("/api/platform/config"), env(), ctx, deps);
+    expect(await res.json()).toMatchObject({ shared_tier_available: false });
+  });
+
+  it("AGREES with what the provision route actually does, in both directions", async () => {
+    // THE POINT. A boolean the client renders from is worthless unless it predicts the refusal it
+    // is meant to prevent, so this asserts the projection and the ROUTE together rather than
+    // trusting that they read the same predicate. If someone rewires one, this fails.
+    const keyless = async () => {
+      const s = await signedIn();
+      await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
+      return await handle(jsonReq("/api/tenant/provision", { slug: "hero" }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    };
+
+    wiring.offersSharedTier.mockReturnValue(false);
+    const advertisedOff = (await (await handle(req("/api/platform/config"), env(), ctx, deps)).json()) as { shared_tier_available: boolean };
+    const refused = await keyless();
+    expect(advertisedOff.shared_tier_available).toBe(false);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ error: "runpod_key_required" });
+
+    store = new MemoryStore();
+    deps = { ...deps, store };
+    wiring.offersSharedTier.mockReturnValue(true);
+    const advertisedOn = (await (await handle(req("/api/platform/config"), env(), ctx, deps)).json()) as { shared_tier_available: boolean };
+    const accepted = await keyless();
+    expect(advertisedOn.shared_tier_available).toBe(true);
+    expect(accepted.status).toBe(202);
+  });
+
   it("offers a provider only when BOTH its id and secret exist (half-config = absent, not broken)", async () => {
     const half = env({ GOOGLE_OAUTH_CLIENT_ID: "id" });
     expect((await (await handle(req("/api/platform/config"), half, ctx, deps)).json())).toMatchObject({
@@ -651,6 +697,122 @@ describe("the AUP gate", () => {
     const res = await handle(req("/api/me", { headers: { cookie } }), env(), ctx, deps);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ aup: { required_version: AUP, accepted: false }, tenant: null });
+  });
+});
+
+// ---- what /api/me SAYS about the AUP (cp#433) ----
+
+describe("the AUP projection on /api/me (cp#433)", () => {
+  // THE DEFECT: `accepted: false` alone made two different people byte-identical to the front
+  // door -- somebody who never accepted anything, and somebody who accepted 1.0.0 while the plane
+  // moved to 1.1.0 -- so both were shown "One thing before you start", which is wrong on both
+  // halves for the second: they are not starting, and they may already have a running studio.
+  //
+  // Every case below asserts DISTINGUISHABILITY, not just a field value. Asserting the states one
+  // at a time would have passed against the broken payload too, because the broken payload was
+  // never wrong about `accepted` -- it was wrong about having nothing else to say.
+
+  const NEXT = "1.1.0";
+  const meBody = async (cookie: string, e = env()) => {
+    const res = await handle(req("/api/me", { headers: { cookie } }), e, ctx, deps);
+    expect(res.status).toBe(200);
+    return (await res.json()) as { aup: { required_version: string; accepted: boolean; last_accepted: { version: string; accepted_at: string } | null } };
+  };
+
+  it("NEVER accepted anything -> last_accepted is null", async () => {
+    const { cookie } = await signedIn();
+    const body = await meBody(cookie);
+    expect(body.aup).toMatchObject({ required_version: AUP, accepted: false, last_accepted: null });
+  });
+
+  it("accepted an OLDER version -> last_accepted names that version and when", async () => {
+    const { cookie } = await signedIn();
+    await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie } }), env(), ctx, deps);
+    // A NON-DEFAULT stored timestamp. Against now(), or against the version label this test
+    // already serves, "carried through from the row" and "computed at projection time" would be
+    // byte-identical; this value is neither the clock nor anything else in scope.
+    store.aup[0].accepted_at = "2026-07-12T09:31:04Z";
+
+    const body = await meBody(cookie, env({ AUP_VERSION: NEXT }));
+    expect(body.aup).toMatchObject({
+      required_version: NEXT,
+      accepted: false,
+      last_accepted: { version: AUP, accepted_at: "2026-07-12T09:31:04Z" },
+    });
+  });
+
+  it("THE DEFECT: the two refused states are no longer identical to a client", async () => {
+    // Both accounts are refused, both read accepted:false, and BEFORE cp#433 the two payloads
+    // below were equal. That equality is the bug, so this asserts on it directly rather than on
+    // either state alone.
+    const fresh = await signedIn();
+    const neverAccepted = (await meBody(fresh.cookie, env({ AUP_VERSION: NEXT }))).aup;
+
+    store = new MemoryStore();
+    deps = { ...deps, store };
+    const returning = await signedIn();
+    await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie: returning.cookie } }), env(), ctx, deps);
+    const wasRegated = (await meBody(returning.cookie, env({ AUP_VERSION: NEXT }))).aup;
+
+    // The half that must still MATCH: the gate treats them the same, and cp#433 does not change
+    // that. If this ever diverges, somebody softened the gate rather than the projection.
+    expect(neverAccepted.accepted).toBe(false);
+    expect(wasRegated.accepted).toBe(false);
+    expect(neverAccepted.required_version).toBe(wasRegated.required_version);
+
+    // The half that must DIFFER: what the client is able to say about them.
+    expect(neverAccepted).not.toEqual(wasRegated);
+    expect(neverAccepted.last_accepted).toBeNull();
+    expect(wasRegated.last_accepted).not.toBeNull();
+    expect(wasRegated.last_accepted?.version).toBe(AUP);
+  });
+
+  it("accepted the CURRENT version -> last_accepted is still populated, not mode-dependent", async () => {
+    // A field that only appears when refused would force every client to know which branch it is
+    // in before it can read it, and absent-vs-null would then mean two different things.
+    const { cookie } = await signedIn();
+    await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie } }), env(), ctx, deps);
+    const body = await meBody(cookie);
+    expect(body.aup.accepted).toBe(true);
+    expect(body.aup.last_accepted?.version).toBe(AUP);
+  });
+
+  it("projects ONLY version and accepted_at -- never ip_hash, user_agent or the sha", async () => {
+    // The row is the callers own, which is why projecting it at all is fine. That is not a
+    // licence to project every column: ip_hash is a hash of an address and user_agent is a device
+    // fingerprint, and neither is needed to write honest copy.
+    const { cookie } = await signedIn();
+    await handle(
+      jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie, "cf-connecting-ip": "203.0.113.9", "user-agent": "curl/8.0" } }),
+      env(), ctx, deps,
+    );
+    const body = await meBody(cookie);
+    expect(Object.keys(body.aup.last_accepted ?? {}).sort()).toEqual(["accepted_at", "version"]);
+
+    // Asserted on the SERIALIZED payload too, because a nested key set says nothing about what
+    // some other part of the response might be carrying the same values under.
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain("203.0.113.9");
+    expect(raw).not.toContain(await sha256Hex("203.0.113.9"));
+    expect(raw).not.toContain("curl/8.0");
+    expect(raw).not.toContain(await sha256Hex(AUP_TEXT));
+  });
+
+  it("scopes to the SESSION account -- another accounts acceptance is never projected", async () => {
+    // Seeded FIRST, so it is the OLDEST row present. A projection that ignored the account id and
+    // simply took the newest row would still pass the null assertion below, which is why the
+    // positive control at the end is not a formality.
+    const other = await store.createAccount("acct_other", "other@b.com");
+    await store.recordAupAcceptance(other.id, "0.9.0", "sha-other", null, null);
+
+    const { cookie } = await signedIn();
+    expect((await meBody(cookie)).aup.last_accepted).toBeNull();
+
+    // POSITIVE CONTROL. Without it, toBeNull() above passes just as well against a method that
+    // returns null unconditionally -- a green that proves the projection is absent, not scoped.
+    const { token } = await startSession(store, other.id, deps.now());
+    const theirs = await meBody(`${SESSION_COOKIE}=${token}`);
+    expect(theirs.aup.last_accepted?.version).toBe("0.9.0");
   });
 });
 
@@ -1181,8 +1343,13 @@ describe("GET /api/tenant/:id/job -- drives PROVISION jobs only", () => {
   // reads. This is what a job whose driver is genuinely GONE looks like: it ran (status running,
   // attempts 1) and then stopped beating (cp#148), which is the ONE state a poll may take over.
   const expireLease = (jobId: string) => {
+    // RELATIVE TO THE TEST CLOCK, not wall time. deps.now() here is fixed at 1_750_000_000_000, so a
+    // lease stamped from Date.now() sits in the FUTURE relative to the code under test and read as
+    // LIVE. It went unnoticed while nothing consulted the lease before claimJob, and MemoryStore
+    // claimJob uses Date.now() rather than deps.now(), so the two disagreed harmlessly until the
+    // reap started reading the lease.
     const j = store.jobs.get(jobId)!;
-    j.lease_until = new Date(Date.now() - 1_000).toISOString().replace("T", " ").slice(0, 19);
+    j.lease_until = new Date(1_750_000_000_000 - 1_000).toISOString().replace("T", " ").slice(0, 19);
   };
 
   it("POSITIVE CONTROL: it DOES drive a provision job whose driver is gone, so the guards are not vacuous", async () => {
@@ -1290,6 +1457,103 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     await store.setTenantRunPodMode("ten_abc123", "shared");
     return s;
   }
+
+  // ---- cp#439: the SHARED branch, which had ZERO test coverage in either direction ----
+  //
+  // Verified before writing these: neither invoke_key_not_accepted nor shared_pool_unconfigured
+  // appeared anywhere under tests/ (bare grep, exit 1), while 20+ sibling refusal codes did. So
+  // the zero was a real gap and not a wrong pattern. This is the tier EVERY operator-provisioned
+  // tenant is on, and its only success path is an EMPTY-bodied POST, which is why 1900 passing
+  // tests never saw that the wizard could not reach it.
+
+  // The pool key is a SENTINEL, and non-default in two ways: the wiring double returns null by
+  // default (so the success path cannot pass by accident), and the value is distinguishable from
+  // anything a test could paste (so "the plane supplied its own key" and "the plane echoed mine"
+  // are not byte-identical).
+  const POOL_KEY = "rpa_pool_sentinel_not_pasted";
+
+  async function sharedTenantReady() {
+    const s = await tenantReady(JSON.stringify([{ key: "backend", label: "Render", id: "ep1", name: "vivijure-hero-backend" }]));
+    const t = store.tenants.get("ten_abc123");
+    if (t) t.runpod_mode = "shared";
+    deps.fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("graphql")
+        ? new Response("no", { status: 401 })
+        : new Response(JSON.stringify({ workers: {} }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    return s;
+  }
+
+  it("REFUSES a pasted key on a SHARED tenant, and stores nothing", async () => {
+    const { cookie } = await sharedTenantReady();
+    wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "rpa_customer" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invoke_key_not_accepted" });
+    // REFUSED, not quietly ignored: no install ran and the tenant did not move.
+    expect(wiring.installInvokeKey).not.toHaveBeenCalled();
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+    expect(JSON.stringify([...store.tenants.values()])).not.toContain("rpa_customer");
+  });
+
+  it("an EMPTY-bodied POST on a SHARED tenant installs the POOL key and goes live", async () => {
+    // THE PATH THE WIZARD COULD NOT REACH. The button was wired `if (invokeKey) run()`, so the
+    // one request that succeeds was never sent: type nothing and nothing happens, type anything
+    // and you are told there is no key for you to provide.
+    const { cookie } = await sharedTenantReady();
+    wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: "live", modules_ready: true });
+    // The key installed is the PLANE own pool key, never something the caller supplied.
+    expect(wiring.installInvokeKey).toHaveBeenCalledTimes(1);
+    const [, key] = wiring.installInvokeKey.mock.calls[0] as [{ id: string }, string];
+    expect(key).toBe(POOL_KEY);
+    expect(store.tenants.get("ten_abc123")?.status).toBe("live");
+    // The pool key is not persisted onto the tenant row either.
+    expect(JSON.stringify([...store.tenants.values()])).not.toContain(POOL_KEY);
+  });
+
+  it("REFUSES with shared_pool_unconfigured when this deploy has no pool key", async () => {
+    // Asserted as a CONTRAST inside one test rather than alone, because null is the wiring
+    // double default: a lone assertion here would pass against a route that could never install
+    // a pool key at all. The configured leg proves the refusal is about CONFIG, not capability.
+    const { cookie } = await sharedTenantReady();
+
+    // UNCONFIGURED leg FIRST, because it changes no tenant state and so leaves the same tenant
+    // usable for the control. (The reverse order needs a second tenant and collides on the slug
+    // UNIQUE constraint, which the fake enforces -- it caught this while the test was being written.)
+    wiring.sharedPoolInvokeKey = vi.fn(() => null);
+    const unconfigured = await handle(jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }), env(), ctx, deps);
+    expect(unconfigured.status).toBe(503);
+    expect(await unconfigured.json()).toMatchObject({ error: "shared_pool_unconfigured" });
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+
+    // CONTROL: the very same request succeeds once a pool key exists, so the 503 above is about
+    // deploy CONFIG and not about the route being incapable of installing a pool key at all.
+    wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
+    const configured = await handle(jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }), env(), ctx, deps);
+    expect(configured.status).toBe(200);
+  });
+
+  it("a DEDICATED tenant still REQUIRES a key on an empty body (the tier control)", async () => {
+    // Without this, the empty-body success above would read identically against a route that had
+    // simply stopped requiring a key for everybody.
+    const { cookie } = await sharedTenantReady();
+    const t = store.tenants.get("ten_abc123");
+    if (t) t.runpod_mode = "dedicated";
+    wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
+    const res = await handle(jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }), env(), ctx, deps);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invoke_key_required" });
+    expect(wiring.installInvokeKey).not.toHaveBeenCalled();
+  });
 
   it("REFUSES a key before endpoints exist: there is nothing to scope to", async () => {
     const { cookie } = await tenantReady(null);

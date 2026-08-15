@@ -63,7 +63,7 @@
     me() {
       return {
         account: { id: "acct_mock", email: "you@example.com" },
-        aup: { required_version: "mock-v1", accepted: true },
+        aup: { required_version: "mock-v1", accepted: true, last_accepted: { version: "mock-v1", accepted_at: "2026-07-12T09:31:04Z" } },
         tenant: mockTenant,
       };
     },

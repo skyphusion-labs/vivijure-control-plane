@@ -66,6 +66,10 @@
     slug: "",
     slugValid: false,
     slugAvailable: false,
+    // cp#435: available and reclaimable are DIFFERENT answers. The second means the name is free
+    // to this account because it is that account own unfinished studio, and taking it destroys it.
+    slugReclaimable: false,
+    slugReclaimConfirmedFor: null,
     tenantDomainSuffix: ".studio.vivijure.com",
   };
 
@@ -458,17 +462,35 @@
     slugTimer = setTimeout(checkSlug, 350);
   }
 
+  // cp#435: RESET THE ACKNOWLEDGEMENT WHENEVER THE ANSWER COULD HAVE CHANGED.
+  //
+  // A ticked box is consent to destroy ONE named studio. Carrying it across a slug edit would let
+  // somebody acknowledge the deletion of one name and then provision over a different one, which
+  // is consent to something they were never shown.
+  function resetReclaimAck() {
+    state.slugReclaimable = false;
+    state.slugReclaimConfirmedFor = null;
+    const box = $("#slug-reclaim");
+    const ack = $("#slug-reclaim-ack");
+    if (ack) ack.checked = false;
+    if (box) box.hidden = true;
+  }
+
   async function checkSlug() {
     const el = $("#slug-hint");
+    resetReclaimAck();
     try {
       const res = await PlatformApi.slugAvailable(state.slug);
       state.slugAvailable = res.available === true;
+      // THE PLANE ALREADY DISTINGUISHES FREE FROM YOUR-OWN-STUDIO. Read both, never just the first.
+      state.slugReclaimable = res.available === true && res.reclaimable === true;
+      const verdict = checks.slugVerdict(res, state.slug);
       if (el) {
-        el.textContent = res.available
-          ? "\"" + state.slug + "\" is free."
-          : "\"" + state.slug + "\" is taken" + (res.reason ? " (" + res.reason + ")" : "") + ". Try another.";
-        el.dataset.level = res.available ? "ok" : "warn";
+        el.textContent = verdict.text;
+        el.dataset.level = verdict.level;
       }
+      const box = $("#slug-reclaim");
+      if (box) box.hidden = verdict.state !== "reclaim";
     } catch (err) {
       state.slugAvailable = false;
       if (el) {
@@ -759,6 +781,14 @@
       if (banner) banner.hidden = false;
     }
 
+    const reclaimAck = $("#slug-reclaim-ack");
+    if (reclaimAck) {
+      reclaimAck.addEventListener("change", function () {
+        // Record WHICH name was acknowledged, not merely that a box was ticked.
+        state.slugReclaimConfirmedFor = reclaimAck.checked ? state.slug : null;
+        refreshGates();
+      });
+    }
     const accept = $("#accept-aup");
     if (accept) {
       accept.addEventListener("change", function () {
@@ -954,6 +984,91 @@
     }
   }
 
+  /**
+   * BOOT FROM /api/me AND LAND WHERE THE TENANT ACTUALLY IS (cp#455).
+   *
+   * init() showed step 1 unconditionally, so a person the front door had ALREADY routed here on
+   * purpose -- finish your setup, watch the progress, see what happened -- was handed a fresh
+   * wizard that did not know their studio existed. Everything they needed was in a payload this
+   * page never asked for.
+   *
+   * The wizard still OPENS at step 1 and this runs after, deliberately: a self-served visitor is
+   * the common case, must see no delay, and must not have a screen swapped under them for a
+   * tenant they do not have. resumeStep returns what for exactly that case, so the common path is
+   * unchanged including its timing.
+   */
+  async function resumeFromAccount() {
+    let me;
+    try {
+      me = await PlatformApi.me();
+    } catch (err) {
+      // 401 is the ordinary signed-out answer and is not worth shouting about; anything else
+      // leaves us NOT KNOWING, and a page that reroutes on not-knowing is how somebody ends up
+      // on a screen about a studio we never actually read. Stay at step 1 either way.
+      return;
+    }
+
+    const target = checks.resumeStep(me);
+    if (target.step === "what") return;
+
+    const tenant = (me && me.tenant) || null;
+    if (tenant) {
+      // THE STATE EVERY LATER STEP ASSUMED IT HAD. state.tenantId had exactly one assignment,
+      // inside runProvision, which is why a fresh arrival POSTed to /api/tenant/null/... and was
+      // then told its key was rejected (cp#447).
+      state.tenantId = tenant.id;
+      state.createdEndpoints = tenant.endpoints || [];
+      if (tenant.url) state.studioUrl = tenant.url;
+      else if (tenant.slug) state.studioUrl = "https://" + tenant.slug + state.tenantDomainSuffix;
+    }
+
+    if (target.step === null) {
+      // Not a setup state at all. The FRONT DOOR has screens for suspended, deleting and deleted;
+      // this page does not, and starting a wizard for a deleted studio would be exactly the
+      // confidently-wrong screen this issue is about. Say so and point at the page that knows.
+      const el = $("#not-in-setup");
+      if (el) el.hidden = false;
+      show("not-in-setup");
+      return;
+    }
+
+    if (target.step === "invoke") {
+      // INTEGRATION POINT for cp#439 (held on a ruling): when the tier projection lands, the
+      // resumed invoke step must branch on runpod_mode here too, or a pooled tenant reaching this
+      // screen by RESUME gets the BYO half while one reaching it by provision does not. Called out
+      // rather than silently coupled, because that divergence is invisible from either PR alone.
+      renderCreatedEndpoints();
+      show("invoke");
+      return;
+    }
+
+    if (target.step === "done") {
+      finishAndShowDone();
+      return;
+    }
+
+    if (target.step === "build") {
+      show("build");
+      await renderResumedJob(tenant);
+    }
+  }
+
+  /** Render the REAL job for a tenant we did not provision in this page session. */
+  async function renderResumedJob(tenant) {
+    if (!tenant) return;
+    let job = null;
+    try {
+      job = await PlatformApi.job(tenant.id);
+    } catch (err) {
+      renderProgress([{ key: "status", label: "We could not read this build", status: "failed", error: err.message }]);
+      return;
+    }
+    // error_step and error_message live on the job row, which is what makes See what happened
+    // able to show what happened rather than a sales pitch (cp#455).
+    renderJobProgress(job);
+    if (job && job.status === "failed") offerRetry(job);
+  }
+
   function init() {
     // Both dependencies are hard: without the transport there is nothing to
     // render from, and a half-wired page that looks alive is worse than one
@@ -965,6 +1080,8 @@
     loadConfig();
     renderRepresentativePlan();
     loadAup();
+    // AFTER the wizard has opened at step 1, so the common self-served path is unchanged.
+    resumeFromAccount();
   }
 
   if (document.readyState === "loading") {

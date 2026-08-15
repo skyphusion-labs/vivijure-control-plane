@@ -13,6 +13,7 @@ import type { LlmSpendReadStore, LlmSpendWindow, RollupPeriodRow } from "./llm-s
 import { MAX_PERIODS_PER_WINDOW, summariseWindow } from "./llm-spend-window";
 import type {
   Account,
+  AupAcceptance,
   AuthProvider,
   ControlPlaneStore,
   InvokeKeyHandoff,
@@ -48,6 +49,34 @@ import { classifySlugClaim, TIER_A_STATUSES,
 // hierarchy (job lease 60s < reclaim lease 300s < job declared lost 600s) is stated once. Re-exported
 // here because that is where callers have always imported it from.
 export { JOB_LEASE_SECONDS };
+
+/**
+ * Normalize the SQLite timestamp format to ISO-8601 UTC (cp#433).
+ *
+ * aup_acceptances.accepted_at is written ONLY by the column DEFAULT, datetime(now), which the
+ * engine emits as "2026-08-15 18:25:24" -- a space separator and no zone designator. That is
+ * MEASURED against the real engine in tests/store-d1-sql.test.ts, not assumed from the schema.
+ *
+ * Handing that string to a client is worse than it looks. Kotlin Instant.parse and Swift
+ * ISO8601DateFormatter both reject it outright, which is recoverable. JavaScript new Date()
+ * ACCEPTS it and reads it as LOCAL time, so a browser west of UTC silently renders a consent
+ * record as having happened hours before it did. A loud failure is survivable; a quietly wrong
+ * timestamp on a consent record is the one thing this table exists to prevent.
+ *
+ * datetime(now) is UTC by definition, so appending the designators is lossless rather than a
+ * guess. An already-zoned value passes through untouched, so a future writer that stores proper
+ * ISO-8601 is not corrupted by this.
+ *
+ * An UNRECOGNIZED value is returned RAW rather than thrown on. Throwing would 500 /api/me, and
+ * /api/me is the route a re-gated account uses to discover why it is blocked (see the cp#396
+ * reachability tests) -- breaking the recovery path over a display field is the worse trade.
+ */
+export function isoFromSqliteUtc(value: string): string {
+  if (/[Zz]$|[+-]\d{2}:?\d{2}$/.test(value)) return value;
+  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/.exec(value);
+  if (!m) return value;
+  return m[1] + "T" + m[2] + (m[3] ?? "") + "Z";
+}
 
 export class D1Store implements ControlPlaneStore, CreditStore {
   constructor(private readonly db: D1Database) {}
@@ -218,6 +247,25 @@ export class D1Store implements ControlPlaneStore, CreditStore {
       .bind(accountId, version)
       .first<{ id: number }>();
     return row !== null;
+  }
+
+  /**
+   * The most recent acceptance, by ROW ID (cp#433).
+   *
+   * ORDER BY id DESC and not by aup_version: the labels are free-form and unsortable. Not by
+   * accepted_at either, which is second-granularity and ties. The autoincrement id is the only
+   * column that records the order the rows actually arrived in.
+   */
+  async getLastAupAcceptance(accountId: string): Promise<AupAcceptance | null> {
+    const row = await this.db
+      .prepare(
+        "SELECT aup_version, accepted_at FROM aup_acceptances WHERE account_id = ?1 " +
+          "ORDER BY id DESC LIMIT 1",
+      )
+      .bind(accountId)
+      .first<{ aup_version: string; accepted_at: string }>();
+    if (row === null) return null;
+    return { version: row.aup_version, accepted_at: isoFromSqliteUtc(row.accepted_at) };
   }
 
   /** Append-only. OR IGNORE makes a double-accept idempotent rather than an error. */
@@ -704,19 +752,38 @@ export class D1Store implements ControlPlaneStore, CreditStore {
       .run();
   }
 
+  /**
+   * Close a job, and REPORT whether it actually closed one (cp#438, cp#443).
+   *
+   * THE PREDICATE, matching updateJobProgress above and for the same cp#148 reason: a terminal job
+   * is a closed record. A driver that lost its job to another driver keeps running to the end of
+   * its invocation, and its finishJob used to overwrite the terminal row, turning a succeeded
+   * provision into a failed one.
+   *
+   * THE RETURN VALUE IS THE OTHER HALF, and the predicate alone is a trap without it. The reap is
+   * TWO writes: finish the job, then flip the tenant. Add the predicate and the job write correctly
+   * refuses while the tenant write runs anyway, because nothing told it the first one did not land.
+   * That leaves a studio which provisioned correctly reading failed, beside a job row reading
+   * succeeded: two records that disagree, which is worse than either being wrong alone.
+   *
+   * So a caller pairing this with a tenant-status write MUST branch on the result. Same
+   * changes === 1 shape claimJob already uses.
+   */
   async finishJob(
     id: string,
     status: "succeeded" | "failed",
     errorStep: string | null,
     errorMessage: string | null,
-  ): Promise<void> {
-    await this.db
+  ): Promise<boolean> {
+    const res = await this.db
       .prepare(
         "UPDATE provision_jobs SET status = ?2, error_step = ?3, error_message = ?4, " +
-          "finished_at = datetime('now'), updated_at = datetime('now'), lease_until = NULL WHERE id = ?1",
+          "finished_at = datetime('now'), updated_at = datetime('now'), lease_until = NULL " +
+          "WHERE id = ?1 AND status IN ('queued', 'running')",
       )
       .bind(id, status, errorStep, errorMessage)
       .run();
+    return (res.meta?.changes ?? 0) === 1;
   }
 
   // ---- settings + audit ----
