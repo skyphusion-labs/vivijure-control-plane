@@ -43,7 +43,7 @@ import {
 } from "../src/provisioner";
 import { resolveVpcDoors } from "../src/deps";
 import type { ControlPlaneEnv } from "../src/env";
-import { convergeTenantTemplateImages, createTenantEndpoints, RunPodClient, tenantEndpointName, endpointBackedPlan } from "../src/runpod";
+import { RunPodClient, tenantEndpointName, endpointBackedPlan } from "../src/runpod";
 import { localStudioBundleSource } from "./studio-bundle-local";
 import { localModuleBundleSource } from "./module-bundle-local";
 import { provisionE2eLive, provisionE2eEnvOrThrow } from "./provision-e2e-env";
@@ -123,10 +123,6 @@ beforeAll(async () => {
     // cp#183: a real deploy binds a ceiling, so the live harness binds one too. Small on purpose --
     // the point is that the var arrives and the studio reports it, not that the number is ours.
     storageQuota: { bytes: "107374182400", invalid: null },
-    runpod: {
-      createEndpoints: (key, s, r2) => createTenantEndpoints(key, s, r2),
-      convergeTemplateImages: (key, s) => convergeTenantTemplateImages(key, s),
-    },
     bundle: localStudioBundleSource(env.studioReleaseDir),
     moduleBundle: localModuleBundleSource(env.studioReleaseDir),
     // The live e2e drives the SAME fallback production takes when no upload credential is set: one
@@ -240,7 +236,7 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
     // alone (endpoints_json + studio_token_enc). If anything after wfp_upload secretly needed key
     // A or the minted R2 secret, only this loop would find out.
     const MAX_INVOCATIONS = 12; // bounded: a driver that never converges must fail loud, not spin
-    let result: ProvisionOutcome = await runProvisionJob(deps, job.id, tenant, env!.runpodKey);
+    let result: ProvisionOutcome = await runProvisionJob(deps, job.id, tenant);
     let invocations = 1;
     while (!result.ok && "yielded" in result) {
       if (invocations >= MAX_INVOCATIONS) {
