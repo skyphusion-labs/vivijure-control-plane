@@ -33,20 +33,48 @@
         <p class="muted">Loading...</p>
       </section>
 
-      <!-- signed out -->
+      <!-- SIGNED OUT: ONE screen, whether or not signups are open.
+
+           Signing IN and signing UP are two different questions, and the plane gates only
+           the second: signups_enabled means "can NEW accounts be created", full stop, and
+           POST /api/auth/email/start still mails a link to an address that ALREADY has an
+           account while the switch is off. This page used to replace the whole screen with
+           a closed notice, which locked every existing account holder out of the front door
+           of a studio they already own. The switch now changes the COPY below and nothing
+           else; the sign-in form is always here. -->
       <section class="panel" data-shell="auth" hidden>
-        <h1>Your own AI film studio, without installing anything</h1>
-        <p class="lede">
+        <h1 id="auth-title-open">Your own AI film studio, without installing anything</h1>
+        <p class="lede" id="auth-lede-open">
           Write a storyboard, render it to video on real GPUs. The GPUs are yours; we just run the
           control panel. Sign in to start, or sign up: it is the same button.
         </p>
 
-        <div class="callout">
+        <h1 id="auth-title-closed" hidden>Sign in to your studio</h1>
+        <p class="lede" id="auth-lede-closed" hidden>
+          Signups are closed right now, so we cannot set up a new studio today. If you already
+          have one, this is the way back in.
+        </p>
+
+        <div class="callout" id="auth-open-note">
           <p><strong>Hosted and self-host ship the same studio. Features never gate on payment.</strong></p>
           <p class="small">There is no paid tier, no credits, and no card. You bring a RunPod key and
           pay RunPod for the seconds you render.
           <a href="https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/hosted-tier.md">What this costs, exactly</a>
           -- or <a href="https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md">install it yourself instead</a>.</p>
+        </div>
+
+        <!-- Shown in place of the note above when signups are closed. These are the words the
+             standalone closed panel carried, kept as they were: the copy was never the bug.
+             What changed is that it no longer arrives INSTEAD of the way in. -->
+        <div class="callout" id="auth-closed-note" hidden>
+          <p><strong>We are not taking new studios at the moment</strong>, so a new account will
+          not go through until that changes.</p>
+          <p class="small muted">
+            You can always
+            <a href="https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md">run
+            the whole thing yourself</a>: same studio, same features, no waiting on us. That is not a
+            consolation prize, it is the actual product.
+          </p>
         </div>
 
         <div id="auth-methods" class="rows" aria-live="polite">
@@ -68,18 +96,6 @@
         <div class="actions">
           <button type="button" id="link-again">Use a different address</button>
         </div>
-      </section>
-
-      <section class="panel" data-shell="signups-closed" hidden>
-        <h2>Signups are closed right now</h2>
-        <p class="lede">We are not taking new studios at the moment. Nothing you do on this page
-          will go through until that changes.</p>
-        <p class="small muted">
-          You can always
-          <a href="https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md">run
-          the whole thing yourself</a>: same studio, same features, no waiting on us. That is not a
-          consolation prize, it is the actual product.
-        </p>
       </section>
 
       <section class="panel" data-shell="aup" hidden>

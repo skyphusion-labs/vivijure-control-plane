@@ -219,6 +219,13 @@ export async function runScheduledTick(env: ControlPlaneEnv, deps: ControlPlaneD
   } catch (e) {
     console.error("scheduled.runpod_sweep_threw", String(e));
   }
+  try {
+    // THE THIRD HALF (cp#429). Isolated like the other two: a throw here must not take the meter
+    // or the sweep with it, and the symptom of that coupling would be an absence.
+    await runPendingProvisionDrive(deps);
+  } catch (e) {
+    console.error("scheduled.provision_drive_threw", String(e));
+  }
 }
 
 /**
@@ -793,12 +800,15 @@ async function tenantRoutes(
     if (request.method === "GET" && action === "job") {
       let job = await deps.store.getLatestJobForTenant(tenant.id);
       if (!job) return err("not_found", 404);
-      // The poll IS the engine (#112). A provision cannot fit in one invocation's budget, so each
-      // poll drives the job a little further under its own fresh waitUntil, and the client's normal
-      // polling cadence walks it to completion. Two things guard this:
-      //   - a stale job (no progress for MAX_JOB_AGE) is declared lost instead of driven forever;
-      //   - only the poll that WINS the lease drives, so overlapping polls cannot double-mint.
-      const driven = await driveJobIfNeeded(ctx, deps, tenant, job);
+      // THE POLL IS AN ENGINE, NOT THE ONLY ONE (#112, and cp#429). A provision cannot fit in
+      // one invocation budget, so each poll drives the job a little further under its own fresh
+      // waitUntil and the client polling cadence walks it to completion. That is sound only while
+      // somebody is polling: an operator-provisioned tenant has no client, so the cron drives THIS
+      // SAME FUNCTION on the same guards for every job nobody is watching. One implementation, two
+      // dispatchers, because the guards below are the load-bearing part:
+      //   - a stale job (no progress for MAX_JOB_STALE_MS) is declared lost instead of driven forever;
+      //   - only the driver that WINS the lease drives, so overlapping drivers cannot double-mint.
+      const driven = await driveJobIfNeeded((p) => ctx.waitUntil(p), deps, tenant, job);
       if (driven) job = driven;
       return json({
         // WHICH KIND OF JOB THIS IS (cp#43). Without it every other field here is ambiguous: a
@@ -856,6 +866,20 @@ const MAX_JOB_STALE_MS = 10 * 60 * 1000;
 const JOB_CLAIM_SECONDS = JOB_LEASE_SECONDS;
 
 /**
+ * How a driver DISPATCHES the resume it just won the lease for.
+ *
+ * The request path hands over ctx.waitUntil: the response is already written and the work outlives
+ * it. The cron path awaits instead, because a scheduled handler IS its work and waitUntil there
+ * would let the runtime call the tick finished mid-provision (the same reason runScheduledTick
+ * awaits its other halves).
+ *
+ * A SEAM RATHER THAN A SECOND DRIVER. Every guard in driveJobIfNeeded is load-bearing (cp#43 kind,
+ * cp#132 first-driver, cp#148 lease, the stale reap), and a cron copy of them is a copy that
+ * drifts on the path nobody exercises until something has already gone wrong.
+ */
+type DriveDispatch = (work: Promise<unknown>) => void;
+
+/**
  * Drive a non-terminal job forward, or declare it lost. Returns the re-read job when it changed.
  *
  * CONCURRENCY, the part that is easy to get wrong: the client polls every few seconds, so several
@@ -865,7 +889,7 @@ const JOB_CLAIM_SECONDS = JOB_LEASE_SECONDS;
  * other poll returns the current state and does nothing.
  */
 async function driveJobIfNeeded(
-  ctx: ExecutionContext,
+  dispatch: DriveDispatch,
   deps: ControlPlaneDeps,
   tenant: Tenant,
   job: ProvisionJob,
@@ -926,8 +950,91 @@ async function driveJobIfNeeded(
   if (!(await deps.store.claimJob(job.id, JOB_CLAIM_SECONDS))) return null;
 
   const stepsDone = JSON.parse(job.steps_done) as string[];
-  ctx.waitUntil(deps.provisioner.resume(job.id, tenant, stepsDone));
+  dispatch(deps.provisioner.resume(job.id, tenant, stepsDone));
   return null;
+}
+
+/**
+ * How many provisions one tick will drive. Each drive costs up to PROVISION_INVOCATION_BUDGET_MS
+ * (15s) before it yields, and the tick also owns the meter and the RunPod sweep, so this bounds
+ * the tick rather than letting a backlog decide how long a cron invocation runs. A backlog drains
+ * across ticks; the cron fires every 5 minutes.
+ */
+const MAX_PROVISION_DRIVES_PER_TICK = 5;
+
+/**
+ * DRIVE THE PROVISIONS NOBODY IS POLLING (cp#429).
+ *
+ * WHY THIS EXISTS. The poll was the ONLY engine. Both provision routes fire exactly one driver
+ * under waitUntil and return 202; that driver spends its 15s budget, persists progress, hands the
+ * lease back and yields, and every step after it needs an inbound GET /api/tenant/:id/job. That
+ * holds up for a tenant sitting on the onboarding page. It does not hold up at all for an
+ * operator-provisioned tenant, who has no client: nothing polls, so nothing drives, and the studio
+ * never builds.
+ *
+ * AND IT NEVER FAILS HONESTLY EITHER, which is the worse half. The MAX_JOB_STALE_MS reap lives
+ * inside driveJobIfNeeded, so an unpolled job is not even declared lost: no progress, no terminal
+ * state, nothing to see. It reads as provisioning forever. This sweep gives that job a driver, and
+ * failing that, gives it an ending.
+ *
+ * IT ADDS NO GUARDS AND WEAKENS NONE. Every decision about whether a job may be driven stays in
+ * driveJobIfNeeded, reached here through the dispatch seam: terminal jobs, the cp#43 kind guard,
+ * the cp#132 refusal to claim a job no driver has taken, the stale reap, and claimJob deciding a
+ * single winner. A cron drive racing a live tenant poll is exactly the concurrency claimJob was
+ * written for, so the two cannot double-mint.
+ */
+export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<void> {
+  if (!deps.provisioner) return;
+
+  // The two lifecycle states an unfinished provision can be sitting in: both routes CREATE the
+  // tenant "pending", and the first driver moves it to "provisioning". Everything later has a
+  // terminal job or none, and getLatestJobForTenant plus the guards below settle the rest.
+  const candidates: Tenant[] = [];
+  for (const status of ["pending", "provisioning"] as const) {
+    const rows = await deps.store.listTenants({ status });
+    // NO SILENT CAP. A full page means there may be work this tick could not see, and an unlogged
+    // truncation reads exactly like "there was nothing else" (the absence is self-sealing).
+    if (rows.length >= TENANT_PAGE_LIMIT) {
+      console.error("scheduled.provision_drive_page_full", JSON.stringify({ status, count: rows.length }));
+    }
+    candidates.push(...rows);
+  }
+
+  let driven = 0;
+  let deferred = 0;
+  for (const tenant of candidates) {
+    if (driven >= MAX_PROVISION_DRIVES_PER_TICK) {
+      deferred += 1;
+      continue;
+    }
+    const job = await deps.store.getLatestJobForTenant(tenant.id);
+    if (!job) continue;
+
+    // AWAIT, do not waitUntil (the scheduled handler owns its whole invocation). The seam collects
+    // the resume promise so this loop can await it and count a drive that actually happened.
+    const work: Promise<unknown>[] = [];
+    try {
+      const reaped = await driveJobIfNeeded((p) => void work.push(p), deps, tenant, job);
+      if (reaped) {
+        console.log("scheduled.provision_drive_reaped", JSON.stringify({ tenant: tenant.id, job: job.id }));
+      }
+      if (work.length) {
+        driven += 1;
+        console.log("scheduled.provision_drive", JSON.stringify({ tenant: tenant.id, job: job.id, step: job.step }));
+        // The provisioner records every outcome on the job row itself; awaiting here is about not
+        // letting the tick finish mid-write, not about reading a result.
+        await Promise.all(work);
+      }
+    } catch (e) {
+      // One tenant cannot take the sweep down with it, for the same reason the tick isolates its
+      // halves (cp#290): the symptom would be an absence in every OTHER tenant.
+      console.error("scheduled.provision_drive_threw", JSON.stringify({ tenant: tenant.id, error: String(e) }));
+    }
+  }
+
+  if (deferred) {
+    console.log("scheduled.provision_drive_deferred", JSON.stringify({ count: deferred, next_tick: true }));
+  }
 }
 
 async function provision(

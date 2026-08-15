@@ -6,6 +6,7 @@ import {
   methodLabel,
   orderMethods,
   shellRoute,
+  signupsOpen,
   type MePayload,
 } from "../public/front-door-checks.js";
 
@@ -54,25 +55,45 @@ describe("orderMethods / methodLabel (projected from auth_methods)", () => {
 
 describe("shellRoute", () => {
   it("sends a signed-out visitor to sign in", () => {
-    expect(shellRoute(null, { signups_enabled: true })).toBe("auth");
-    expect(shellRoute({}, {})).toBe("auth");
+    expect(shellRoute(null)).toBe("auth");
+
+    expect(shellRoute({})).toBe("auth");
+  });
+  // THE REGRESSION (cp#428). This test used to assert the bug: with signups off, a
+  // signed-out visitor was routed to a closed panel and the sign-in form went away
+  // with it, so an account that already existed had no way back into a studio it
+  // already owned. The plane never worked that way -- POST /api/auth/email/start
+  // mails the link to an existing address with the switch off -- and only the UI
+  // conflated can a NEW account be created with can a KNOWN person get back in.
+  it("NEVER routes a signed-out visitor away from sign-in, whatever the signup switch says", () => {
+    expect(shellRoute(null)).toBe("auth");
+    // And structurally: the route no longer takes the platform config AT ALL, so no
+    // future edit can reintroduce the conflation by reading the switch in here.
+    expect(shellRoute.length).toBe(1);
   });
 
-  it("tells a signed-out visitor signups are closed instead of a dead form", () => {
-    expect(shellRoute(null, { signups_enabled: false })).toBe("signups-closed");
+  // The switch still has to be VISIBLE -- it just changes the copy rather than the door.
+  it("signupsOpen answers the copy question, and defaults OPEN on a payload it cannot read", () => {
+    expect(signupsOpen({ signups_enabled: false })).toBe(false);
+    expect(signupsOpen({ signups_enabled: true })).toBe(true);
+    // An unreadable or absent config must not invent a closure: the plane refuses on
+    // its own, and a page that announces closed signups it never read is a guess.
+    expect(signupsOpen({})).toBe(true);
+    expect(signupsOpen(null)).toBe(true);
+    expect(signupsOpen(undefined)).toBe(true);
   });
 
   it("does not lock out an EXISTING account when signups are closed", () => {
     // signups_enabled gates new studios, not people who already have one.
-    expect(shellRoute(me({ tenant: { id: "t", slug: "s", status: "live" } }), { signups_enabled: false })).toBe("studio");
+    expect(shellRoute(me({ tenant: { id: "t", slug: "s", status: "live" } }))).toBe("studio");
   });
 
   it("gates on the AUP before anything else", () => {
-    expect(shellRoute(me({ aup: { required_version: "v3", accepted: false } }), {})).toBe("aup");
-    expect(shellRoute(me({ aup: null }), {})).toBe("aup");
+    expect(shellRoute(me({ aup: { required_version: "v3", accepted: false } }))).toBe("aup");
+    expect(shellRoute(me({ aup: null }))).toBe("aup");
     // A bumped version re-gates an account that accepted an older one: the
     // server compares versions, and the UI must not cache a stale yes.
-    expect(shellRoute(me({ aup: { required_version: "v4", accepted: false } }), {})).toBe("aup");
+    expect(shellRoute(me({ aup: { required_version: "v4", accepted: false } }))).toBe("aup");
   });
 
   it("routes each tenant status to its own screen", () => {
@@ -87,26 +108,26 @@ describe("shellRoute", () => {
       ["deleted", "deleted"],
     ];
     for (const [status, route] of cases) {
-      expect(shellRoute(me({ tenant: { id: "t", slug: "s", status } }), {})).toBe(route);
+      expect(shellRoute(me({ tenant: { id: "t", slug: "s", status } }))).toBe(route);
     }
   });
 
   it("sends an account with no tenant to onboarding", () => {
-    expect(shellRoute(me(), {})).toBe("onboarding");
+    expect(shellRoute(me())).toBe("onboarding");
   });
 
   it("REFUSES to guess on an unrecognized status", () => {
     // A status this file has never heard of must not fall through to "studio"
     // and hand someone a link that 5xx's.
-    expect(shellRoute(me({ tenant: { id: "t", slug: "s", status: "reticulating" } }), {})).toBe("unknown");
-    expect(shellRoute(me({ tenant: { id: "t", slug: "s", status: "" } }), {})).toBe("unknown");
+    expect(shellRoute(me({ tenant: { id: "t", slug: "s", status: "reticulating" } }))).toBe("unknown");
+    expect(shellRoute(me({ tenant: { id: "t", slug: "s", status: "" } }))).toBe("unknown");
   });
 
   it("never routes a non-live tenant to the studio screen", () => {
     // The studio screen is the only one that hands out a URL, and tenantView
     // only returns one when the tenant is actually live.
     for (const status of ["pending", "provisioning", "awaiting_invoke_key", "failed", "suspended", "deleting", "deleted", "bogus"]) {
-      expect(shellRoute(me({ tenant: { id: "t", slug: "s", status } }), {})).not.toBe("studio");
+      expect(shellRoute(me({ tenant: { id: "t", slug: "s", status } }))).not.toBe("studio");
     }
   });
 });
