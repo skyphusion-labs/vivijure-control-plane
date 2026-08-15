@@ -112,15 +112,29 @@ function emptyLog(): CallLog {
 
 describe("teardown referential guard", () => {
   let store: D1Store;
+  /** The sqlite handle under the store, so a test can build the PRE-0023 legacy shape. */
+  let rawDb: ReturnType<typeof freshMigratedDb>;
   let log: CallLog;
   let deps: ProvisionDeps;
 
   beforeEach(async () => {
-    store = new D1Store(d1Over(freshMigratedDb()));
+    rawDb = freshMigratedDb();
+    store = new D1Store(d1Over(rawDb));
     log = emptyLog();
     deps = recordingDeps(store, log).deps;
     await store.createAccount("acct_1", "a@b.com");
   });
+
+  /**
+   * Build the LEGACY population option C exists for: resource columns set, NO ownership row, the
+   * shape of every row provisioned before migration 0023. own() below claims ownership by
+   * construction (setTenantD1 -> claimResourceOwnership, cp#335), so simply NOT calling
+   * claimResourceOwnership does not produce a legacy row -- it produces an owned one that reaps
+   * through option D while reading as a test of the option C hatch. Drop the provenance instead.
+   */
+  function forgetOwnership() {
+    rawDb.exec("DELETE FROM tenant_resource_ownership");
+  }
 
   /** Give a row the resource ids it claims to own. */
   async function own(id: string, refs: { d1?: string; bucket?: string; token?: string; script?: string }) {
@@ -273,7 +287,11 @@ describe("teardown referential guard", () => {
 
     await store.createTenant("ten_legacy", "legacy-slug", "acct_1", "failed");
     await own("ten_legacy", { d1: D1_ID });
-    // No claimResourceOwnership call anywhere: this is the legacy population, owner genuinely unset.
+    // MEASURED, NOT ASSUMED: own() above CLAIMED ownership for ten_legacy (the prior owner is a
+    // tombstone, so the claim succeeded), which made this test pass through option D and left it
+    // unable to redden when the hatch was deleted. Drop the provenance to get the legacy shape.
+    forgetOwnership();
+    expect(await store.getResourceOwner("d1", D1_ID), "the fixture must have NO recorded owner").toBeNull();
 
     const legacy = (await store.getTenantById("ten_legacy"))!;
     const res = await teardownTenant(deps, legacy, {
@@ -319,6 +337,98 @@ describe("teardown referential guard", () => {
       (store as unknown as { getResourceOwner: typeof realGetOwner }).getResourceOwner = realGetOwner;
     }
   });
+
+  // cp#106 option C (cp#334): THE HATCH ITSELF, on genuinely legacy rows.
+  //
+  // These three exist because the hatch had NO discriminating coverage: with the hatch condition
+  // forced false on main, all 21 tests in this file and all 95 suite files still passed. Cause:
+  // own() writes the resource columns through setTenantD1/Bucket/Script and cp#335 wired
+  // claimResourceOwnership into exactly those setters, so every fixture own() builds is a RECORDED
+  // OWNER and reaps through option D no matter what the flag says.
+  it("cp#106 C: i_own reaps d1, bucket AND worker on a legacy row with tombstone-only referrers", async () => {
+    await store.createTenant("ten_own1", "own-one", "acct_1", "failed");
+    await store.setTenantStatus("ten_own1", "deleted");
+    await own("ten_own1", { d1: D1_ID, bucket: BUCKET, script: SCRIPT });
+
+    await store.createTenant("ten_own2", "own-two", "acct_1", "failed");
+    await store.setTenantStatus("ten_own2", "deleted");
+    await own("ten_own2", { d1: D1_ID, bucket: BUCKET, script: SCRIPT });
+    forgetOwnership();
+    const owner = (await store.getTenantById("ten_own2"))!;
+
+    // THE FIXTURE IS PART OF THE CLAIM: prove it is legacy before asserting what teardown does.
+    expect(await store.getResourceOwner("d1", D1_ID)).toBeNull();
+    expect(await store.getResourceOwner("r2_bucket", BUCKET)).toBeNull();
+    expect(await store.getResourceOwner("worker", SCRIPT)).toBeNull();
+
+    const res = await teardownTenant(deps, owner, {
+      deleteData: true,
+      ignoreTombstoneReferrers: true,
+    });
+
+    expect(res.ok, JSON.stringify(res.failures)).toBe(true);
+    expect(res.failures.filter((f) => f.error.startsWith("refused:"))).toEqual([]);
+    // EVERY resource kind, not just the d1 the other C tests use: the hatch is per-resource.
+    expect(log.deleteD1).toEqual([D1_ID]);
+    expect(log.deleteR2Bucket).toEqual([BUCKET]);
+    expect(log.deleteUserWorker).toContain(SCRIPT);
+  });
+
+  // cp#106 as ruled: C is a tiebreak among the DEAD, not an override of the guard. No operator
+  // flag may relax a live referrer, which is what keeps C from becoming last-referrer-wins (B).
+  it("cp#106 C: i_own STILL refuses when a LIVE row references the resource", async () => {
+    await store.createTenant("ten_live2", "shared-live", "acct_1", "live");
+    await own("ten_live2", { d1: D1_ID, bucket: BUCKET, script: SCRIPT });
+
+    await store.createTenant("ten_dead2", "shared-dead", "acct_1", "failed");
+    await store.setTenantStatus("ten_dead2", "deleted");
+    await own("ten_dead2", { d1: D1_ID, bucket: BUCKET, script: SCRIPT });
+    forgetOwnership();
+    const dead = (await store.getTenantById("ten_dead2"))!;
+
+    const res = await teardownTenant(deps, dead, {
+      deleteData: true,
+      ignoreTombstoneReferrers: true,
+    });
+
+    expect(res.ok).toBe(false);
+    const refused = Object.fromEntries(res.failures.map((f) => [f.resource, f.error]));
+    expect(refused.d1).toMatch(/AT LEAST ONE IS NOT DELETED/);
+    expect(refused.r2_bucket).toMatch(/AT LEAST ONE IS NOT DELETED/);
+    expect(log.deleteD1).toEqual([]);
+    expect(log.deleteR2Bucket).toEqual([]);
+    // The irreversible half: no emptying credential minted and the bucket never opened (cf#72).
+    expect(log.mint).toEqual([]);
+    expect(log.s3).toEqual([]);
+  });
+
+  // cp#335 deleted the old refuse-all-tombstones test because option D made its fixture reapable.
+  // The DEFAULT it protected is still real for a legacy row, and it is the state an operator meets
+  // BEFORE reaching for the hatch, so it is restored here in its post-D form, carrying cp#334s
+  // requirement that the refusal hand over a pasteable i_own value. An operator who cannot see the
+  // escape hatch in the message invents one.
+  it("cp#106 C: a legacy row refuses by default, and the message names i_own with this tenant id", async () => {
+    await store.createTenant("ten_msg1", "msg-one", "acct_1", "failed");
+    await store.setTenantStatus("ten_msg1", "deleted");
+    await own("ten_msg1", { d1: D1_ID });
+
+    await store.createTenant("ten_msg2", "msg-two", "acct_1", "failed");
+    await store.setTenantStatus("ten_msg2", "deleted");
+    await own("ten_msg2", { d1: D1_ID });
+    forgetOwnership();
+    const t2 = (await store.getTenantById("ten_msg2"))!;
+    expect(await store.getResourceOwner("d1", D1_ID)).toBeNull();
+
+    const res = await teardownTenant(deps, t2, { deleteData: true });
+
+    const d1Failure = res.failures.find((f) => f.resource === "d1")!;
+    expect(d1Failure.error).toMatch(/^refused:/);
+    expect(d1Failure.error).toContain("ten_msg1");
+    expect(d1Failure.error).not.toContain("AT LEAST ONE IS NOT DELETED");
+    expect(d1Failure.error).toContain(`i_own: "${t2.id}"`);
+    expect(log.deleteD1).toEqual([]);
+  });
+
 
   it("blanks a column ONLY on that resource's successful deletion", async () => {
     await store.createTenant("ten_mix", "mixed", "acct_1", "failed");
@@ -442,6 +552,8 @@ describe("teardown referential guard", () => {
 // proves 404s pass would be green for a change that swallowed everything.
 describe("teardown idempotent delete (cp#110)", () => {
   let store: D1Store;
+  /** The sqlite handle under the store, so a test can build the PRE-0023 legacy shape. */
+  let rawDb: ReturnType<typeof freshMigratedDb>;
   let log: CallLog;
   let deps: ProvisionDeps;
 
@@ -457,7 +569,8 @@ describe("teardown idempotent delete (cp#110)", () => {
   };
 
   beforeEach(async () => {
-    store = new D1Store(d1Over(freshMigratedDb()));
+    rawDb = freshMigratedDb();
+    store = new D1Store(d1Over(rawDb));
     log = emptyLog();
     deps = recordingDeps(store, log).deps;
     await store.createAccount("acct_1", "a@b.com");
