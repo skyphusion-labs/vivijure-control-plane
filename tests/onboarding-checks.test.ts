@@ -4,6 +4,7 @@ import {
   KEY_PREFIX,
   STEPS,
   canAdvance,
+  slugVerdict,
   costCeilingUsd,
   formatUsd,
   keyShapeHint,
@@ -612,5 +613,58 @@ describe("the waiting screen says what it is doing", () => {
     const minutes = Math.floor((PROVISION_FIRST_POLL_MS + PROVISION_WATCH_MS) / 60000);
     expect(copy).toContain(String(minutes));
     expect(copy).toContain("reload this page");
+  });
+});
+
+// cp#435: THE SLUG PREVIEW AND THE DESTRUCTIVE CASE.
+//
+// GET /api/tenant/slug-available answers available AND reclaimable. reclaimable means the name is
+// free TO THIS ACCOUNT because the row behind it is that account own unfinished studio, and
+// provisioning over it is a teardown with deleteData true, not a resume. The client used to read
+// only availability and print is free, so an operator-provisioned owner could be told his own
+// studio name was available and then destroy it by clicking Continue.
+//
+// RED ON MAIN: slugVerdict does not exist there, and canAdvance(name) opens on availability alone.
+describe("slugVerdict / the reclaim gate (cp#435)", () => {
+  it("prints a plain free for a name nobody holds", () => {
+    const v = slugVerdict({ available: true, reclaimable: false }, "fresh");
+    expect(v.state).toBe("free");
+    expect(v.level).toBe("ok");
+    expect(v.text).toMatch(/is free/);
+  });
+
+  it("NEVER says free about a studio the account already has", () => {
+    // The exact sentence that preceded a silent teardown.
+    const v = slugVerdict({ available: true, reclaimable: true }, "conrad");
+    expect(v.state).toBe("reclaim");
+    expect(v.text).not.toMatch(/is free/);
+    // And it must name the consequence, not merely decline to reassure.
+    expect(v.text).toMatch(/DELETES/);
+    expect(v.level).toBe("bad");
+  });
+
+  it("still reports a taken name with the plane own reason", () => {
+    const v = slugVerdict({ available: false, reason: "that name is taken" }, "mine");
+    expect(v.state).toBe("taken");
+    expect(v.text).toMatch(/that name is taken/);
+  });
+
+  it("treats a missing reclaimable as NOT reclaimable, so an old payload cannot open the gate", () => {
+    expect(slugVerdict({ available: true }, "x").state).toBe("free");
+  });
+
+  it("opens the name gate on an ordinary free slug, unchanged", () => {
+    expect(canAdvance("name", { slugValid: true, slugAvailable: true })).toBe(true);
+  });
+
+  it("REFUSES to advance over the account own studio without an explicit acknowledgement", () => {
+    const s = { slugValid: true, slugAvailable: true, slugReclaimable: true };
+    expect(canAdvance("name", s)).toBe(false);
+    expect(canAdvance("name", { ...s, slugReclaimConfirmed: true })).toBe(true);
+  });
+
+  it("does not accept a truthy accident as consent to destroy a studio", () => {
+    const s = { slugValid: true, slugAvailable: true, slugReclaimable: true, slugReclaimConfirmed: 1 as unknown as boolean };
+    expect(canAdvance("name", s)).toBe(false);
   });
 });

@@ -66,6 +66,10 @@
     slug: "",
     slugValid: false,
     slugAvailable: false,
+    // cp#435: available and reclaimable are DIFFERENT answers. The second means the name is free
+    // to this account because it is that account own unfinished studio, and taking it destroys it.
+    slugReclaimable: false,
+    slugReclaimConfirmed: false,
     tenantDomainSuffix: ".studio.vivijure.com",
   };
 
@@ -458,17 +462,35 @@
     slugTimer = setTimeout(checkSlug, 350);
   }
 
+  // cp#435: RESET THE ACKNOWLEDGEMENT WHENEVER THE ANSWER COULD HAVE CHANGED.
+  //
+  // A ticked box is consent to destroy ONE named studio. Carrying it across a slug edit would let
+  // somebody acknowledge the deletion of one name and then provision over a different one, which
+  // is consent to something they were never shown.
+  function resetReclaimAck() {
+    state.slugReclaimable = false;
+    state.slugReclaimConfirmed = false;
+    const box = $("#slug-reclaim");
+    const ack = $("#slug-reclaim-ack");
+    if (ack) ack.checked = false;
+    if (box) box.hidden = true;
+  }
+
   async function checkSlug() {
     const el = $("#slug-hint");
+    resetReclaimAck();
     try {
       const res = await PlatformApi.slugAvailable(state.slug);
       state.slugAvailable = res.available === true;
+      // THE PLANE ALREADY DISTINGUISHES FREE FROM YOUR-OWN-STUDIO. Read both, never just the first.
+      state.slugReclaimable = res.available === true && res.reclaimable === true;
+      const verdict = checks.slugVerdict(res, state.slug);
       if (el) {
-        el.textContent = res.available
-          ? "\"" + state.slug + "\" is free."
-          : "\"" + state.slug + "\" is taken" + (res.reason ? " (" + res.reason + ")" : "") + ". Try another.";
-        el.dataset.level = res.available ? "ok" : "warn";
+        el.textContent = verdict.text;
+        el.dataset.level = verdict.level;
       }
+      const box = $("#slug-reclaim");
+      if (box) box.hidden = verdict.state !== "reclaim";
     } catch (err) {
       state.slugAvailable = false;
       if (el) {
@@ -759,6 +781,13 @@
       if (banner) banner.hidden = false;
     }
 
+    const reclaimAck = $("#slug-reclaim-ack");
+    if (reclaimAck) {
+      reclaimAck.addEventListener("change", function () {
+        state.slugReclaimConfirmed = reclaimAck.checked;
+        refreshGates();
+      });
+    }
     const accept = $("#accept-aup");
     if (accept) {
       accept.addEventListener("change", function () {

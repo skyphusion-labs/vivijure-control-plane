@@ -155,3 +155,33 @@ describe("intro: the placeholders are not spinners", () => {
     expect("<p>loading a real example...</p>").toContain("loading a real example");
   });
 });
+
+// cp#435: the destructive-name warning must SHIP, not merely be computable.
+//
+// slugVerdict returning the right string proves the decision; it does not prove the page carries
+// the block that decision is meant to reveal, or the checkbox the gate reads. Both bugs tonight
+// were of exactly that shape: a correct pure function next to markup that dropped its answer.
+describe("the reclaim warning ships in onboarding.html (cp#435)", () => {
+  // Whitespace-collapsed: the copy is wrapped across lines in the markup, and a regex that breaks
+  // on a line break would be asserting the formatting rather than the sentence.
+  const raw = readFileSync(join(HERE, "..", "public", "onboarding.html"), "utf8");
+  const page = raw.replace(/\s+/g, " ");
+
+  it("CONTROL: the page and its name step are really there", () => {
+    expect(page.length).toBeGreaterThan(2000);
+    expect(page).toContain("data-step=\"name\"");
+  });
+
+  it("carries the block and the acknowledgement the gate reads", () => {
+    expect(page).toContain("id=\"slug-reclaim\"");
+    expect(page).toContain("id=\"slug-reclaim-ack\"");
+  });
+
+  it("names the consequence in words, rather than hinting at it", () => {
+    // A person about to lose a studio needs the verb, not a euphemism.
+    expect(page).toMatch(/deletes all of that and builds a new one/i);
+    expect(page).toMatch(/not recoverable/i);
+    // And it must not describe the destructive path as carrying on from where they left off.
+    expect(page).toMatch(/does not carry on where it left off/i);
+  });
+});
