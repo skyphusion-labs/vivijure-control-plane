@@ -75,7 +75,7 @@ export async function verifyInvokeKeyScope(
       detail:
         "that key has GraphQL access, which can create and delete resources across your whole " +
         "RunPod account. We will not store a key that powerful. Create a Restricted key with " +
-        "api.runpod.io/graphql set to None and api.runpod.ai restricted to your 4 vivijure endpoints.",
+        "api.runpod.io/graphql set to None and api.runpod.ai restricted to the " + endpointIds.length + " vivijure endpoints your studio submits to.",
     };
   }
 
@@ -113,7 +113,7 @@ export async function verifyInvokeKeyScope(
     outOfScope,
     detail:
       `that key does not cover ${outOfScope.length} of your ${endpointIds.length} vivijure ` +
-      "endpoints. Scope it to all four, then paste it again.",
+      "endpoints. Scope it to all " + endpointIds.length + ", then paste it again.",
   };
 }
 
