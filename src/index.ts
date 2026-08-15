@@ -311,6 +311,22 @@ export async function handle(
         aup_version: env.AUP_VERSION,
         // Projected from what is actually configured, never hardcoded. Joan renders from this.
         auth_methods: ["email", ...configuredProviders(env)],
+        // cp#439: whether THIS DEPLOY can provision a tenant with no RunPod key of its own.
+        //
+        // The provision route already branches on exactly this fact -- a keyless provision is
+        // refused with runpod_key_required ONLY when the plane offers no shared tier -- but the
+        // fact itself was projected nowhere, so no client could know a key was optional. The
+        // wizard therefore gated its key step on a non-empty key and a shared-tier tenant could
+        // not provision at all.
+        //
+        // BELONGS HERE rather than on the tenant: this is decided BEFORE any tenant row exists,
+        // so tenantView.runpod_mode (the cp#439 field) cannot answer it. Two different questions,
+        // asked at two different moments: "can this plane do keyless" and "which tier did this
+        // tenant get".
+        //
+        // False when the provisioner is unwired at all, which is the same answer for the client:
+        // do not offer keyless here.
+        shared_tier_available: deps.provisioner?.offersSharedTier() ?? false,
       });
     }
 
