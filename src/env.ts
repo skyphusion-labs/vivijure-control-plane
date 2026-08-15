@@ -144,6 +144,24 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    * self-hoster without the container gets.
    */
   VIDEO_FINISH_VPC_SERVICE_ID?: string;
+  /**
+   * THE OWN-IRON DOORS (cp#396). One pair per vpc-backed PROVISION_PLAN capability.
+   *
+   * `*_VPC_SERVICE_ID` is a Connectivity Directory service id, exactly like
+   * VIDEO_FINISH_VPC_SERVICE_ID above and classified the same way. `*_DOOR_TOKEN` is the bearer
+   * the serve container checks (its LOCAL_FINISH_TOKEN) and IS a credential.
+   *
+   * BOTH HALVES OR NEITHER, per door. A binding without its bearer is not a partial rollout: the
+   * module switches transport and is then refused 401 on every call, which is strictly worse than
+   * never switching. deps.ts enforces that and refuses the door if only one half is set.
+   *
+   * Which var belongs to which capability is declared on the PLAN (PlannedVpcCapability
+   * serviceIdVar / doorTokenVar), so this list and the plan cannot drift silently.
+   */
+  FINISH_UPSCALE_VPC_SERVICE_ID?: string;
+  FINISH_DOOR_TOKEN?: string;
+  SPEECH_UPSCALE_VPC_SERVICE_ID?: string;
+  SPEECH_DOOR_TOKEN?: string;
 
   /**
    * The SHARED RunPod endpoint pool for the hosted shared tier (cp#270), as JSON keyed by
@@ -421,6 +439,10 @@ export const ENV_SECRETS = [
   "CF_PROVISIONER_TOKEN",
   "CF_WORKER_UPLOAD_TOKEN",
   "VIDEO_FINISH_VPC_SERVICE_ID",
+  "FINISH_UPSCALE_VPC_SERVICE_ID",
+  "FINISH_DOOR_TOKEN",
+  "SPEECH_UPSCALE_VPC_SERVICE_ID",
+  "SPEECH_DOOR_TOKEN",
   // cp#185, classified from the tracked evidence rather than from the name: docs/deploy.md records
   // it as "worker secret, wrangler secret put" and its owners row says it is not yet installed on
   // the Worker. So the delivery mechanism is out of band, and the census must NOT ask for it in a

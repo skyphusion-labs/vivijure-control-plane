@@ -19,7 +19,7 @@
 //   3. ZERO GPU spend: template + endpoint creation is free, and nothing is ever invoked.
 
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
-import { PROVISION_PLAN, RunPodClient, preflightQuota, parseQuotaError, templateEnv } from "../src/runpod";
+import { endpointBackedPlan, RunPodClient, preflightQuota, parseQuotaError, templateEnv } from "../src/runpod";
 import { imageRef } from "../src/satellite-pins";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -86,7 +86,7 @@ describe.skipIf(!LIVE)("RunPod port against the real API (scratch account)", () 
 
   it("creates a template + a scale-to-zero endpoint with max_workers PINNED ($0: never invoked)", async () => {
     if (!scratchConfirmed) throw new Error("guard failed; refusing to create");
-    const spec = PROVISION_PLAN.find((p) => p.key === "upscale")!;
+    const spec = endpointBackedPlan().find((p) => p.key === "lipsync")!;
     const name = `${stamp}-upscale`;
 
     const tpl = await client.createTemplate(
@@ -124,7 +124,7 @@ describe.skipIf(!LIVE)("RunPod port against the real API (scratch account)", () 
     const endpoints = await client.listEndpoints();
     const mine = endpoints.find((e) => e.id === made.endpoints[0]);
     expect(mine, "endpoint missing right after create").toBeTruthy();
-    expect(mine!.workersMax).toBe(PROVISION_PLAN.find((p) => p.key === "upscale")!.maxWorkers);
+    expect(mine!.workersMax).toBe(endpointBackedPlan().find((p) => p.key === "lipsync")!.maxWorkers);
   });
 
   it("reports the endpoint's configured capacity (REST has NO worker list -- verified, not assumed)", async () => {
@@ -136,6 +136,6 @@ describe.skipIf(!LIVE)("RunPod port against the real API (scratch account)", () 
     const detail = await client.getEndpoint(made.endpoints[0]);
     console.log(`  configured: workersMin=${detail.workersMin} workersMax=${detail.workersMax}`);
     expect(detail.workersMin).toBe(0); // scale-to-zero: idle costs nothing
-    expect(detail.workersMax).toBe(PROVISION_PLAN.find((p) => p.key === "upscale")!.maxWorkers);
+    expect(detail.workersMax).toBe(endpointBackedPlan().find((p) => p.key === "lipsync")!.maxWorkers);
   });
 });

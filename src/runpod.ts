@@ -20,7 +20,23 @@ const BACKEND_GPUS = ["NVIDIA H200", "NVIDIA B200"];
 /** The finish satellites are CPU-light GPU work; RTX 6000 Pro class, as live-verified 2026-07-15. */
 const SATELLITE_GPUS = ["NVIDIA RTX 6000 Ada Generation", "NVIDIA L40S"];
 
-export interface PlannedEndpoint {
+/**
+ * A plan capability is satisfied EITHER by a RunPod endpoint we provision, OR by hardware we
+ * already own and run ourselves. Modelled as a DISCRIMINATED UNION rather than a nullable field,
+ * so the compiler enumerates every site that assumed an endpoint id exists.
+ *
+ * WHY THE SPLIT EXISTS AT ALL. The shared invoke key is endpoint-scoped, and it was minted with NO
+ * access to vivijure-video-upscale or vivijure-audio-upscale: those two run as long-lived serve
+ * containers on our own GPU boxes. SHARED_RUNPOD_ENDPOINTS is all-or-nothing across plan keys, so
+ * before this split the correct pool config could not be WRITTEN AT ALL -- four keys demanded, two
+ * of which must not exist. The ruling lived in the credential and not in the code, and nothing
+ * could report the disagreement.
+ *
+ * A CAPABILITY IS NEVER REMOVED FROM A TENANT, ONLY RE-ROUTED. A shared tenant keeps the full
+ * upscale capability and reaches our iron instead of RunPod, so it consumes no RunPod quota, needs
+ * no pool entry, and carries no endpoint id.
+ */
+interface PlannedCapabilityBase {
   /** Stable key the UI and the studio secrets use. */
   key: SatelliteKey;
   label: string;
@@ -31,17 +47,73 @@ export interface PlannedEndpoint {
    */
   imageRepo: string;
   tag: string;
+}
+
+/** A capability we provision as a RunPod serverless endpoint. */
+export interface PlannedEndpoint extends PlannedCapabilityBase {
+  backing: "runpod";
   /**
-   * Pinned EXPLICITLY on every endpoint, never left to RunPod's default of 3.
+   * Pinned EXPLICITLY on every endpoint, never left to RunPod default of 3.
    * Why it matters: the quota is ACCOUNT-WIDE and enforced at CONFIG time against the sum of
-   * workersMax across all endpoints (#60). Four endpoints at the default 3 = 12, which fails at
-   * create time on the later endpoints. This layout sums to 5 and therefore fits any observed tier.
+   * workersMax across all endpoints (#60).
    */
   maxWorkers: number;
   gpuTypeIds: string[];
-  /** The studio secret that carries this endpoint's id. */
+  /** The studio secret that carries this endpoint id. */
   endpointVar: string;
 }
+
+/**
+ * A capability served by hardware we own and operate, reached by the tenant MODULE WORKER over a
+ * Workers VPC service binding instead of RunPod.
+ *
+ * THE BINDING GOES ON THE MODULE, NOT ON THE STUDIO, and that is the whole contract. Upscale is a
+ * module capability: the studio dispatches to a module worker, and the module worker is what talks
+ * to RunPod or to a door. A binding attached to the studio script under a name nothing reads would
+ * upload clean and change nothing.
+ *
+ * The names are NOT ours to choose. They are what vivijure-cf modules already declare (cf#480,
+ * shipped in v1.21.0 and present in the pinned v1.28.0):
+ *
+ *   modules/finish-upscale   FINISH_UPSCALE_VPC + FINISH_DOOR_TOKEN
+ *   modules/speech-upscale   SPEECH_UPSCALE_VPC + SPEECH_DOOR_TOKEN
+ *
+ * modules/_shared/finish-door.ts branches on the binding being BOUND, never on RunPod failing: a
+ * door-to-RunPod failover would silently re-rent the GPU this change exists to stop renting, with
+ * every signal still green. Same rule as the cp#288 proxy pair.
+ *
+ * NO maxWorkers AND NO endpointVar, on purpose rather than by omission. There is no RunPod quota to
+ * spend and no endpoint id to bind, and a nullable field here would let an empty string reach a
+ * module as an endpoint id, which fails at the tenant FIRST RENDER instead of at provision.
+ */
+export interface PlannedVpcCapability extends PlannedCapabilityBase {
+  backing: "vpc";
+  /** The vpc_service binding name the MODULE worker reads. */
+  bindingName: string;
+  /** The secret binding name the module reads the door bearer from. */
+  doorTokenBinding: string;
+  /** Plane env var holding the Connectivity Directory service id for this door. */
+  serviceIdVar: string;
+  /** Plane env var holding the door bearer (the container LOCAL_FINISH_TOKEN). */
+  doorTokenVar: string;
+}
+
+export type PlannedCapability = PlannedEndpoint | PlannedVpcCapability;
+
+/**
+ * The narrowing every consumer that needs an endpoint id must go through. A type guard rather than
+ * a filter on a string field, so a caller cannot reach `endpointVar` on an own-iron entry without
+ * the compiler objecting. That is the safety property.
+ */
+export const isEndpointBacked = (c: PlannedCapability): c is PlannedEndpoint => c.backing === "runpod";
+
+/** Only the entries a RunPod endpoint must exist for. */
+export const endpointBackedPlan = (plan: PlannedCapability[] = PROVISION_PLAN): PlannedEndpoint[] =>
+  plan.filter(isEndpointBacked);
+
+/** Only the entries served by our own hardware. Exported so the UI can SAY so rather than omit them. */
+export const vpcBackedPlan = (plan: PlannedCapability[] = PROVISION_PLAN): PlannedVpcCapability[] =>
+  plan.filter((c): c is PlannedVpcCapability => c.backing === "vpc");
 
 /**
  * THE PROVISIONING PLAN, as DATA.
@@ -63,13 +135,14 @@ const pinned = (key: SatelliteKey) => ({
 // this file already uses, instead of a hand-duplicated literal that can silently drift.
 export const NO_TRAINING_CLAUSE = /lora|train/i;
 
-export const PROVISION_PLAN: PlannedEndpoint[] = [
+export const PROVISION_PLAN: PlannedCapability[] = [
   {
     ...pinned("backend"),
+    backing: "runpod",
     // cp#303: cast LoRA training does NOT run on this endpoint. Training is fail-closed on its
-    // own satellite (`vivijure-wan-train` / RUNPOD_WAN_TRAIN_ENDPOINT_ID) and never falls back
+    // own satellite (vivijure-wan-train / RUNPOD_WAN_TRAIN_ENDPOINT_ID) and never falls back
     // here. A training clause in this label was a tenant-visible lie and invited the wrong
-    // inference that the shared pool already covers training because it covers `backend`.
+    // inference that the shared pool already covers training because it covers backend.
     label: "Render (keyframes, video)",
     maxWorkers: 2,
     gpuTypeIds: BACKEND_GPUS,
@@ -77,13 +150,19 @@ export const PROVISION_PLAN: PlannedEndpoint[] = [
   },
   {
     ...pinned("upscale"),
+    // OWN IRON (cp#396). Runs as an always-on serve container on propagandhi and fatmike, reached
+    // by the finish-upscale MODULE worker over a Workers VPC service binding. NOT dropped: a
+    // tenant keeps the full capability and only the TRANSPORT changes.
+    backing: "vpc",
     label: "Video upscale",
-    maxWorkers: 1,
-    gpuTypeIds: SATELLITE_GPUS,
-    endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID",
+    bindingName: "FINISH_UPSCALE_VPC",
+    doorTokenBinding: "FINISH_DOOR_TOKEN",
+    serviceIdVar: "FINISH_UPSCALE_VPC_SERVICE_ID",
+    doorTokenVar: "FINISH_DOOR_TOKEN",
   },
   {
     ...pinned("lipsync"),
+    backing: "runpod",
     label: "Lip sync",
     maxWorkers: 1,
     gpuTypeIds: SATELLITE_GPUS,
@@ -91,14 +170,17 @@ export const PROVISION_PLAN: PlannedEndpoint[] = [
   },
   {
     ...pinned("audio-upscale"),
+    // OWN IRON, same ruling and same credential posture as the upscale entry above.
+    backing: "vpc",
     label: "Audio upscale",
-    maxWorkers: 1,
-    gpuTypeIds: SATELLITE_GPUS,
-    endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID",
+    bindingName: "SPEECH_UPSCALE_VPC",
+    doorTokenBinding: "SPEECH_DOOR_TOKEN",
+    serviceIdVar: "SPEECH_UPSCALE_VPC_SERVICE_ID",
+    doorTokenVar: "SPEECH_DOOR_TOKEN",
   },
 ];
 
-export const planWorkerTotal = (plan: PlannedEndpoint[] = PROVISION_PLAN): number =>
+export const planWorkerTotal = (plan: PlannedEndpoint[] = endpointBackedPlan()): number =>
   plan.reduce((n, e) => n + e.maxWorkers, 0);
 
 export interface TenantR2Creds {
@@ -358,7 +440,7 @@ function normalizeList<T>(payload: unknown, key: string): T[] {
 export async function preflightQuota(
   client: RunPodClient,
   slug?: string,
-  plan: PlannedEndpoint[] = PROVISION_PLAN,
+  plan: PlannedEndpoint[] = endpointBackedPlan(),
 ): Promise<QuotaReading> {
   const existing = await client.listEndpoints();
   const existingSum = existing.reduce((n, e) => n + (e.workersMax ?? 0), 0);
@@ -408,7 +490,7 @@ export async function preflightQuota(
  * RunPod to raise it). "Unreadable" is OURS to look at, and telling the tenant to go fund their
  * account for it would be actively wrong advice.
  */
-export function quotaGuidance(reading: QuotaReading, plan: PlannedEndpoint[] = PROVISION_PLAN): string {
+export function quotaGuidance(reading: QuotaReading, plan: PlannedEndpoint[] = endpointBackedPlan()): string {
   const needed = planWorkerTotal(plan);
   if (reading.fits) return `Your RunPod account has room for all ${plan.length} endpoints.`;
   if (reading.refusal === "quota_unreadable") {
@@ -420,7 +502,7 @@ export function quotaGuidance(reading: QuotaReading, plan: PlannedEndpoint[] = P
   }
   return (
     `Your RunPod account's worker quota is ${reading.quota}, and this studio needs ${needed} ` +
-    "workers across 4 endpoints. Free up workers on your existing endpoints, or ask RunPod support " +
+    `workers across ${plan.length} endpoints. Free up workers on your existing endpoints, or ask RunPod support ` +
     "to raise the quota, then try again. Nothing was created."
   );
 }
@@ -448,7 +530,7 @@ export async function createTenantEndpoints(
   runpodApiKey: string,
   slug: string,
   r2: TenantR2Creds,
-  plan: PlannedEndpoint[] = PROVISION_PLAN,
+  plan: PlannedEndpoint[] = endpointBackedPlan(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<CreatedEndpoint[]> {
   const client = new RunPodClient(runpodApiKey, fetchImpl);
@@ -580,7 +662,7 @@ export interface TemplateConvergence {
 export async function convergeTenantTemplateImages(
   runpodApiKey: string,
   slug: string,
-  plan: PlannedEndpoint[] = PROVISION_PLAN,
+  plan: PlannedEndpoint[] = endpointBackedPlan(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<TemplateConvergence[]> {
   const client = new RunPodClient(runpodApiKey, fetchImpl);

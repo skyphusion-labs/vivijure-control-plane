@@ -20,11 +20,13 @@ const SIGNING_KEY = "signing-key-under-test";
 const POOL_KEY = "runpod-pool-key-under-test";
 const TENANT_ID = "ten_1";
 
+// The pool is the ENDPOINT-BACKED capabilities only (cp#396). parseSharedPool REFUSES a pool that
+// names upscale or audio-upscale, so naming one here would empty the allow-list entirely and every
+// case below would pass or fail on a parse error rather than on the proxy it is testing. Nothing
+// about own iron reaches this file: those modules take a VPC door, never a proxied RunPod route.
 const POOL_JSON = JSON.stringify({
   backend: { id: "pool-backend", name: "vivijure-prod-backend" },
-  upscale: { id: "pool-upscale", name: "vivijure-prod-upscale" },
   lipsync: { id: "pool-lipsync", name: "vivijure-prod-lipsync" },
-  "audio-upscale": { id: "pool-audio", name: "vivijure-prod-audio-upscale" },
 });
 
 /** A public model slug from the eight-entry cost-door list. Deliberately narration-gen's: it is

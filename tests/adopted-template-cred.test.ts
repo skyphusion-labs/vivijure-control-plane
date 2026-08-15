@@ -14,8 +14,10 @@ import { describe, it, expect, vi } from "vitest";
 import {
   PROVISION_PLAN,
   createTenantEndpoints,
+  endpointBackedPlan,
   templateEnv,
   tenantEndpointName,
+  vpcBackedPlan,
 } from "../src/runpod";
 
 const STALE = {
@@ -32,6 +34,16 @@ const FRESH = {
 };
 
 /**
+ * The ENDPOINT-BACKED half of the plan, which is all createTenantEndpoints takes (cp#396).
+ *
+ * upscale and audio-upscale are served by hardware we operate and reached over a Workers VPC
+ * binding, so they have no RunPod template to adopt and no credential to refresh -- there is no
+ * template object for a stale key to survive in. Everything below is therefore about the two
+ * capabilities that still have one.
+ */
+const PLAN = endpointBackedPlan();
+
+/**
  * A RunPod fake that keeps real state: templates carry env, and a PATCH mutates it. `calls` records
  * ordering so "template refreshed BEFORE the endpoint is touched" is assertable.
  */
@@ -42,13 +54,13 @@ function statefulRunPod(opts: { seedTemplates?: boolean; seedEndpoints?: boolean
   const calls: string[] = [];
 
   if (opts.seedTemplates) {
-    for (const spec of PROVISION_PLAN) {
+    for (const spec of PLAN) {
       const name = tenantEndpointName("hero", spec.key);
       templates.set(name, { id: `tpl-${name}`, name, env: templateEnv(spec.key, seedEnv) });
     }
   }
   if (opts.seedEndpoints) {
-    for (const spec of PROVISION_PLAN) {
+    for (const spec of PLAN) {
       const name = tenantEndpointName("hero", spec.key);
       endpoints.set(name, { id: `ep-${name}`, name, workersMax: spec.maxWorkers });
     }
@@ -97,6 +109,15 @@ function statefulRunPod(opts: { seedTemplates?: boolean; seedEndpoints?: boolean
 const storedEnvs = (t: Map<string, { env: Record<string, string> }>) => [...t.values()].map((v) => v.env);
 
 describe("adopted RunPod templates carry the freshly minted R2 credential (#83)", () => {
+  it("CONTROL: the plan splits by TRANSPORT, so two templates is a move and not a loss", () => {
+    // Both halves asserted, not just the endpoint-backed count: a lone "2 endpoints" figure cannot
+    // tell a capability that CHANGED TRANSPORT from one that was deleted from the product, and this
+    // file seeds its templates off PLAN, so every count below rests on this split being right.
+    expect(endpointBackedPlan().map((c) => c.key)).toEqual(["backend", "lipsync"]);
+    expect(vpcBackedPlan().map((c) => c.key)).toEqual(["upscale", "audio-upscale"]);
+    expect(PROVISION_PLAN).toHaveLength(4);
+  });
+
   it("CONTROL: the fake really stores the stale credential first (else the gate is vacuous)", () => {
     const rp = statefulRunPod({ seedTemplates: true, seedEndpoints: true });
     for (const env of storedEnvs(rp.templates)) {
@@ -108,9 +129,9 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
     // Exactly the live case: endpoints AND templates already exist from an earlier provision.
     const rp = statefulRunPod({ seedTemplates: true, seedEndpoints: true });
 
-    const out = await createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl);
+    const out = await createTenantEndpoints("rpa_keyA", "hero", FRESH, PLAN, rp.fetchImpl);
 
-    expect(out).toHaveLength(PROVISION_PLAN.length);
+    expect(out).toHaveLength(PLAN.length);
     for (const env of storedEnvs(rp.templates)) {
       expect(env.R2_ACCESS_KEY_ID).toBe("FRESH_AK_minted_this_run");
       expect(env.R2_SECRET_ACCESS_KEY).toBe("FRESH_SK_minted_this_run");
@@ -122,7 +143,7 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
   it("refreshes the template BEFORE touching the endpoint, so no consumer sees a dead cred window", async () => {
     const rp = statefulRunPod({ seedTemplates: true, seedEndpoints: false });
 
-    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl);
+    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PLAN, rp.fetchImpl);
 
     const firstBackendPatch = rp.calls.indexOf("PATCH template:vivijure-hero-backend");
     const firstBackendEndpoint = rp.calls.findIndex((c) => c.startsWith("POST endpoint:vivijure-hero-backend"));
@@ -133,7 +154,7 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
   it("adopted template + missing endpoint: template refreshed AND the new endpoint uses it", async () => {
     const rp = statefulRunPod({ seedTemplates: true, seedEndpoints: false });
 
-    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl);
+    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PLAN, rp.fetchImpl);
 
     for (const env of storedEnvs(rp.templates)) {
       expect(env.R2_ACCESS_KEY_ID).toBe("FRESH_AK_minted_this_run");
@@ -144,9 +165,9 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
   it("fresh tenant: creates templates carrying the minted cred (unchanged behaviour)", async () => {
     const rp = statefulRunPod();
 
-    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl);
+    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PLAN, rp.fetchImpl);
 
-    expect(rp.templates.size).toBe(PROVISION_PLAN.length);
+    expect(rp.templates.size).toBe(PLAN.length);
     for (const env of storedEnvs(rp.templates)) {
       expect(env.R2_ACCESS_KEY_ID).toBe("FRESH_AK_minted_this_run");
     }
@@ -157,7 +178,7 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
     // would be the #83 lie in a new costume.
     const rp = statefulRunPod({ seedTemplates: false, seedEndpoints: true });
 
-    await expect(createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl)).rejects.toThrow(
+    await expect(createTenantEndpoints("rpa_keyA", "hero", FRESH, PLAN, rp.fetchImpl)).rejects.toThrow(
       /no template named .* was found/,
     );
   });
@@ -167,15 +188,17 @@ describe("adopted RunPod templates carry the freshly minted R2 credential (#83)"
     // Getting this wrong on the refresh path would fail only at the tenant first render.
     const rp = statefulRunPod({ seedTemplates: true, seedEndpoints: true });
 
-    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PROVISION_PLAN, rp.fetchImpl);
+    await createTenantEndpoints("rpa_keyA", "hero", FRESH, PLAN, rp.fetchImpl);
 
     const backend = rp.templates.get("vivijure-hero-backend")!.env;
     expect(backend.R2_ENDPOINT).toBe(FRESH.endpoint);
     expect(backend.HF_HUB_OFFLINE).toBe("1");
     expect(backend.R2_ENDPOINT_URL).toBeUndefined();
 
-    const upscale = rp.templates.get("vivijure-hero-upscale")!.env;
-    expect(upscale.R2_ENDPOINT_URL).toBe(FRESH.endpoint);
-    expect(upscale.R2_ENDPOINT).toBeUndefined();
+    // The satellite side of the asymmetry is read off LIPSYNC now: upscale is own-iron and has no
+    // template at all (cp#396), so asking for one would assert on undefined rather than on F17.
+    const lipsync = rp.templates.get("vivijure-hero-lipsync")!.env;
+    expect(lipsync.R2_ENDPOINT_URL).toBe(FRESH.endpoint);
+    expect(lipsync.R2_ENDPOINT).toBeUndefined();
   });
 });

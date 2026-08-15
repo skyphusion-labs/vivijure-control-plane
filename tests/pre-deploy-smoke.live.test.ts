@@ -98,6 +98,8 @@ import { applyStudioMigrations } from "../src/migrate";
 import { deployHarnessDispatcher, type HarnessDispatcher } from "./e2e-harness-dispatcher";
 import { localModuleBundleSource } from "./module-bundle-local";
 import { localStudioBundleSource } from "./studio-bundle-local";
+import { resolveVpcDoors } from "../src/deps";
+import type { ControlPlaneEnv } from "../src/env";
 import { fetchStudioRelease, type FetchedStudioRelease } from "./studio-release-fetch";
 import {
   NO_ANSWER,
@@ -371,6 +373,9 @@ const endpoints: TenantEndpoint[] = [
 function makeDeps(): TenantModuleDeps {
   return {
     cf,
+    // cp#396: same environment-read as the e2e suite. Absent doors REFUSE at modules_upload rather
+    // than silently skipping a capability the smoke claims to have exercised.
+    vpcDoors: resolveVpcDoors(process.env as unknown as ControlPlaneEnv),
     moduleNamespace: NAMESPACE,
     aiGatewayId: null,
     // cp#288: STATED RATHER THAN OMITTED, per the note above about what this smoke can and cannot

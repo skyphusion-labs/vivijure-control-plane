@@ -45,6 +45,10 @@ function deps(over: Partial<TenantModuleDeps> = {}) {
     moduleBundle: { fetch: vi.fn(async () => ({ mainModule: "i.js", moduleText: "export default {}", compatibilityDate: "2026-06-01" })) },
     callTenantModule: vi.fn(async () => ({ status: 200, text: "{}" })),
     callTenantStudio: vi.fn(async () => ({ status: 200, text: "{}" })),
+    vpcDoors: {
+      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
+      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
+    },
     log: () => undefined,
     ...over,
   } as unknown as TenantModuleDeps;

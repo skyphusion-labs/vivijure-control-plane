@@ -27,13 +27,15 @@ import { MemoryStore, TEST_PROVISION_FACTS } from "./memory-store";
 const KEK = btoa("0123456789abcdef0123456789abcdef");
 const RING = kekRing(KEK);
 const MIGRATIONS = [{ name: "0001_init.sql", sql: "CREATE TABLE IF NOT EXISTS projects (id TEXT);" }];
-// All four, because the module catalog maps a module onto each one; a short list fails at
-// modules_upload rather than testing what this file is about.
+// BOTH endpoint-backed capabilities, because the module catalog maps a module onto each one and a
+// short list fails at modules_upload rather than testing what this file is about. It is two rather
+// than four since cp#396: upscale and audio-upscale are served by our own iron, so no endpoint is
+// created for them and the module reaches them over the doors in vpcDoors below. Their modules are
+// still uploaded -- the capability MOVED transport, it was not dropped, and a missing door would
+// still fail modules_upload here.
 const ENDPOINTS = [
   { key: "backend", label: "Render", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
-  { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
   { key: "lipsync", label: "Lipsync", id: "ep3", name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
-  { key: "audio-upscale", label: "Audio", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
 ];
 
 /**
@@ -73,10 +75,9 @@ function fakeCf(over: Record<string, unknown> = {}) {
       { type: "plain_text", name: "R2_S3_BUCKET" },
       { type: "plain_text", name: "R2_S3_ENDPOINT" },
       { type: "ratelimit", name: "SPEND_RATE_LIMITER" },
+      // cp#396: only the endpoint-backed vars, which is what a real upload now carries.
       { type: "plain_text", name: "RUNPOD_ENDPOINT_ID" },
-      { type: "plain_text", name: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
       { type: "plain_text", name: "MUSETALK_RUNPOD_ENDPOINT_ID" },
-      { type: "plain_text", name: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
     ]),
     getScriptSecretNames: vi.fn(async () => ["R2_S3_SECRET_ACCESS_KEY", "STUDIO_API_TOKEN"]),
     createAssetsUploadSession: vi.fn(async () => ({ jwt: "j", buckets: [] })),
@@ -93,6 +94,13 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     // Same object as cf: the fallback path, so a test asserting on cf's log sees the upload.
     scriptUploadCf: cf,
     videoFinishServiceId: null,
+    // cp#396: both own-iron doors configured, which is what a wired plane looks like. Absent, every
+    // case in this file would die at modules_upload on the vpc-backed modules refusing to upload
+    // with no route to their door.
+    vpcDoors: {
+      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
+      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
+    },
     runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),
@@ -1036,11 +1044,12 @@ describe("readTenantEndpoints", () => {
   it("reads the stored objects, endpointVar and all", async () => {
     const store = new MemoryStore();
     const t = await seedTenant(store, { throughStudio: true });
+    // Two vars, and the row is the whole population: this reader returns what was STORED, and only
+    // endpoint-backed capabilities have an endpoint to store (cp#396). The own-iron pair is absent
+    // here because it is carried as a door on the module worker, not because a tenant lost it.
     expect(readTenantEndpoints(t).map((e) => e.endpointVar)).toEqual([
       "RUNPOD_ENDPOINT_ID",
-      "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID",
       "MUSETALK_RUNPOD_ENDPOINT_ID",
-      "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID",
     ]);
   });
 

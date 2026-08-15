@@ -90,6 +90,10 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
       if (init.path === "/api/modules/install") return { status: 201, text: "{}" };
       return { status: 200, text: "{}" };
     }),
+    vpcDoors: {
+      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
+      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
+    },
     log: () => undefined,
     ...over,
   } as unknown as ProvisionDeps;

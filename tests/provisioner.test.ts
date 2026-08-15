@@ -67,10 +67,12 @@ function fakeCf(over: Partial<Record<string, unknown>> = {}) {
       { type: "plain_text", name: "R2_S3_ENDPOINT" },
       { type: "ratelimit", name: "SPEND_RATE_LIMITER" },
       { type: "dispatch_namespace", name: "MODULE_DISPATCH" },
+      // cp#396: the endpoint-id vars a REAL upload carries are the endpoint-backed ones only.
+      // upscale and audio-upscale are own-iron and reach their door from the MODULE worker, so the
+      // studio never holds a var for them and a census that listed one would be asserting a
+      // binding production does not create.
       { type: "plain_text", name: "RUNPOD_ENDPOINT_ID" },
-      { type: "plain_text", name: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
       { type: "plain_text", name: "MUSETALK_RUNPOD_ENDPOINT_ID" },
-      { type: "plain_text", name: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
     ]),
     createDispatchNamespace: vi.fn(async () => void calls.push("createDispatchNamespace")),
     listNamespaceScripts: vi.fn(async () => [] as string[]),
@@ -82,11 +84,13 @@ function fakeCf(over: Partial<Record<string, unknown>> = {}) {
   return cf as unknown as CfApi;
 }
 
+// What createTenantEndpoints returns: the ENDPOINT-BACKED capabilities only (cp#396). upscale and
+// audio-upscale run on hardware we operate, so no endpoint is created for them and none comes back;
+// their transport is a door bound on the module worker (see vpcDoors below). Ids stay ep1/ep3 so
+// every assertion that already named one still names the same capability.
 const ENDPOINTS = [
   { key: "backend", label: "Render", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
-  { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
   { key: "lipsync", label: "Lip sync", id: "ep3", name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
-  { key: "audio-upscale", label: "Audio upscale", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
 ];
 
 function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
@@ -95,6 +99,13 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     store,
     cf,
     videoFinishServiceId: null,
+    // cp#396: the DEFAULT fixture configures BOTH own-iron doors, because a fully-wired plane is
+    // what a deploy is. uploadTenantModules refuses a vpc-backed module with no door, so an absent
+    // default would fail every case in this file for a reason none of them are about.
+    vpcDoors: {
+      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
+      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
+    },
     // cp#270: the DEFAULT fixture is a plane with NO shared pool, so every pre-existing case
     // still exercises the dedicated path exactly as it did. The pooled cases override both.
     sharedPool: null,
@@ -231,15 +242,17 @@ beforeEach(() => {
 
 // cp#270: the SHARED pool fixture. Ids and names only -- the invoke key is a separate dep, exactly
 // as it is in production, so a test that forgets one cannot accidentally get the other.
+// The pool carries the ENDPOINT-BACKED keys only (cp#396): parseSharedPool REFUSES a pool naming
+// upscale or audio-upscale, because the shared invoke key has no access to endpoints that do not
+// exist. A shared tenant keeps both capabilities and reaches them over the same doors a dedicated
+// tenant does, which is why nothing here shrinks except the endpoint list.
 const SHARED_POOL = {
   endpoints: [
     { key: "backend", label: "Render", id: "pool-1", name: "vivijure-prod-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
-    { key: "upscale", label: "Upscale", id: "pool-2", name: "vivijure-prod-upscale", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
     { key: "lipsync", label: "Lip sync", id: "pool-3", name: "vivijure-prod-lipsync", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
-    { key: "audio-upscale", label: "Audio upscale", id: "pool-4", name: "vivijure-prod-audio", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
   ],
-  ids: new Set(["pool-1", "pool-2", "pool-3", "pool-4"]),
-  names: new Set(["vivijure-prod-backend", "vivijure-prod-upscale", "vivijure-prod-lipsync", "vivijure-prod-audio"]),
+  ids: new Set(["pool-1", "pool-3"]),
+  names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync"]),
 };
 
 describe("runProvisionJob on the SHARED pool (cp#270)", () => {
@@ -633,7 +646,12 @@ describe("runProvisionJob", () => {
     expect(byName.get("ASSETS")?.type).toBe("assets");
     // Each endpoint id is wired into the var the studio reads it from (spec.endpointVar).
     expect(byName.get("RUNPOD_ENDPOINT_ID")?.text).toBe("ep1");
-    expect(byName.get("VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID")?.text).toBe("ep2");
+    expect(byName.get("MUSETALK_RUNPOD_ENDPOINT_ID")?.text).toBe("ep3");
+    // ...and own iron carries NO endpoint id, so the studio is handed no var for one (cp#396). Both
+    // directions asserted: a present var proves the wiring, an absent one proves the split, and an
+    // empty string bound to satisfy a shape would upload clean and die at the tenant first render.
+    expect(byName.has("VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID")).toBe(false);
+    expect(byName.has("AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID")).toBe(false);
     // The studio auth token is a SECRET on the tenant worker.
     expect(byName.get("STUDIO_API_TOKEN")?.type).toBe("secret_text");
     const tokenValue = byName.get("STUDIO_API_TOKEN")!.text!;
@@ -1093,7 +1111,7 @@ describe("cf#99 tenant module bridge", () => {
     expect(uploads(d)[0].namespace).toBe("vivijure-tenants");
   });
 
-  it("wires each module's RUNPOD_ENDPOINT_ID to its endpoint, and does NOT bind key B at upload", async () => {
+  it("wires each module to its TRANSPORT (endpoint id or own-iron door), and does NOT bind key B at upload", async () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
@@ -1105,13 +1123,38 @@ describe("cf#99 tenant module bridge", () => {
         .map((u) => [u.scriptName, u.bindings]),
     );
     const pre = (n: string) => `${t.id}-${n}`.replace(/_/g, "-");
-    // keyframe + own-gpu ride the backend endpoint (ep1); the finishers/audio get their own.
+    // keyframe + own-gpu ride the backend endpoint (ep1); finish-lipsync gets its own (ep3).
     const epOf = (script: string, name: string) => byScript.get(script)!.find((b) => b.name === name)?.text;
     expect(epOf(pre("keyframe"), "RUNPOD_ENDPOINT_ID")).toBe("ep1");
     expect(epOf(pre("own-gpu"), "RUNPOD_ENDPOINT_ID")).toBe("ep1");
-    expect(epOf(pre("finish-upscale"), "RUNPOD_ENDPOINT_ID")).toBe("ep2");
     expect(epOf(pre("finish-lipsync"), "RUNPOD_ENDPOINT_ID")).toBe("ep3");
-    expect(epOf(pre("speech-upscale"), "RUNPOD_ENDPOINT_ID")).toBe("ep4");
+    // cp#396: finish-upscale and speech-upscale are OWN IRON, so their transport is a vpc_service
+    // binding plus the door bearer, and NO endpoint id. All three asserted per module, on purpose:
+    // a missing RUNPOD_ENDPOINT_ID on its own reads exactly like a module that was never uploaded,
+    // and a bound door on its own would not catch an endpoint id bound beside it -- the
+    // both-transports state that uploads clean and dies at the tenant first render.
+    const bindOf = (script: string, name: string) =>
+      byScript.get(script)!.find((b) => b.name === name) as
+        | { type: string; name: string; text?: string; service_id?: string }
+        | undefined;
+    expect(bindOf(pre("finish-upscale"), "FINISH_UPSCALE_VPC")).toMatchObject({
+      type: "vpc_service",
+      service_id: "svc-finish-upscale",
+    });
+    expect(bindOf(pre("finish-upscale"), "FINISH_DOOR_TOKEN")).toMatchObject({
+      type: "secret_text",
+      text: "door-token-test",
+    });
+    expect(bindOf(pre("finish-upscale"), "RUNPOD_ENDPOINT_ID")).toBeUndefined();
+    expect(bindOf(pre("speech-upscale"), "SPEECH_UPSCALE_VPC")).toMatchObject({
+      type: "vpc_service",
+      service_id: "svc-speech-upscale",
+    });
+    expect(bindOf(pre("speech-upscale"), "SPEECH_DOOR_TOKEN")).toMatchObject({
+      type: "secret_text",
+      text: "door-token-test",
+    });
+    expect(bindOf(pre("speech-upscale"), "RUNPOD_ENDPOINT_ID")).toBeUndefined();
     // Key B is NOT present at upload -- it lands in installInvokeKey (custody: the key never rides
     // the module upload, only a rotate-in-place secret PUT after it is verified).
     for (const bindings of byScript.values()) {

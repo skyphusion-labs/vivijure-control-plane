@@ -26,6 +26,7 @@ import {
   verifyTenantProxyToken,
 } from "../src/runpod-proxy-auth";
 import { PROXY_UPSTREAM_PREFIX, matchProxyRoute } from "../src/runpod-proxy-route-match";
+import { endpointBackedPlan, vpcBackedPlan } from "../src/runpod";
 import { tenantModuleProxy, publicOrigin, type ControlPlaneEnv } from "../src/env";
 import { provisionerWiring } from "../src/deps";
 import { CfApi, type WorkerBinding } from "../src/cf-api";
@@ -72,6 +73,10 @@ function deps(over: Partial<TenantModuleDeps> = {}): { d: TenantModuleDeps; uplo
     },
     callTenantModule: vi.fn(async () => ({ status: 200, text: "{}" })),
     callTenantStudio: vi.fn(async () => ({ status: 201, text: "{}" })),
+    vpcDoors: {
+      upscale: { serviceId: "svc-finish-upscale", token: "door-token-test" },
+      "audio-upscale": { serviceId: "svc-speech-upscale", token: "door-token-test" },
+    },
     log: vi.fn((...a: unknown[]) => void logs.push(a)),
     ...over,
   } as unknown as TenantModuleDeps;
@@ -90,7 +95,15 @@ const text = (b: WorkerBinding | undefined) => (b as { text?: string } | undefin
  *  endpoint of ours -- so the proxy pair, which every RunPod-reaching module needs, must key on
  *  reachesRunpod. Keying it on endpointKey would have left those eight on the DIRECT RunPod key on
  *  a shared tenant. Each list below is used for exactly the claim it names. */
-const ENDPOINT_BACKED = TENANT_MODULE_CATALOG.filter((s) => s.endpointKey).map((s) => s.module);
+// cp#396: endpointKey no longer means "gets a RUNPOD_ENDPOINT_ID binding". It means the module has
+// a CAPABILITY in the plan, and the plan now decides the TRANSPORT: endpoint-backed capabilities get
+// an endpoint id, vpc-backed ones get a door binding and no endpoint id at all.
+//
+// Both sets are DERIVED from the plan rather than listed, and both are asserted non-empty below: a
+// denominator that silently went to zero is how a loop-based assertion passes by testing nothing.
+const endpointKeysOf = (keys: string[]) => TENANT_MODULE_CATALOG.filter((s) => Boolean(s.endpointKey) && keys.includes(String(s.endpointKey))).map((s) => s.module);
+const ENDPOINT_BACKED = endpointKeysOf(endpointBackedPlan().map((c) => c.key));
+const DOOR_BACKED = endpointKeysOf(vpcBackedPlan().map((c) => c.key));
 const REACHES_RUNPOD = TENANT_MODULE_CATALOG.filter(reachesRunpod).map((s) => s.module);
 const NOT_REACHING_RUNPOD = TENANT_MODULE_CATALOG.filter((s) => !reachesRunpod(s)).map((s) => s.module);
 
@@ -403,5 +416,63 @@ describe("the bound base round-trips through the plane's own matcher", () => {
     expect(base.endsWith("/")).toBe(false);
     expect(matchProxyRoute("POST", new URL(cfUrl(base + "/", "ep1", "/run")).pathname))
       .toEqual({ kind: "submit", endpointId: "ep1" });
+  });
+});
+
+// ---- cp#396: the OWN-IRON DOOR, on the module worker -------------------------------------------
+
+describe("a vpc-backed capability gets a DOOR instead of an endpoint id", () => {
+  it("binds the door pair and NO RUNPOD_ENDPOINT_ID", async () => {
+    const { d, uploads } = deps();
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG");
+    expect(DOOR_BACKED.length, "denominator is empty; this asserts nothing").toBeGreaterThan(0);
+    for (const m of DOOR_BACKED) {
+      const u = forModule(uploads, m);
+      const capability = vpcBackedPlan().find((c) => TENANT_MODULE_CATALOG.find((s) => s.module === m)?.endpointKey === c.key)!;
+      const door = named(u, capability.bindingName);
+      expect(door, m).toBeDefined();
+      expect(door!.type, m).toBe("vpc_service");
+      const bearer = named(u, capability.doorTokenBinding);
+      expect(bearer, m).toBeDefined();
+      // secret_text, never plain_text: a bearer readable from the dashboard is a shared secret
+      // nobody rotated.
+      expect(bearer!.type, m).toBe("secret_text");
+      // THE ABSENCE THAT MATTERS. An empty or stale endpoint id here binds clean and dies at the
+      // tenant first render, which is the failure the transport split exists to remove.
+      expect(named(u, "RUNPOD_ENDPOINT_ID"), m).toBeUndefined();
+    }
+  });
+
+  it("REFUSES the upload when a vpc-backed capability has NO door configured, naming both vars", async () => {
+    // The other half of the transport rule. A door-bound module with no door has NO transport at
+    // all: no endpoint id and no binding. Uploading it would produce a studio that provisions green
+    // and dies at the first upscale, which is the exact failure this whole change removes.
+    //
+    // The refusal must NAME THE KNOBS. A message saying only that something is unconfigured sends
+    // an operator to the wrong file; these two vars are the fix.
+    const { d } = deps({ vpcDoors: {} } as Partial<TenantModuleDeps>);
+    const capability = vpcBackedPlan()[0];
+    await expect(
+      uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG"),
+    ).rejects.toThrow(new RegExp(capability.serviceIdVar));
+    const { d: d2 } = deps({ vpcDoors: {} } as Partial<TenantModuleDeps>);
+    await expect(
+      uploadTenantModules(d2, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG"),
+    ).rejects.toThrow(new RegExp(capability.doorTokenVar));
+  });
+
+  it("CONTROL: endpoint-backed modules still get the endpoint id and NO door", async () => {
+    // Without this, the assertion above would also pass on a build that bound doors to everything.
+    const { d, uploads } = deps();
+    await uploadTenantModules(d, "v1.0.0", TENANT, "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared", undefined, "AIG");
+    expect(ENDPOINT_BACKED.length).toBeGreaterThan(0);
+    for (const m of ENDPOINT_BACKED) {
+      const u = forModule(uploads, m);
+      expect(named(u, "RUNPOD_ENDPOINT_ID"), m).toBeDefined();
+      for (const capability of vpcBackedPlan()) {
+        expect(named(u, capability.bindingName), m).toBeUndefined();
+        expect(named(u, capability.doorTokenBinding), m).toBeUndefined();
+      }
+    }
   });
 });
