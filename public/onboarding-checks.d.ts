@@ -48,8 +48,14 @@ export interface OnboardingState {
   capacity?: QuotaFit | null;
   confirmed?: boolean;
   invokeVerified?: boolean;
+  /** The name currently in the field. The gate compares consent against THIS. */
+  slug?: string;
   slugValid?: boolean;
   slugAvailable?: boolean;
+  // cp#435: available and reclaimable are different answers; the second is destructive to act on.
+  slugReclaimable?: boolean;
+  /** The slug the destruction was acknowledged FOR. Consent names its studio, so it cannot carry. */
+  slugReclaimConfirmedFor?: string | null;
 }
 
 export const STEPS: OnboardingStep[];
@@ -161,6 +167,21 @@ export function costCeilingUsd(
 export function formatUsd(amount: number | null | undefined): string | null;
 export function stepIndex(key: string): number;
 export function canAdvance(key: string, state: OnboardingState | null | undefined): boolean;
+
+export interface SlugAvailability {
+  available?: boolean;
+  reclaimable?: boolean;
+  reason?: string;
+}
+
+export interface SlugVerdict {
+  state: "free" | "reclaim" | "taken";
+  level: "ok" | "warn" | "bad";
+  text: string;
+}
+
+/** cp#435: three outcomes, never two. A reclaimable slug is the account own studio. */
+export function slugVerdict(res: SlugAvailability | null | undefined, slug: string): SlugVerdict;
 
 /**
  * The provision job payload as GET /api/tenant/:id/job reports it (cp#43).

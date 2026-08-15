@@ -29,7 +29,7 @@ import {
 } from "./payment-rail";
 import type { CreditStore, OperatorCredential } from "./store";
 import { ApiTokenError } from "./tenant-api-token";
-import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt } from "./aup";
+import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt, lastAcceptance } from "./aup";
 import {
   clearedSessionCookie,
   endSession,
@@ -311,6 +311,22 @@ export async function handle(
         aup_version: env.AUP_VERSION,
         // Projected from what is actually configured, never hardcoded. Joan renders from this.
         auth_methods: ["email", ...configuredProviders(env)],
+        // cp#439: whether THIS DEPLOY can provision a tenant with no RunPod key of its own.
+        //
+        // The provision route already branches on exactly this fact -- a keyless provision is
+        // refused with runpod_key_required ONLY when the plane offers no shared tier -- but the
+        // fact itself was projected nowhere, so no client could know a key was optional. The
+        // wizard therefore gated its key step on a non-empty key and a shared-tier tenant could
+        // not provision at all.
+        //
+        // BELONGS HERE rather than on the tenant: this is decided BEFORE any tenant row exists,
+        // so tenantView.runpod_mode (the cp#439 field) cannot answer it. Two different questions,
+        // asked at two different moments: "can this plane do keyless" and "which tier did this
+        // tenant get".
+        //
+        // False when the provisioner is unwired at all, which is the same answer for the client:
+        // do not offer keyless here.
+        shared_tier_available: deps.provisioner?.offersSharedTier() ?? false,
       });
     }
 
@@ -569,11 +585,24 @@ async function finishSso(
 
 async function me(env: ControlPlaneEnv, deps: ControlPlaneDeps, account: Account): Promise<Response> {
   const tenant = await deps.store.getTenantForAccount(account.id);
+  // cp#433: `accepted` ALONE collapsed two different people into one false -- somebody who has
+  // never accepted anything, and somebody who accepted an earlier version that has since been
+  // superseded. They were byte-identical here, so the front door rendered the same first-run
+  // setup gate at both, telling an owner with a RUNNING studio that they were about to start.
+  //
+  // last_accepted is the discriminator: null means never, present means the policy moved under
+  // them. It is projected UNCONDITIONALLY rather than only when refused, so a client never has to
+  // know which branch it is in to read it. Nothing here touches who gets through the gate.
+  const [accepted, last] = await Promise.all([
+    hasAcceptedCurrent(deps.store, account.id, env.AUP_VERSION),
+    lastAcceptance(deps.store, account.id),
+  ]);
   return json({
     account: { id: account.id, email: account.email, created_at: account.created_at },
     aup: {
       required_version: env.AUP_VERSION,
-      accepted: await hasAcceptedCurrent(deps.store, account.id, env.AUP_VERSION),
+      accepted,
+      last_accepted: last,
     },
     tenant: tenant ? tenantView(tenant, tenantDomainSuffix(env)) : null,
   });

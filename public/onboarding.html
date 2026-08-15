@@ -121,6 +121,23 @@
         </div>
         <p class="small muted" id="slug-preview" aria-live="polite"></p>
         <p class="hint" id="slug-hint" data-level="" aria-live="polite"></p>
+
+        <!-- cp#435: shown ONLY when the plane reports the name as reclaimable, which means it is
+             this account own unfinished studio. Continuing is a teardown with deleteData true,
+             not a resume, so the gate needs an act rather than a Continue click. -->
+        <div class="callout callout-bad" id="slug-reclaim" hidden>
+          <p><strong>You already have a studio with this name.</strong></p>
+          <p class="small">It was set up for you, and its database, its file storage and its studio
+          worker exist right now. <strong>Continuing does not carry on where it left off. It deletes
+          all of that and builds a new one under the same name.</strong> What is deleted is not
+          recoverable.</p>
+          <p class="small muted">If you came here to finish setting up a studio somebody else
+          created for you, this is not the way to do it. Stop here and ask us.</p>
+          <label class="row" for="slug-reclaim-ack">
+            <input type="checkbox" id="slug-reclaim-ack" />
+            I understand this deletes the existing studio and everything in it.
+          </label>
+        </div>
         <p class="small muted">
           Lowercase letters, numbers, and dashes. A few names are reserved for us.
         </p>

@@ -560,6 +560,21 @@ export interface ProxyJobClose {
   terminal_at: number;
 }
 
+/**
+ * A recorded AUP acceptance, projected back to the account that made it (cp#433).
+ *
+ * DELIBERATELY NARROW. The stored row also carries ip_hash, user_agent and aup_sha256, and none of
+ * them are here. "The caller may see their own row" is not the same claim as "the caller needs
+ * every column in it": ip_hash is a hash of an IP address and user_agent is a device fingerprint,
+ * so projecting either into a browser buys the copy nothing and widens what a stolen session sees.
+ */
+export interface AupAcceptance {
+  /** The AUP_VERSION label that was in force at the moment of acceptance. */
+  version: string;
+  /** ISO-8601 UTC. Normalized at the store boundary; see isoFromSqliteUtc in store-d1.ts. */
+  accepted_at: string;
+}
+
 export interface ControlPlaneStore {
   // accounts + identities
   getAccountById(id: string): Promise<Account | null>;
@@ -585,6 +600,18 @@ export interface ControlPlaneStore {
 
   // AUP
   hasAcceptedAup(accountId: string, version: string): Promise<boolean>;
+  /**
+   * The most recent acceptance by this account, or null if it has never accepted any version
+   * (cp#433). Answers a DIFFERENT question from hasAcceptedAup: not who may pass, but what to
+   * tell whoever did not. The gate stays an exact-version lookup and nothing here softens it.
+   *
+   * Ordered by the APPEND ORDER of the row, never by the version label. AUP_VERSION is a
+   * free-form string: production has served 1.0.0 and 1.1.0, test configuration uses date-shaped
+   * labels like 2026-07-17, and even inside semver 1.10.0 sorts before 1.9.0 lexicographically.
+   * accepted_at is second-granularity, so two acceptances inside one second tie. Insertion order
+   * is the only ordering the record actually has.
+   */
+  getLastAupAcceptance(accountId: string): Promise<AupAcceptance | null>;
   recordAupAcceptance(
     accountId: string,
     version: string,
