@@ -177,10 +177,11 @@ export function tenantRefusal(tenant: Tenant): Response | null {
       // Direction matches `routingStatusFor()` in tenant-resolver.ts, which projects the SAME
       // column and already documents fail-closed as "the correct direction for a mistake to fall".
       // Two projections of one column falling opposite ways was the defect; this is cp#390.
+      const unmodelledStatus = (tenant as { status?: unknown }).status;
       console.error(JSON.stringify({
         ev: "routing.lifecycle_unmodelled",
         tenant: tenant.id,
-        status: String((tenant as { status: unknown }).status),
+        ...(typeof unmodelledStatus === "string" ? { status: unmodelledStatus } : {}),
         msg: "tenant status outside TenantLifecycle -- refusing. Loud in the log, generic on the wire.",
       }));
       return refusal(404, "No studio at this address.");
