@@ -1053,7 +1053,14 @@ export interface ControlPlaneStore {
    * re-arm its lease, leaving a failed job that reads as live and progressing.
    */
   updateJobProgress(id: string, step: string, stepsDoneJson: string): Promise<void>;
-  finishJob(id: string, status: "succeeded" | "failed", errorStep: string | null, errorMessage: string | null): Promise<void>;
+  /**
+   * Close a job. Returns whether a row ACTUALLY CHANGED: a terminal job is a closed record and
+   * refuses (cp#438), so a caller pairing this with a tenant-status write MUST BRANCH ON THE
+   * RESULT (cp#443). Writing the tenant unconditionally after a refused close is what turns a
+   * losing race from wrong-but-consistent into inconsistent: the job keeps its real outcome while
+   * the tenant takes the LOSING driver outcome.
+   */
+  finishJob(id: string, status: "succeeded" | "failed", errorStep: string | null, errorMessage: string | null): Promise<boolean>;
 
   // ---- invoke-key handoffs (cp#169) ----
   /** Mint one. The caller hashes; this store never sees the token value. */

@@ -226,3 +226,41 @@ describe("the reclaim acknowledgement is revoked, and revoked in the right ORDER
     expect(reset).toBeLessThan(fetched);
   });
 });
+
+// cp#455: the boot branch must SHIP, and the fake loading state must be GONE.
+describe("onboarding boots from the account rather than always at step 1 (cp#455)", () => {
+  const html = readFileSync(join(HERE, "..", "public", "onboarding.html"), "utf8");
+  const js = readFileSync(join(HERE, "..", "public", "onboarding.js"), "utf8");
+
+  it("CONTROL: both assets are really there", () => {
+    expect(html).toContain("data-step=\"invoke\"");
+    expect(js).toContain("function init()");
+  });
+
+  it("reads the account on boot and lands on the resumed step", () => {
+    expect(js).toContain("checks.resumeStep(");
+    expect(js).toContain("resumeFromAccount()");
+  });
+
+  it("recovers the tenant id a fresh load never had", () => {
+    // state.tenantId had exactly ONE assignment, inside runProvision, which is why a fresh
+    // arrival POSTed to /api/tenant/null/invoke-key and was told its key was rejected (cp#447).
+    const start = js.indexOf("async function resumeFromAccount");
+    const body = js.slice(start, start + 2200);
+    expect(body).toContain("state.tenantId = tenant.id");
+    expect(body).toContain("state.createdEndpoints = tenant.endpoints");
+  });
+
+  it("ships NO fake loading state for the endpoint list (cp#449)", () => {
+    // A spinner-shaped word implies work in progress, so the honest reading -- this page does
+    // not know your endpoints -- is the one it hid. renderCreatedEndpoints says so itself when
+    // it has nothing.
+    expect(html).toMatch(/id="created-endpoints"[^>]*><\/div>/);
+    expect(html).not.toMatch(/id="created-endpoints"[^>]*>loading/i);
+  });
+
+  it("refuses to start a wizard for a studio that is not in setup", () => {
+    expect(html).toContain("data-step=\"not-in-setup\"");
+    expect(html).toMatch(/not in setup/i);
+  });
+});

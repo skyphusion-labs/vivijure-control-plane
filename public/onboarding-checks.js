@@ -426,6 +426,46 @@
     return { state: "free", level: "ok", text: name + " is free." };
   }
 
+  // WHERE A FRESH ARRIVAL BELONGS (cp#455).
+  //
+  // init() called show("what") unconditionally and never read /api/me, so every step after the
+  // first assumed you had walked the previous one and kept what it needed in page memory a fresh
+  // arrival does not have. That single fact produced five separate defects, because a self-served
+  // tenant PASSES THROUGH these screens while an operator-provisioned one ARRIVES at them.
+  //
+  // The front door already computes this correctly from the same payload and then hands off to a
+  // page that throws it away. This is that decision, kept pure so it can be tested without a DOM,
+  // and deliberately shaped the same way: total, no cheerful default, and an unrecognised state
+  // returns null rather than a guess.
+  //
+  // step null means THE WIZARD IS NOT THE RIGHT PLACE. Suspended, deleting, deleted and anything
+  // unmodelled are real states the front door has screens for and this page does not; starting a
+  // setup wizard for a deleted studio would be the same species of confidently-wrong screen the
+  // rest of this issue is about.
+  function resumeStep(me) {
+    if (!me || !me.account) return { step: "what", reason: "signed_out" };
+    if (!me.aup || me.aup.accepted !== true) return { step: "what", reason: "aup_required" };
+
+    const tenant = me.tenant;
+    if (!tenant) return { step: "what", reason: "no_tenant" };
+
+    switch (tenant.status) {
+      case "pending":
+      case "provisioning":
+        return { step: "build", reason: "provisioning" };
+      case "awaiting_invoke_key":
+        return { step: "invoke", reason: "awaiting_invoke_key" };
+      case "failed":
+        // The build screen is where progress and errors render, and error_step and error_message
+        // are on the job row. This is what makes See what happened able to show what happened.
+        return { step: "build", reason: "failed" };
+      case "live":
+        return { step: "done", reason: "live" };
+      default:
+        return { step: null, reason: "not_in_setup" };
+    }
+  }
+
   function canAdvance(key, state) {
     const s = state || {};
     if (key === "rules") return s.rulesAccepted === true;
@@ -763,6 +803,7 @@
     formatUsd: formatUsd,
     stepIndex: stepIndex,
     canAdvance: canAdvance,
+    resumeStep: resumeStep,
     slugVerdict: slugVerdict,
     PROVISION_RESUME_BOUNDARY: PROVISION_RESUME_BOUNDARY,
     PROVISION_FIRST_POLL_MS: PROVISION_FIRST_POLL_MS,

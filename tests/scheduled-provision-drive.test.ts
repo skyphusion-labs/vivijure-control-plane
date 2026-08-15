@@ -170,4 +170,147 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     expect(resume).toHaveBeenCalledTimes(1);
     expect(tenantRow("ten_6").status).toBe("awaiting_invoke_key");
   });
+
+  // ---- cp#437: the TOTAL-AGE cap ---------------------------------------------------------------
+
+  /** Backdate CREATION, which is the quantity the cap measures and the one re-claiming cannot
+   *  reset. Deliberately separate from noProgressFor above: that moves updated_at, and the whole
+   *  point of the cap is that updated_at is no longer a usable clock under a cron. */
+  const createdAgo = (jobId: string, minutes: number) =>
+    db.prepare("UPDATE provision_jobs SET created_at = datetime(:now, :ago) WHERE id = :id")
+      .run({ now: "now", ago: -minutes + " minutes", id: jobId });
+
+  it("gives up on a job older than the cap, even though it was touched a moment ago", async () => {
+    // THE CASE THE STALENESS RULE CANNOT SEE. updated_at is FRESH here -- claimJob stamps it on
+    // every tick -- so the idle reap will never fire on this row no matter how long it runs.
+    await store.createTenant("ten_old", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_old", "ten_old", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_old");
+    expireLease("job_old");
+    createdAgo("job_old", 3 * 60);
+
+    await runScheduledTick(env(), deps);
+
+    expect(tenantRow("ten_old").status).toBe("failed");
+    expect(jobRow("job_old").status).toBe("failed");
+    expect(jobRow("job_old").error_message).toMatch(/did not complete within/);
+    // and it was REAPED rather than driven: the resume never ran.
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a job INSIDE the cap is still driven, so the cap is not just refusing everything", async () => {
+    // Without this the case above would pass identically against a cap of zero.
+    await store.createTenant("ten_young", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_young", "ten_young", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_young");
+    expireLease("job_young");
+    createdAgo("job_young", 30);
+
+    await runScheduledTick(env(), deps);
+
+    expect(tenantRow("ten_young").status).toBe("awaiting_invoke_key");
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("THE FOREVER LOOP: a job re-claimed every tick is eventually reaped by the cap", async () => {
+    // ernst edge, and the second independent argument for this constant. claimJob stamps
+    // updated_at (store-d1.ts:645), and the cron cadence sits INSIDE the staleness window, so a job
+    // that keeps being claimed keeps resetting the only clock the idle rule reads. Simulated by
+    // ticking repeatedly and letting each tick stamp the row.
+    await store.createTenant("ten_loop", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_loop", "ten_loop", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_loop");
+
+    // A driver that throws AFTER the claim: the row is stamped, nothing progresses, nothing fails.
+    resume.mockImplementation(async () => {
+      throw new Error("driver died after claim");
+    });
+
+    for (let i = 0; i < 3; i += 1) {
+      expireLease("job_loop");
+      await runScheduledTick(env(), deps);
+      // updated_at is fresh after every tick, which is exactly why the idle rule never fires.
+      expect(jobRow("job_loop").status).not.toBe("failed");
+    }
+
+    // Now age it past the cap. THIS is what breaks the loop, and nothing else would.
+    createdAgo("job_loop", 3 * 60);
+    expireLease("job_loop");
+    await runScheduledTick(env(), deps);
+
+    expect(jobRow("job_loop").status).toBe("failed");
+    expect(tenantRow("ten_loop").status).toBe("failed");
+  });
+
+  // ---- cp#438 + cp#443: the reap is TWO writes, and half a guard is worse than none -------------
+
+  it("a reap whose job write REFUSES does not flip the tenant either", async () => {
+    // THE STATE THIS PREVENTS, and it is worse than the bug it comes from: another driver closes the
+    // job between our read and our write, the job write correctly refuses on the terminal predicate
+    // (cp#438), and without cp#443 the tenant write runs anyway. That leaves a studio which
+    // provisioned CORRECTLY reading failed, beside a job row reading succeeded. Two records that
+    // disagree are harder to diagnose than either being wrong alone.
+    //
+    // SIMULATED AT THE STORE SEAM rather than through the sweep, deliberately and stated because it
+    // matters: driveJobIfNeeded returns early on a terminal job (index.ts:913), so a job that is
+    // ALREADY closed never reaches the reap at all. The window is a genuine time-of-check to
+    // time-of-use one -- read running, closed by someone else, then written -- and a fixture that
+    // merely pre-closes the row tests nothing. I wrote that fixture first and it passed with the
+    // conditional REMOVED, which is how I found it.
+    await store.createTenant("ten_race", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_race", "ten_race", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_race");
+    noProgressFor("job_race", 30);
+    expireLease("job_race");
+
+    // The other driver wins the moment our reap tries to close: the write changes no row.
+    const realFinish = store.finishJob.bind(store);
+    let refusedOnce = false;
+    (store as unknown as { finishJob: unknown }).finishJob = async (...args: unknown[]) => {
+      refusedOnce = true;
+      void realFinish;
+      void args;
+      return false;
+    };
+
+    await runScheduledTick(env(), deps);
+
+    expect(refusedOnce, "the reap never attempted a close, so this asserts nothing").toBe(true);
+    // THE ASSERTION: the tenant is untouched because the job write refused.
+    expect(tenantRow("ten_race").status).toBe("provisioning");
+  });
+
+  it("CONTROL: finishJob still closes a job that is genuinely open, and refuses the second close", async () => {
+    // The predicate must not be refusing everything, and the terminal-record rule must actually
+    // hold. Both directions, at the store, against real SQL.
+    await store.createTenant("ten_open", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_open", "ten_open", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_open");
+    expect(await store.finishJob("job_open", "failed", "wfp_upload", "boom")).toBe(true);
+    expect(await store.finishJob("job_open", "succeeded", null, null)).toBe(false);
+    expect(jobRow("job_open").status).toBe("failed");
+  });
+
+  it("NEVER reaps a job whose driver is still HEARTBEATING, however old or idle it looks", async () => {
+    // cp#451, found by ernst. renewJobLease bumps lease_until ALONE and never updated_at, so a
+    // driver sitting inside one long step is STALE by both reap clocks and ALIVE by the lease.
+    // Before this guard the reap could not tell it from a dead one, killed it, and the living
+    // driver then wrote its own terminal status over the row.
+    //
+    // Old by BOTH rules at once, so this fails if either terminalizer ignores the lease.
+    await store.createTenant("ten_alive", "conrad", "acct_1", "provisioning");
+    await store.createProvisionJob("job_alive", "ten_alive", "provision", SHARED_FACTS);
+    await store.setJobRunning("job_alive");
+    noProgressFor("job_alive", 30);
+    createdAgo("job_alive", 3 * 60);
+    // The heartbeat, doing exactly what cp#148 designed it to do.
+    await store.renewJobLease("job_alive", 60);
+
+    await runScheduledTick(env(), deps);
+
+    // Untouched: not failed, not driven, left for the driver that owns it.
+    expect(jobRow("job_alive").status).toBe("running");
+    expect(tenantRow("ten_alive").status).toBe("provisioning");
+    expect(resume).not.toHaveBeenCalled();
+  });
 });
