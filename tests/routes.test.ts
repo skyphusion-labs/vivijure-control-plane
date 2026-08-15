@@ -536,6 +536,58 @@ describe("the AUP gate", () => {
     expect(await res.json()).toMatchObject({ error: "aup_required", version: "2026-09-01" });
   });
 
+  // cp#396: bumping AUP_VERSION IS the re-prompt, so it is also the moment a mistake locks every
+  // existing account out with no way back in. What a re-gated account can still reach is the
+  // blast radius, and the entire recovery path runs through it.
+  //
+  // Asserted END TO END rather than by inspecting AUP_EXEMPT, because the property that matters
+  // is REACHABILITY and the exempt set is not what provides it here. Route ORDER does: all four
+  // exempt paths return before the gate is ever consulted (/api/aup/current and
+  // /api/auth/logout are handled before authentication at all; /api/me and /api/aup/accept
+  // return early inside the authenticated block, above the gate). AUP_EXEMPT is belt to route
+  // order braces. A test that read the SET would therefore pass while the router locked
+  // everyone out, which is the exact failure this is here to prevent.
+  it("a version bump cannot lock an account out: the exempt routes stay reachable and accepting restores service", async () => {
+    const { cookie } = await signedIn();
+    expect(
+      (await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie } }), env(), ctx, deps)).status,
+    ).toBe(204);
+
+    const NEXT = "1.1.0";
+    const bumped = env({ AUP_VERSION: NEXT });
+
+    // CONTROL, and it is not a formality: without it the assertions below would read identically
+    // against a gate that was never blocking anybody.
+    const gated = await handle(req("/api/tenant/slug-available?slug=hero", { headers: { cookie } }), bumped, ctx, deps);
+    expect(gated.status).toBe(403);
+    expect(await gated.json()).toMatchObject({ error: "aup_required", version: NEXT });
+
+    // Reachable while blocked. Not merely non-403: /api/me is how the UI learns it must prompt.
+    const me = await handle(req("/api/me", { headers: { cookie } }), bumped, ctx, deps);
+    expect(me.status).toBe(200);
+    const current = await handle(req("/api/aup/current"), bumped, ctx, deps);
+    expect(current.status).toBe(200);
+    expect(await current.json()).toMatchObject({ version: NEXT });
+
+    // logout on its OWN session, because it revokes the one it is given and would otherwise
+    // invalidate the cookie the recovery assertion below depends on.
+    const other = await signedIn("c@d.com");
+    const out = await handle(
+      jsonReq("/api/auth/logout", {}, { headers: { cookie: other.cookie } }),
+      bumped,
+      ctx,
+      deps,
+    );
+    expect(out.status).not.toBe(403);
+
+    // THE WAY BACK IN. This is the assertion that matters: the accept route is reachable while
+    // blocked AND accepting the new version actually clears the block.
+    expect(
+      (await handle(jsonReq("/api/aup/accept", { version: NEXT }, { headers: { cookie } }), bumped, ctx, deps)).status,
+    ).toBe(204);
+    const after = await handle(req("/api/tenant/slug-available?slug=hero", { headers: { cookie } }), bumped, ctx, deps);
+    expect(after.status).toBe(200);
+  });
   it("REFUSES acceptance of a stale version rather than logging consent to unseen text", async () => {
     const { cookie } = await signedIn();
     const res = await handle(jsonReq("/api/aup/accept", { version: "2020-01-01" }, { headers: { cookie } }), env(), ctx, deps);

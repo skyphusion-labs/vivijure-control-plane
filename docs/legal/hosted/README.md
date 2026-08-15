@@ -105,8 +105,34 @@ read `1.0.0`. Version files are never deleted.
 
 | Version | Date | Status | Change |
 |---|---|---|---|
-| `1.0.0` | (unreleased) | DRAFT | Initial hosted AUP. Not in force; awaiting counsel review and launch. **Amended in place 2026-07-17 (pre-serve, zero acceptance records): Conrad's ruling incorporated the hub's opening language.** Legitimate under the first-serve rule above; would NOT be legitimate after serving starts. **Amended in place again 2026-07-28, three times, all pre-serve with zero acceptance records (the cp#219 disclosure gate, PR #224): (1) added the operator support-access recording bullet to Section 5; (2) rewrote that bullet to disclose the break-glass credential as the stated exception to attribution and to scope the recording claim to access that reaches into a specific studio; (3) added the sentence bounding tenant visibility (the record is ours; no self-serve view promised).** |
+| `1.0.0` | served from 2026-07-17 | **SERVED AND ACCEPTED -- FROZEN** | Initial hosted AUP. **CORRECTED 2026-08-15 (cp#396): the two entries this row used to carry, both claiming amendment was legitimate because it was pre-serve with zero acceptance records, were wrong on the facts.** A count against the live control-plane D1 (`CP_DB`, table `aup_acceptances`) found **4 acceptances of 1.0.0**, every one recording sha256 `1072c782`. The rows, so the arithmetic below can be checked rather than taken: `2026-07-17 15:10:40`, `2026-07-25 13:37:05`, `2026-07-25 17:07:50`, `2026-08-01 14:51:15` (UTC). So the 2026-07-28 amendment (PR #224) landed after **THREE** acceptances and the 2026-08-14 amendment (PR #394) after all four. Both were post-serve edits to a frozen version. The claim was never checked when it was written, and it read as true because nobody had asked the database. **This row itself first said TWO** (caught by ernst, 2026-08-15): the dates were printed correctly right beside it and nobody added them up, which is the same failure one layer down. The timestamps are now listed so the count is checkable from the row rather than trusted, and the corrected figure was re-read from the D1 rows, not from this prose. |
+| `1.1.0` | (not yet served) | **NOT YET SERVED** (force status is Conrad to state) | **The cp#394 shared-tier scoping correction, shipped as a NEW version rather than an edit, because 1.0.0 is frozen.** 1.0.0 states of ALL tenants that the hosted studio renders on GPU endpoints running on their own RunPod account, which is false for a pooled tenant (`provisioner.ts:202`: a pooled tenant has no RunPod account). MINOR, not PATCH: it changes what a person is agreeing to, and a patch number would understate that to the four accounts being re-prompted. **Also drops the `Status: DRAFT, not in force` line that 1.0.0 carries.** A gate that hard-blocks live accounts until they accept a document cannot ask them to accept one that disclaims its own force: either it binds and the label is false, or it does not and the gate is theatre. Carrying the line into a new version would have reasserted it deliberately rather than by inheritance. Whether the AUP is in force is Conrad to state; this removes a claim that the gate contradicts, it does not make the opposite claim. Bumping `AUP_VERSION` IS the re-prompt (blocking gate, `src/index.ts:435`), and moving it is the lead. |
 
+
+### 1.0.0 in this repository was RESTORED to the bytes that were served
+
+Recorded because the correction is more interesting than the state it fixed, and because the
+reasoning generalises.
+
+Until 2026-08-15, aup/1.0.0.md here was NOT the document anyone accepted. Four accounts accepted
+bytes hashing to 1072c782; no revision of this file had ever hashed to that value, across all
+three of its commits (ca9bf69a, 20fd5105, d0533987). The served document existed only in
+vivijure-cf at commit 8a5d96b4, orphaned from that repository main. Two of those three commits
+were in-place edits made AFTER serving had begun.
+
+The file has been restored from that commit and verified to hash to 1072c782.
+
+**Why restoring a frozen version file is not a violation of the freeze.** The rule binds the
+bytes that were SERVED, not a file that never served them. AUP_URL still points at the cf commit,
+so nothing a tenant can reach changed; this corrects the RECORD to match the artifact. Leaving it
+alone would have been the worse outcome: a repository that owns the AUP, holding a file labelled
+1.0.0 that misrepresents 1.0.0, while the accepted text had no home here at all.
+
+**What stops it drifting again.** scripts/check-aup-files-immutable.sh hashes every version file
+in this directory against SHA256SUMS on every CI run. It is the check that would have caught all
+three in-place edits, and it is deliberately the cheapest possible one: no network, no deploy,
+hash and compare. The reason the edits survived is not that they were subtle, it is that nothing
+had an opinion about them.
 ## Drift: this AUP vs the canonical constellation AUP
 
 The **canonical constellation AUP** lives at the project hub
