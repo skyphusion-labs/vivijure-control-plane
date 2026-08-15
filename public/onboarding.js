@@ -52,7 +52,6 @@
 
   const state = {
     rulesAccepted: false,
-    capacity: null,
     confirmed: false,
     invokeVerified: false,
     plan: [],

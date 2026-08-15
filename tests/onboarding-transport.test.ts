@@ -64,13 +64,15 @@ describe("transport: every route hits the path and method the control plane serv
     expect(calls[0].url).toBe("/api/tenant/slug-available?slug=a%20b%26c%3Dd");
   });
 
-  it("POST /api/tenant/provision carries the slug and the key under the contract names", async () => {
+  it("POST /api/tenant/provision carries the slug and NOTHING ELSE (cp#427)", async () => {
     const { impl, calls } = recordingFetch(() => json({ tenant_id: "t1", job_id: "j1" }));
     const api = createPlatformApi({ fetchImpl: impl });
-    const res = await api.provision("my-studio", "rpa_setup_key");
+    const res = await api.provision("my-studio");
     expect(calls[0].url).toBe("/api/tenant/provision");
     expect(calls[0].init?.method).toBe("POST");
-    expect(bodyOf(calls[0].init)).toEqual({ slug: "my-studio", runpod_api_key: "rpa_setup_key" });
+    // The key is GONE from the contract, not merely unused: the route no longer accepts one, so
+    // a transport that still advertised the field would be a fiction waiting for a consumer.
+    expect(bodyOf(calls[0].init)).toEqual({ slug: "my-studio" });
     expect(res).toEqual({ tenant_id: "t1", job_id: "j1" });
   });
 
@@ -98,23 +100,13 @@ describe("transport: every route hits the path and method the control plane serv
     expect(bodyOf(calls[0].init)).toEqual({ runpod_api_key: "rpa_again" });
   });
 
-  it("POST capacity sends the key the read-only probe reads", async () => {
-    const { impl, calls } = recordingFetch(() => json({ quota: 10, existing_worker_sum: 0 }));
-    const api = createPlatformApi({ fetchImpl: impl });
-    await api.capacity("rpa_probe");
-    expect(calls[0].url).toBe("/api/tenant/capacity");
-    expect(bodyOf(calls[0].init)).toEqual({ runpod_api_key: "rpa_probe" });
-  });
-});
-
-describe("transport: json() turns a non-2xx into a THROWN error that keeps the diagnosis", () => {
   it("carries the real status and the parsed body, not just a string", async () => {
     // handleProvisionError in onboarding.js branches on err.status === 409 and
     // on err.body.error. If either is dropped here, the customer gets a dead
     // end instead of "paste your key again".
     const { impl } = recordingFetch(() => json({ error: "runpod_key_required" }, 409));
     const api = createPlatformApi({ fetchImpl: impl });
-    await expect(api.provision("s", "k")).rejects.toMatchObject({
+    await expect(api.provision("s")).rejects.toMatchObject({
       status: 409,
       body: { error: "runpod_key_required" },
       message: "runpod_key_required",
@@ -222,12 +214,11 @@ describe("transport: SECRET HYGIENE, a key never reaches a URL", () => {
     const { impl, calls } = recordingFetch(() => json({ quota: 1, existing_worker_sum: 0 }));
     const api = createPlatformApi({ apiBase: "https://cp.example", fetchImpl: impl });
 
-    await api.capacity(SECRET);
-    await api.provision("slug", SECRET).catch(() => {});
+    await api.provision("slug").catch(() => {});
     await api.retry("ten_1", SECRET).catch(() => {});
     await api.invokeKey("ten_1", SECRET);
 
-    expect(calls.length).toBe(4);
+    expect(calls.length).toBe(3);
     calls.forEach(({ url }) => expect(url).not.toContain(SECRET));
   });
 
@@ -236,7 +227,7 @@ describe("transport: SECRET HYGIENE, a key never reaches a URL", () => {
     // silently dropped and never sent at all.
     const { impl, calls } = recordingFetch(() => json({ quota: 1, existing_worker_sum: 0 }));
     const api = createPlatformApi({ fetchImpl: impl });
-    await api.capacity(SECRET);
+    await api.invokeKey("ten_1", SECRET);
     expect(String(calls[0].init?.body)).toContain(SECRET);
   });
 });
@@ -249,8 +240,7 @@ describe("transport: mock mode is a real short circuit, not a fallback", () => {
     await api.config();
     await api.me();
     await api.plan();
-    await api.capacity("k");
-    await api.provision("s", "k");
+    await api.provision("k");
     await api.job("t");
     await api.retry("t", "k");
     await api.slugAvailable("s");

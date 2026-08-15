@@ -275,7 +275,7 @@ describe("onboarding boots from the account rather than always at step 1 (cp#455
 // plane next to a UI that offered no way to send the request it accepts.
 describe("the BYOK surface is GONE from the wizard (cp#427)", () => {
   const raw = readFileSync(join(HERE, "..", "public", "onboarding.html"), "utf8");
-  const page = raw.replace(/\\s+/g, " ");
+  const page = raw.replace(/\s+/g, " ");
   const js = readFileSync(join(HERE, "..", "public", "onboarding.js"), "utf8");
 
   it("CONTROL: the wizard is really there and still has its go-live step", () => {
@@ -302,6 +302,11 @@ describe("the BYOK surface is GONE from the wizard (cp#427)", () => {
 
   it("still offers the ONE action that works, and says what the other two states are", () => {
     expect(page).toContain("id=\"go-live\"");
+    // ACROSS A LINE BREAK ON PURPOSE. The collapse above is the instrument, and an assertion
+    // that only ever matches within one line cannot tell a working collapse from a dead one.
+    // This file shipped the dead variant TWICE; the second time it was written beside its own
+    // correct twin. Make the instrument fail loudly rather than trusting the character.
+    expect(page).toMatch(/do not provision that way any more/i);
     expect(page).toContain("id=\"invoke-undecided\"");
     expect(page).toContain("id=\"invoke-unsupported\"");
     // And a plane that cannot provision says so up front rather than at the end.
