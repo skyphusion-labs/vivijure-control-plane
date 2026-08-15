@@ -81,4 +81,33 @@ describe("the scheduled tick isolates its halves", () => {
     await runScheduledTick(env(), deps);
     expect(fetched).toHaveLength(1);
   });
+
+  // ---- cp#429: the THIRD half -------------------------------------------------------------
+  //
+  // Adding a consumer to this tick is exactly the coupling the file exists to prevent, and the
+  // new one is the most likely to throw: it reads tenants, reads jobs, and hands work to the
+  // provisioner. Its symptom would be the same invisible absence as the other two.
+
+  it("runs the sweep even when the PROVISION DRIVE throws", async () => {
+    const { deps, fetched } = await depsWithWork();
+    const boom = {
+      ...deps,
+      provisioner: {
+        resume: async () => {},
+      } as unknown as ControlPlaneDeps["provisioner"],
+    } as ControlPlaneDeps;
+    vi.spyOn(boom.store, "listTenants").mockRejectedValue(new Error("d1 down"));
+    await expect(runScheduledTick(env(), boom)).resolves.toBeUndefined();
+    // The sweep ran BEFORE it, and still reached upstream: order is not the isolation.
+    expect(fetched).toEqual(["https://api.runpod.ai/v2/pool-backend/status/job-1"]);
+  });
+
+  it("drives nothing, and does not throw, on a plane with no provisioner wired", async () => {
+    // The shipped shape for a plane that cannot provision at all. It must be a no-op rather
+    // than a TypeError that takes the tick down after the other two halves already ran.
+    const { deps } = await depsWithWork();
+    const listed = vi.spyOn(deps.store, "listTenants");
+    await expect(runScheduledTick(env(), deps)).resolves.toBeUndefined();
+    expect(listed).not.toHaveBeenCalled();
+  });
 });

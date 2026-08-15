@@ -38,17 +38,33 @@
     return email.concat(rest);
   }
 
+  // SIGNING IN AND SIGNING UP ARE TWO DIFFERENT QUESTIONS, and only the second
+  // one is what the signup switch closes.
+  //
+  // The plane has said so in code since 2026-07-17: signups_enabled means "can
+  // NEW accounts be created", full stop (src/index.ts), and POST
+  // /api/auth/email/start still mails a link to an address that ALREADY has an
+  // account while the switch is off. This file used to answer the switch by
+  // routing a signed-out visitor away from the sign-in form entirely, which
+  // locked every existing account holder out of the front door of a studio they
+  // already own. The switch changes the COPY on the signed-out screen. It never
+  // removes the way back in.
+  function signupsOpen(config) {
+    return (config || {}).signups_enabled !== false;
+  }
+
   // THE shell decision: given GET /api/me (or null when signed out), which
   // screen does this person belong on?
   //
   // Kept pure and total on purpose. Every branch here is a claim about somebody
   // else's account and money, and an unknown state must never fall through to a
   // cheerful default: it returns "unknown" so the UI can say so honestly.
-  function shellRoute(me, config) {
-    const cfg = config || {};
-    if (!me || !me.account) {
-      return cfg.signups_enabled === false ? "signups-closed" : "auth";
-    }
+  //
+  // It no longer takes the platform config AT ALL. The route is a fact about the
+  // SESSION; the signup switch is a fact about new accounts. Keeping the switch
+  // out of this function is what stops the two from being conflated again.
+  function shellRoute(me) {
+    if (!me || !me.account) return "auth";
     // The AUP gate is blocking and versioned: a bumped version re-gates an
     // existing account, which is the whole point of comparing versions rather
     // than storing a boolean.
@@ -97,6 +113,7 @@
     methodLabel: methodLabel,
     orderMethods: orderMethods,
     shellRoute: shellRoute,
+    signupsOpen: signupsOpen,
     authErrorCopy: authErrorCopy,
   };
 });

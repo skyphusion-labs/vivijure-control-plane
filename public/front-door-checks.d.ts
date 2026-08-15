@@ -21,16 +21,17 @@ export interface PlatformConfig {
   auth_methods?: string[];
 }
 
+// The signed-out screen is ONE route. "signups-closed" was removed with the
+// lockout it caused: the switch decides what that screen SAYS, never whether it
+// carries a sign-in form. signupsOpen() answers the copy question separately.
 export type ShellRoute =
-  | "auth" | "signups-closed" | "aup" | "onboarding" | "resume-key"
+  | "auth" | "aup" | "onboarding" | "resume-key"
   | "studio" | "suspended" | "building" | "failed" | "deleted" | "unknown";
 
 export const METHOD_LABELS: Record<string, string>;
 export const AUTH_ERRORS: Record<string, string>;
 export function methodLabel(method: string): string;
 export function orderMethods(methods: string[] | null | undefined): string[];
-export function shellRoute(
-  me: MePayload | null | undefined,
-  config?: PlatformConfig | null,
-): ShellRoute;
+export function shellRoute(me: MePayload | null | undefined): ShellRoute;
+export function signupsOpen(config?: PlatformConfig | null): boolean;
 export function authErrorCopy(code: string | null | undefined): string | null;

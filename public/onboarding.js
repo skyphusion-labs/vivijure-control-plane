@@ -922,10 +922,32 @@
     try {
       const cfg = await PlatformApi.config();
       if (cfg && cfg.tenant_domain_suffix) state.tenantDomainSuffix = cfg.tenant_domain_suffix;
+      // SIGNUPS-OFF FREEZES A STRANGER, NEVER AN ACCOUNT THAT ALREADY EXISTS (cp#428).
+      //
+      // This used to disable every [data-next] on the page the moment the switch was off, which
+      // stranded exactly the person the plane goes out of its way NOT to strand: provisioning
+      // gates on session plus accepted AUP only, and src/index.ts says so in as many words --
+      // an existing, AUP-accepted account mid-onboarding is never stranded by the admin closing
+      // signups. An operator-provisioned tenant reaches this page to hand over its render key,
+      // and a disabled Next there is the difference between a studio that finishes and one that
+      // cannot. The banner is true for a stranger and false for an account holder, so it follows
+      // the same test instead of being shown to both.
       if (cfg && cfg.signups_enabled === false) {
-        const banner = $("#signups-off");
-        if (banner) banner.hidden = false;
-        document.querySelectorAll("[data-next]").forEach(function (b) { b.disabled = true; });
+        let signedOut = false;
+        try {
+          const me = await PlatformApi.me();
+          signedOut = !(me && me.account);
+        } catch (err) {
+          // 401/403 IS the signed-out answer. Any other failure leaves us NOT KNOWING, and a
+          // client that refuses on not knowing invents a refusal the plane never made; the
+          // provision route is the real gate and refuses legibly by itself.
+          signedOut = Boolean(err) && (err.status === 401 || err.status === 403);
+        }
+        if (signedOut) {
+          const banner = $("#signups-off");
+          if (banner) banner.hidden = false;
+          document.querySelectorAll("[data-next]").forEach(function (b) { b.disabled = true; });
+        }
       }
     } catch (err) {
       // Non-fatal: the per-step calls surface their own errors honestly.
