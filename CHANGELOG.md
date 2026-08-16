@@ -6,6 +6,13 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.29.1 -- 2026-08-16
+
+### fix(onboarding): preview mock matches wan-train plan; go-live is not invoke
+
+v1.29.0 failed preflight Test: mock plan omitted wan-train, and the intro suite still
+looked for `data-step="invoke"` after the BYOK purge.
+
 ## v1.29.0 -- 2026-08-16
 
 ### feat(credits): PayPal payment rail behind the PaymentRail seam (cp#193)

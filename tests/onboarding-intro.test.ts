@@ -244,7 +244,7 @@ describe("onboarding boots from the account rather than always at step 1 (cp#455
   const js = readFileSync(join(HERE, "..", "public", "onboarding.js"), "utf8");
 
   it("CONTROL: both assets are really there", () => {
-    expect(html).toContain("data-step=\"invoke\"");
+    expect(html).toContain("data-step=\"go-live\"");
     expect(js).toContain("function init()");
   });
 
@@ -290,7 +290,7 @@ describe("the BYOK surface is GONE from the wizard (cp#427)", () => {
   const js = readFileSync(join(HERE, "..", "public", "onboarding.js"), "utf8");
 
   it("CONTROL: the wizard is really there and still has its go-live step", () => {
-    expect(page).toContain("data-step=\"invoke\"");
+    expect(page).toContain("data-step=\"go-live\"");
     expect(js).toContain("function init()");
   });
 

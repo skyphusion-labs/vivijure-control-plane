@@ -80,6 +80,7 @@
           { key: "backend", label: "Render (keyframes, video)", backing: "runpod", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "NVIDIA H200 / NVIDIA B200" },
           { key: "upscale", label: "Video upscale", backing: "vpc", image: "ghcr.io/skyphusion-labs/vivijure-upscale", max_workers: null, gpu: "our hardware" },
           { key: "lipsync", label: "Lip sync", backing: "runpod", image: "ghcr.io/skyphusion-labs/vivijure-musetalk", max_workers: 1, gpu: "NVIDIA RTX 6000 Ada Generation / NVIDIA L40S" },
+          { key: "wan-train", label: "Cast LoRA training (Wan)", backing: "runpod", image: "ghcr.io/skyphusion-labs/vivijure-wan-train", max_workers: 2, gpu: "NVIDIA H200 / NVIDIA B200" },
           { key: "audio-upscale", label: "Audio upscale", backing: "vpc", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", max_workers: null, gpu: "our hardware" },
         ],
         // A real, named render from our own history (film-2294a9d7, 2026-07-14:
