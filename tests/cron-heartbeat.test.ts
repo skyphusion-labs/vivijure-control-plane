@@ -377,7 +377,7 @@ describe("the summary counts DRIVES, not tenants (cp#436 x cp#442)", () => {
       seen[jobId] = (seen[jobId] ?? 0) + 1;
       const done = async () => {
         await store.finishJob(jobId, "succeeded", null, null);
-        await store.setTenantStatus(tenant.id, "awaiting_invoke_key");
+        await store.setTenantStatus(tenant.id, "awaiting_go_live");
       };
       if (jobId === "job_b") return void (await done());
       if (seen[jobId] < 3) {
@@ -460,7 +460,7 @@ describe("a drive that never DISPATCHED still counts as an error (cp#436, found 
 
     const resume = vi.fn(async (jobId: string, tenant: { id: string }) => {
       await store.finishJob(jobId, "succeeded", null, null);
-      await store.setTenantStatus(tenant.id, "awaiting_invoke_key");
+      await store.setTenantStatus(tenant.id, "awaiting_go_live");
     });
     const deps = {
       store,
@@ -484,7 +484,7 @@ describe("a drive that never DISPATCHED still counts as an error (cp#436, found 
 
     // ISOLATION, which nothing else pins on this path: one tenant unreadable row does not stop the
     // next tenant being driven.
-    expect(tenantRow(db, "ten_ok").status).toBe("awaiting_invoke_key");
+    expect(tenantRow(db, "ten_ok").status).toBe("awaiting_go_live");
     expect(tenantRow(db, "ten_bad").status).toBe("provisioning");
     expect(summary.tenants_seen).toBe(2);
   });

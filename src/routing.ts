@@ -182,6 +182,7 @@ export function tenantRefusal(tenant: Tenant): Response | null {
       return null;
     case "pending":
     case "provisioning":
+    case "awaiting_go_live":
     case "awaiting_invoke_key":
       return refusal(503, "This studio is still being set up.", { "retry-after": "30" });
     case "failed":

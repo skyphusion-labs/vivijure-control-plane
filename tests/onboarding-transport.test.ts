@@ -180,7 +180,7 @@ describe("transport: invokeKey hands status and body through UNFLATTENED", () =>
     const api = createPlatformApi({ apiBase: "https://cp.example", fetchImpl: impl });
 
     const res = await api.invokeKey("ten_abc123", "rpa_render_key");
-    expect(calls[0].url).toBe("https://cp.example/api/tenant/ten_abc123/invoke-key");
+    expect(calls[0].url).toBe("https://cp.example/api/tenant/ten_abc123/go-live");
     expect(calls[0].init?.method).toBe("POST");
     // The route reads body.runpod_invoke_key; any other name is a silent 400.
     expect(bodyOf(calls[0].init)).toEqual({ runpod_invoke_key: "rpa_render_key" });
@@ -303,12 +303,12 @@ describe("transport: mock mode is a real short circuit, not a fallback", () => {
     expect(v.tone).toBe("good");
   });
 
-  it("the preview tenant lands in awaiting_invoke_key, like a real provision", async () => {
+  it("the preview tenant lands in awaiting_go_live, like a real provision", async () => {
     // If the mock jumped straight to live, the preview would skip the key-B
     // screen entirely and stop being a preview of the actual flow.
     const api = createPlatformApi({ useMock: true });
     const me = await api.me();
-    expect(me.tenant?.status).toBe("awaiting_invoke_key");
+    expect(me.tenant?.status).toBe("awaiting_go_live");
     expect(me.tenant?.endpoints?.length).toBe(4);
   });
 });

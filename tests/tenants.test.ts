@@ -71,11 +71,17 @@ describe("validateSlug", () => {
 });
 
 describe("tenantView", () => {
+  it("projects the dead BYOK status name as awaiting_go_live", () => {
+    const view = tenantView(tenant({ status: "awaiting_invoke_key" }), ".studio.vivijure.com");
+    expect(view.status).toBe("awaiting_go_live");
+    expect(view.lifecycle).toBe("awaiting_go_live");
+  });
+
   it("exposes a URL only once the studio is live", () => {
     expect(tenantView(tenant({ status: "live" }), ".studio.vivijure.com").url).toBe(
       "https://hero.studio.vivijure.com",
     );
-    for (const status of ["pending", "provisioning", "awaiting_invoke_key", "failed"] as const) {
+    for (const status of ["pending", "provisioning", "awaiting_go_live", "failed"] as const) {
       expect(tenantView(tenant({ status }), ".studio.vivijure.com").url, status).toBeNull();
     }
   });

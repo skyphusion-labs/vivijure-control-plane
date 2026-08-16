@@ -77,7 +77,7 @@ export const LIVE_UNVERIFIED = {
 // interpolates attempts and elapsedMs, so it cannot be byte-exact; assert the
 // stable substrings in MESSAGE_MUST_SAY instead.
 export const UNCONFIRMED = {
-  status: "awaiting_invoke_key",
+  status: "awaiting_go_live",
   verified_endpoints: 4,
   modules_ready: false,
   modules_verified: ["backend"],

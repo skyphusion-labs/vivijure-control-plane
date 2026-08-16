@@ -43,11 +43,11 @@
   // two in one file means the tests that check the real shapes also reach these.
 
   // The mock tenant walks the real status machine: a provision lands in
-  // awaiting_invoke_key, and only key B moves it to live.
+  // awaiting_go_live, then an empty POST takes it live.
   const mockTenant = {
     id: "ten_mock",
     slug: "your-studio",
-    status: "awaiting_invoke_key",
+    status: "awaiting_go_live",
     endpoints: [
       { key: "backend", label: "backend", id: "abc123backend", name: "vivijure-backend-your-studio" },
       { key: "upscale", label: "upscale", id: "abc123upscale", name: "vivijure-upscale-your-studio" },
@@ -266,7 +266,7 @@
         // Shared-tier go-live is an EMPTY body (cp#439). A posted key is refused
         // on that tier, so a blank field must not become runpod_invoke_key:"".
         const payload = key ? { runpod_invoke_key: key } : {};
-        const r = await doFetch(apiBase + "/api/tenant/" + encodeURIComponent(tenantId) + "/invoke-key", {
+        const r = await doFetch(apiBase + "/api/tenant/" + encodeURIComponent(tenantId) + "/go-live", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),

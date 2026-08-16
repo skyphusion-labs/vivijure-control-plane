@@ -259,7 +259,7 @@ const POOL_ID = {
 };
 
 describe("runProvisionJob on the SHARED pool (cp#270)", () => {
-  it("creates ZERO endpoints and still reaches awaiting_invoke_key", async () => {
+  it("creates ZERO endpoints and still reaches awaiting_go_live", async () => {
     // The headline. The ten-tenant ceiling exists because every tenant consumed 5 account-wide
     // workers, forever (teardown structurally cannot reap them). A shared tenant must consume none.
     const t = await tenant();
@@ -268,7 +268,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
 
     const res = await runProvisionJob(d, job.id, t);
 
-    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(res).toEqual({ ok: true, status: "awaiting_go_live" });
     expect(calls.filter((c) => c.startsWith("runpod."))).toEqual([]);
     expect(JSON.parse(store.jobs.get("job_1")!.steps_done)).toEqual([...PROVISION_STEPS]);
   });
@@ -438,14 +438,14 @@ describe("teardown harvests the job index before reaping the D1 (cp#270)", () =>
 });
 
 describe("runProvisionJob", () => {
-  it("runs the steps in order and parks at awaiting_invoke_key, not live", async () => {
+  it("runs the steps in order and parks at awaiting_go_live, not live", async () => {
     const t = await tenant();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
     const res = await runProvisionJob(deps(), job.id, t);
 
-    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(res).toEqual({ ok: true, status: "awaiting_go_live" });
     // NOT live: the studio exists but cannot render until key B lands.
-    expect(store.tenants.get(t.id)?.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get(t.id)?.status).toBe("awaiting_go_live");
     expect(store.jobs.get("job_1")?.status).toBe("succeeded");
     expect(JSON.parse(store.jobs.get("job_1")!.steps_done)).toEqual([...PROVISION_STEPS]);
   });
@@ -1000,7 +1000,7 @@ describe("cp#461: a refused finishJob does not roll back a succeeded studio", ()
     (d.scriptUploadCf as unknown as { uploadUserWorker: unknown }).uploadUserWorker = vi.fn(async () => {
       // THE SUCCESSOR: same job, already finished. The zombie is still inside this await.
       expect(await store.finishJob(job.id, "succeeded", null, null)).toBe(true);
-      await store.setTenantStatus(t.id, "awaiting_invoke_key");
+      await store.setTenantStatus(t.id, "awaiting_go_live");
       throw boom;
     });
 
@@ -1011,7 +1011,7 @@ describe("cp#461: a refused finishJob does not roll back a succeeded studio", ()
     // calls finishJob is [true] only and would pass the teardown assertions vacuously.
     expect(finishes, "the zombie catch never called finishJob, so this asserts nothing").toEqual([true, false]);
     expect(store.jobs.get(job.id)?.status).toBe("succeeded");
-    expect(store.tenants.get(t.id)?.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get(t.id)?.status).toBe("awaiting_go_live");
     expect(d.tokenMinter.revoke).not.toHaveBeenCalled();
     expect(calls).not.toContain("deleteD1");
     expect(calls).not.toContain("deleteR2Bucket");
@@ -1037,7 +1037,7 @@ describe("cp#461: a refused finishJob does not roll back a succeeded studio", ()
       moduleBundle: {
         fetch: vi.fn(async () => {
           expect(await store.finishJob(job.id, "succeeded", null, null)).toBe(true);
-          await store.setTenantStatus(t.id, "awaiting_invoke_key");
+          await store.setTenantStatus(t.id, "awaiting_go_live");
           throw new Error("modules explode");
         }),
       },
@@ -1048,7 +1048,7 @@ describe("cp#461: a refused finishJob does not roll back a succeeded studio", ()
     expect(res.ok).toBe(false);
     expect(finishes, "the zombie catch never called finishJob, so this asserts nothing").toEqual([true, false]);
     expect(store.jobs.get(job.id)?.status).toBe("succeeded");
-    expect(store.tenants.get(t.id)?.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get(t.id)?.status).toBe("awaiting_go_live");
     expect(d.tokenMinter.revoke).not.toHaveBeenCalled();
     expect(calls).not.toContain("deleteD1");
     expect(calls).not.toContain("deleteR2Bucket");

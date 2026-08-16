@@ -47,7 +47,7 @@
     { key: "name", title: "Name it" },
     { key: "review", title: "Review" },
     { key: "build", title: "Building" },
-    { key: "invoke", title: "Go live" },
+    { key: "go-live", title: "Go live" },
     { key: "done", title: "Done" },
   ];
 
@@ -497,8 +497,9 @@
       case "pending":
       case "provisioning":
         return { step: "build", reason: "provisioning" };
+      case "awaiting_go_live":
       case "awaiting_invoke_key":
-        return { step: "invoke", reason: "awaiting_invoke_key" };
+        return { step: "go-live", reason: "awaiting_go_live" };
       case "failed":
         // The build screen is where progress and errors render, and error_step and error_message
         // are on the job row. This is what makes See what happened able to show what happened.
@@ -613,7 +614,7 @@
     }
     if (key === "review") return s.confirmed === true;
     // Nothing goes live on a key whose scope we did not verify.
-    if (key === "invoke") return !!(s.invokeVerified === true);
+    if (key === "go-live") return !!(s.invokeVerified === true);
     return true;
   }
 

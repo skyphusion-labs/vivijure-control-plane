@@ -1,6 +1,7 @@
 // Tenant identity rules (#52). The provisioner itself is #53; this owns slugs and the status machine.
 
 import type { Tenant, TenantLifecycle, TenantStatus } from "./store";
+import { normalizeLifecycle } from "./store";
 import { readRunPodMode, type RunPodMode } from "./runpod-pool";
 
 /**
@@ -110,11 +111,12 @@ export function tenantView(tenant: Tenant, domainSuffix: string): TenantView {
   // `lifecycle` carries the real column so a deleted-but-suspended row is not mistaken for
   // restorable (cp#281).
   const suspended = tenant.suspended_at !== null;
+  const lifecycle = normalizeLifecycle(tenant.status);
   return {
     id: tenant.id,
     slug: tenant.slug,
-    status: suspended ? "suspended" : tenant.status,
-    lifecycle: tenant.status,
+    status: suspended ? "suspended" : lifecycle,
+    lifecycle,
     // A URL is shown only once there is something behind it; a link that 5xx's is not honest. A
     // suspended tenant gets no URL either, whatever its lifecycle says.
     url: tenant.status === "live" && !suspended ? `https://${tenant.slug}${domainSuffix}` : null,

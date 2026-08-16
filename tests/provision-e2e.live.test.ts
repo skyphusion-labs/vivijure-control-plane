@@ -210,7 +210,7 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
     expect(scratchOk, "PROD TELL PRESENT -- refusing to provision").toBe(true);
   });
 
-  it("provisions a REAL tenant end to end and parks at awaiting_invoke_key", async () => {
+  it("provisions a REAL tenant end to end and parks at awaiting_go_live", async () => {
     expect(scratchOk).toBe(true);
     const account = await store.createAccount("acct_e2e", "e2e@example.com");
     const tenant = await store.createTenant(TENANT_ID, slug, account.id, "pending");
@@ -257,12 +257,12 @@ describe.skipIf(!LIVE)("full provisioner chain (real CF + real RunPod scratch)",
       throw new Error(`provision failed at ${fail.step}: ${fail.message}`);
     }
 
-    expect(result).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(result).toEqual({ ok: true, status: "awaiting_go_live" });
     console.log(`  provision converged in ${invocations} invocation(s)`);
     const t = store.tenants.get(TENANT_ID)!;
     console.log(`  tenant ${slug}: d1=${t.d1_database_id?.slice(0, 8)} bucket=${t.r2_bucket_name} script=${t.script_name}`);
     console.log(`  endpoints: ${t.endpoints_json}`);
-    expect(t.status).toBe("awaiting_invoke_key");
+    expect(t.status).toBe("awaiting_go_live");
     expect(JSON.parse(store.jobs.get("job_e2e")!.steps_done)).toContain("verify");
   }, 300_000);
 

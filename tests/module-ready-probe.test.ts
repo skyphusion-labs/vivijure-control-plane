@@ -309,7 +309,7 @@ const publicSlugBody = (module: string, key: boolean) =>
 describe("classifyReadyResponse: DOOR-BACKED modules run on our own iron (cp#396)", () => {
   it("THE BLOCKER: the exact live body from the first shared-tier provision is READY", () => {
     // It classified `misconfigured` before this change -- not retryable, so it THREW and the
-    // tenant could never leave awaiting_invoke_key. The module was healthy throughout.
+    // tenant could never leave awaiting_go_live. The module was healthy throughout.
     expect(classifyReadyResponse(200, JSON.stringify(LIVE_DOOR_BODY), "finish-upscale")).toBe("ready");
   });
 

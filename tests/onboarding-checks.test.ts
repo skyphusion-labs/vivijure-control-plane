@@ -459,10 +459,10 @@ describe("canAdvance (the gates)", () => {
   });
 
   it("blocks go-live until key B's scope is verified", () => {
-    expect(canAdvance("invoke", {})).toBe(false);
-    expect(canAdvance("invoke", { invokeVerified: false })).toBe(false);
-    expect(canAdvance("invoke", null)).toBe(false);
-    expect(canAdvance("invoke", { invokeVerified: true })).toBe(true);
+    expect(canAdvance("go-live", {})).toBe(false);
+    expect(canAdvance("go-live", { invokeVerified: false })).toBe(false);
+    expect(canAdvance("go-live", null)).toBe(false);
+    expect(canAdvance("go-live", { invokeVerified: true })).toBe(true);
   });
 
   it("does not gate the informational steps", () => {
@@ -478,15 +478,15 @@ describe("STEPS / stepIndex", () => {
     // probed the CUSTOMER own quota, which is meaningless when the capacity is ours. Capacity
     // additionally POSTed to a route that never existed (cp#467), so it was a hard stop.
     expect(STEPS.map((s) => s.key)).toEqual([
-      "what", "rules", "name", "review", "build", "invoke", "done",
+      "what", "rules", "name", "review", "build", "go-live", "done",
     ]);
     // The invariants that SURVIVE the purge, and they are the ones that mattered.
     //
     // The slug is required by POST /api/tenant/provision, so it is collected before the build.
     expect(stepIndex("name")).toBeLessThan(stepIndex("build"));
     // Going live can only happen once the endpoints exist, so it sits after the build.
-    expect(stepIndex("build")).toBeLessThan(stepIndex("invoke"));
-    expect(stepIndex("invoke")).toBeLessThan(stepIndex("done"));
+    expect(stepIndex("build")).toBeLessThan(stepIndex("go-live"));
+    expect(stepIndex("go-live")).toBeLessThan(stepIndex("done"));
     // NOTHING IS CREATED ON ANYBODY BEHALF BEFORE AN EXPLICIT REVIEW. This is the load-bearing
     // one and it is unchanged by the purge.
     expect(stepIndex("review")).toBeLessThan(stepIndex("build"));
@@ -775,10 +775,11 @@ describe("resumeStep (cp#455)", () => {
     expect(resumeStep(at("provisioning")).step).toBe("build");
   });
 
-  it("lands an awaiting_invoke_key tenant on the render-key step, which was unreachable on a fresh load", () => {
-    const r = resumeStep(at("awaiting_invoke_key"));
-    expect(r.step).toBe("invoke");
-    expect(r.reason).toBe("awaiting_invoke_key");
+  it("lands an awaiting_go_live tenant on go-live, including the dead BYOK status name", () => {
+    const r = resumeStep(at("awaiting_go_live"));
+    expect(r.step).toBe("go-live");
+    expect(r.reason).toBe("awaiting_go_live");
+    expect(resumeStep(at("awaiting_invoke_key")).step).toBe("go-live");
   });
 
   it("shows a FAILED studio its failure, rather than five minutes to your own studio", () => {

@@ -294,7 +294,7 @@ describe("preflight refuses before anything is written", () => {
   it("refuses a tenant that is not LIVE: an unfinished provision belongs to the resume path", async () => {
     const store = new MemoryStore();
     const tenant = await seedLiveTenant(store);
-    await store.setTenantStatus(tenant.id, "awaiting_invoke_key");
+    await store.setTenantStatus(tenant.id, "awaiting_go_live");
     const row = (await store.getTenantById(tenant.id)) as Tenant;
 
     const pre = await preflightStudioUpgrade(deps(store), row, NEW_RELEASE);

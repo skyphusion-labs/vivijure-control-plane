@@ -1695,7 +1695,7 @@ export interface ModuleReadiness {
  *
  * Called after the key-B fan-out and BEFORE the tenant flips to live, which is the whole point: the
  * window this closes is the one between "the secret was written" and "the version the edge serves
- * can read it". A throw here leaves the tenant at awaiting_invoke_key rather than promoting it to
+ * can read it". A throw here leaves the tenant at awaiting_go_live rather than promoting it to
  * live on credentials nothing has proven, which is the correct failure.
  *
  * OLD MODULE IMAGES (404). A module published before /ready existed cannot answer, and hard-failing
