@@ -1019,7 +1019,11 @@ export async function runProvisionJob(
     const message =
       e instanceof CfApiError || e instanceof ProvisionFailure || e instanceof TenantModuleError ? e.message : String(e);
     deps.log("provision.failed", { tenant: tenant.id, step, message });
-    await deps.store.finishJob(jobId, "failed", step, message);
+    // cp#461: finishJob refuses a job somebody else already closed. A zombie that lost its
+    // lease and then failed must not write the tenant or tear the studio down -- the successor
+    // may already have succeeded, and rollbackFailedProvision DELETES that D1 / R2 / token.
+    const closed = await deps.store.finishJob(jobId, "failed", step, message);
+    if (!closed) return { ok: false, step, message };
     await deps.store.setTenantStatus(tenant.id, "failed");
     // Auto-teardown (cf#91): a failed provision must not leave live R2 tokens / buckets / D1
     // standing. Re-fetch the row so we see ids persisted mid-run (the start-of-job `tenant`
@@ -1391,7 +1395,10 @@ export async function continueProvisionJob(
     const message =
       e instanceof CfApiError || e instanceof ProvisionFailure || e instanceof TenantModuleError ? e.message : String(e);
     deps.log("provision.failed", { tenant: tenant.id, step, message, resumed: true });
-    await deps.store.finishJob(jobId, "failed", step, message);
+    // Same branch as runProvisionJob (cp#461): a refused close means this driver does not own
+    // the outcome. Writing the tenant or rolling back would tear down a studio that succeeded.
+    const closed = await deps.store.finishJob(jobId, "failed", step, message);
+    if (!closed) return { ok: false, step, message };
     await deps.store.setTenantStatus(tenant.id, "failed");
     await rollbackFailedProvision(deps, tenant.id);
     return { ok: false, step, message };
