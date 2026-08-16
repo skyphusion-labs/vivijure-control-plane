@@ -153,6 +153,18 @@ describe("credit read routes", () => {
     expect(body.topup_available).toBe(false);
   });
 
+  it("reports topup_available TRUE only when the PayPal door is fully configured", async () => {
+    // credits_apply stays false: a configured rail does not invent a billing relationship.
+    const configured = env({
+      PAYPAL_CLIENT_ID: "id",
+      PAYPAL_CLIENT_SECRET: "s",
+      PAYPAL_WEBHOOK_ID: "wh",
+    });
+    const body = (await (await getTenant(TEN, deps, configured)).json()) as Record<string, unknown>;
+    expect(body.topup_available).toBe(true);
+    expect(body.credits_apply).toBe(false);
+  });
+
   it("the fields are PRESENT even when false, so the client never has to guess from an absence", async () => {
     const body = (await (await getTenant()).json()) as Record<string, unknown>;
     expect(Object.keys(body)).toEqual(expect.arrayContaining(["credits_apply", "topup_available"]));

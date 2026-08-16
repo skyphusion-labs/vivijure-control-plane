@@ -247,14 +247,20 @@ R2_USAGE_ALERT_BYTES = "${R2_USAGE_ALERT_BYTES}"
 # the deliberate default: counting mode, where the ledger records everything and refuses nothing.
 # Not fail-closed by default, because no purchase door exists yet, so no tenant CAN hold a positive
 # balance and enforcing-by-default would refuse every submission the moment the migration landed.
-# Flipping this on is a named acceptance criterion of cp#193 and must happen in the SAME act as the
-# purchase door opening: a door in front of a counting ledger sells credits that refuse nothing.
+# Flipping this on is a named acceptance criterion of cp#193 and is a SEPARATE act from wiring
+# PayPal: a door in front of a counting ledger sells credits that refuse nothing. Do not set this
+# until the purchase path is proven against a real settlement.
 CREDITS_ENFORCING = "${CREDITS_ENFORCING}"
 # cp#193: ceiling on ONE operator credit, in micro-USD. EMPTY IS MEANINGFUL: the documented default
 # (USD 100) applies. A typo catcher rather than a policy -- nobody ruled a maximum comp, and the
 # hazard bounded is a stray keystroke turning USD 10.00 into USD 10,000.00 on the one surface that
 # mints money from nothing. The refusal names this var, so a larger credit is a deliberate change.
 MANUAL_CREDIT_CEILING_MICRO_USD = "${MANUAL_CREDIT_CEILING_MICRO_USD}"
+# cp#193: PayPal Business rail. EMPTY IS MEANINGFUL on every one of these: the rail is simply not
+# offered. PAYPAL_CLIENT_SECRET is a wrangler secret, never a var. PAYPAL_ENV empty = sandbox.
+PAYPAL_CLIENT_ID = "${PAYPAL_CLIENT_ID}"
+PAYPAL_WEBHOOK_ID = "${PAYPAL_WEBHOOK_ID}"
+PAYPAL_ENV = "${PAYPAL_ENV}"
 # cp#183: the per-tenant R2 storage ceiling in BYTES, bound onto every tenant studio as
 # R2_STORAGE_QUOTA_BYTES and enforced there at submit (vivijure-core core#52: honest 507 with both
 # real numbers, fail-CLOSED 503 if the quota is set and its check cannot run).

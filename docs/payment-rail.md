@@ -2,10 +2,9 @@
 
 Tracking issue: `vivijure-control-plane#193`, under `cp#173` (prepaid credits).
 
-**Nothing in this repository contains a payment credential, and no payment account has been created
-by the crew.** The ledger was built against an interface with one rail that needs no processor, so
-the entire credit path is provable today. The list in Part 2 is the work only the account owner can
-do, written to be executed without reading any code.
+**Nothing in this repository contains a payment credential.** The ledger talks to PayPal through
+`PaymentRail`; `ManualRail` still needs no processor. The list in Part 2 is the work only the
+account owner can do, written to be executed without reading any code.
 
 ## Part 1: what exists now
 
@@ -15,7 +14,9 @@ do, written to be executed without reading any code.
 | `ManualRail` (operator-credited top-ups) | `src/payment-rail.ts` | built, usable |
 | `applySettlement` (the only path that creates credit) | `src/payment-rail.ts` | built |
 | `POST /api/admin/tenants/:id/credits/manual` | `src/index.ts` | built, admin-gated |
-| A Stripe rail | nowhere | **not built, blocked on Part 2** |
+| `PayPalRail` | `src/paypal-rail.ts` | built; live only after Part 2 credentials exist |
+| `POST /api/tenant/:id/credits/topup` | `src/index.ts` | built, owner session |
+| `POST /api/webhooks/paypal` | `src/index.ts` | built; 400 if unverified, 200 on replay |
 
 `ManualRail` is a real rail, not a placeholder. Comping an account, correcting an incident, and
 honouring a refund are permanent operator needs that outlive any processor. It is also what lets the
@@ -55,21 +56,26 @@ integration at all.
 
 ## Part 2: what Conrad must provision, in order
 
-Nothing on this list can or should be done on his behalf. Each item says what to create, what it is
-called, where it goes, and how to know it worked.
+The rail in this repo is **PayPal Business**, not Stripe. Stripe is not the processor. Nothing on
+this list can or should be done on his behalf. Each item says what to create, what it is called,
+where it goes, and how to know it worked.
 
-### 1. The Stripe account
+`ManualRail` stays. Operator credits do not go through PayPal.
 
-Create it in **the business identity that should appear on customer statements and receipts**. This
-is the name a tenant sees on their card statement and the name on every receipt; changing it later is
-a support burden, so it is worth a minute now.
+### 1. The PayPal Business account
 
-### 2. Business verification and a payout bank account
+You already have this. Confirm it is the **business identity that should appear on customer
+statements and receipts**. That is the name a tenant sees and the name on every receipt.
 
-Stripe holds funds until this clears. **Do this before launch, not at first payout.** A launch that
-discovers an unverified account is a launch that stops with customer money already taken.
+### 2. An app in developer.paypal.com
 
-*Verify:* the Stripe dashboard shows payouts enabled, with no outstanding verification requests.
+Create a REST app under that Business account.
+
+1. Start in **sandbox**. Create (or use) a sandbox app and take its **client id** and **secret**.
+2. Live later: a live app under the same account, a second client id+secret, and `PAYPAL_ENV=live`.
+   Do not point sandbox credentials at live, or live credentials at sandbox.
+
+*Verify:* the app exists in the PayPal Developer Dashboard and shows a client id.
 
 ### 3. Tax configuration: RULED, and NOT a blocker
 
@@ -85,35 +91,53 @@ changes, and a scoped ruling is worth more later than a confident unscoped one.
 similar). That is a future-jurisdiction question, it does not gate the purchase door opening, and it
 is recorded on `cp#193` rather than solved here.
 
-### 4. Products and prices for the top-up packs
+### 4. The USD 10 floor, not a product catalog
 
-The **USD 10 minimum top-up is ruled**. The rest of the ladder (whether there is a USD 25 or USD 50
-pack, and what they cost) is not, and is yours to set.
+The **USD 10 minimum top-up is ruled**. The tenant posts `amount_micro_usd`; the rail creates a
+PayPal order for that amount. There is no Stripe-style price object to pre-create. The rest of the
+ladder (whether the UI offers USD 25 or USD 50) is yours to set on the surface; the rail will accept
+any whole-cent amount at or above USD 10.
 
-*Verify:* each price object exists and its amount matches what the pricing surface will claim.
+### 5. Credentials, and how they must travel
 
-### 5. Two secrets, and how they must travel
-
-| Secret | What it is | Scope it to |
+| Name | Kind | What it is |
 | --- | --- | --- |
-| `STRIPE_SECRET_KEY` | a **restricted** API key | creating checkout sessions and reading payments ONLY. Not account management, not payouts, not team. |
-| `STRIPE_WEBHOOK_SECRET` | the signing secret for the webhook endpoint | that endpoint alone |
+| `PAYPAL_CLIENT_ID` | wrangler **var** (or GitHub Actions repo var) | sandbox client id now; live client id when you flip |
+| `PAYPAL_CLIENT_SECRET` | wrangler **secret** | the matching secret. **chmod 600 file, then `wrangler secret put`. Never chat, never a tracked file.** |
+| `PAYPAL_WEBHOOK_ID` | wrangler **var** (or secret, if you prefer it out of the render) | the webhook endpoint id PayPal assigns in step 6 |
+| `PAYPAL_ENV` | wrangler **var** | empty or `sandbox` now; `live` only when the live app is wired |
 
-**How they travel, and this is not a style preference.** Both go straight from the Stripe dashboard
-into `wrangler secret put <NAME>` in your own shell. Neither is ever pasted into a file in this
-repository, an issue, a pull request, a chat message, or a runbook. There is no configuration in this
-design that reads a payment credential from a tracked file, and adding one would be a defect.
+**How the secret travels, and this is not a style preference.** Copy the client secret from the
+PayPal dashboard into a `chmod 600` file on your laptop (not this repository, not a chat, not an
+issue). Then:
 
-*Verify:* `wrangler secret list` shows both names. It shows names only, which is the point: the value
-is never readable back, from anywhere, including by us.
+```
+npx wrangler secret put PAYPAL_CLIENT_SECRET < that-file
+```
+
+(or paste from the file in your own shell). The value is never readable back. `wrangler secret list`
+shows the name only.
+
+`PAYPAL_CLIENT_ID`, `PAYPAL_WEBHOOK_ID`, and `PAYPAL_ENV` can be repository variables / wrangler
+vars. They are identifiers, not the secret. Empty means the rail is not offered.
+
+*Verify:* `wrangler secret list` shows `PAYPAL_CLIENT_SECRET`. The three vars are set on the Worker
+(or empty, if you have not provisioned yet).
 
 ### 6. The webhook endpoint
 
-We give you the URL once the Stripe rail route exists (it does not yet). You register it in Stripe,
-subscribe it to the payment-success event, and paste the resulting signing secret per item 5.
+URL, once this plane is deployed:
 
-*Verify:* Stripe's dashboard shows a successful test delivery, and the tenant's balance moves by the
-expected amount exactly once.
+```
+https://<CONTROL_PLANE_HOST>/api/webhooks/paypal
+```
+
+Register that URL on the same REST app. Subscribe it to **`PAYMENT.CAPTURE.COMPLETED`** (money has
+arrived; do not settle on `CHECKOUT.ORDER.APPROVED`). Copy the webhook **id** into
+`PAYPAL_WEBHOOK_ID`.
+
+*Verify:* PayPal's dashboard shows a successful delivery, and the tenant's balance moves by the
+expected amount exactly once. A replay of the same capture is `200` with `applied: false`.
 
 ### 7. A decision only you can make: refunds, expiry, and account closure
 
@@ -135,12 +159,14 @@ storage already in R2. That is a retention-policy question inseparable from what
 happens to their films, recorded on `cp#195` and awaiting Conrad. It is listed here because it and
 item 7 are the same conversation.
 
-## Part 3: what the crew does once Part 2 exists
+## Part 3: what remains after the rail exists
 
-1. Build a `StripeRail` implementing `PaymentRail` (checkout session out, verified webhook in).
-2. Route the verified webhook through the existing `applySettlement`, so purchases stay idempotent on
-   Stripe's own event id with no new money path.
-3. **Flip credit enforcement on** (`CREDITS_ENFORCING`). This is a named acceptance criterion of
-   `cp#193`: a purchase door that opens while the ledger is still in counting mode means tenants can
-   buy credits that refuse nothing. The two flip together, and `cp#193` does not close while the
-   plane is still counting.
+The `PayPalRail` is built. Settlements go through the existing `applySettlement`, idempotent on
+PayPal's capture id, namespaced `paypal:`. `ManualRail` is unchanged.
+
+**Do not flip `CREDITS_ENFORCING` in the same act as wiring credentials.** A purchase door in front
+of a counting ledger sells credits that refuse nothing; flipping enforcement is a named acceptance
+criterion of `cp#193` and happens when you decide the door is proven, not when the class lands.
+
+`credits_apply` stays false for every tenant until `compute_mode` exists. Configuring PayPal does
+not invent a billing relationship for a BYOK studio.

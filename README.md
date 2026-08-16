@@ -244,6 +244,10 @@ is a variable, which is a secret, and which are allowed to be empty.
 | `GOOGLE_OAUTH_CLIENT_ID` | var | Public half of Google sign-in |
 | `GITHUB_OAUTH_CLIENT_ID` | var | Public half of GitHub sign-in |
 | `APPLE_TEAM_ID`, `APPLE_SERVICES_ID` | var | The parked Apple seam. Empty means Apple is not offered |
+| `PAYPAL_CLIENT_ID` | var | Public half of the PayPal checkout rail. Empty means the rail is not offered |
+| `PAYPAL_WEBHOOK_ID` | var | PayPal webhook endpoint id for `POST /api/webhooks/paypal` |
+| `PAYPAL_ENV` | var | `live` or empty/`sandbox`. Empty is sandbox |
+| `PAYPAL_CLIENT_SECRET` | secret | Private half of the PayPal rail. `wrangler secret put` from a chmod 600 file |
 | `CF_ACCOUNT_ID` | var | Needed at runtime, because a Worker cannot read its own account id |
 | `DISPATCH_NAMESPACE` | var | Name of the tenant-studio namespace. Must match the binding |
 | `TENANT_MODULE_NAMESPACE` | var | Name of the shared tenant-module namespace. Created if missing, but required |
