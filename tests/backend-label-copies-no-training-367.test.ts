@@ -43,8 +43,9 @@ function onboardingApiPurpose(): string {
   const plan = mockResponses.plan();
   const entry = plan.endpoints.find((e) => e.key === "backend");
   expect(entry, "public/onboarding-api.js: no backend entry in mockResponses.plan().endpoints").toBeDefined();
-  expect(entry?.purpose, "public/onboarding-api.js: backend entry has no purpose field").toBeTruthy();
-  return entry?.purpose ?? "";
+  // cp#474: the mock now matches provisionPlanView, which projects label, not a separate purpose.
+  expect(entry?.label, "public/onboarding-api.js: backend entry has no label field").toBeTruthy();
+  return entry?.label ?? "";
 }
 
 function hostedTierDocPurpose(): string {

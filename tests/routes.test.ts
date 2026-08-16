@@ -8,6 +8,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { handle } from "../src/index";
+import { isEndpointBacked, PROVISION_PLAN, provisionPlanView } from "../src/runpod";
 import type { ControlPlaneDeps, ProvisionerWiring } from "../src/deps";
 import type { ControlPlaneEnv } from "../src/env";
 import { SESSION_COOKIE, startSession } from "../src/auth";
@@ -850,6 +851,44 @@ describe("sessions", () => {
 });
 
 // ---- tenants ----
+
+describe("GET /api/tenant/provision-plan (cp#474)", () => {
+  async function ready() {
+    const s = await signedIn();
+    await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    return s;
+  }
+
+  it("REFUSES unsigned-in and unsigned-AUP the same way every other tenant route does", async () => {
+    expect((await handle(req("/api/tenant/provision-plan"), env(), ctx, deps)).status).toBe(401);
+    const { cookie } = await signedIn();
+    const gated = await handle(req("/api/tenant/provision-plan", { headers: { cookie } }), env(), ctx, deps);
+    expect(gated.status).toBe(403);
+    expect(await gated.json()).toMatchObject({ error: "aup_required" });
+  });
+
+  it("projects PROVISION_PLAN, not a second list", async () => {
+    const { cookie } = await ready();
+    const res = await handle(req("/api/tenant/provision-plan", { headers: { cookie } }), env(), ctx, deps);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { endpoints: Array<{ key: string; label: string; backing: string; max_workers: number | null; gpu: string; image: string }> };
+    const view = provisionPlanView();
+    expect(body.endpoints.map((e) => e.key)).toEqual(PROVISION_PLAN.map((c) => c.key));
+    expect(body.endpoints.map((e) => e.label)).toEqual(PROVISION_PLAN.map((c) => c.label));
+    expect(body.endpoints).toEqual(view);
+    for (const cap of PROVISION_PLAN) {
+      const row = body.endpoints.find((e) => e.key === cap.key);
+      expect(row, cap.key).toBeDefined();
+      expect(row?.backing).toBe(cap.backing);
+      if (isEndpointBacked(cap)) {
+        expect(row?.max_workers).toBe(cap.maxWorkers);
+      } else {
+        expect(row?.max_workers).toBeNull();
+        expect(row?.gpu).toBe("our hardware");
+      }
+    }
+  });
+});
 
 describe("POST /api/tenant/provision", () => {
   async function ready() {

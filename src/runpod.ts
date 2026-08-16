@@ -232,6 +232,49 @@ export const PROVISION_PLAN: PlannedCapability[] = [
   },
 ];
 
+/**
+ * The tenant-visible projection of PROVISION_PLAN (cp#474).
+ *
+ * The review step used to GET /api/tenant/provision-plan, a route this plane has never served,
+ * so every walk of the wizard rendered an empty plan at the last stop before anything is created.
+ * This is that route's body, derived from the same array the provisioner builds from: adding a
+ * capability grows a review row with no second list to keep in step.
+ *
+ * max_workers is null on own-iron rows. There is no RunPod quota to spend there, and a zero would
+ * look like a pin rather than an absence.
+ */
+export interface ProvisionPlanRow {
+  key: string;
+  label: string;
+  backing: "runpod" | "vpc";
+  image: string;
+  max_workers: number | null;
+  gpu: string;
+}
+
+export function provisionPlanView(plan: PlannedCapability[] = PROVISION_PLAN): ProvisionPlanRow[] {
+  return plan.map((cap) => {
+    if (isEndpointBacked(cap)) {
+      return {
+        key: cap.key,
+        label: cap.label,
+        backing: "runpod",
+        image: imageRef(cap.key),
+        max_workers: cap.maxWorkers,
+        gpu: cap.gpuTypeIds.join(" / "),
+      };
+    }
+    return {
+      key: cap.key,
+      label: cap.label,
+      backing: "vpc",
+      image: imageRef(cap.key),
+      max_workers: null,
+      gpu: "our hardware",
+    };
+  });
+}
+
 
 export interface TenantR2Creds {
   endpoint: string;

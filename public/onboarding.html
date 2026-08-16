@@ -56,12 +56,11 @@
         </p>
 
         <div class="callout">
-          <p><strong>The GPUs are yours, not ours.</strong> We create four render endpoints on your
-          own RunPod account. You pay RunPod for the seconds you render, directly. We take no cut,
-          and there is no vivijure bill in this tier.</p>
+          <p><strong>The GPUs are ours. You just write the film.</strong> Your studio runs on our
+          shared render capacity. You do not need a RunPod account, and you never paste a key.</p>
         </div>
 
-        <h3>What gets created on your RunPod account</h3>
+        <h3>What gets set up</h3>
         <p class="small muted">
           A representative example. Nothing is created until you say go, and you will see this exact
           list again with your account's real numbers at the review step, before anything happens.
@@ -158,20 +157,19 @@
       </section>
       <section class="panel" data-step="review" hidden>
         <h2>Review, then we build</h2>
-        <p class="lede">This is everything we will create on your RunPod account. Last stop before
-          anything happens.</p>
+        <p class="lede">This is everything we will set up. Last stop before anything happens.</p>
         <div class="rows" id="plan-review"></div>
         <p class="small muted" id="plan-total"></p>
 
         <div class="callout">
-          <p class="small">We pin the worker count on each endpoint ourselves rather than taking
-          RunPod's default of 3 each. Four endpoints at that default would ask for 12 workers and
-          fail on most accounts.</p>
+          <p class="small">Worker counts on the shared GPU pool are pinned by us, not left at
+          RunPod's default of 3 each. The own-hardware rows have no worker pin: they run on boxes
+          we already operate.</p>
         </div>
 
         <div class="checkbox-row">
           <input type="checkbox" id="confirm-create" />
-          <label for="confirm-create">Create these endpoints on my RunPod account.</label>
+          <label for="confirm-create">Build my studio with this plan.</label>
         </div>
 
         <div class="actions">
@@ -259,33 +257,16 @@
         <p class="lede">Go make something.</p>
         <p><a id="studio-link" href="#" class="row-name">Open my studio</a></p>
 
-        <div class="callout callout-warn">
-          <p><strong>One last thing: delete the setup key.</strong> That is the first key you
-          pasted, the powerful one. We never stored it, and we are done with it. Delete it or
-          rotate it whenever you like; nothing here breaks, because your studio does not have it.</p>
-          <p class="small"><a href="https://console.runpod.io/user/settings" target="_blank" rel="noopener noreferrer">Delete it in your RunPod console</a>.</p>
-        </div>
-
         <div class="callout">
-          <p><strong>What we keep, in full:</strong> your render key, and nothing else. It can start
-          and check jobs on your four endpoints. It cannot create anything, cannot touch the rest of
-          your RunPod account, and cannot even change those four endpoints' settings. If it leaked
-          tomorrow, the worst anyone could do is render films on your four endpoints.</p>
+          <p><strong>What we keep:</strong> the studio, its database, and its files. The render
+          key is ours and stays on our side. You never had one to delete.</p>
         </div>
 
         <div class="callout">
           <p><strong>If you ever want out.</strong> Your storyboards and render history live in your
           own database, and your films live in your own storage bucket. Delete your studio and we
-          offer you the export first: a SQL file and your files, yours to take. Your RunPod
-          endpoints were always yours.</p>
-          <p class="small"><a href="https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/hosted-tier.md">The full story: costs, keys, and how to leave</a></p>
-        </div>
-
-        <div class="callout callout-warn">
-          <p><strong>If you do not render for a week, RunPod puts your endpoints to sleep.</strong>
-          After 7 idle days it sets them to 0 max workers and leaves them there. Nothing is lost;
-          the number just needs raising. Your studio will spot this and tell you how to fix it
-          rather than failing a render with a confusing error.</p>
+          offer you the export first: a SQL file and your files, yours to take.</p>
+          <p class="small"><a href="https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/hosted-tier.md">The full story: costs, and how to leave</a></p>
         </div>
       </section>
     </main>

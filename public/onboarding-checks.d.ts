@@ -26,10 +26,12 @@ export interface SlugHint {
 export interface PlannedEndpoint {
   key: string;
   label: string;
-  purpose: string;
-  image: string;
-  max_workers: number;
+  purpose?: string;
+  image?: string;
+  max_workers?: number | null;
   gpu?: string;
+  /** runpod = shared GPU pool; vpc = our own hardware. Absent is treated as runpod. */
+  backing?: "runpod" | "vpc";
 }
 
 export interface QuotaFit {
@@ -154,6 +156,10 @@ export function invokeRejectionCopy(
   detail?: string | null,
 ): string;
 export function planWorkerTotal(plan: PlannedEndpoint[] | null | undefined): number;
+/** Meta line for one review row. Own-iron is not scale-to-zero. */
+export function planRowMeta(ep: PlannedEndpoint | null | undefined): string;
+/** One-line total under the review list. */
+export function planSummaryCopy(plan: PlannedEndpoint[] | null | undefined): string;
 export function quotaFit(
   quota: number | null | undefined,
   existingWorkerSum: number | null | undefined,

@@ -70,11 +70,13 @@
   // rows read, so the two render identically.
   const REPRESENTATIVE_PLAN = {
     endpoints: [
-      // cp#303: purpose matches PROVISION_PLAN -- training is not on this endpoint.
-      { key: "backend", label: "backend", purpose: "The main render: keyframes and video", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "H200 / B200" },
-      { key: "upscale", label: "upscale", purpose: "Makes finished video sharper", image: "ghcr.io/skyphusion-labs/vivijure-upscale", max_workers: 1, gpu: "RTX 6000 Pro" },
-      { key: "lipsync", label: "lipsync", purpose: "Matches mouth movement to dialogue", image: "ghcr.io/skyphusion-labs/vivijure-musetalk", max_workers: 1, gpu: "RTX 6000 Pro" },
-      { key: "audio-upscale", label: "audio-upscale", purpose: "Cleans up and sharpens audio", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", max_workers: 1, gpu: "RTX 6000 Pro" },
+      // Labels match PROVISION_PLAN. backing is what lets the intro tell own-iron
+      // from the shared pool without inventing four RunPod endpoints (cp#474).
+      // cp#303: purpose matches the plan -- training is not on this endpoint.
+      { key: "backend", label: "Render (keyframes, video)", purpose: "The main render: keyframes and video", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "H200 / B200", backing: "runpod" },
+      { key: "upscale", label: "Video upscale", purpose: "Makes finished video sharper", image: "ghcr.io/skyphusion-labs/vivijure-upscale", gpu: "our hardware", backing: "vpc" },
+      { key: "lipsync", label: "Lip sync", purpose: "Matches mouth movement to dialogue", image: "ghcr.io/skyphusion-labs/vivijure-musetalk", max_workers: 1, gpu: "RTX 6000 Pro", backing: "runpod" },
+      { key: "audio-upscale", label: "Audio upscale", purpose: "Cleans up and sharpens audio", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", gpu: "our hardware", backing: "vpc" },
     ],
     // A real, named render from our own history (film-2294a9d7, 2026-07-14: 2
     // shots, 10s of finished video, final quality). wall_clock_ms is wall-clock
@@ -163,6 +165,42 @@
       const n = ep && typeof ep.max_workers === "number" ? ep.max_workers : 0;
       return sum + (Number.isFinite(n) && n > 0 ? n : 0);
     }, 0);
+  }
+
+  // The meta line under a review row. Own-iron is not scale-to-zero and has no
+  // worker pin, so a single "max N -- scale-to-zero" sentence on every row
+  // would lie about half the plan the moment cp#474 served the real one.
+  function planRowMeta(ep) {
+    const row = ep || {};
+    if (row.backing === "vpc") {
+      return row.gpu || "our hardware";
+    }
+    const bits = [];
+    if (row.gpu) bits.push(row.gpu);
+    if (typeof row.max_workers === "number" && Number.isFinite(row.max_workers) && row.max_workers > 0) {
+      bits.push("max " + row.max_workers + (row.max_workers === 1 ? " worker" : " workers"));
+    }
+    bits.push("scale-to-zero");
+    return bits.join(" -- ");
+  }
+
+  function planSummaryCopy(plan) {
+    const rows = Array.isArray(plan) ? plan : [];
+    if (!rows.length) return "";
+    const workers = planWorkerTotal(rows);
+    const ours = rows.filter(function (ep) { return ep && ep.backing === "vpc"; }).length;
+    const bits = [];
+    if (workers > 0) {
+      bits.push(
+        workers + (workers === 1 ? " worker" : " workers") +
+          " at most on the shared GPU pool, all scale-to-zero",
+      );
+    }
+    if (ours > 0) {
+      bits.push(ours + (ours === 1 ? " capability" : " capabilities") + " on our own hardware");
+    }
+    if (!bits.length) return "Total: " + rows.length + (rows.length === 1 ? " item" : " items") + ".";
+    return "Total: " + bits.join(", plus ") + ".";
   }
 
   // Does the plan fit the account's REAL worker quota?
@@ -883,6 +921,8 @@
     aupPinningRefusalCopy: aupPinningRefusalCopy,
     REJECTION_COPY: REJECTION_COPY,
     planWorkerTotal: planWorkerTotal,
+    planRowMeta: planRowMeta,
+    planSummaryCopy: planSummaryCopy,
     quotaFit: quotaFit,
     costCeilingUsd: costCeilingUsd,
     formatUsd: formatUsd,

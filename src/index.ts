@@ -98,6 +98,7 @@ import {
   smokeRefusalStatus,
   startSmokeRender,
 } from "./smoke-render";
+import { provisionPlanView } from "./runpod";
 import {
   slugRejectionMessage,
   tenantEndpointIds,
@@ -796,6 +797,13 @@ async function tenantRoutes(
 
   if (request.method === "POST" && path === "/api/tenant/provision") {
     return await provision(request, ctx, deps, account);
+  }
+
+  // cp#474: the review step has called this since the wizard shipped, and nothing served it.
+  // The body is a projection of PROVISION_PLAN, the same array the provisioner builds from,
+  // so the last screen before anything is created cannot invent a different list.
+  if (request.method === "GET" && path === "/api/tenant/provision-plan") {
+    return json({ endpoints: provisionPlanView() });
   }
 
   const scoped = /^\/api\/tenant\/(ten_[a-f0-9]+)(?:\/([a-z-]+))?$/.exec(path);
