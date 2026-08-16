@@ -8,6 +8,7 @@ import { TEST_VPC_DOORS } from "./door-fixture";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   PROVISION_STEPS,
+  continueProvisionJob,
   runProvisionJob,
   teardownTenant,
   tenantBucketName,
@@ -21,7 +22,7 @@ import { CfApiError } from "../src/cf-api";
 import type { CfApi } from "../src/cf-api";
 import type { Tenant } from "../src/store";
 import { sha256Hex } from "../src/crypto";
-import { decryptStudioToken, kekRing } from "../src/token-crypto";
+import { decryptStudioToken, encryptStudioToken, kekRing } from "../src/token-crypto";
 import { MemoryStore, recordingStore, TEST_PROVISION_FACTS } from "./memory-store";
 import { HARVEST_ROW_CAP } from "../src/runpod-job-index";
 import { expectProvisionFailure } from "./provision-assert";
@@ -961,6 +962,97 @@ describe("auto-teardown on provision failure (cf#91)", () => {
     // unchanged and still asserted -- the R2 credential must be revoked by its PERSISTED ID, never
     // by falling back to a name census.
     expect(d.tokenMinter.revokeByName).not.toHaveBeenCalledWith(tenantR2TokenName("hero"));
+  });
+});
+
+// ---- cp#461: a refused finishJob must not roll back a studio that already succeeded ------------
+//
+// finishJob reports whether it closed a row. The reap already branches on that (cp#443). The two
+// provision drivers did not: a zombie that lost its lease, then failed, still wrote
+// setTenantStatus(failed) + rollbackFailedProvision over a successor that had already succeeded,
+// and the rollback DELETES that studio's D1, R2 bucket, and token.
+//
+// Simulated at the failing step, not by pre-closing the job. Pre-closing then calling
+// runProvisionJob from the top re-opens the row (setJobRunning has no status predicate), so
+// finishJob would succeed and this would assert the opposite of the prize. The successor wins
+// INSIDE the step that then throws; that is the window.
+
+describe("cp#461: a refused finishJob does not roll back a succeeded studio", () => {
+  const KEK = kekRing(btoa("0123456789abcdef0123456789abcdef"));
+
+  function spyFinish(s: MemoryStore): boolean[] {
+    const real = s.finishJob.bind(s);
+    const results: boolean[] = [];
+    s.finishJob = async (id, status, errorStep, errorMessage) => {
+      const closed = await real(id, status, errorStep, errorMessage);
+      results.push(closed);
+      return closed;
+    };
+    return results;
+  }
+
+  it("runProvisionJob: successor already succeeded, zombie fail does not tear the studio down", async () => {
+    const t = await tenant();
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
+    const finishes = spyFinish(store);
+    const boom = new CfApiError("wfp.upload", 400, [{ message: "script too large" }]);
+    const d = deps();
+    (d.scriptUploadCf as unknown as { uploadUserWorker: unknown }).uploadUserWorker = vi.fn(async () => {
+      // THE SUCCESSOR: same job, already finished. The zombie is still inside this await.
+      expect(await store.finishJob(job.id, "succeeded", null, null)).toBe(true);
+      await store.setTenantStatus(t.id, "awaiting_invoke_key");
+      throw boom;
+    });
+
+    const res = await runProvisionJob(d, job.id, t);
+
+    expect(res.ok).toBe(false);
+    // Floor: successor closed (true), then the zombie's catch refused (false). A catch that never
+    // calls finishJob is [true] only and would pass the teardown assertions vacuously.
+    expect(finishes, "the zombie catch never called finishJob, so this asserts nothing").toEqual([true, false]);
+    expect(store.jobs.get(job.id)?.status).toBe("succeeded");
+    expect(store.tenants.get(t.id)?.status).toBe("awaiting_invoke_key");
+    expect(d.tokenMinter.revoke).not.toHaveBeenCalled();
+    expect(calls).not.toContain("deleteD1");
+    expect(calls).not.toContain("deleteR2Bucket");
+    expect(logs.some((l) => l.event === "provision.rollback")).toBe(false);
+  });
+
+  it("continueProvisionJob: same refusal, same no-teardown", async () => {
+    const t0 = await tenant();
+    await store.setTenantStatus(t0.id, "provisioning");
+    await store.setTenantEndpoints(t0.id, JSON.stringify(ENDPOINTS));
+    await store.setTenantD1(t0.id, "db-1");
+    await store.setTenantBucket(t0.id, tenantBucketName("hero"));
+    await store.setTenantR2Token(t0.id, "tok-1");
+    await store.setTenantStudioToken(t0.id, await encryptStudioToken(KEK, "the-studio-token"));
+    await store.setTenantScript(t0.id, "tenant-hero-studio", "v1.0.0");
+    const t = (await store.getTenantById(t0.id))!;
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
+    const stepsDone = ["d1_create", "d1_migrate", "r2_bucket", "r2_token", "runpod_endpoints", "wfp_upload"];
+    await store.setJobRunning(job.id);
+    await store.updateJobProgress(job.id, "wfp_upload", JSON.stringify(stepsDone));
+    const finishes = spyFinish(store);
+    const d = deps({
+      moduleBundle: {
+        fetch: vi.fn(async () => {
+          expect(await store.finishJob(job.id, "succeeded", null, null)).toBe(true);
+          await store.setTenantStatus(t.id, "awaiting_invoke_key");
+          throw new Error("modules explode");
+        }),
+      },
+    });
+
+    const res = await continueProvisionJob(d, job.id, t, stepsDone);
+
+    expect(res.ok).toBe(false);
+    expect(finishes, "the zombie catch never called finishJob, so this asserts nothing").toEqual([true, false]);
+    expect(store.jobs.get(job.id)?.status).toBe("succeeded");
+    expect(store.tenants.get(t.id)?.status).toBe("awaiting_invoke_key");
+    expect(d.tokenMinter.revoke).not.toHaveBeenCalled();
+    expect(calls).not.toContain("deleteD1");
+    expect(calls).not.toContain("deleteR2Bucket");
+    expect(logs.some((l) => l.event === "provision.rollback")).toBe(false);
   });
 });
 
