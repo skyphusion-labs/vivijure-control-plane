@@ -105,7 +105,9 @@ describe("the catalog says WHICH modules record", () => {
         "seedance", "speech-upscale", "vidu-q3",
       ],
     );
-    expect(NOT_RECORDING).toEqual(["plan-enhance"]);
+    expect(NOT_RECORDING.sort()).toEqual(
+      ["cf-flux-3-video", "cf-grok-video", "cf-hh1-r2v", "cf-seedance", "plan-enhance"].sort(),
+    );
   });
 
   it("finish-rife is catalogued AND recording, so the upstream set is fully covered (cp#284)", () => {

@@ -6,6 +6,13 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.28.1 -- 2026-08-16
+
+### fix(ci): fixtures match wan-train + CF i2v catalog
+
+v1.28.0 tagged and failed preflight Test. Pin regex accepts `train-*`.
+Studio fixtures bind RUNPOD_WAN_TRAIN_ENDPOINT_ID. Catalog counts 19.
+
 ## v1.28.0 -- 2026-08-16
 
 ### feat(purge): remove the BYOK / dedicated RunPod path (cp#396)

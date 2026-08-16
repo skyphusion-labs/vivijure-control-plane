@@ -41,7 +41,7 @@ describe("satellite pins (cp#126)", () => {
       expect(tag, key).not.toBe("latest");
       // A git sha pin makes an endpoint untraceable to a release (the RunPod pin rule).
       expect(tag, key).not.toMatch(/^[0-9a-f]{7,40}$/);
-      expect(tag, key).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(tag, key).toMatch(/^(train-)?\d+\.\d+\.\d+$/);
       // The python provisioner's frozen footgun default, which must never reach a tenant.
       expect(tag, key).not.toBe("0.4.4");
     }
