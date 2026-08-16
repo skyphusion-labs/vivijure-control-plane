@@ -130,6 +130,7 @@ beforeAll(async () => {
     // not by silently widening what this suite claims to cover.
     scriptUploadCf: cf,
     videoFinishServiceId: null,
+    mediaDoorUrls: {},
     // cp#396: the own-iron doors, read from the environment like every other piece of this suite
     // config. Supply FINISH_UPSCALE_VPC_SERVICE_ID / FINISH_DOOR_TOKEN (and the SPEECH_ pair) to
     // cover the door-bound modules end to end.

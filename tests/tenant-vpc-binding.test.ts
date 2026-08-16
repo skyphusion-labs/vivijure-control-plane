@@ -27,6 +27,7 @@ const ENDPOINTS = [
   { key: "backend", label: "Render", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
   { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
   { key: "lipsync", label: "Lip sync", id: "ep3", name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+  { key: "wan-train", label: "Cast LoRA training (Wan)", id: "ep4", name: "n4", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
   { key: "audio-upscale", label: "Audio upscale", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
 ];
 
@@ -68,6 +69,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     },
     sharedPoolInvokeKey: "rpa_poolkey",
     videoFinishServiceId: null,
+    mediaDoorUrls: {},
     runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
     tokenMinter: {
       mintBucketToken: vi.fn(async () => ({ id: "tok-1", value: "SECRET" })),

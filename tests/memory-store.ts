@@ -548,6 +548,15 @@ export class MemoryStore implements ControlPlaneStore {
    * the fake would let a test pass against semantics production does not have.
    */
   jobIndex = new Map<string, Record<string, unknown>>();
+  llmEvents: Array<{
+    tenant_id: string;
+    source_id: string;
+    model: string | null;
+    cost_micro_usd: number | null;
+    tokens_in: number | null;
+    tokens_out: number | null;
+    occurred_at: string;
+  }> = [];
 
   async indexRunpodJobs(
     tenantId: string,
@@ -605,6 +614,38 @@ export class MemoryStore implements ControlPlaneStore {
       }
     }
     return null;
+  }
+
+  async listTenantRunpodJobs(tenantId: string, limit: number): Promise<import("../src/store").TenantRunpodJob[]> {
+    const rows = [...this.jobIndex.values()]
+      .filter((r) => String(r.tenant_id) === tenantId)
+      .sort((a, b) => Number(b.submitted_at ?? 0) - Number(a.submitted_at ?? 0))
+      .slice(0, limit);
+    return rows.map((r) => ({
+      job_id: String(r.job_id),
+      tenant_slug: String(r.tenant_slug ?? ""),
+      module: r.module == null ? null : String(r.module),
+      endpoint_id: r.endpoint_id == null ? null : String(r.endpoint_id),
+      outcome: r.outcome == null ? null : String(r.outcome),
+      status_raw: r.status_raw == null ? null : String(r.status_raw),
+      execution_ms: r.execution_ms == null ? null : Number(r.execution_ms),
+      delay_ms: r.delay_ms == null ? null : Number(r.delay_ms),
+      submitted_at: r.submitted_at == null ? null : Number(r.submitted_at),
+      terminal_at: r.terminal_at == null ? null : Number(r.terminal_at),
+      source: r.source == null ? null : String(r.source),
+    }));
+  }
+
+  async listTenantLlmEvents(tenantId: string, limit: number): Promise<import("../src/store").TenantLlmEvent[]> {
+    const rows = (this.llmEvents ?? []).filter((e) => e.tenant_id === tenantId).slice(0, limit);
+    return rows.map((e) => ({
+      source_id: e.source_id,
+      model: e.model,
+      cost_micro_usd: e.cost_micro_usd,
+      tokens_in: e.tokens_in,
+      tokens_out: e.tokens_out,
+      occurred_at: e.occurred_at,
+    }));
   }
 
   async closeRunpodProxyJob(row: ProxyJobClose): Promise<number> {

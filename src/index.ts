@@ -2020,6 +2020,7 @@ export const ADMIN_REQUIREMENTS: ReadonlyArray<{ method: string; pattern: RegExp
 
   { method: "GET", pattern: /^\/api\/admin\/audit$/, requires: "tenants:read" },
   { method: "GET", pattern: /^\/api\/admin\/tenants$/, requires: "tenants:read" },
+  { method: "GET", pattern: new RegExp(`^/api/admin/tenants/${TEN}/usage$`), requires: "tenants:read" },
   // cp#376. NOT a ${TEN} route and cannot become one: `provision` is not a tenant id, so it can
   // never collide with the per-tenant patterns below no matter where this row sits. Its own scope,
   // for the reasons written at the tenants:provision entry in operator-auth.ts -- the short version
@@ -2353,6 +2354,38 @@ async function adminRoutes(
       q: url.searchParams.get("q") ?? undefined,
     });
     return json({ tenants: tenants.map((t) => tenantView(t, tenantDomainSuffix(env))) });
+  }
+
+  const tenantUsage = new RegExp(`^/api/admin/tenants/${TEN}/usage$`).exec(path);
+  if (request.method === "GET" && tenantUsage) {
+    const tenant = await deps.store.getTenantById(tenantUsage[1]);
+    if (!tenant) return err("not_found", 404);
+    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? "200") || 200));
+    const [jobs, llm] = await Promise.all([
+      deps.store.listTenantRunpodJobs(tenant.id, limit),
+      deps.store.listTenantLlmEvents(tenant.id, limit),
+    ]);
+    const { parseSpendPricebook } = await import("./spend-pricebook");
+    const { assembleTenantUsage, formatUsdFromMicro } = await import("./tenant-usage");
+    const usage = assembleTenantUsage({
+      tenantId: tenant.id,
+      jobs,
+      llm,
+      book: parseSpendPricebook(env.SPEND_PRICEBOOK),
+    });
+    return json(
+      {
+        slug: tenant.slug,
+        ...usage,
+        totals_usd: {
+          runpod: formatUsdFromMicro(usage.totals.runpod_cost_micro_usd),
+          llm: formatUsdFromMicro(usage.totals.llm_cost_micro_usd),
+          all: formatUsdFromMicro(usage.totals.cost_micro_usd),
+        },
+      },
+      200,
+      { "cache-control": "no-store" },
+    );
   }
 
   // ---- OPERATOR-PROVISIONED TENANT (cp#376) --------------------------------------------------

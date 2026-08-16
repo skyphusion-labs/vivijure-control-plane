@@ -54,16 +54,13 @@ function fakeRunPod(opts: { endpoints?: unknown[]; templates?: unknown[]; quotaE
 }
 
 describe("the provisioning plan", () => {
-  it("holds 4 capabilities: 2 endpoint-backed summing to 3 workers, 2 on our own iron", () => {
-    // BOTH NUMBERS, never one. A single figure cannot distinguish a capability that was DROPPED
-    // from one that MOVED transport, and telling those apart is the entire point of cp#396: a
-    // shared tenant keeps the full upscale capability and reaches our GPU boxes instead of RunPod.
-    expect(PROVISION_PLAN).toHaveLength(4);
-    expect(endpointBackedPlan()).toHaveLength(2);
+  it("holds 5 capabilities: 3 endpoint-backed, 2 on our own iron", () => {
+    expect(PROVISION_PLAN).toHaveLength(5);
+    expect(endpointBackedPlan()).toHaveLength(3);
     expect(vpcBackedPlan()).toHaveLength(2);
-    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "lipsync"]);
+    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "lipsync", "wan-train"]);
     expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["audio-upscale", "upscale"]);
-    // cp#396: planWorkerTotal went with the creation path. maxWorkers survives on the plan as the    // pin an endpoint WOULD carry, and is asserted per-entry below rather than as a sum.    expect(endpointBackedPlan().reduce((n, e) => n + e.maxWorkers, 0)).toBe(3);
+    expect(endpointBackedPlan().reduce((n, e) => n + e.maxWorkers, 0)).toBe(5);
   });
 
   it("pins max_workers EXPLICITLY on every ENDPOINT (RunPod default of 3 would overrun the quota)", () => {

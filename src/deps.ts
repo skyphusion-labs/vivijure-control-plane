@@ -556,6 +556,13 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     // Trimmed, and empty-means-absent: a whitespace-only value is a config typo, and treating it as
     // a service id would attach a binding CF cannot resolve.
     videoFinishServiceId: env.VIDEO_FINISH_VPC_SERVICE_ID?.trim() || null,
+    mediaDoorUrls: Object.fromEntries(
+      (["VIDEO_FINISH_URL", "AUDIO_MIX_URL", "AUDIO_BEAT_SYNC_URL", "IMAGE_PREP_URL", "AUDIO_MASTER_URL"] as const)
+        .flatMap((name) => {
+          const v = env[name]?.trim();
+          return v ? [[name, v] as const] : [];
+        }),
+    ),
     // cp#396: the own-iron doors, keyed by plan key and derived FROM the plan, so adding a
     // vpc-backed capability is a plan entry plus two deploy vars and never an edit here.
     //

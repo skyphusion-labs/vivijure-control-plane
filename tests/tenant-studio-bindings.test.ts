@@ -101,6 +101,7 @@ function deps(census: CensusState, over: Partial<ProvisionDeps> = {}): Provision
     cf: fakeCf("cf", census),
     scriptUploadCf: fakeCf("scriptUpload", census),
     videoFinishServiceId: SERVICE_ID,
+    mediaDoorUrls: {},
     namespace: "vivijure-tenants",
     release: "v1.7.0",
     tenantScriptName: (slug: string) => `tenant-${slug}-studio`,

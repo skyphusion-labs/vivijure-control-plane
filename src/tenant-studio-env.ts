@@ -144,6 +144,22 @@ export const TENANT_STUDIO_VAR_DISPOSITION: Record<string, { disposition: VarDis
   DEMO_RENDER_QUEUE_DEPTH: { disposition: "not-hosted", why: "public demo studio only" },
   DEMO_CHAT_PER_IP_DAILY: { disposition: "not-hosted", why: "public demo studio only" },
   DEMO_CHAT_GLOBAL_DAILY: { disposition: "not-hosted", why: "public demo studio only" },
+  VIDEO_FINISH_URL: {
+    disposition: "conditional",
+    why: "Traefik SUBMIT origin. Bound when the plane var is set. Unset = assemble off.",
+  },
+  AUDIO_MIX_URL: { disposition: "conditional", why: "Traefik audio-mix origin. Unset = mix off." },
+  AUDIO_BEAT_SYNC_URL: { disposition: "conditional", why: "Traefik beat-sync origin. Unset = beat-sync off." },
+  IMAGE_PREP_URL: { disposition: "conditional", why: "Traefik image-prep origin. Unset = rembg off." },
+  AUDIO_MASTER_URL: { disposition: "conditional", why: "Traefik audio-master origin. Unset = master off." },
+  FINISH_UPSCALE_DOORS: { disposition: "conditional", why: "Comma-separated HTTPS origins for finish-upscale poll." },
+  SPEECH_UPSCALE_DOORS: { disposition: "conditional", why: "Comma-separated HTTPS origins for speech-upscale poll." },
+  FINISH_BLENDER_DOORS: { disposition: "conditional", why: "Comma-separated HTTPS origins for blender poll." },
+  RUNPOD_WAN_TRAIN_ENDPOINT_ID: {
+    disposition: "conditional",
+    why: "Shared pool wan-train endpoint id. Bound from the pool when present.",
+  },
+  SPEND_PRICEBOOK: { disposition: "not-hosted", why: "plane-only price book; tenants do not price themselves" },
 };
 
 /** The vars a tenant studio MUST carry. Derived from the map, so it cannot drift from it. */
