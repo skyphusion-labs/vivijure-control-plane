@@ -74,7 +74,8 @@ describe("the provisioning plan", () => {
       const asAny = c as unknown as Record<string, unknown>;
       expect(asAny.maxWorkers, c.key).toBeUndefined();
       expect(asAny.endpointVar, c.key).toBeUndefined();
-      expect(c.doors.length, c.key).toBeGreaterThan(0);
+      expect(c.doorsUrlVar, c.key).toMatch(/_DOORS$/);
+      expect(c.tokens.length, c.key).toBeGreaterThan(0);
     }
   });
 
@@ -97,9 +98,9 @@ describe("the provisioning plan", () => {
     expect(view.map((r) => r.key)).toEqual(PROVISION_PLAN.map((c) => c.key));
     expect(view.map((r) => r.label)).toEqual(PROVISION_PLAN.map((c) => c.label));
     expect(view.filter((r) => r.backing === "runpod")).toHaveLength(endpointBackedPlan().length);
-    expect(view.filter((r) => r.backing === "vpc")).toHaveLength(vpcBackedPlan().length);
+    expect(view.filter((r) => r.backing === "door")).toHaveLength(vpcBackedPlan().length);
     for (const row of view) {
-      if (row.backing === "vpc") {
+      if (row.backing === "door") {
         expect(row.max_workers).toBeNull();
         expect(row.gpu).toBe("our hardware");
       } else {

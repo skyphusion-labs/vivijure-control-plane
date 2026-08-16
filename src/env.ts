@@ -172,6 +172,10 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   AUDIO_BEAT_SYNC_URL?: string;
   IMAGE_PREP_URL?: string;
   AUDIO_MASTER_URL?: string;
+  FINISH_UPSCALE_DOORS?: string;
+  SPEECH_UPSCALE_DOORS?: string;
+  LOCAL_FINISH_TOKEN?: string;
+  MEDIA_FINISH_TOKEN?: string;
   /**
    * THE OWN-IRON DOORS (cp#396). One pair per vpc-backed PROVISION_PLAN capability.
    *
@@ -485,6 +489,8 @@ export const ENV_SECRETS = [
   "FINISH_DOOR_TOKEN_PROPAGANDHI",
   "SPEECH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID",
   "SPEECH_DOOR_TOKEN_PROPAGANDHI",
+  "LOCAL_FINISH_TOKEN",
+  "MEDIA_FINISH_TOKEN",
   // cp#185, classified from the tracked evidence rather than from the name: docs/deploy.md records
   // it as "worker secret, wrangler secret put" and its owners row says it is not yet installed on
   // the Worker. So the delivery mechanism is out of band, and the census must NOT ask for it in a

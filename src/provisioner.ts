@@ -213,7 +213,7 @@ export interface ProvisionDeps {
    * video-finish-availability.ts genuinely read. These are MODULE bindings. Both are doors onto the
    * same fleet; they are attached to different workers because different code reads them.
    */
-  vpcDoors: Record<string, ResolvedDoor[]>;
+  vpcDoors: Record<string, ResolvedDoor>;
   /**
    * Clock, sleep and fetch, injected rather than reached for globally (#23 / cf#72).
    *

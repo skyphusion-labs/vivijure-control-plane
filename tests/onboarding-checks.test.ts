@@ -108,11 +108,11 @@ describe("planWorkerTotal", () => {
 
 describe("planRowMeta / planSummaryCopy (cp#474)", () => {
   it("does not say scale-to-zero about own-iron", () => {
-    expect(planRowMeta({ key: "upscale", label: "Video upscale", backing: "vpc", gpu: "our hardware" }))
+    expect(planRowMeta({ key: "upscale", label: "Video upscale", backing: "door", gpu: "our hardware" }))
       .toBe("our hardware");
-    expect(planRowMeta({ key: "upscale", label: "Video upscale", backing: "vpc" }))
+    expect(planRowMeta({ key: "upscale", label: "Video upscale", backing: "door" }))
       .toBe("our hardware");
-    expect(planRowMeta({ key: "upscale", label: "Video upscale", backing: "vpc", gpu: "our hardware" }))
+    expect(planRowMeta({ key: "upscale", label: "Video upscale", backing: "door", gpu: "our hardware" }))
       .not.toMatch(/scale-to-zero/);
   });
 
@@ -136,9 +136,9 @@ describe("planRowMeta / planSummaryCopy (cp#474)", () => {
   it("summarises a mixed plan without calling own-iron scale-to-zero", () => {
     const copy = planSummaryCopy([
       { key: "backend", label: "Render", backing: "runpod", max_workers: 2 },
-      { key: "upscale", label: "Video upscale", backing: "vpc" },
+      { key: "upscale", label: "Video upscale", backing: "door" },
       { key: "lipsync", label: "Lip sync", backing: "runpod", max_workers: 1 },
-      { key: "audio-upscale", label: "Audio upscale", backing: "vpc" },
+      { key: "audio-upscale", label: "Audio upscale", backing: "door" },
     ]);
     expect(copy).toMatch(/3 workers/);
     expect(copy).toMatch(/shared GPU pool/);

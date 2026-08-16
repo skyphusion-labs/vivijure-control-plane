@@ -31,7 +31,7 @@ import {
   mintTenantProxyToken,
 } from "./runpod-proxy-auth";
 import type { TenantEndpoint } from "./provisioner";
-import { vpcBackedPlan } from "./runpod";
+import { doorBackedPlan } from "./runpod";
 import type { ResolvedDoor } from "./runpod";
 import type { RunPodMode } from "./runpod-pool";
 
@@ -455,7 +455,7 @@ export interface TenantModuleDeps {
    * Absent means the vpc-backed capability is NOT BOUND, and uploadTenantModules refuses rather
    * than uploading a module with no route to its door at all.
    */
-  vpcDoors: Record<string, ResolvedDoor[]>;
+  vpcDoors: Record<string, ResolvedDoor>;
   /** Dispatch a GET to one tenant MODULE script over TENANT_MODULE_DISPATCH (cf#114). Separate from
    *  callTenantStudio because module scripts live in a DIFFERENT dispatch namespace and take no
    *  bearer: /ready is unauthenticated by design (it carries booleans, never values, and the control
@@ -629,9 +629,9 @@ export async function uploadTenantModules(
     // trimming the plan orphaned finish-upscale and speech-upscale, and the guard below threw on
     // both, shared and dedicated alike. Collapsing 2 into 1 would be worse in the other direction --
     // a module that silently reaches nothing.
-    const vpcCapability = spec.endpointKey ? vpcBackedPlan().find((c) => c.key === spec.endpointKey) : undefined;
-    const endpoint = spec.endpointKey && !vpcCapability ? endpoints.find((e) => e.key === spec.endpointKey) : undefined;
-    if (spec.endpointKey && !vpcCapability && !endpoint) {
+    const doorCapability = spec.endpointKey ? doorBackedPlan().find((c) => c.key === spec.endpointKey) : undefined;
+    const endpoint = spec.endpointKey && !doorCapability ? endpoints.find((e) => e.key === spec.endpointKey) : undefined;
+    if (spec.endpointKey && !doorCapability && !endpoint) {
       throw new TenantModuleError(
         "modules_upload",
         `module ${spec.module} needs the ${spec.endpointKey} endpoint, which the tenant does not have`,
@@ -643,18 +643,13 @@ export async function uploadTenantModules(
     // The POOL for this capability. ZERO doors is the refusal, not fewer-than-all: a pool of one is
     // a working pool (vivijure-cf pickDoor is n % pool.length), so a plane that has configured one
     // box and not the other still provisions and simply concentrates on the box it has.
-    const doors = vpcCapability ? deps.vpcDoors[vpcCapability.key] : undefined;
-    if (vpcCapability && (!doors || doors.length === 0)) {
-      // NAMES EVERY DOOR VAR, not just the first. An operator who set only the second door pair
-      // would otherwise be told to set vars they have already set, with nothing pointing at the
-      // legacy pair that is actually missing.
-      const knobs = vpcCapability.doors
-        .map((d) => `${d.serviceIdVar} + ${d.doorTokenVar}`)
-        .join(", or ");
+    const door = doorCapability ? deps.vpcDoors[doorCapability.key] : undefined;
+    if (doorCapability && (!door || !door.doorsUrl)) {
+      const knobs = [doorCapability.doorsUrlVar, ...doorCapability.tokens.map((tok) => tok.envVar)].join(" + ");
       throw new TenantModuleError(
         "modules_upload",
-        `module ${spec.module} is served by our own iron, but this plane configures no door for ` +
-          `${vpcCapability.key}: set at least one pair -- ${knobs}`,
+        `module ${spec.module} is served by our own iron, but this plane configures no HTTPS door ` +
+          `for ${doorCapability.key}: set ${knobs}. Workers VPC is not a fallback.`,
       );
     }
     let bundle: ModuleBundle;
@@ -676,29 +671,10 @@ export async function uploadTenantModules(
       // via secretValue), so a plain_text binding drops straight in.
       bindings.push({ type: "plain_text", name: "RUNPOD_ENDPOINT_ID", text: endpoint.id });
     }
-    if (vpcCapability && doors) {
-      // THE OWN-IRON DOOR POOL (cp#396), following the VIDEO_FINISH_VPC precedent in provisioner.ts:
-      // a vpc_service binding plus the bearer the container checks, ONCE PER BOX.
-      //
-      // EVERY configured door is bound, in plan order. vivijure-cf builds doorPool() from these and
-      // round-robins with pickDoor, so binding only one would concentrate every tenant render on a
-      // single box while the other idled -- correct, but at half capacity and with no signal
-      // attached to the difference.
-      //
-      // NO RUNPOD_ENDPOINT_ID IS BOUND, and that is not an omission. vivijure-cf resolves the door
-      // pool FIRST and branches on it being non-empty before it ever reads a RunPod credential, so
-      // a door-bound module never needs an endpoint id. Binding an empty string to satisfy a shape
-      // would be the exact failure this split exists to remove: it uploads clean and dies at the
-      // tenant first render.
-      //
-      // The NAMES come from the module Env, not from us -- see PlannedDoor. Getting one wrong
-      // produces a binding nothing reads, which is SILENT, so they are carried as data on the plan
-      // rather than written here.
-      for (const door of doors) {
-        bindings.push({ type: "vpc_service", name: door.bindingName, service_id: door.serviceId });
-        // secret_text, never plain_text: this is a BEARER. A plain_text binding is readable from
-        // the dashboard and the API, which is how a door token becomes a secret nobody rotated.
-        bindings.push({ type: "secret_text", name: door.doorTokenBinding, text: door.token });
+    if (doorCapability && door) {
+      bindings.push({ type: "plain_text", name: door.doorsUrlVar, text: door.doorsUrl });
+      for (const tok of door.tokens) {
+        bindings.push({ type: "secret_text", name: tok.bindingName, text: tok.token });
       }
     }
     if (reachesRunpod(spec)) {

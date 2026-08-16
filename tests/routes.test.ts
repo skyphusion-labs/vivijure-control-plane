@@ -40,7 +40,7 @@ const CLEAN_REFRESH = {
   service_id: "019ecbe6-9fc1-70a0-9946-14bbec0f51bc",
   already_present: false,
   bindings_before: ["ASSETS", "DB"],
-  bindings_after: ["ASSETS", "DB", "VIDEO_FINISH_VPC"],
+  bindings_after: ["ASSETS", "DB"],
   secrets_before: ["STUDIO_API_TOKEN"],
   secrets_after: ["STUDIO_API_TOKEN"],
   missing_bindings: [] as string[],

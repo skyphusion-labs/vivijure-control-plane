@@ -31,7 +31,7 @@ export interface PlannedEndpoint {
   max_workers?: number | null;
   gpu?: string;
   /** runpod = shared GPU pool; vpc = our own hardware. Absent is treated as runpod. */
-  backing?: "runpod" | "vpc";
+  backing?: "runpod" | "door";
 }
 
 export interface QuotaFit {

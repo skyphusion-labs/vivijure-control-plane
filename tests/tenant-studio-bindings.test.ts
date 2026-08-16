@@ -112,7 +112,7 @@ function deps(census: CensusState, over: Partial<ProvisionDeps> = {}): Provision
 
 const census = (over: Partial<CensusState> = {}): CensusState => ({
   before: LIVE_BINDINGS,
-  after: [...LIVE_BINDINGS, { type: "vpc_service", name: VIDEO_FINISH_BINDING }],
+  after: LIVE_BINDINGS,
   secretsBefore: LIVE_SECRETS,
   secretsAfter: LIVE_SECRETS,
   ...over,
@@ -126,7 +126,7 @@ async function tenant(over: Partial<Tenant> = {}): Promise<Tenant> {
   return t;
 }
 
-const run = async (d: ProvisionDeps, t: Tenant) => await refreshTenantStudioBindings(d, t, SCRIPT, SERVICE_ID);
+const run = async (d: ProvisionDeps, t: Tenant) => await refreshTenantStudioBindings(d, t, SCRIPT);
 
 beforeEach(async () => {
   store = new MemoryStore();
@@ -136,23 +136,16 @@ beforeEach(async () => {
 });
 
 describe("cp#112: refreshing an existing tenant studio bindings", () => {
-  it("carries EVERY existing binding forward as inherit, and adds the vpc_service", async () => {
+  it("carries EVERY existing binding forward as inherit, and does NOT add vpc_service", async () => {
     const t = await tenant();
     await run(deps(census()), t);
 
     expect(patched.length).toBe(1);
     const sent = patched[0].bindings;
-    // Exact set equality, not a subset match: the failure this guards against is a binding QUIETLY
-    // MISSING from the desired set, which every subset assertion passes straight over.
-    expect(new Set(sent.map((b) => b.name))).toEqual(
-      new Set([...LIVE_BINDINGS.map((b) => b.name), VIDEO_FINISH_BINDING]),
-    );
+    expect(new Set(sent.map((b) => b.name))).toEqual(new Set(LIVE_BINDINGS.map((b) => b.name)));
     expect(sent.filter((b) => b.type === "inherit").length).toBe(LIVE_BINDINGS.length);
-    expect(sent.find((b) => b.name === VIDEO_FINISH_BINDING)).toEqual({
-      type: "vpc_service",
-      name: VIDEO_FINISH_BINDING,
-      service_id: SERVICE_ID,
-    });
+    expect(sent.some((b) => b.type === "vpc_service")).toBe(false);
+    expect(sent.find((b) => b.name === VIDEO_FINISH_BINDING)).toBeUndefined();
   });
 
   it("sends NO binding value of any kind: every carried binding is exactly {type,name}", async () => {
@@ -203,13 +196,12 @@ describe("cp#112: refreshing an existing tenant studio bindings", () => {
     });
     const res = await run(deps(already), t);
 
-    expect(res.already_present).toBe(true);
+    expect(res.already_present).toBe(false);
     expect(res.ok).toBe(true);
     expect(patched.length).toBe(1);
     // Exactly ONE VIDEO_FINISH_VPC entry in the desired set: the old one is replaced, not duplicated.
-    expect(patched[0].bindings.filter((b) => b.name === VIDEO_FINISH_BINDING)).toEqual([
-      { type: "vpc_service", name: VIDEO_FINISH_BINDING, service_id: SERVICE_ID },
-    ]);
+    expect(patched[0].bindings.filter((b) => b.name === VIDEO_FINISH_BINDING)).toEqual([]);
+    expect(patched[0].bindings.some((b) => b.type === "vpc_service")).toBe(false);
   });
 
   it("reports ok:false and NAMES what went missing when the readback comes back short", async () => {
@@ -234,10 +226,13 @@ describe("cp#112: refreshing an existing tenant studio bindings", () => {
     expect(res.secrets_before).toEqual([...LIVE_SECRETS].sort());
   });
 
-  it("reports ok:false when the binding it exists to add is NOT there afterwards", async () => {
+  it("reports ok:false when leftover VIDEO_FINISH_VPC is STILL bound afterwards", async () => {
     const t = await tenant();
-    const noop = census({ after: LIVE_BINDINGS });
-    const res = await run(deps(noop), t);
+    const stuck = census({
+      before: [...LIVE_BINDINGS, { type: "vpc_service", name: VIDEO_FINISH_BINDING }],
+      after: [...LIVE_BINDINGS, { type: "vpc_service", name: VIDEO_FINISH_BINDING }],
+    });
+    const res = await run(deps(stuck), t);
     expect(res.ok).toBe(false);
     expect(res.missing_bindings).toEqual([]);
   });
@@ -260,8 +255,8 @@ describe("cp#112: refreshing an existing tenant studio bindings", () => {
         ]);
       }) as unknown as CfApi["patchScriptSettings"],
     });
-    await expect(run(deps(census(), { scriptUploadCf: refusing }), t)).rejects.toThrow(StudioBindingError);
-    await expect(run(deps(census(), { scriptUploadCf: refusing }), t)).rejects.toThrow(/CF_WORKER_UPLOAD_TOKEN/);
+    await expect(run(deps(census(), { scriptUploadCf: refusing }), t)).rejects.toThrow(/Workers VPC binding configuration failed/);
+    await expect(run(deps(census(), { scriptUploadCf: refusing }), t)).rejects.not.toThrow(StudioBindingError);
   });
 
   it("does NOT swallow an unrelated CF failure into the VPC message", async () => {
@@ -289,13 +284,12 @@ describe("cp#112 preflight: refuses before it writes", () => {
     expect(patched).toEqual([]);
   });
 
-  it("refuses when the plane runs no video-finish tier (cp#109 honest refusal)", async () => {
+  it("does NOT refuse when VIDEO_FINISH_VPC_SERVICE_ID is unset: refresh does not attach VPC", async () => {
     const t = await tenant();
     const pre = preflightStudioBindings(deps(census(), { videoFinishServiceId: null }), t);
-    expect(pre.ok).toBe(false);
-    if (pre.ok) throw new Error("unreachable");
-    expect(pre.refusal.code).toBe("video_finish_unconfigured");
-    expect(pre.refusal.message).toMatch(/VIDEO_FINISH_VPC_SERVICE_ID/);
+    expect(pre.ok).toBe(true);
+    if (!pre.ok) throw new Error("unreachable");
+    expect(pre.script).toBe(SCRIPT);
   });
 
   it("POSITIVE CONTROL: a provisioned tenant on a configured plane PASSES preflight", async () => {
@@ -304,7 +298,6 @@ describe("cp#112 preflight: refuses before it writes", () => {
     expect(pre.ok).toBe(true);
     if (!pre.ok) throw new Error("unreachable");
     expect(pre.script).toBe(SCRIPT);
-    expect(pre.serviceId).toBe(SERVICE_ID);
   });
 });
 
@@ -377,10 +370,15 @@ describe("cp#136: detaching the video-finish tier from a live tenant", () => {
 
   it("is NOT ok when the tier is still bound after the patch, even though the call returned", async () => {
     const t = await tenant();
-    const d = deps(bound());
+    // bound() defaults after to LIVE_BINDINGS (tier gone). Force the leftover to remain.
+    const stuck = census({
+      before: [...LIVE_BINDINGS, { type: "vpc_service", name: VIDEO_FINISH_BINDING }],
+      after: [...LIVE_BINDINGS, { type: "vpc_service", name: VIDEO_FINISH_BINDING }],
+    });
+    const d2 = deps(stuck);
     const pre = preflightStudioBindingDetach(t);
     if (!pre.ok) throw new Error("preflight refused: " + pre.refusal.code);
-    const result = await detachTenantStudioBinding(d, t, pre.script);
+    const result = await detachTenantStudioBinding(d2, t, pre.script);
     expect(result.ok).toBe(false);
   });
 
@@ -445,7 +443,6 @@ describe("cp#136: one truth at a time -- the declaration guard on BOTH direction
     const t = await tenant();
     expect(preflightStudioBindingDetach(t).ok).toBe(true);
     const attach = preflightStudioBindings(deps(census(), { videoFinishServiceId: null }), t);
-    expect(attach.ok).toBe(false);
-    if (!attach.ok) expect(attach.refusal.code).toBe("video_finish_unconfigured");
+    expect(attach.ok).toBe(true);
   });
 });

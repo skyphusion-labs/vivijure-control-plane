@@ -74,9 +74,9 @@
       // from the shared pool without inventing four RunPod endpoints (cp#474).
       // cp#303: purpose matches the plan -- training is not on this endpoint.
       { key: "backend", label: "Render (keyframes, video)", purpose: "The main render: keyframes and video", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "H200 / B200", backing: "runpod" },
-      { key: "upscale", label: "Video upscale", purpose: "Makes finished video sharper", image: "ghcr.io/skyphusion-labs/vivijure-upscale", gpu: "our hardware", backing: "vpc" },
+      { key: "upscale", label: "Video upscale", purpose: "Makes finished video sharper", image: "ghcr.io/skyphusion-labs/vivijure-upscale", gpu: "our hardware", backing: "door" },
       { key: "lipsync", label: "Lip sync", purpose: "Matches mouth movement to dialogue", image: "ghcr.io/skyphusion-labs/vivijure-musetalk", max_workers: 1, gpu: "RTX 6000 Pro", backing: "runpod" },
-      { key: "audio-upscale", label: "Audio upscale", purpose: "Cleans up and sharpens audio", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", gpu: "our hardware", backing: "vpc" },
+      { key: "audio-upscale", label: "Audio upscale", purpose: "Cleans up and sharpens audio", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", gpu: "our hardware", backing: "door" },
     ],
     // A real, named render from our own history (film-2294a9d7, 2026-07-14: 2
     // shots, 10s of finished video, final quality). wall_clock_ms is wall-clock
@@ -172,7 +172,7 @@
   // would lie about half the plan the moment cp#474 served the real one.
   function planRowMeta(ep) {
     const row = ep || {};
-    if (row.backing === "vpc") {
+    if ((row.backing === "door" || row.backing === "vpc")) {
       return row.gpu || "our hardware";
     }
     const bits = [];
@@ -188,7 +188,7 @@
     const rows = Array.isArray(plan) ? plan : [];
     if (!rows.length) return "";
     const workers = planWorkerTotal(rows);
-    const ours = rows.filter(function (ep) { return ep && ep.backing === "vpc"; }).length;
+    const ours = rows.filter(function (ep) { return ep && (ep.backing === "door" || ep.backing === "vpc"); }).length;
     const bits = [];
     if (workers > 0) {
       bits.push(
