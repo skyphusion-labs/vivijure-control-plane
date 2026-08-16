@@ -95,9 +95,9 @@ export const UNCONFIRMED = {
     repaste_needed: false,
   },
   message:
-    "your key is installed and stored. Your render modules have not finished picking it up yet " +
+    "the shared render key is installed. Your render modules have not finished picking it up yet " +
     "(checked 6 times over 9800ms). This usually clears in under a minute: retry this request to " +
-    "finish going live. Do not re-paste your key; nothing is wrong with it.",
+    "finish going live. There is no key for you to send.",
 };
 
 // KNOWN UNCOVERED VARIANT, stated rather than left to be discovered: a 202 can ALSO carry
@@ -117,7 +117,7 @@ export const UNCONFIRMED = {
 // moment a structured twin appeared would drop coverage on the live surface while the replacement
 // has no consumer yet. These go when the client stops echoing message, in the release that removes
 // message -- not before.
-export const MESSAGE_MUST_SAY = [/installed/i, /stored/i, /retry/i, /do not re-paste/i];
+export const MESSAGE_MUST_SAY = [/installed/i, /retry/i, /no key/i];
 
 // The structured twin of MESSAGE_MUST_SAY: the same four claims, assertable rather than greppable.
 // A rewording cannot silently drop one of these, which is the entire point of the change.

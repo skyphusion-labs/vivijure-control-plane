@@ -66,7 +66,7 @@
   // opinion in the panel is how two surfaces start disagreeing.
   //
   // EVERY DECISION BELOW COMES FROM THE PAYLOAD. The panel never infers that a
-  // tenant is prepaid from having a balance, because a BYOK tenant and a prepaid
+  // tenant is prepaid from having a balance, because a studio we do not bill and a prepaid
   // tenant who has not topped up both read zero, and telling the first they owe
   // us money is the failure this gate exists to prevent.
   async function mountCredits(tenant) {

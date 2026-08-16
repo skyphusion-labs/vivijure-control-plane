@@ -25,8 +25,8 @@
 // ones this flow needs that the #52 contract does not carry yet. If they land
 // in a different shape, this adapter is the only thing that changes.
 //
-// SECRET HYGIENE: keys pass THROUGH these functions into a POST body and are
-// never stored, logged, or placed in a URL. Nothing here retains an argument.
+// Go-live never sends a tenant RunPod key. The POST body is empty; the plane
+// installs its own shared pool key. Nothing here accepts a credential.
 (function (root, factory) {
   const api = factory();
   if (typeof module !== "undefined" && module.exports) {
@@ -262,15 +262,12 @@
       // the decision inside the fetch where no test could reach it. Both halves
       // of that are the defect. The route serves 200 (live) or 202 (installed,
       // not yet confirmed); failures carry a diagnostic.
-      async invokeKey(tenantId, key) {
+      async invokeKey(tenantId) {
         if (useMock) return mock.invokeKey();
-        // Shared-tier go-live is an EMPTY body (cp#439). A posted key is refused
-        // on that tier, so a blank field must not become runpod_invoke_key:"".
-        const payload = key ? { runpod_invoke_key: key } : {};
         const r = await doFetch(apiBase + "/api/tenant/" + encodeURIComponent(tenantId) + "/go-live", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({}),
         });
         const body = await r.json().catch(function () { return {}; });
         return { status: r.status, body: body };

@@ -9,7 +9,7 @@
 // PROXIED tenant, so those hold THIS instead: a credential worthless anywhere except our own plane.
 // The STUDIO copy is still written on every tier, because the studio itself submits RunPod work
 // (cast LoRA training) and vivijure-core has no proxy branch yet. So the invariant -- a consumer
-// reaches RunPod through our product or not at all (CLAUDE.md, Conrad 2026-08-02), BYOK excepted --
+// reaches RunPod through our product or not at all (CLAUDE.md, Conrad 2026-08-02) --
 // is satisfied by construction for the modules and NOT YET for the studio. Do not read this file's
 // existence as the whole hole being closed.
 //

@@ -131,7 +131,7 @@ Suspend is enforced in the DISPATCHER, from control-plane state, **before** disp
 |---|---|
 | `suspended_at` set (ANY lifecycle) | `403`, never reaches the namespace |
 | lifecycle `live`, not suspended | dispatched to `tenant-<slug>-studio` |
-| `pending` / `provisioning` / `awaiting_invoke_key` | `503` + `Retry-After: 30` |
+| `pending` / `provisioning` / `awaiting_go_live` (read alias: `awaiting_invoke_key`) | `503` + `Retry-After: 30` |
 | `failed` | `503`, honest: provisioning did not finish |
 | `deleting` / `deleted`, or `deleted_at` set | `404` |
 | no tenant row | `404` |

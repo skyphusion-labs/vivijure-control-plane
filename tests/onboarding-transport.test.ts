@@ -175,46 +175,41 @@ describe("transport: acceptAup reports honestly (the 409 that used to be swallow
 });
 
 describe("transport: invokeKey hands status and body through UNFLATTENED", () => {
-  it("POSTs the key under the name the route reads, and passes 202 through", async () => {
+  it("POSTs an empty body to go-live, and passes 202 through", async () => {
     const { impl, calls } = recordingFetch(() => json(UNCONFIRMED, 202));
     const api = createPlatformApi({ apiBase: "https://cp.example", fetchImpl: impl });
 
-    const res = await api.invokeKey("ten_abc123", "rpa_render_key");
+    const res = await api.invokeKey("ten_abc123");
     expect(calls[0].url).toBe("https://cp.example/api/tenant/ten_abc123/go-live");
     expect(calls[0].init?.method).toBe("POST");
-    // The route reads body.runpod_invoke_key; any other name is a silent 400.
-    expect(bodyOf(calls[0].init)).toEqual({ runpod_invoke_key: "rpa_render_key" });
+    expect(bodyOf(calls[0].init)).toEqual({});
+    expect(String(calls[0].init?.body)).not.toContain("runpod_invoke_key");
 
     expect(res.status).toBe(202);
-    // End to end through the real verdict: 202 must stay pending, not become a
-    // failure and not clear the field.
     const v = invokeKeyVerdict(res.status, res.body);
     expect(v.pending).toBe(true);
     expect(v.clearKey).toBe(false);
   });
 
-  it("POSTs an EMPTY body when no key is handed (cp#439 shared-tier go-live)", async () => {
+  it("never puts a tenant key on the wire", async () => {
     const { impl, calls } = recordingFetch(() => json({ status: "live" }, 200));
     const api = createPlatformApi({ fetchImpl: impl });
-    await api.invokeKey("ten_abc123", "");
+    await api.invokeKey("ten_abc123");
     expect(bodyOf(calls[0].init)).toEqual({});
   });
 
   it("does NOT throw on a 4xx: it is transport-only and decides nothing", async () => {
-    // invokeKey deliberately does not go through json(). If it ever did, the
-    // 400/503 diagnostics would arrive as exceptions and the customer would see
-    // a generic message instead of the real reason.
-    const { impl } = recordingFetch(() => json({ error: "invoke_key_rejected", reason: "graphql_capable" }, 400));
+    const { impl } = recordingFetch(() => json({ error: "invoke_key_not_accepted" }, 400));
     const api = createPlatformApi({ fetchImpl: impl });
-    const res = await api.invokeKey("ten_1", "rpa_bad");
+    const res = await api.invokeKey("ten_1");
     expect(res.status).toBe(400);
-    expect(res.body.reason).toBe("graphql_capable");
+    expect(res.body.error).toBe("invoke_key_not_accepted");
   });
 
   it("a non-JSON body degrades to an empty body, not a crash", async () => {
     const { impl } = recordingFetch(() => new Response("<html>502 Bad Gateway</html>", { status: 502 }));
     const api = createPlatformApi({ fetchImpl: impl });
-    const res = await api.invokeKey("ten_1", "rpa_x");
+    const res = await api.invokeKey("ten_1");
     expect(res.status).toBe(502);
     expect(res.body).toEqual({});
     const v = invokeKeyVerdict(res.status, res.body);
@@ -223,27 +218,19 @@ describe("transport: invokeKey hands status and body through UNFLATTENED", () =>
   });
 });
 
-describe("transport: SECRET HYGIENE, a key never reaches a URL", () => {
-  const SECRET = "rpa_do_not_put_me_in_a_url";
-
-  it("no key-bearing call puts the key in the request URL", async () => {
-    const { impl, calls } = recordingFetch(() => json({ quota: 1, existing_worker_sum: 0 }));
+describe("transport: go-live never sends a tenant RunPod key", () => {
+  it("provision and go-live bodies contain no runpod_invoke_key", async () => {
+    const { impl, calls } = recordingFetch(() => json({ tenant_id: "t", job_id: "j" }));
     const api = createPlatformApi({ apiBase: "https://cp.example", fetchImpl: impl });
 
     await api.provision("slug").catch(() => {});
-    await api.invokeKey("ten_1", SECRET);
+    await api.invokeKey("ten_1");
 
     expect(calls.length).toBe(2);
-    calls.forEach(({ url }) => expect(url).not.toContain(SECRET));
-  });
-
-  it("CONTROL: the key IS in the request BODY, so the assertion above is about placement", async () => {
-    // Without this control, the URL assertion would also pass if the key were
-    // silently dropped and never sent at all.
-    const { impl, calls } = recordingFetch(() => json({ quota: 1, existing_worker_sum: 0 }));
-    const api = createPlatformApi({ fetchImpl: impl });
-    await api.invokeKey("ten_1", SECRET);
-    expect(String(calls[0].init?.body)).toContain(SECRET);
+    calls.forEach(({ url, init }) => {
+      expect(url).not.toMatch(/rpa_/);
+      expect(String(init?.body ?? "")).not.toContain("runpod_invoke_key");
+    });
   });
 });
 
@@ -258,7 +245,7 @@ describe("transport: mock mode is a real short circuit, not a fallback", () => {
     await api.provision("k");
     await api.job("t");
     await api.slugAvailable("s");
-    await api.invokeKey("t", "k");
+    await api.invokeKey("t");
     await api.aup();
 
     expect(calls.length).toBe(0);

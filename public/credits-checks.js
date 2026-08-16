@@ -7,7 +7,7 @@
 // infers a tenant's billing relationship from the SHAPE of a payload, and that
 // restraint is the whole design: a balance of zero and "credits do not apply to
 // this studio" look identical if you guess from the numbers, and guessing wrong
-// tells a BYOK tenant they owe us money.
+// tells someone they owe us money for a studio we do not bill.
 (function (root, factory) {
   const api = factory();
   if (typeof module !== "undefined" && module.exports) {
@@ -39,11 +39,11 @@
 
   // WHAT THE PANEL SHOWS, decided in one place.
   //
-  // `credits_apply` comes from the server and is NEVER inferred here. A BYOK
-  // tenant pays RunPod directly and has no credit relationship with us at all;
-  // showing them a USD 0.00 balance would invent one, and would read as a bill
-  // they had not been told about. So an absent or false flag renders NOTHING,
-  // which is also the correct behaviour on a payload from an older plane.
+  // `credits_apply` comes from the server and is NEVER inferred here. A studio
+  // we do not bill has no credit relationship with us at all; showing them a
+  // USD 0.00 balance would invent one, and would read as a bill they had not
+  // been told about. So an absent or false flag renders NOTHING, which is also
+  // the correct behaviour on a payload from an older plane.
   function panelState(payload) {
     if (!payload || payload.credits_apply !== true) {
       return { show: false, reason: "not_applicable" };

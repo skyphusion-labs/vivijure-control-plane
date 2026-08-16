@@ -1,8 +1,8 @@
 // Plane-side RunPod invocation proxy (cp#288).
 //
 // WHAT IT IS FOR. On the shared tier no tenant-namespace script may hold a RunPod credential
-// (CLAUDE.md, Conrad 2026-08-02: a consumer reaches RunPod through our product or not at all, BYOK
-// excepted). Tenant module workers call the plane; the plane holds the key and calls RunPod. The
+// (CLAUDE.md, Conrad 2026-08-02: a consumer reaches RunPod through our product or not at all).
+// Tenant module workers call the plane; the plane holds the key and calls RunPod. The
 // verb-scoping question stops being load-bearing because there is no distributed credential to
 // scope: RunPod's per-endpoint control has no operation axis, so no configuration can ever permit
 // `run` while refusing `purge-queue`.

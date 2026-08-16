@@ -49,10 +49,10 @@ export interface TenantCreditView {
   /**
    * Whether credits apply to this studio AT ALL.
    *
-   * THE FIELD EXISTS SO THE UI NEVER HAS TO GUESS. A BYOK tenant pays RunPod directly and has no
-   * credit relationship with us; their balance is legitimately zero forever. A prepaid tenant who has
+   * THE FIELD EXISTS SO THE UI NEVER HAS TO GUESS. A studio we do not bill has no
+   * credit relationship with us; its balance is legitimately zero forever. A prepaid tenant who has
    * not topped up yet ALSO has a balance of zero. Those two are indistinguishable from the numbers,
-   * and guessing wrong tells a BYOK tenant they owe us money for a product they never bought. So the
+   * and guessing wrong tells someone they owe us money for a product they never bought. So the
    * plane states it and the surface renders from the statement.
    */
   credits_apply: boolean;
@@ -120,7 +120,7 @@ export interface AdminCreditView extends TenantCreditView {
  * tenant is prepaid, so no tenant has credits, so the honest answer for every tenant is false.
  *
  * The consequence is deliberate: the credit surface ships DARK. It renders for nobody until there is
- * somebody it is true of. The alternative -- showing every existing BYOK tenant a USD 0.00 balance --
+ * somebody it is true of. The alternative -- showing every studio a USD 0.00 balance --
  * would invent a billing relationship that does not exist, on a product whose whole pitch is that
  * there is no paid tier yet.
  *
@@ -138,7 +138,7 @@ export function creditsApplyToTenant(_tenant: { id: string }): boolean {
  * True only when the PayPal rail can both send a tenant to checkout AND verify the money arriving:
  * client id, secret, and webhook id all set. Missing any one would advertise a door that cannot
  * settle. Independent of `creditsApplyToTenant` (still false until compute_mode): a configured rail
- * does not invent a billing relationship for a BYOK tenant.
+ * does not invent a billing relationship for a studio we do not bill.
  */
 export function topUpAvailable(env: {
   PAYPAL_CLIENT_ID?: string;

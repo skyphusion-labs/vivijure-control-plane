@@ -169,4 +169,4 @@ of a counting ledger sells credits that refuse nothing; flipping enforcement is 
 criterion of `cp#193` and happens when you decide the door is proven, not when the class lands.
 
 `credits_apply` stays false for every tenant until `compute_mode` exists. Configuring PayPal does
-not invent a billing relationship for a BYOK studio.
+not invent a billing relationship for a studio we do not bill.

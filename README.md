@@ -1,8 +1,8 @@
 # Vivijure Control Plane
 
 This is the **hosted door** for Vivijure Studio. It is the software that lets someone sign up,
-agree to the rules, paste a key, and get their own working film studio a few minutes later,
-without ever installing anything.
+agree to the rules, and get their own working film studio on our shared render pool a few
+minutes later, without ever installing anything or pasting a RunPod key.
 
 It is a single Cloudflare Worker. It runs separately from the studio itself, and it is released
 and deployed on its own schedule.
@@ -185,8 +185,9 @@ Your chosen name is both a web address label and an internal script name, so it 
 against the letters both of those allow, plus a reserved list so nobody can register a name that
 impersonates one of our own pages.
 
-A tenant has a **lifecycle**: `pending`, `provisioning`, `awaiting_invoke_key`, `live`, `failed`,
-`deleting`, `deleted`. **Suspension is a separate flag**, not one of those values.
+A tenant has a **lifecycle**: `pending`, `provisioning`, `awaiting_go_live`, `live`, `failed`,
+`deleting`, `deleted`. **Suspension is a separate flag**, not one of those values. Reads still
+accept the dead name `awaiting_invoke_key`; writes never produce it.
 
 That separation is load-bearing and we learned it the hard way. Storing "suspended" *in* the
 lifecycle column destroys the value it overwrites, so resuming has to guess where to go back to,
