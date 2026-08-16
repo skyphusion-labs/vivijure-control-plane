@@ -817,7 +817,7 @@
   const PROVISION_ROWS = [
     { key: "database", label: "Creating your database", steps: ["d1_create", "d1_migrate"] },
     { key: "storage", label: "Creating your storage bucket", steps: ["r2_bucket", "r2_token"] },
-    { key: "endpoints", label: "Creating your 4 RunPod endpoints", steps: ["runpod_endpoints"] },
+    { key: "endpoints", label: "Connecting to our render pool", steps: ["runpod_endpoints"] },
     { key: "studio", label: "Deploying your studio", steps: ["wfp_upload"] },
     { key: "modules", label: "Installing your render modules", steps: ["modules_upload", "modules_install"] },
     { key: "verify", label: "Checking it all works", steps: ["verify"] },
