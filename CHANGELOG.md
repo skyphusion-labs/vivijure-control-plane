@@ -6,6 +6,15 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.29.2 -- 2026-08-16
+
+### fix(deploy): declare Traefik door URL vars so the census lets 1.29 ship
+
+VIDEO_FINISH_URL, AUDIO_MIX_URL, AUDIO_BEAT_SYNC_URL, IMAGE_PREP_URL,
+AUDIO_MASTER_URL, and SPEND_PRICEBOOK were typed and read, and listed as
+GitHub vars, but missing from the four deploy lists. Census red, PayPal rail
+never reached the Worker.
+
 ## v1.29.1 -- 2026-08-16
 
 ### fix(onboarding): preview mock matches wan-train plan; go-live is not invoke
