@@ -6,6 +6,358 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.28.0 -- 2026-08-16
+
+### feat(purge): remove the BYOK / dedicated RunPod path (cp#396)
+
+Conrad ruling: the BYOK channel is closed, so its code is REMOVED rather than deferred. Dead code
+for a channel nobody builds or tests is a liability, and the shared tier is now armed and is the
+only tier.
+
+**3,789 lines deleted against 280 added.** Gone entirely: per-tenant RunPod endpoint creation
+(`createTenantEndpoints`, `convergeTenantTemplateImages`, `preflightQuota`, `quotaGuidance`,
+`templateEnv`, `invokeKeyRecipe`), the whole RunPod-provisioning seam on `ProvisionDeps`, the
+endpoint-rebuild route and its module, the owner invoke-key handoff with its page and client, and
+key A itself -- `runProvisionJob` and `provisioner.start` no longer take a key parameter at all,
+which is stronger than passing null, because a key can no longer be handed over by mistake.
+
+**THREE THINGS ON THE OBVIOUS PURGE LIST ARE LOAD-BEARING FOR THE SHARED TIER AND STAYED.**
+`installInvokeKey`, `verifyInvokeKeyScope` and the `awaiting_invoke_key` state all run for shared
+tenants: the plane supplies its POOL key through the same install, the same verification and the
+same promotion. Deleting them on the strength of their names would have taken the tier down.
+
+**Closed a hole the purge would otherwise have made permanent.** `invoke_key_not_accepted` and
+`shared_pool_unconfigured` had ZERO tests -- every route-level invoke-key test drove a PASTED key,
+because the fixture recorded a legacy row by default. That branch is now the ONLY branch, so it has
+negative tests plus a control proving the pool key is what gets installed. Watched going red on a
+mutation that drops the refusal.
+
+**The dedicated fixture was the carrier for most of the provisioning suite**, not a small set of
+dedicated tests: 53 of 58 provisioner cases ran the dedicated branch because the default fixture
+was a plane with no pool. Flipping that default to a POOL preserved all of them; only 3 asserted
+creation itself and were deleted. The rollback test kept its claim and moved its failure injection
+to the studio upload, since `createEndpoints` was the seam it used to throw from.
+
+**A simplification the purge unlocked rather than one it forced.** `YIELD_UNSAFE_STEPS` existed
+because `runpod_endpoints` had just created billable endpoints a keyless poll could not use, so a
+yield there produced a permanently unresumable job. Nothing is created now: the step is pure config
+resolution and a poll re-resolves it identically. The set is EMPTY rather than deleted, so the
+mechanism stays available for the next step that earns it and the comment records why this one no
+longer does.
+
+**The 13 historical rows are untouched and stay protected.** `runpod_mode` does not record a
+provisioning STYLE, it records whose the endpoint ids on a row are, and that still has two answers.
+The narrowing is unchanged: never treat a row ids as pool-owned unless it says shared explicitly.
+`reconcile-runpod.ts` still iterates the FULL plan to attribute historical endpoint names, and the
+migrations stay -- the column outlives the code path and dropping it needs its own migration.
+The resume refusal for a legacy dedicated row is kept and now has a test that says LEGACY on the
+tin and states the fact explicitly instead of inheriting it from a default.
+
+**Teardown needed no code change and one comment change.** There is no RunPod delete call anywhere
+in `teardownTenant`, on any branch, so the protection is structural. But the comment justified that
+with two reasons, one per tier; deleting the dedicated half would leave a claim that is false of
+every remaining tenant, and a reader who noticed would be one step from adding the reap leg it
+exists to prevent.
+
+**The invoke-key route is now SHARED-ONLY, and the handoff removal was CONDITIONAL on proving it.**
+`setTenantStatus(..., "live")` occurs at exactly ONE site, `performInvokeKeyInstall`, which after
+this change has exactly ONE caller, the session route. So a shared tenant reaches live
+without traversing the handoff, which is what made removing an unauthenticated surface safe. A row
+that is not recorded shared -- the 13 legacy ones, all dead -- is refused BY NAME
+(`tenant_not_on_shared_tier`) rather than dropping through to a 404-shaped silence.
+
+The caller comment on that route named the handoff as one of its callers. Left alone it would
+have been a false statement about the security argument the route rests on, which is the same
+defect class as the teardown comment above.
+
+### fix(onboarding): purge BYOK from the wizard, so a studio can actually be built (cp#427, cp#439, cp#467)
+
+Conrad ruled the BYOK/dedicated path REMOVED, not deferred (cp#427). This is the wizard half; the
+plane half is #430. Together they are the difference between a wizard nobody could finish and one
+that works.
+
+**Three walls stood on this path and all three came from the same assumption -- everyone is BYOK.**
+
+**Step 4 asked for a RunPod key** the plane no longer accepts, and would not advance without one.
+**Step 5 POSTed to /api/tenant/capacity, a route the plane has never served** (cp#467): two explicit
+tenant paths exist and the scoped handler matches ten_ ids, so it 404d, and the 404 rendered as
+**We could not check your account with RunPod** with advice to go fix a key that was fine. Its gate
+demanded fits === true, which the error path never sets. **Step 8 refused a pasted key** and
+promoted on a request carrying none, while the only control was gated on having typed one.
+
+So a shared tenant stopped at 4 and a BYOK tenant cleared 4 and stopped at 5. **Nobody could
+complete this wizard on either tier.**
+
+## Both dead steps retire TOGETHER, and that is not tidiness
+
+Removing the key gate alone would have moved everybody from the first wall onto the second, and it
+would have read as a regression introduced by the fix. **Never ship a state where the visible
+symptom migrates rather than clears.** Nine steps become seven.
+
+## What is left
+
+The go-live step keeps the one action that works: an empty-bodied POST that installs the plane own
+pool key. Its other two states are stated rather than guessed -- a legacy dedicated row is
+UNSUPPORTED (the route refuses it by name, so key instructions would send somebody to make a
+credential nothing accepts), and an unwritten runpod_mode is UNDECIDED, because null is not a tier.
+
+**shared_tier_available survives with a WIDER meaning, and the rename says so.** It answered is a
+key optional back when a pasted key still selected a tier. With BYOK gone the pool IS the product,
+so it now answers **can this plane provision at all**, and the wizard says so UP FRONT rather than
+letting somebody name a studio it could never build. planCanProvision, not keyRequirement.
+
+## Verification
+
+**13 tests went red and every one asserted the retired design.** They were RETIRED citing cp#427,
+not adapted to go green -- the ordering test kept the invariants that survive (nothing is created
+before an explicit review; going live comes after the build) and lost only the key and capacity
+references.
+
+Driven in a real browser on the shipped assets: seven steps, no key field anywhere, the go-live
+control present, and **the path that was walled now runs** -- name a studio, click Continue, land
+on review rather than into a step that no longer exists.
+
+### The cron can now say whether it is alive (cp#436)
+
+The scheduled handler ran three halves and every one of them reported to the console only. Nothing
+persisted the fact that a tick had happened, so the cron could not be observed from outside the
+Worker at all: if it stopped firing, every symptom was an ABSENCE (no meter periods, no RunPod
+sweep, no provision drives), and an absence is indistinguishable from a plane with nothing to do.
+
+That was tolerable while a dead cron only meant late billing data. It stopped being tolerable when
+the cron became the only engine that drives an operator-provisioned tenant to a studio: from that
+point a dead cron means no customer ever gets a studio, the tenant reads provisioning forever, and
+nothing anywhere reports a fault.
+
+Every tick now stamps a durable heartbeat, and a new operator read, GET /api/admin/cron, serves it
+with the staleness already worked out. Two properties it was built to have, because a heartbeat
+that lacks them is decoration:
+
+- **It can go RED.** A half that threw is recorded as having thrown, and so is a half that REFUSED
+  (no credential, no reader). A run that did nothing because it COULD not must never read like a
+  run that did nothing because there was nothing to do.
+- **Never-ran and ran-and-found-nothing do not read alike.** A clean tick over an empty plane still
+  stamps the row, so the row existing is the evidence the handler executed. A missing row is
+  reported as never-ran, not as a healthy quiet plane.
+
+The sharpest case is the provision half. It catches per tenant, deliberately, so that one bad
+tenant cannot take the rest of the tick down; the consequence is that it returns NORMALLY when
+every drive it attempted failed. Judging it on whether an error escaped would have left it green
+through a total outage of the thing it measures, so it is judged on its error count instead.
+
+The write is unconditional and its failure is swallowed. An instrument that can take down the
+engine it measures is a worse defect than the blindness it was added to fix.
+
+### fix(provision): drive a job until it stops moving inside one tick, not once per 5 minutes (cp#429)
+
+The cron drive shipped in v1.26.0 drove each tenant **exactly once per tick**. A drive buys at most
+PROVISION_INVOCATION_BUDGET_MS (15s) before it yields, and the cron fires every 5 minutes, so that
+is 15 seconds of work per 300 seconds of clock: **a 5% duty cycle**, roughly twenty times slower
+than the poll path it substitutes for, and 3 to 5 ticks (10 to 25 minutes) for a fresh provision
+nobody is watching. It would have been perfectly defensible as "it completes".
+
+**It also defeated cp#158, which is the part worth keeping.** That lease hand-back exists precisely
+so a yielding driver does not sit on a dead 60s lease before the next driver takes over. Driving
+once per tick made the job wait five minutes anyway. Every guard was individually intact and
+correctly inherited; what was thrown away was the OPTIMISATION one of those guards was written to
+buy. No test could see it, because none measured how many times a tick drives, and each guard
+passes its own tests either way. **Inheriting a guard correctly and then wasting the thing it
+bought is a failure mode with no name and no detector.**
+
+A tenant is now driven repeatedly inside one tick, until it stops moving.
+
+**Termination does not rest on the budget.** Every no-dispatch path out of driveJobIfNeeded is
+stable under re-reading the same row (terminal, wrong kind, cp#132 queued-and-undriven, lost claim,
+no provisioner), so a refusal ENDS that tenant instead of being retried. Only a pass that actually
+drove continues. The budget is a bound, not the terminator.
+
+**The job row is RE-READ every iteration and the fresh read is what gets driven.** getLatestJobForTenant
+sits inside the loop body, above driveJobIfNeeded, so no pass ever sees the previous pass object.
+That is load-bearing rather than tidy: finishJob has no status predicate (cp#438, cp#443), so a
+stale in-memory row reaching the reap could flip a tenant that has since SUCCEEDED back to failed.
+
+**A WALL BUDGET, NOT A DRIVE COUNT.** A count is a proxy for time and means something different the
+day step durations change. PROVISION_DRIVE_TICK_BUDGET_MS is 120s, sized against the 5-minute
+period: this half runs LAST, after the meter and the sweep, so all three must fit inside 300s or
+ticks overlap. PROVISION_DRIVE_TENANT_SLICE_MS (60s) stops one long tail eating the tick and
+starving other in-flight provisions. MAX_PROVISION_DRIVES_PER_TICK is **gone rather than renamed**:
+it counted tenants, and nothing counts tenants now.
+
+**Every tick states how it ENDED**, not only when truncated: outcome is budget_spent or drained,
+always logged, with drives, tenants seen and tenants deferred. Only drained means there was nothing
+left to do. A silent tick used to read as that either way, which is the same self-sealing absence as
+a truncated page.
+
+**Watched red for the right reason:** the assertion is that ONE tick drives the SAME job more than
+once, and against the single-drive cut it fails with "expected 2 times, got 1". Deliberately not
+"the tenant finished", which could go green for other causes. The driver double emulates a real
+yield, persisting progress and handing the lease back, so the test drives the real contention path.
+Two termination tests ship with it: a cp#132 queued job must not be retried inside the tick, and a
+completed job must not be driven a second time.
+
+**The seam the merge created, pinned (ernst).** The cap reap is reached from a fresh read, the loop
+takes a fresh read on every pass, and a yield hands the lease back, so jobHasLiveDriver does not
+defer the next pass. A job that is actively PROGRESSING can therefore cross the age line between
+two drives of the SAME tick and be reaped by the very loop driving it. **Neither PR could have
+tested that, because it only exists once both land.**
+
+That IS the intended semantics: the cap measures how long a provision has been alive, and being
+actively driven does not buy it more time. What matters is that it is pinned rather than
+discovered months later, so it is asserted in both directions -- crossing the line reaps, and a
+job still inside the cap drives to completion untouched.
+
+**Writing that test found a real interaction I had not seen.** The obvious setup, a two-minute
+burn between drives, SILENTLY TESTED NOTHING: two minutes exceeds the 60s per-tenant slice, so the
+loop exited on the slice before it ever took the second read. The burn has to cross the cap while
+staying inside the slice, which is why the backdate is in seconds rather than minutes and why that
+precision is commented in the test. A green run there would have proved only that the loop stops.
+
+### fix(onboarding): classify a provision failure on the CODE, and say what the plane said (cp#448, cp#447)
+
+`handleProvisionError` read `err.status === 409` and called every one of them a key problem. The
+provision route serves at least four distinct 409s and only one was ever about a key, so
+`tenant_exists`, `slug_taken`, `slug_reclaim_in_progress` and `reclaim_teardown_failed` all rendered
+as **Setup needs your key again**.
+
+Two things made that worse than a wrong headline.
+
+**The plane's own sentence was dropped.** The transport sets `err.message` to `body.error` -- the
+CODE -- and the screen rendered that. So the owner of a genuinely stuck teardown saw the bare string
+`reclaim_teardown_failed` and never the words telling them to stop retrying and contact us.
+
+**And the advice attached to it pointed at a teardown.** Because it believed a key was needed, the
+screen told them to provision the same name again, which is the cp#435 destroy path. The one
+paragraph in the product that describes the destruction appeared as INSTRUCTIONS in cases where
+destruction is not the answer.
+
+Now: classified on the code, and **the plane's message wins whenever it sent one** -- it is written
+for the owner, it knows which refusal this is, and nothing the client can infer beats it. The code
+is a last resort and is labelled as one rather than dressed up as an explanation. **No path advises
+re-provisioning**: under cp#427 there is no key to re-paste, and the destroy route belongs behind the
+cp#435 acknowledgement, never in a failure hint.
+
+**`runpod_key_required` is read with its NARROWED meaning.** cp#427 kept the code and changed what
+it means -- this deploy has no shared render capacity -- so a client still reading it as *bring a
+key* would send somebody after a key that no longer exists anywhere in the product.
+
+**cp#447 went with it**, because it lived in the same handler. A `data-next` button relabelled *Back
+to the key step* advanced BY INDEX into the render-key step: forward, past its own gate, on a page
+holding none of the state that step needs. The step it named no longer exists either. **A failure
+screen that cannot offer a correct action now offers none.**
+
+**Watched red first:** 7 against merged main for the classifier, 3 for the wiring, controls green.
+One of the wiring assertions had to be rewritten mid-flight -- it forbade the PHRASE *Back to the key
+step*, which caught the comment explaining why the control was removed. It now asserts on the
+assignment instead, because a test that made me delete the explanation to stay green would have been
+the test dictating the wrong thing.
+
+### fix(audit): record owner reclaim teardown and write teardown intent first (cp#456, cp#398)
+
+Owner reclaim teardown (`deleteData: true`) wrote no audit row, while the identical operator
+teardown did. A real reclaim tonight destroyed a D1, R2 bucket, R2 token, and studio worker and
+left the newest audit entry as an earlier operator provision.
+
+Both destructive paths now write `*.intent` BEFORE `provisioner.teardown` and a completion row
+after. A failed intent write aborts before anything is deleted. The owner actor is
+`account:<id>`, not an operator token. Partial failures land in the completion detail.
+
+### fix(auth): do not spend a magic link on GET (cp#437)
+
+`GET /auth/email/callback` rendered a session from an unauthenticated GET, so the first fetch
+won: mail scanners, prefetch, and preview fetches burned the link. The GET now serves a confirm
+page and changes nothing. `POST /auth/email/callback` with the form token is the spend.
+
+A POST of the mailed URL with no form body does not consume the token. Remaining bearer
+property: a client that submits the form still spends it. That is the product.
+
+Test: GET (including `Purpose: prefetch`) leaves `consumed_at` null; POST after GET signs in;
+an intent-audit throw leaves resources in place on both teardown paths.
+
+### fix(provision): a refused finishJob must not roll back a succeeded studio (cp#461)
+
+`finishJob` reports whether it actually closed a row, and a caller pairing it with a tenant-status
+write MUST branch on the result (cp#443). Both reap sites already do. `runProvisionJob` and
+`continueProvisionJob` did not.
+
+The reachable corner is a zombie driver: it loses its lease, a successor finishes the provision,
+then the zombie fails. `finishJob` correctly refuses. The catch still wrote `setTenantStatus(failed)`
+and `rollbackFailedProvision`, which deletes the D1, R2 bucket, and token of a studio that
+succeeded.
+
+Both catch paths now treat a refused close as "this driver does not own the outcome": no tenant
+write, no teardown.
+
+Test: successor closes as succeeded inside the step that then throws; the zombie catch is reached
+and the successor's studio is untouched. Watched red with the conditional removed.
+
+### fix(onboarding): retire the retry transport, and guard against the next phantom (cp#467, cp#474)
+
+`retry()` POSTed `/api/tenant/:id/retry`. The plane serves exactly two literal tenant paths
+(`provision`, `slug-available`) and four scoped actions (`api-token`, `credits`, `invoke-key`,
+`job`). **`retry` is none of them**, and it has had no caller in `public/` for some time. Its body
+also still conditionally advertised `runpod_api_key`, which cp#427 removed the concept of, so it was
+advertising a dead field on a dead route.
+
+That is the SECOND phantom after `capacity`, both found by walking. **Walking does not scale**, so
+this adds a guard: read the shipped transport and the shipped route table and demand they agree,
+with a positive control so an empty extraction cannot pass.
+
+**It found a THIRD within a second, and that one is live.** `/api/tenant/provision-plan` is called
+on every walk of the wizard by `loadPlan()`, and the REVIEW step renders from it -- the screen whose
+entire job is to show what is about to be created before somebody confirms it. It has never had
+anything to show. Filed as cp#474 and deliberately NOT fixed here: retiring a dead route is one
+thing, but this one needs a route to EXIST, and that is a plane-side decision.
+
+**The allowlist cleans itself.** Both known phantoms are listed by name with their issue, and an
+entry that is no longer called FAILS. A list of exceptions granted to nothing is how a guard quietly
+stops guarding -- the next phantom to take one of those names would be waved straight through.
+
+**Why all three survived:** each had a mock that answered it green, so the flow was walkable in
+preview and broken in production, and nothing compared the two. **The mock was not drifting from the
+contract, it was inventing one**, and the only thing asserting these contracts was something we
+wrote to stand in for them.
+
+Probed with `crew-probe` in both directions: pointing a transport at a route the plane does not
+serve reds the guard, and staling an allowlist entry reds it too.
+
+### fix(onboarding): serve the real provision plan, so review is not empty (cp#474)
+
+The review step called `GET /api/tenant/provision-plan` on every walk of the wizard. **The plane
+did not serve that route.** The preview mock invented four RunPod endpoints and answered green, so
+the flow was walkable in preview and blank in production, on the last screen before anything is
+created.
+
+The route now exists and its body is a projection of `PROVISION_PLAN`, the same array the
+provisioner builds from. Own-iron rows carry `backing: "vpc"` and a null worker pin; pooled rows
+carry the real GPU list and the pinned max. The review renderer stopped appending
+"scale-to-zero" to every row, because half the plan is not a RunPod endpoint.
+
+The go-live POST with no key is now an empty JSON body rather than `runpod_invoke_key:""`. Shared
+tier already treated both as empty; sending a named empty field was the one leftover that still
+looked like a key form.
+
+cp#439, cp#428, cp#467, cp#447, cp#448, cp#449 and cp#435 were already true at this HEAD. This
+closes the one wall that was still standing.
+
+### fix(onboarding): burn the tenant invoke-key ritual
+
+The tenant never pastes a RunPod key. `awaiting_invoke_key` was the BYOK parking
+name; writes are now `awaiting_go_live`. The go-live route is
+`POST /api/tenant/:id/go-live` (old `invoke-key` path still works). Front door
+copy no longer asks for "one more key." hosted-tier.md no longer tells anyone
+to mint two RunPod tokens. The plane's own `SHARED_RUNPOD_INVOKE_KEY` stays
+what it is: our job credential, not a customer step.
+
+### feat(admin): tenant usage view, wan-train on the shared pool, cloud i2v in the catalog
+
+GET /api/admin/tenants/:id/usage lists every recorded RunPod / public-slug job
+and every attributed AI Gateway row for that tenant, rolled up by module, with
+optional SPEND_PRICEBOOK costs.
+
+wan-train is an endpoint-backed plan key (RUNPOD_WAN_TRAIN_ENDPOINT_ID).
+cf-grok-video / cf-seedance / cf-flux-3-video / cf-hh1-r2v join the tenant
+catalog. Traefik door URLs stamp onto the studio when the plane vars are set.
+
 ## v1.27.0 -- 2026-08-15
 
 ### fix(readiness): a module that does not reach RunPod at an endpoint of ours can be READY (cp#396)
