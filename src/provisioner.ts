@@ -854,9 +854,9 @@ export async function runProvisionJob(
         // placement is label-driven and the workers hold no credential to re-issue. That is the
         // cp#270 shared-tier thesis already running in production, which is why this comment is
         // the precedent the pooled RunPod design is built on.
-        ...(deps.videoFinishServiceId
-          ? [{ type: "vpc_service" as const, name: "VIDEO_FINISH_VPC", service_id: deps.videoFinishServiceId }]
-          : []),
+        // Traefik HTTPS doors only. Do not attach VIDEO_FINISH_VPC. Conrad 2026-08-16:
+        // Workers VPC is gone; a vpc_service bind is what killed hosted provision
+        // (10196 unauthorized) and what the UI was still lying about.
         ...Object.entries(deps.mediaDoorUrls).map(([name, text]) => ({
           type: "plain_text" as const,
           name,
