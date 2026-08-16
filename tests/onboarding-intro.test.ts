@@ -317,7 +317,7 @@ describe("the BYOK surface is GONE from the wizard (cp#427)", () => {
     // that only ever matches within one line cannot tell a working collapse from a dead one.
     // This file shipped the dead variant TWICE; the second time it was written beside its own
     // correct twin. Make the instrument fail loudly rather than trusting the character.
-    expect(page).toMatch(/do not provision that way any more/i);
+    expect(page).toMatch(/cannot go live automatically/i);
     expect(page).toContain("id=\"invoke-undecided\"");
     expect(page).toContain("id=\"invoke-unsupported\"");
     // And a plane that cannot provision says so up front rather than at the end.

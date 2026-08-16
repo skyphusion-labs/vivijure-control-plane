@@ -56,8 +56,8 @@
         </p>
 
         <div class="callout">
-          <p><strong>The GPUs are ours. You just write the film.</strong> Your studio runs on our
-          shared render capacity. You do not need a RunPod account, and you never paste a key.</p>
+          <p><strong>The GPUs are ours. You just write the film.</strong> This is our hosted studio.
+          You do not install anything, and you do not bring a GPU account.</p>
         </div>
 
         <h3>What gets set up</h3>
@@ -71,17 +71,8 @@
         <div class="rows" id="plan-preview" aria-live="polite"></div>
 
         <div class="callout">
-          <p><strong>Idle costs you $0.</strong> Every endpoint is scale-to-zero: when nothing is
-          rendering, nothing is running, and nothing is billed. Not "a few cents." Zero.</p>
+          <p><strong>Idle costs you $0.</strong> When nothing is rendering, nothing is billed.</p>
           <p class="small muted" id="cost-example"></p>
-        </div>
-
-        <div class="callout">
-          <p><strong>Hosted and self-host ship the same studio. Features never gate on payment.</strong></p>
-          <p class="small">You are not signing up for a limited edition. There is no paid tier with
-          more features, because there is no paid tier. The hosted door itself is open source, so
-          you can read exactly what we run, or run it yourself.
-          <a href="https://github.com/skyphusion-labs/vivijure-cf/blob/main/docs/quickstart.md">Install it yourself instead.</a></p>
         </div>
 
         <div class="actions">
@@ -162,9 +153,7 @@
         <p class="small muted" id="plan-total"></p>
 
         <div class="callout">
-          <p class="small">Worker counts on the shared GPU pool are pinned by us, not left at
-          RunPod's default of 3 each. The own-hardware rows have no worker pin: they run on boxes
-          we already operate.</p>
+          <p class="small">Renders run on our GPU pool. You do not manage machines.</p>
         </div>
 
         <div class="checkbox-row">
@@ -188,8 +177,7 @@
         </div>
       </section>
 
-      <!-- STEP 7: the render key (key B) --------------------------------->
-      <!-- STEP 6: go live ---------------------------------------------->
+      <!-- go live ---------------------------------------------->
       <!--
            cp#427 purge: there is no second key and no key step before this one. The plane runs
            the render capacity, so going live is an empty-bodied POST that installs OUR pool key.
@@ -199,34 +187,23 @@
       <section class="panel" data-step="go-live" hidden>
         <h2>Ready to go live</h2>
         <p class="lede">
-          Your endpoints are built and the render key is ours, already in place. One button and
-          the studio is yours.
+          The studio is built on our render pool. One button and it is yours.
         </p>
 
         <!-- NULL IS NOT A TIER. runpod_mode is withheld until the endpoints exist, so an absent
              value means NOT DECIDED YET. Claiming either answer here would be a guess about
              somebody studio, so neither is shown. -->
         <div class="callout" id="invoke-undecided" hidden>
-          <p><strong>We cannot tell you which render tier this studio is on yet.</strong></p>
-          <p class="small">That is a gap on our side, not something you did, and we would rather
-          say so than guess and hand you the wrong instructions. Reload in a moment; if it keeps
-          saying this, tell us and we will look.</p>
+          <p><strong>We are still finishing the last setup check.</strong></p>
+          <p class="small">Reload in a moment. If this stays up, tell us.</p>
         </div>
 
-        <!-- A row still recording dedicated predates the purge. The invoke-key route refuses it
-             by name, so offering key instructions would send somebody to make a credential that
-             nothing will accept. -->
         <div class="callout callout-bad" id="invoke-unsupported" hidden>
-          <p><strong>This studio is set up on a path we no longer run.</strong></p>
-          <p class="small">It was built to use your own RunPod account. We do not provision that
-          way any more, and there is nothing you can paste here that would work. Please get in
-          touch and we will move it across rather than leave you guessing.</p>
+          <p><strong>This studio cannot go live automatically.</strong></p>
+          <p class="small">That is our problem. Tell us and we will finish it.</p>
         </div>
 
         <div id="invoke-pooled" hidden>
-          <h3>Nothing to paste. This one is on us.</h3>
-          <p>Your studio runs on our render capacity, so the key it needs is ours and is already
-          in place. There is no second key for you to make.</p>
           <div class="actions">
             <button type="button" class="primary" id="go-live">Take my studio live</button>
           </div>
@@ -258,8 +235,7 @@
         <p><a id="studio-link" href="#" class="row-name">Open my studio</a></p>
 
         <div class="callout">
-          <p><strong>What we keep:</strong> the studio, its database, and its files. The render
-          key is ours and stays on our side. You never had one to delete.</p>
+          <p><strong>What we keep:</strong> the studio, its database, and its files.</p>
         </div>
 
         <div class="callout">
@@ -277,7 +253,7 @@
       <span aria-hidden="true">|</span>
       <a href="mailto:abuse@skyphusion.org">abuse@skyphusion.org</a>
     </footer>
-    <script src="onboarding-checks.js?v=1.29.2"></script>
+    <script src="onboarding-checks.js?v=1.29.3"></script>
     <script src="onboarding-api.js"></script>
     <script src="onboarding.js"></script>
   </body>
