@@ -64,113 +64,74 @@ export interface PlannedEndpoint extends PlannedCapabilityBase {
 }
 
 /**
- * ONE DOOR onto one GPU box. A vpc-backed capability has a POOL of these, one per box that serves
- * it, because that is what the module reads: vivijure-cf builds `doorPool([...])` from a candidate
- * per box and round-robins with `pickDoor`.
- *
- * The FIRST entry is the LEGACY door and its ordering is load-bearing, not cosmetic. Its binding
- * carries the bare `DOOR_ROUTE_NAME`, which is what an in-flight poll token carries, and
- * `resolveDoor` is a LOOKUP by name rather than a pick -- polling any door but the one that minted
- * a job reports a live job as GONE. So the legacy door must keep its position and its name.
+ * One bearer the MODULE worker reads. Names are what vivijure-cf finish-upscale / speech-upscale
+ * declare: FINISH_DOOR_TOKEN (+ optional FINISH_DOOR_TOKEN_PROPAGANDHI), same for SPEECH_.
  */
-export interface PlannedDoor {
-  /** The vpc_service binding name the MODULE worker reads. */
+export interface PlannedDoorToken {
   bindingName: string;
-  /** The secret binding name this door bearer is read from. */
-  doorTokenBinding: string;
-  /** Plane env var holding the Connectivity Directory service id for this door. */
-  serviceIdVar: string;
-  /** Plane env var holding this door bearer (the container LOCAL_FINISH_TOKEN). */
-  doorTokenVar: string;
+  envVar: string;
 }
 
 /**
- * A capability served by hardware we own and operate, reached by the tenant MODULE WORKER over a
- * Workers VPC service binding instead of RunPod.
+ * Own-iron capability reached over public Traefik HTTPS (vivijure-cf finish-door.ts),
+ * not Workers VPC and not RunPod. Binding goes on the MODULE, not the studio.
  *
- * THE BINDING GOES ON THE MODULE, NOT ON THE STUDIO, and that is the whole contract. Upscale is a
- * module capability: the studio dispatches to a module worker, and the module worker is what talks
- * to RunPod or to a door. A binding attached to the studio under a name nothing reads would upload
- * clean and change nothing.
+ *   finish-upscale  FINISH_UPSCALE_DOORS + FINISH_DOOR_TOKEN
+ *   speech-upscale  SPEECH_UPSCALE_DOORS + SPEECH_DOOR_TOKEN
  *
- * The names are NOT ours to choose. They are what vivijure-cf modules already declare (cf#480,
- * present in the pinned v1.28.0), and at that tag BOTH modules build a POOL rather than a single
- * route:
- *
- *   modules/finish-upscale   FINISH_UPSCALE_VPC + FINISH_DOOR_TOKEN            (legacy, fatmike)
- *                            FINISH_UPSCALE_VPC_PROPAGANDHI + _TOKEN_PROPAGANDHI
- *   modules/speech-upscale   SPEECH_UPSCALE_VPC + SPEECH_DOOR_TOKEN            (legacy, fatmike)
- *                            SPEECH_UPSCALE_VPC_PROPAGANDHI + _TOKEN_PROPAGANDHI
- *
- * modules/_shared/finish-door.ts branches on the pool being NON-EMPTY, never on RunPod failing: a
- * door-to-RunPod failover would silently re-rent the GPU this change exists to stop renting, with
- * every signal still green. Same rule as the cp#288 proxy pair.
- *
- * NO maxWorkers AND NO endpointVar, on purpose rather than by omission. There is no RunPod quota to
- * spend and no endpoint id to bind, and a nullable field here would let an empty string reach a
- * module as an endpoint id, which fails at the tenant FIRST RENDER instead of at provision.
+ * First URL in the comma-separated list is the legacy door.
  */
-export interface PlannedVpcCapability extends PlannedCapabilityBase {
-  backing: "vpc";
-  /** Every door onto this capability, legacy first. At least one must be configured to provision. */
-  doors: PlannedDoor[];
+export interface PlannedDoorCapability extends PlannedCapabilityBase {
+  backing: "door";
+  doorsUrlVar: string;
+  tokens: PlannedDoorToken[];
 }
 
-export type PlannedCapability = PlannedEndpoint | PlannedVpcCapability;
+export type PlannedCapability = PlannedEndpoint | PlannedDoorCapability;
 
-/** One door, RESOLVED: the module binding names from the plan plus the values that fill them.
- *  Lives here beside PlannedDoor rather than in deps.ts, so provisioner and tenant-modules can name
- *  it without importing the wiring module and creating a cycle. */
 export interface ResolvedDoor {
-  bindingName: string;
-  doorTokenBinding: string;
-  serviceId: string;
-  token: string;
+  doorsUrlVar: string;
+  doorsUrl: string;
+  tokens: { bindingName: string; token: string }[];
 }
 
-/**
- * The narrowing every consumer that needs an endpoint id must go through. A type guard rather than
- * a filter on a string field, so a caller cannot reach `endpointVar` on an own-iron entry without
- * the compiler objecting. That is the safety property.
- */
+export function parseHttpsDoorList(raw: string | undefined | null): string[] {
+  if (!raw) return [];
+  const out: string[] = [];
+  for (const part of raw.split(",")) {
+    const s = part.trim();
+    if (!s) continue;
+    try {
+      const u = new URL(s);
+      if (u.protocol === "https:") out.push(u.origin);
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
 export const isEndpointBacked = (c: PlannedCapability): c is PlannedEndpoint => c.backing === "runpod";
 
-/** Only the entries a RunPod endpoint must exist for. */
 export const endpointBackedPlan = (plan: PlannedCapability[] = PROVISION_PLAN): PlannedEndpoint[] =>
   plan.filter(isEndpointBacked);
 
-/** Only the entries served by our own hardware. Exported so the UI can SAY so rather than omit them. */
-export const vpcBackedPlan = (plan: PlannedCapability[] = PROVISION_PLAN): PlannedVpcCapability[] =>
-  plan.filter((c): c is PlannedVpcCapability => c.backing === "vpc");
+export const doorBackedPlan = (plan: PlannedCapability[] = PROVISION_PLAN): PlannedDoorCapability[] =>
+  plan.filter((c): c is PlannedDoorCapability => c.backing === "door");
+export const vpcBackedPlan = doorBackedPlan;
 
-/**
- * THE PROVISIONING PLAN, as DATA.
- *
- * Joan's onboarding renders from this rather than hardcoding a list (the registry-projection rule),
- * so what the tenant is shown is what actually gets built. 2+1+1+1 = 5 workers.
- *
- * The IMAGE half of every entry comes from `SATELLITE_PINS` (cp#126); this file decides layout,
- * labels, GPU class and worker counts, and never decides a version.
- */
 const pinned = (key: SatelliteKey) => ({
   key,
   imageRepo: SATELLITE_PINS[key].repo,
   tag: SATELLITE_PINS[key].tag,
 });
 
-// cp#367: single source for "this endpoint does not do cast-LoRA training" so every downstream
-// copy of the backend purpose or label can be asserted against the same pattern the test in
-// this file already uses, instead of a hand-duplicated literal that can silently drift.
 export const NO_TRAINING_CLAUSE = /lora|train/i;
 
 export const PROVISION_PLAN: PlannedCapability[] = [
   {
     ...pinned("backend"),
     backing: "runpod",
-    // cp#303: cast LoRA training does NOT run on this endpoint. Training is fail-closed on its
-    // own satellite (vivijure-wan-train / RUNPOD_WAN_TRAIN_ENDPOINT_ID) and never falls back
-    // here. A training clause in this label was a tenant-visible lie and invited the wrong
-    // inference that the shared pool already covers training because it covers backend.
     label: "Render (keyframes, video)",
     maxWorkers: 2,
     gpuTypeIds: BACKEND_GPUS,
@@ -178,28 +139,12 @@ export const PROVISION_PLAN: PlannedCapability[] = [
   },
   {
     ...pinned("upscale"),
-    // OWN IRON (cp#396). Always-on serve containers on BOTH fatmike and propagandhi, reached by the
-    // finish-upscale MODULE worker over a Workers VPC binding. NOT dropped: a tenant keeps the full
-    // capability and only the TRANSPORT changes.
-    //
-    // TWO DOORS, legacy first. The tenant module pools them exactly as the operator studio does;
-    // binding one would concentrate every tenant render on one box while the other idled, with no
-    // signal attached to the difference.
-    backing: "vpc",
+    backing: "door",
     label: "Video upscale",
-    doors: [
-      {
-        bindingName: "FINISH_UPSCALE_VPC",
-        doorTokenBinding: "FINISH_DOOR_TOKEN",
-        serviceIdVar: "FINISH_UPSCALE_VPC_SERVICE_ID",
-        doorTokenVar: "FINISH_DOOR_TOKEN",
-      },
-      {
-        bindingName: "FINISH_UPSCALE_VPC_PROPAGANDHI",
-        doorTokenBinding: "FINISH_DOOR_TOKEN_PROPAGANDHI",
-        serviceIdVar: "FINISH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID",
-        doorTokenVar: "FINISH_DOOR_TOKEN_PROPAGANDHI",
-      },
+    doorsUrlVar: "FINISH_UPSCALE_DOORS",
+    tokens: [
+      { bindingName: "FINISH_DOOR_TOKEN", envVar: "FINISH_DOOR_TOKEN" },
+      { bindingName: "FINISH_DOOR_TOKEN_PROPAGANDHI", envVar: "FINISH_DOOR_TOKEN_PROPAGANDHI" },
     ],
   },
   {
@@ -220,41 +165,20 @@ export const PROVISION_PLAN: PlannedCapability[] = [
   },
   {
     ...pinned("audio-upscale"),
-    // OWN IRON, same ruling, same credential posture and the same two boxes as the upscale entry.
-    backing: "vpc",
+    backing: "door",
     label: "Audio upscale",
-    doors: [
-      {
-        bindingName: "SPEECH_UPSCALE_VPC",
-        doorTokenBinding: "SPEECH_DOOR_TOKEN",
-        serviceIdVar: "SPEECH_UPSCALE_VPC_SERVICE_ID",
-        doorTokenVar: "SPEECH_DOOR_TOKEN",
-      },
-      {
-        bindingName: "SPEECH_UPSCALE_VPC_PROPAGANDHI",
-        doorTokenBinding: "SPEECH_DOOR_TOKEN_PROPAGANDHI",
-        serviceIdVar: "SPEECH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID",
-        doorTokenVar: "SPEECH_DOOR_TOKEN_PROPAGANDHI",
-      },
+    doorsUrlVar: "SPEECH_UPSCALE_DOORS",
+    tokens: [
+      { bindingName: "SPEECH_DOOR_TOKEN", envVar: "SPEECH_DOOR_TOKEN" },
+      { bindingName: "SPEECH_DOOR_TOKEN_PROPAGANDHI", envVar: "SPEECH_DOOR_TOKEN_PROPAGANDHI" },
     ],
   },
 ];
 
-/**
- * The tenant-visible projection of PROVISION_PLAN (cp#474).
- *
- * The review step used to GET /api/tenant/provision-plan, a route this plane has never served,
- * so every walk of the wizard rendered an empty plan at the last stop before anything is created.
- * This is that route's body, derived from the same array the provisioner builds from: adding a
- * capability grows a review row with no second list to keep in step.
- *
- * max_workers is null on own-iron rows. There is no RunPod quota to spend there, and a zero would
- * look like a pin rather than an absence.
- */
 export interface ProvisionPlanRow {
   key: string;
   label: string;
-  backing: "runpod" | "vpc";
+  backing: "runpod" | "door";
   image: string;
   max_workers: number | null;
   gpu: string;
@@ -275,7 +199,7 @@ export function provisionPlanView(plan: PlannedCapability[] = PROVISION_PLAN): P
     return {
       key: cap.key,
       label: cap.label,
-      backing: "vpc",
+      backing: "door",
       image: imageRef(cap.key),
       max_workers: null,
       gpu: "our hardware",

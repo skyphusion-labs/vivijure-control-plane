@@ -36,8 +36,7 @@ import {
   type TeardownOpts,
   type TeardownOutcome,
 } from "./provisioner";
-import { vpcBackedPlan } from "./runpod";
-import type { ResolvedDoor } from "./runpod";
+import { doorBackedPlan, parseHttpsDoorList, type ResolvedDoor } from "./runpod";
 import { parseSharedPool, readRunPodMode } from "./runpod-pool";
 import type { SharedRunPodPool } from "./runpod-pool";
 import type { ControlPlaneStore, CreditStore, Tenant } from "./store";
@@ -411,47 +410,48 @@ export function llmMeterReader(env: ControlPlaneEnv): GatewayLogReader | undefin
 const TENANT_STUDIO_FETCH_TIMEOUT_MS = 5_000;
 
 /**
- * Resolve the own-iron door POOL from the environment (cp#396).
- *
- * DERIVED FROM THE PLAN, never a hand-written list: each vpc-backed capability declares its doors
- * and each door declares which two vars fill it, so this stays correct when a door or a capability
- * is added and cannot silently disagree with what the modules are bound to.
- *
- * IT ITERATES THE PLAN, WHICH IS WHY UNKNOWN SECRETS ARE HARMLESS. A secret whose name no plan door
- * references is never read here and never reaches an upload. That is what makes it safe to set the
- * second door values BEFORE the plan names them: they sit inert rather than half-attaching
- * anything. Stated because the next person to find inert secrets should not have to re-derive it.
- *
- * BOTH OR NEITHER, PER DOOR. A door with one half set is dropped and logged naming both vars --
- * attaching a binding without its bearer uploads clean and 401s on every render. A capability keeps
- * whatever OTHER doors are whole, because a pool of one is a working pool; losing every door is the
- * case modules_upload refuses, and it refuses there rather than here so the operator sees it at
- * provision time.
+ * Fallback names for the door bearer. Module Env still reads FINISH_DOOR_TOKEN / SPEECH_DOOR_TOKEN.
  */
-export function resolveVpcDoors(env: ControlPlaneEnv): Record<string, ResolvedDoor[]> {
-  const out: Record<string, ResolvedDoor[]> = {};
+const DOOR_TOKEN_FALLBACKS = ["FINISH_DOOR_TOKEN", "LOCAL_FINISH_TOKEN", "MEDIA_FINISH_TOKEN"] as const;
+
+/**
+ * Resolve own-iron Traefik HTTPS doors from the environment.
+ * Workers VPC service ids are never read. Empty HTTPS list = capability unbound.
+ */
+export function resolveVpcDoors(env: ControlPlaneEnv): Record<string, ResolvedDoor> {
+  const out: Record<string, ResolvedDoor> = {};
   const read = (name: string): string | null =>
     (env as unknown as Record<string, string | undefined>)[name]?.trim() || null;
-  for (const capability of vpcBackedPlan()) {
-    const resolved: ResolvedDoor[] = [];
-    for (const door of capability.doors) {
-      const serviceId = read(door.serviceIdVar);
-      const token = read(door.doorTokenVar);
-      if (serviceId && token) {
-        resolved.push({ bindingName: door.bindingName, doorTokenBinding: door.doorTokenBinding, serviceId, token });
-        continue;
-      }
-      if (serviceId || token) {
-        console.error(
-          "vpc_door.refused",
-          `${capability.key} door ${door.bindingName}: set BOTH ${door.serviceIdVar} and ` +
-            `${door.doorTokenVar}; a door binding without its bearer is refused 401 on every render`,
-        );
-      }
+  const readToken = (preferred: string): string | null => {
+    const own = read(preferred);
+    if (own) return own;
+    for (const name of DOOR_TOKEN_FALLBACKS) {
+      if (name === preferred) continue;
+      const v = read(name);
+      if (v) return v;
     }
-    // ORDER PRESERVED, and it is load-bearing: the legacy door is first and carries the bare route
-    // name an in-flight poll token names. See PlannedDoor.
-    if (resolved.length) out[capability.key] = resolved;
+    return null;
+  };
+  for (const capability of doorBackedPlan()) {
+    const origins = parseHttpsDoorList(read(capability.doorsUrlVar));
+    if (!origins.length) continue;
+    const tokens: ResolvedDoor["tokens"] = [];
+    for (const spec of capability.tokens) {
+      const token = spec === capability.tokens[0] ? readToken(spec.envVar) : read(spec.envVar);
+      if (token) tokens.push({ bindingName: spec.bindingName, token });
+    }
+    if (!tokens.length) {
+      console.error(
+        "iron_door.refused",
+        `${capability.key}: ${capability.doorsUrlVar} is set but no bearer is readable`,
+      );
+      continue;
+    }
+    out[capability.key] = {
+      doorsUrlVar: capability.doorsUrlVar,
+      doorsUrl: origins.join(","),
+      tokens,
+    };
   }
   return out;
 }
@@ -690,7 +690,7 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
       // has no job row to record one on.
       const pre = preflightStudioBindings(deps, tenant);
       if (!pre.ok) return { ok: false, refusal: pre.refusal };
-      return { ok: true, result: await refreshTenantStudioBindings(deps, tenant, pre.script, pre.serviceId) };
+      return { ok: true, result: await refreshTenantStudioBindings(deps, tenant, pre.script) };
     },
     async detachStudioBinding(tenant) {
       const pre = preflightStudioBindingDetach(tenant);

@@ -9,7 +9,7 @@ import { TEST_VPC_DOORS } from "./door-fixture";
 import { describe, it, expect, vi } from "vitest";
 import { uploadTenantModules, TENANT_MODULE_CATALOG, reachesRunpod, type TenantModuleDeps } from "../src/tenant-modules";
 import { endpointBackedPlan } from "../src/runpod";
-import { CfApiError, type WorkerBinding } from "../src/cf-api";
+import { CfApiError, classifyVpcBindingFailure, type WorkerBinding } from "../src/cf-api";
 
 // The tenant studio D1 uuid the recording modules get as TELEMETRY_DB (cp#248).
 const TENANT_D1 = "d1-uuid-acme";
@@ -298,48 +298,21 @@ describe("module uploads run on the SCRIPT UPLOAD credential (cp#464)", () => {
   });
 });
 
-describe("the door-binding guard, and its own staleness detector (cp#462, cp#464)", () => {
-  // Refuses ONLY the upload that actually attaches a door, which is what Cloudflare does. A fake
-  // that threw on every upload would fail on the first module in the catalog, whose bindings carry
-  // no vpc_service -- and the guard would correctly not fire, making the test measure the fixture.
-  const failWith = (code: number) => ({
-    createDispatchNamespace: vi.fn(async () => undefined),
-    uploadUserWorker: vi.fn(async (a: Upload) => {
-      if (!a.bindings.some((b) => b.type === "vpc_service")) return;
-      throw new CfApiError("wfp.upload", 400, [{ code, message: "VPC binding configuration failed" }]);
-    }),
+describe("leftover VPC upload errors are still classified (cp#462)", () => {
+  it("classifyVpcBindingFailure names a leftover 10196 when vpc_service was attached", () => {
+    const e = new CfApiError("wfp.upload", 403, [
+      { code: 10196, message: "Workers VPC binding configuration failed because your credentials are not authorized" },
+    ]);
+    expect(classifyVpcBindingFailure(e, true)).toEqual({ kind: "refused" });
+    expect(classifyVpcBindingFailure(e, false)).toEqual({ kind: "unrelated" });
   });
 
-  const run = (d: TenantModuleDeps) =>
-    uploadTenantModules(d, "v1.0.0", "ten_1", "acme-films", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "dedicated", undefined, "AIG_SECRET_VALUE");
-
-  it("translates the KNOWN refusal into words an operator can act on", async () => {
-    const { d } = deps({ scriptUploadCf: failWith(10196) } as unknown as Partial<TenantModuleDeps>);
-    // The module path had NO guard at all before this: the operator got raw Cloudflare prose from
-    // a step whose sibling has had a written-for-humans message since cf#118.
-    await expect(run(d)).rejects.toThrow(/door binding refused/);
-  });
-
-  // THE POINT OF cp#462, AND THE HALF THAT IS EASY TO LEAVE OUT.
-  //
-  // A predicate keyed on a vendor constant has an expiry date nobody wrote down. When Cloudflare
-  // renumbers, a boolean guard answers false forever and NOTHING reports that it stopped working --
-  // which is exactly how the cf#118 guard sat inert above the failing call while an operator read
-  // raw vendor prose. So the miss is logged. This test is the difference between a guard that dies
-  // silently and one that announces its own obsolescence the first time it is wrong.
-  it("LOGS the codes Cloudflare actually returned when the known code does NOT match", async () => {
-    const { d, logs } = deps({ scriptUploadCf: failWith(99999) } as unknown as Partial<TenantModuleDeps>);
-
-    // Still throws: the guard translates, it never swallows.
-    await expect(run(d)).rejects.toThrow(/VPC binding configuration failed/);
-    expect(logs).toContain("module_upload.vpc_guard_did_not_match");
-  });
-
-  // CONTROL: the detector must fire on a MISS, not on every failure. A version that logged
-  // unconditionally would pass the test above while telling an operator nothing.
-  it("CONTROL: does NOT cry stale when the code DID match", async () => {
-    const { d, logs } = deps({ scriptUploadCf: failWith(10196) } as unknown as Partial<TenantModuleDeps>);
-    await expect(run(d)).rejects.toThrow();
-    expect(logs).not.toContain("module_upload.vpc_guard_did_not_match");
+  it("reports unmatched when the known code does NOT match", () => {
+    const e = new CfApiError("wfp.upload", 400, [{ code: 99999, message: "VPC binding configuration failed" }]);
+    expect(classifyVpcBindingFailure(e, true)).toEqual({
+      kind: "unmatched",
+      codes: [99999],
+      messages: ["VPC binding configuration failed"],
+    });
   });
 });

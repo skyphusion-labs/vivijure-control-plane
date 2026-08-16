@@ -1190,18 +1190,18 @@ describe("cf#99 tenant module bridge", () => {
     const moduleFor: Record<string, string> = { upscale: "finish-upscale", "audio-upscale": "speech-upscale" };
     for (const capability of vpcBackedPlan()) {
       const script = pre(moduleFor[capability.key]);
-      expect(capability.doors.length, capability.key).toBeGreaterThan(1);
-      for (const door of capability.doors) {
-        const want = TEST_VPC_DOORS[capability.key].find((r) => r.bindingName === door.bindingName)!;
-        expect(bindOf(script, door.bindingName), door.bindingName).toMatchObject({
-          type: "vpc_service",
-          service_id: want.serviceId,
-        });
-        expect(bindOf(script, door.doorTokenBinding), door.doorTokenBinding).toMatchObject({
+      const want = TEST_VPC_DOORS[capability.key];
+      expect(bindOf(script, want.doorsUrlVar), want.doorsUrlVar).toMatchObject({
+        type: "plain_text",
+        text: want.doorsUrl,
+      });
+      for (const tok of want.tokens) {
+        expect(bindOf(script, tok.bindingName), tok.bindingName).toMatchObject({
           type: "secret_text",
-          text: want.token,
+          text: tok.token,
         });
       }
+      expect(byScript.get(script)!.some((b) => b.type === "vpc_service"), capability.key).toBe(false);
       expect(bindOf(script, "RUNPOD_ENDPOINT_ID"), capability.key).toBeUndefined();
     }
     // Key B is NOT present at upload -- it lands in installInvokeKey (custody: the key never rides

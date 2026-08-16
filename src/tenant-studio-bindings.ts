@@ -79,7 +79,7 @@ export class StudioBindingError extends Error {
  * touched the tenant. Same split as preflightUpgrade: the refusal and the work are not one call.
  */
 export interface StudioBindingRefusal {
-  code: "not_provisioned" | "video_finish_unconfigured" | "video_finish_declared";
+  code: "not_provisioned" | "video_finish_declared";
   status: number;
   message: string;
 }
@@ -111,9 +111,9 @@ const names = (list: { name: string }[]): string[] => list.map((b) => b.name).so
  * script to patch, and the fix is a provision, not this.
  */
 export function preflightStudioBindings(
-  deps: ProvisionDeps,
+  _deps: ProvisionDeps,
   tenant: Tenant,
-): { ok: true; script: string; serviceId: string } | { ok: false; refusal: StudioBindingRefusal } {
+): { ok: true; script: string } | { ok: false; refusal: StudioBindingRefusal } {
   if (!tenant.script_name) {
     return {
       ok: false,
@@ -149,19 +149,7 @@ export function preflightStudioBindings(
       },
     };
   }
-  if (!deps.videoFinishServiceId) {
-    return {
-      ok: false,
-      refusal: {
-        code: "video_finish_unconfigured",
-        status: 409,
-        message:
-          "this plane is not configured for video finishing (VIDEO_FINISH_VPC_SERVICE_ID is unset), " +
-          "so there is no tier to deliver; set it, deploy, then re-run",
-      },
-    };
-  }
-  return { ok: true, script: tenant.script_name, serviceId: deps.videoFinishServiceId };
+  return { ok: true, script: tenant.script_name };
 }
 
 /**
@@ -185,21 +173,21 @@ export async function refreshTenantStudioBindings(
   deps: ProvisionDeps,
   tenant: Tenant,
   script: string,
-  serviceId: string,
 ): Promise<StudioBindingRefresh> {
-  // Census BEFORE, through the provisioner credential (reads), so we know what a loss would look
-  // like. Secret NAMES only; these endpoints never return values and this file never wants one.
   const before = await deps.cf.getScriptBindings(deps.namespace, script);
   const secretsBefore = await deps.cf.getScriptSecretNames(deps.namespace, script);
-  const alreadyPresent = before.some((b) => b.name === VIDEO_FINISH_BINDING);
+  const leftoverVpc = before.some((b) => b.name === VIDEO_FINISH_BINDING);
 
-  // Everything we are keeping travels as `inherit`, so no binding VALUE is handled here -- which is
-  // the entire reason this route can run against a tenant whose secrets the plane cannot reproduce.
+  const doorNames = new Set(Object.keys(deps.mediaDoorUrls));
   const desired: WorkerBinding[] = [
     ...before
-      .filter((b) => b.name !== VIDEO_FINISH_BINDING)
+      .filter((b) => b.name !== VIDEO_FINISH_BINDING && !doorNames.has(b.name))
       .map((b) => ({ type: "inherit" as const, name: b.name })),
-    { type: "vpc_service" as const, name: VIDEO_FINISH_BINDING, service_id: serviceId },
+    ...Object.entries(deps.mediaDoorUrls).map(([name, text]) => ({
+      type: "plain_text" as const,
+      name,
+      text,
+    })),
   ];
 
   try {
@@ -235,14 +223,16 @@ export async function refreshTenantStudioBindings(
 
   const afterNames = new Set(after.map((b) => b.name));
   const afterSecrets = new Set(secretsAfter);
-  const missingBindings = names(before).filter((n) => !afterNames.has(n));
+  const missingBindings = names(before)
+    .filter((n) => n !== VIDEO_FINISH_BINDING)
+    .filter((n) => !afterNames.has(n));
   const missingSecrets = [...secretsBefore].sort().filter((n) => !afterSecrets.has(n));
 
   const result: StudioBindingRefresh = {
-    ok: missingBindings.length === 0 && missingSecrets.length === 0 && afterNames.has(VIDEO_FINISH_BINDING),
+    ok: missingBindings.length === 0 && missingSecrets.length === 0 && !afterNames.has(VIDEO_FINISH_BINDING),
     script,
-    service_id: serviceId,
-    already_present: alreadyPresent,
+    service_id: "",
+    already_present: !leftoverVpc,
     bindings_before: names(before),
     bindings_after: names(after),
     secrets_before: [...secretsBefore].sort(),
@@ -255,7 +245,7 @@ export async function refreshTenantStudioBindings(
     tenant: tenant.id,
     script,
     ok: result.ok,
-    already_present: alreadyPresent,
+    already_present: result.already_present,
     bindings_before: result.bindings_before.length,
     bindings_after: result.bindings_after.length,
     missing_bindings: missingBindings,

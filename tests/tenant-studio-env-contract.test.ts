@@ -360,9 +360,9 @@ describe("the tenant studio transport contract (cp#396)", () => {
     const bindings = await provisionAndCaptureStudioBindings();
     const names = new Set(bindings.map((b) => b.name));
     for (const capability of vpcBackedPlan()) {
-      for (const door of capability.doors) {
-        expect(names.has(door.bindingName), door.bindingName + " bound on the studio").toBe(false);
-        expect(names.has(door.doorTokenBinding), door.doorTokenBinding + " bound on the studio").toBe(false);
+      expect(names.has(capability.doorsUrlVar), capability.doorsUrlVar + " bound on the studio").toBe(false);
+      for (const tok of capability.tokens) {
+        expect(names.has(tok.bindingName), tok.bindingName + " bound on the studio").toBe(false);
       }
     }
     // CONTROL: the studio carries Traefik media doors when configured, never a vpc_service.

@@ -76,7 +76,7 @@ describe("intro: there is a representative example to render with no fetch", () 
       expect(typeof ep.purpose).toBe("string");
       expect(String(ep.purpose).length).toBeGreaterThan(0);
       expect(typeof ep.gpu).toBe("string");
-      if (ep.backing === "vpc") {
+      if (ep.backing === "door") {
         expect(ep.max_workers == null).toBe(true);
       } else {
         expect(typeof ep.max_workers).toBe("number");

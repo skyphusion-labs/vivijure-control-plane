@@ -126,7 +126,7 @@ export function parseSharedPool(raw: string | undefined | null): PoolConfigResul
       detail:
         "SHARED_RUNPOD_ENDPOINTS names own-iron capability(ies): " +
         vpcNamed.join(", ") +
-        ". These run on hardware we operate and are reached over a Workers VPC binding, not as " +
+        ". These run on hardware we operate and are reached over Traefik HTTPS doors, not as " +
         "RunPod endpoints, so no endpoint id belongs here and the shared invoke key has no access " +
         "to one. Remove the key rather than pointing it at an endpoint the plane cannot reach",
     };
