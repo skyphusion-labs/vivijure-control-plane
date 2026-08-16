@@ -79,9 +79,10 @@ function recordingDeps() {
       endpoints: [
         { key: "backend", label: "Render", id: "pool-1", name: "vivijure-prod-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
         { key: "lipsync", label: "Lip sync", id: "pool-3", name: "vivijure-prod-lipsync", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+        { key: "wan-train", label: "Cast LoRA training (Wan)", id: "pool-4", name: "vivijure-prod-wan-train", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
       ],
-      ids: new Set(["pool-1", "pool-3"]),
-      names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync"]),
+      ids: new Set(["pool-1", "pool-3", "pool-4"]),
+      names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync", "vivijure-prod-wan-train"]),
     },
     sharedPoolInvokeKey: "rpa_poolkey",
     videoFinishServiceId: null,
@@ -374,7 +375,7 @@ describe("the tenant studio transport contract (cp#396)", () => {
   it("EXACTLY ONE TRANSPORT per capability, counted across the whole plan", () => {
     // The summary claim, asserted as BOTH numbers. One figure cannot distinguish a capability that
     // was DROPPED from one that MOVED transport, and telling those apart is the entire point.
-    expect(endpointBackedPlan()).toHaveLength(2);
+    expect(endpointBackedPlan()).toHaveLength(3);
     expect(vpcBackedPlan()).toHaveLength(2);
     expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "lipsync", "wan-train"]);
     expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["audio-upscale", "upscale"]);

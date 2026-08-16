@@ -98,7 +98,7 @@ describe("plan-enhance is in the catalog and is NOT endpoint-backed", () => {
     // "plan-enhance is not RunPod-backed" a real fact about that spec is reachesRunpod, which is
     // also the predicate the proxy pair branches on -- so this control now guards the same thing
     // the upload does, instead of a proxy for it that the catalog outgrew.
-    for (const spec of TENANT_MODULE_CATALOG.filter((s) => s.module !== "plan-enhance")) {
+    for (const spec of TENANT_MODULE_CATALOG.filter((s) => !s.needsAiGateway)) {
       expect(reachesRunpod(spec), spec.module).toBe(true);
     }
   });

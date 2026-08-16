@@ -76,6 +76,7 @@ function fakeCf(over: Partial<Record<string, unknown>> = {}) {
       // binding production does not create.
       { type: "plain_text", name: "RUNPOD_ENDPOINT_ID" },
       { type: "plain_text", name: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+      { type: "plain_text", name: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
     ]),
     createDispatchNamespace: vi.fn(async () => void calls.push("createDispatchNamespace")),
     listNamespaceScripts: vi.fn(async () => [] as string[]),
@@ -1147,6 +1148,10 @@ describe("cf#99 tenant module bridge", () => {
         `${t.id}-seedance`,
         `${t.id}-speech-upscale`,
         `${t.id}-vidu-q3`,
+        `${t.id}-cf-grok-video`,
+        `${t.id}-cf-seedance`,
+        `${t.id}-cf-flux-3-video`,
+        `${t.id}-cf-hh1-r2v`,
       ].map((n) => n.replace(/_/g, "-")).sort(),
     );
     // The studio upload is the FIRST uploadUserWorker (its namespace is the tenants namespace).
@@ -1231,7 +1236,7 @@ describe("cf#99 tenant module bridge", () => {
       (c) => c[1] as { method: string; path: string; body?: string },
     );
     const installs = studioCalls.filter((c) => c.path === "/api/modules/install");
-    expect(installs).toHaveLength(15);  // cf#56 plan-enhance, cp#284 finish-rife, then the 8 cost-door rows
+    expect(installs).toHaveLength(19);  // + cf-grok/seedance/flux/hh1 cloud i2v
     // Each install carries the tenant-prefixed script name (not the bare module name).
     const scriptNames = installs.map((c) => JSON.parse(c.body!).script_name).sort();
     expect(scriptNames).toEqual(
@@ -1243,6 +1248,7 @@ describe("cf#99 tenant module bridge", () => {
         "speech-upscale", "finish-rife", "plan-enhance",
         "alibaba-wan", "alibaba-wan-lora", "google-veo", "kling",
         "minimax-hailuo", "narration-gen", "seedance", "vidu-q3",
+        "cf-grok-video", "cf-seedance", "cf-flux-3-video", "cf-hh1-r2v",
       ]
         .map((n) => `${t.id}-${n}`.replace(/_/g, "-"))
         .sort(),

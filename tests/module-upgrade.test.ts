@@ -236,7 +236,7 @@ describe("preflight refuses before anything is written", () => {
     expect(pre.context.bundles).toBeInstanceOf(Map);
     // It carries the release the OPERATOR asked for, never the plane-wide deps.release.
     expect(pre.context.release).toBe(NEW_RELEASE);
-    expect(pre.context.bundles.size).toBe(15);   // + the 8 cp#284 cost-door rows
+    expect(pre.context.bundles.size).toBe(19);   // + cf-grok/seedance/flux/hh1
   });
 
   it("fetches every bundle at the REQUESTED release, not the plane-wide pin", async () => {
@@ -251,7 +251,7 @@ describe("preflight refuses before anything is written", () => {
 
     await preflightModuleUpgrade(d, tenant, NEW_RELEASE);
 
-    expect(fetchSpy).toHaveBeenCalledTimes(15);   // + the 8 cp#284 cost-door rows
+    expect(fetchSpy).toHaveBeenCalledTimes(19);   // + cf-grok/seedance/flux/hh1
     // deps.release is OLD_RELEASE; if the explicit release were being dropped this would be it.
     for (const call of fetchSpy.mock.calls as unknown as [string, string][]) {
       expect(call[0]).toBe(NEW_RELEASE);
@@ -275,10 +275,10 @@ describe("upgradeTenantModules", () => {
 
     expect(out.ok).toBe(true);
     // All SIX catalog modules, uploaded and installed again (cf#56 added plan-enhance).
-    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(15);   // + the 8 cp#284 cost-door rows
+    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(19);   // + cf-grok/seedance/flux/hh1
     const installs = (d.callTenantStudio as unknown as { mock: { calls: [string, { path: string }][] } }).mock.calls
       .filter((c) => c[1].path === "/api/modules/install");
-    expect(installs).toHaveLength(15);  // + the 8 cp#284 cost-door rows
+    expect(installs).toHaveLength(19);  // + cf-grok/seedance/flux/hh1
   });
 
   it("uses the PRE-FETCHED bundles; it does not re-fetch during upload", async () => {
@@ -319,6 +319,7 @@ describe("upgradeTenantModules", () => {
         "speech-upscale", "finish-rife", "plan-enhance",
         "alibaba-wan", "alibaba-wan-lora", "google-veo", "kling",
         "minimax-hailuo", "narration-gen", "seedance", "vidu-q3",
+        "cf-grok-video", "cf-seedance", "cf-flux-3-video", "cf-hh1-r2v",
       ],
     });
     const after = (await store.getTenantById(tenant.id)) as Tenant;
