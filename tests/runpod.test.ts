@@ -7,6 +7,7 @@ import {
   PROVISION_PLAN,
   endpointBackedPlan,
   vpcBackedPlan,
+  provisionPlanView,
   NO_TRAINING_CLAUSE,
 
 
@@ -92,6 +93,25 @@ describe("the provisioning plan", () => {
     const backend = PROVISION_PLAN.find((e) => e.key === "backend");
     expect(backend?.label).toBe("Render (keyframes, video)");
     expect(backend?.label).not.toMatch(NO_TRAINING_CLAUSE);
+  });
+
+  it("provisionPlanView is a projection of the same array, not a second list (cp#474)", () => {
+    const view = provisionPlanView();
+    expect(view.map((r) => r.key)).toEqual(PROVISION_PLAN.map((c) => c.key));
+    expect(view.map((r) => r.label)).toEqual(PROVISION_PLAN.map((c) => c.label));
+    expect(view.filter((r) => r.backing === "runpod")).toHaveLength(endpointBackedPlan().length);
+    expect(view.filter((r) => r.backing === "vpc")).toHaveLength(vpcBackedPlan().length);
+    for (const row of view) {
+      if (row.backing === "vpc") {
+        expect(row.max_workers).toBeNull();
+        expect(row.gpu).toBe("our hardware");
+      } else {
+        expect(row.max_workers).toBeGreaterThan(0);
+        expect(row.gpu.length).toBeGreaterThan(0);
+        expect(row.gpu).not.toBe("our hardware");
+      }
+      expect(row.image.startsWith("ghcr.io/")).toBe(true);
+    }
   });
 });
 

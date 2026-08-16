@@ -158,13 +158,8 @@
 
       const meta = document.createElement("span");
       meta.className = "row-meta";
-      const bits = [];
-      if (ep.gpu) bits.push(ep.gpu);
-      if (typeof ep.max_workers === "number") {
-        bits.push("max " + ep.max_workers + (ep.max_workers === 1 ? " worker" : " workers"));
-      }
-      bits.push("scale-to-zero");
-      meta.textContent = bits.join(" -- ");
+      // Own-iron rows are not scale-to-zero and have no worker pin (cp#474).
+      meta.textContent = checks.planRowMeta(ep);
       head.appendChild(meta);
       row.appendChild(head);
 
@@ -786,10 +781,7 @@
   function renderTotal() {
     const el = $("#plan-total");
     if (!el) return;
-    const total = checks.planWorkerTotal(state.plan);
-    let text = "Total: " + total + (total === 1 ? " worker" : " workers") + " at most, across " +
-      state.plan.length + " endpoints, all scale-to-zero.";
-    el.textContent = text;
+    el.textContent = checks.planSummaryCopy(state.plan);
   }
 
   // cp#439: PROJECT THE TIER ONTO BOTH STEPS THAT ASSUMED BYOK.

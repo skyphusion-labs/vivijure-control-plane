@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createPlatformApi, mockResponses } from "../public/onboarding-api.js";
 import { invokeKeyVerdict } from "../public/onboarding-checks.js";
+import { provisionPlanView } from "../src/runpod";
 import { LIVE_KEYS, UNCONFIRMED, expectExactKeys } from "./invoke-key-shapes";
 
 // THE TRANSPORT SEAM, driven for real (control-plane#31).
@@ -76,6 +77,14 @@ describe("transport: every route hits the path and method the control plane serv
     expect(res).toEqual({ tenant_id: "t1", job_id: "j1" });
   });
 
+  it("GET /api/tenant/provision-plan (cp#474: this used to be a phantom)", async () => {
+    const { impl, calls } = recordingFetch(() => json({ endpoints: [] }));
+    const api = createPlatformApi({ fetchImpl: impl });
+    await api.plan();
+    expect(calls[0].url).toBe("/api/tenant/provision-plan");
+    expect(calls[0].init?.method ?? "GET").toBe("GET");
+  });
+
   it("GET the job status under the tenant id, ENCODED", async () => {
     const { impl, calls } = recordingFetch(() => json({ status: "running" }));
     const api = createPlatformApi({ fetchImpl: impl });
@@ -108,6 +117,23 @@ describe("transport: every route hits the path and method the control plane serv
     const { impl } = recordingFetch(() => json({ endpoints: [] }));
     const api = createPlatformApi({ fetchImpl: impl });
     await expect(api.plan()).resolves.toEqual({ endpoints: [] });
+  });
+});
+
+describe("the preview mock matches the real plan projection (cp#474)", () => {
+  it("does not invent a different set of capabilities than the provisioner", () => {
+    // The defect this closes: mock.plan() answered four RunPod endpoints with
+    // invented purposes, so preview walked and production rendered an empty
+    // review. Keys, labels, backing and worker pins must match the projection
+    // the route now serves. Image tags are omitted from the mock on purpose so
+    // a pin bump cannot fail this test.
+    const mockRows = mockResponses.plan().endpoints;
+    const real = provisionPlanView();
+    expect(mockRows.map((e) => e.key)).toEqual(real.map((e) => e.key));
+    expect(mockRows.map((e) => e.label)).toEqual(real.map((e) => e.label));
+    expect(mockRows.map((e) => e.backing)).toEqual(real.map((e) => e.backing));
+    expect(mockRows.map((e) => e.max_workers ?? null)).toEqual(real.map((e) => e.max_workers));
+    expect(mockRows.map((e) => e.gpu)).toEqual(real.map((e) => e.gpu));
   });
 });
 
@@ -165,6 +191,13 @@ describe("transport: invokeKey hands status and body through UNFLATTENED", () =>
     const v = invokeKeyVerdict(res.status, res.body);
     expect(v.pending).toBe(true);
     expect(v.clearKey).toBe(false);
+  });
+
+  it("POSTs an EMPTY body when no key is handed (cp#439 shared-tier go-live)", async () => {
+    const { impl, calls } = recordingFetch(() => json({ status: "live" }, 200));
+    const api = createPlatformApi({ fetchImpl: impl });
+    await api.invokeKey("ten_abc123", "");
+    expect(bodyOf(calls[0].init)).toEqual({});
   });
 
   it("does NOT throw on a 4xx: it is transport-only and decides nothing", async () => {
@@ -371,25 +404,7 @@ describe("no transport calls a route the plane does not serve (cp#467)", () => {
     // Positive control: the extraction must actually find something, or this passes on an empty set.
     expect(servedFixed.length + servedActions.length).toBeGreaterThan(3);
 
-    // ONE KNOWN EXCEPTION, tracked rather than tolerated (cp#474). provision-plan is a
-    // phantom this very test found, and it has a LIVE caller: the review step renders from it,
-    // so it cannot simply be deleted the way capacity and retry were. It needs a decision about
-    // whether the route gets built or the step is rewritten. Listed by name so a SECOND phantom
-    // cannot hide behind it, and so removing this line is part of closing that issue.
-    const KNOWN_PHANTOM = [
-      "/api/tenant/provision-plan", // cp#474, has a live caller and needs a decision
-    ];
-
-    // THE ALLOWLIST CLEANS ITSELF. An entry that is no longer called is an exception granted
-    // to nothing, and a list of those is how a guard quietly stops guarding: the next phantom
-    // to take one of these names would be waved straight through. So a stale entry FAILS, and
-    // removing it is part of closing the issue that put it here.
-    for (const known of KNOWN_PHANTOM) {
-      expect(fixed, known + " is allowlisted but no longer called; delete the entry").toContain(known);
-    }
-
     for (const path of fixed) {
-      if (KNOWN_PHANTOM.includes(path)) continue;
       expect(servedFixed, path + " is called by the client and served by nothing").toContain(path);
     }
     for (const action of scoped) {

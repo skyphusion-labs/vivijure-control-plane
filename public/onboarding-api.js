@@ -72,12 +72,15 @@
     },
     plan() {
       return {
+        // Shape matches provisionPlanView() (cp#474). The mock used to invent four RunPod
+        // endpoints with purposes the plane never served, so preview walked and production
+        // rendered an empty review.
         endpoints: [
-          // cp#303: purpose matches PROVISION_PLAN -- training is not on this endpoint.
-          { key: "backend", label: "backend", purpose: "The main render: keyframes and video", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "H200 / B200" },
-          { key: "upscale", label: "upscale", purpose: "Makes finished video sharper", image: "ghcr.io/skyphusion-labs/vivijure-upscale", max_workers: 1, gpu: "RTX 6000 Pro" },
-          { key: "lipsync", label: "lipsync", purpose: "Matches mouth movement to dialogue", image: "ghcr.io/skyphusion-labs/vivijure-musetalk", max_workers: 1, gpu: "RTX 6000 Pro" },
-          { key: "audio-upscale", label: "audio-upscale", purpose: "Cleans up and sharpens audio", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", max_workers: 1, gpu: "RTX 6000 Pro" },
+          // cp#303: label matches PROVISION_PLAN -- training is not on this endpoint.
+          { key: "backend", label: "Render (keyframes, video)", backing: "runpod", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "NVIDIA H200 / NVIDIA B200" },
+          { key: "upscale", label: "Video upscale", backing: "vpc", image: "ghcr.io/skyphusion-labs/vivijure-upscale", max_workers: null, gpu: "our hardware" },
+          { key: "lipsync", label: "Lip sync", backing: "runpod", image: "ghcr.io/skyphusion-labs/vivijure-musetalk", max_workers: 1, gpu: "NVIDIA RTX 6000 Ada Generation / NVIDIA L40S" },
+          { key: "audio-upscale", label: "Audio upscale", backing: "vpc", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", max_workers: null, gpu: "our hardware" },
         ],
         // A real, named render from our own history (film-2294a9d7, 2026-07-14:
         // 2 shots, 10s of finished video, final quality). wall_clock_ms is
@@ -221,10 +224,10 @@
         return this.json("/api/tenant/slug-available?slug=" + encodeURIComponent(slug));
       },
 
-      // REQUESTED (raised on #52): what will be created, with the pinned
-      // max_workers per endpoint. The review screen cannot honestly say "this
-      // is what we will create on your account" without it, and the numbers
-      // belong to the provisioner (#54), not to the page.
+      // CONTRACT (cp#474). Projection of PROVISION_PLAN, the same array the
+      // provisioner builds from. The review screen cannot honestly say "this
+      // is what we will create" without it, and the numbers belong to the
+      // provisioner, not to the page.
       plan() {
         if (useMock) return Promise.resolve(mock.plan());
         return this.json("/api/tenant/provision-plan");
@@ -260,10 +263,13 @@
       // not yet confirmed); failures carry a diagnostic.
       async invokeKey(tenantId, key) {
         if (useMock) return mock.invokeKey();
+        // Shared-tier go-live is an EMPTY body (cp#439). A posted key is refused
+        // on that tier, so a blank field must not become runpod_invoke_key:"".
+        const payload = key ? { runpod_invoke_key: key } : {};
         const r = await doFetch(apiBase + "/api/tenant/" + encodeURIComponent(tenantId) + "/invoke-key", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ runpod_invoke_key: key }),
+          body: JSON.stringify(payload),
         });
         const body = await r.json().catch(function () { return {}; });
         return { status: r.status, body: body };

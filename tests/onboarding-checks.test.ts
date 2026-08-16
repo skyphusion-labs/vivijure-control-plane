@@ -13,6 +13,8 @@ import {
   formatUsd,
   keyShapeHint,
   planWorkerTotal,
+  planRowMeta,
+  planSummaryCopy,
   aupAcceptFailureCopy,
   aupPinningRefusalCopy,
   aupUrlPinning,
@@ -101,6 +103,52 @@ describe("planWorkerTotal", () => {
       { key: "c", label: "c", purpose: "", image: "", max_workers: 2 },
     ] as PlannedEndpoint[];
     expect(planWorkerTotal(junk)).toBe(2);
+  });
+});
+
+describe("planRowMeta / planSummaryCopy (cp#474)", () => {
+  it("does not say scale-to-zero about own-iron", () => {
+    expect(planRowMeta({ key: "upscale", label: "Video upscale", backing: "vpc", gpu: "our hardware" }))
+      .toBe("our hardware");
+    expect(planRowMeta({ key: "upscale", label: "Video upscale", backing: "vpc" }))
+      .toBe("our hardware");
+    expect(planRowMeta({ key: "upscale", label: "Video upscale", backing: "vpc", gpu: "our hardware" }))
+      .not.toMatch(/scale-to-zero/);
+  });
+
+  it("keeps the worker pin and scale-to-zero on a pooled row", () => {
+    const line = planRowMeta({
+      key: "backend",
+      label: "Render",
+      backing: "runpod",
+      max_workers: 2,
+      gpu: "NVIDIA H200 / NVIDIA B200",
+    });
+    expect(line).toContain("NVIDIA H200 / NVIDIA B200");
+    expect(line).toContain("max 2 workers");
+    expect(line).toContain("scale-to-zero");
+  });
+
+  it("treats a missing backing as pooled, so an older payload still has a meta line", () => {
+    expect(planRowMeta({ key: "backend", label: "Render", max_workers: 2 })).toContain("scale-to-zero");
+  });
+
+  it("summarises a mixed plan without calling own-iron scale-to-zero", () => {
+    const copy = planSummaryCopy([
+      { key: "backend", label: "Render", backing: "runpod", max_workers: 2 },
+      { key: "upscale", label: "Video upscale", backing: "vpc" },
+      { key: "lipsync", label: "Lip sync", backing: "runpod", max_workers: 1 },
+      { key: "audio-upscale", label: "Audio upscale", backing: "vpc" },
+    ]);
+    expect(copy).toMatch(/3 workers/);
+    expect(copy).toMatch(/shared GPU pool/);
+    expect(copy).toMatch(/2 capabilities on our own hardware/);
+    expect(copy).not.toMatch(/across 4 endpoints, all scale-to-zero/);
+  });
+
+  it("is empty on an empty plan rather than inventing a total", () => {
+    expect(planSummaryCopy([])).toBe("");
+    expect(planSummaryCopy(null)).toBe("");
   });
 });
 

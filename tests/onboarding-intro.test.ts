@@ -67,15 +67,20 @@ describe("intro: there is a representative example to render with no fetch", () 
   });
 
   it("every representative row has the fields the plan renderer reads, so no row is blank", () => {
-    // renderPlan reads label/key, gpu, max_workers, purpose. A row missing these
-    // would render empty -- the same "looks broken" outcome by another route.
+    // renderPlan reads label/key, gpu, purpose, and (via planRowMeta) backing.
+    // Own-iron rows have no worker pin; requiring max_workers of every row
+    // would force a lie the moment the intro matched the real plan (cp#474).
     REPRESENTATIVE_PLAN.endpoints.forEach((ep) => {
       expect(typeof (ep.label || ep.key)).toBe("string");
       expect((ep.label || ep.key).length).toBeGreaterThan(0);
       expect(typeof ep.purpose).toBe("string");
-      expect(ep.purpose.length).toBeGreaterThan(0);
-      expect(typeof ep.max_workers).toBe("number");
+      expect(String(ep.purpose).length).toBeGreaterThan(0);
       expect(typeof ep.gpu).toBe("string");
+      if (ep.backing === "vpc") {
+        expect(ep.max_workers == null).toBe(true);
+      } else {
+        expect(typeof ep.max_workers).toBe("number");
+      }
     });
   });
 
@@ -149,6 +154,12 @@ describe("intro: the placeholders are not spinners", () => {
 
   it("the intro labels the example as representative", () => {
     expect(html).toContain("representative example");
+  });
+
+  it("the review step no longer claims the plan is the owner's RunPod account (cp#474)", () => {
+    expect(html).not.toMatch(/create on your RunPod account/i);
+    expect(html).not.toMatch(/Create these endpoints on my RunPod account/i);
+    expect(html).toMatch(/Build my studio with this plan/i);
   });
 
   it("CONTROL: the loading-text scan can fail", () => {
