@@ -43,8 +43,8 @@ describe("formatting", () => {
 
 describe("whether the panel renders at all", () => {
   it("renders NOTHING when credits do not apply to this studio", () => {
-    // The BYOK case, and the whole reason the flag exists: their balance is legitimately zero
-    // forever, and showing it would invent a billing relationship they never entered into.
+    // A studio we do not bill, and the whole reason the flag exists: their balance is legitimately
+    // zero forever, and showing it would invent a billing relationship they never entered into.
     expect(panelState({ credits_apply: false, complete: true }).show).toBe(false);
   });
 

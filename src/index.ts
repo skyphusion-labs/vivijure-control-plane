@@ -1113,7 +1113,7 @@ async function driveJobIfNeeded(
   if (job.status === "succeeded" || job.status === "failed") return null;
   if (!deps.provisioner) return null;
   // KIND GUARD. This driver resumes a PROVISION and nothing else: deps.provisioner.resume runs
-  // continueProvisionJob, whose success path writes setTenantStatus("awaiting_invoke_key"). Pointed
+  // continueProvisionJob, whose success path writes setTenantStatus("awaiting_go_live"). Pointed
   // at a module_upgrade job that is exactly the outage upgradeTenantModules refuses to cause -- a
   // LIVE, paying tenant flipped to a non-routable status (503 from routingStatusFor) on the path
   // where the upgrade SUCCEEDS, plus a second driver PUTting module bytes concurrently with the
@@ -1647,7 +1647,7 @@ async function provision(
  * What makes that safe is STRUCTURAL, not a check this function performs, and it is worth stating
  * exactly because a future reader will otherwise reasonably assume a guard is missing:
  *
- *   - The provisioning job's success paths end at `awaiting_invoke_key` (provisioner.ts) and never
+ *   - The provisioning job's success paths end at `awaiting_go_live` (provisioner.ts) and never
  *     write `live`.
  *   - `setTenantStatus(..., "live")` occurs at exactly ONE site in this tree: performInvokeKeyInstall
  *     below. (Measured: 1 of 15 setTenantStatus call sites across src/.)
@@ -1714,8 +1714,7 @@ async function operatorProvision(
     return err("runpod_key_not_accepted", 400, {
       message:
         "an operator-provisioned studio always lands on our shared render capacity and never " +
-        "receives a RunPod key. A tenant who wants their own RunPod account provisions it " +
-        "themselves once they can sign in; that is what BYO means. Nothing was created.",
+        "receives a RunPod key. Hosted tenants do not bring a RunPod account. Nothing was created.",
     });
   }
 
@@ -1855,26 +1854,22 @@ async function installInvokeKey(
   tenant: Tenant,
 ): Promise<Response> {
   const body = (await readJson(request)) as { runpod_invoke_key?: string } | null;
-  const pasted = String(body?.runpod_invoke_key ?? "");
 
-  // cp#270: a SHARED tenant has no RunPod account and therefore no key to paste. The PLANE
-  // supplies its pool key and the install runs otherwise UNCHANGED -- same verification, same
-  // readiness probe, same promotion. That is not a shortcut: the pool key genuinely is a
-  // Restricted, invoke-only key scoped to exactly the endpoints on this tenant's row, so
-  // verifyInvokeKeyScope is a real positive control here rather than a formality it would be
-  // tempting to skip. Skipping it would remove the graphql-capable refusal from the one tier
-  // whose key is ours, which is the tier where a mistake is widest.
+  // Same presence refusal as operator provision vs runpod_api_key. Hosted go-live
+  // never accepts a tenant RunPod key, empty or not. Session go-live installs the
+  // plane shared pool key only.
+  if (body != null && Object.prototype.hasOwnProperty.call(body, "runpod_invoke_key")) {
+    return err("invoke_key_not_accepted", 400, {
+      message:
+        "this studio runs on our shared render capacity. A RunPod key is not accepted. " +
+        "Nothing was stored.",
+    });
+  }
+
+  // cp#270: a SHARED tenant has no RunPod account. The PLANE supplies its pool
+  // key and the install runs otherwise UNCHANGED -- same verification, same
+  // readiness probe, same promotion.
   if (readRunPodMode(tenant.runpod_mode) === "shared") {
-    // REFUSED, not ignored. Silently discarding a pasted key would leave the customer believing
-    // their credential is in use, and a tenant who has one to paste is a tenant who has
-    // misunderstood which tier they are on -- worth saying so.
-    if (pasted) {
-      return err("invoke_key_not_accepted", 400, {
-        message:
-          "this studio runs on our shared render capacity, so there is no key for you to " +
-          "provide. Nothing was stored.",
-      });
-    }
     if (!deps.provisioner) return err("provisioner_unconfigured", 503);
     const poolKey = deps.provisioner.sharedPoolInvokeKey();
     if (!poolKey) {
@@ -2041,10 +2036,9 @@ async function performInvokeKeyInstall(
           repaste_needed: false,
         },
         message:
-          "your key is installed and stored. Your render modules have not finished picking it up yet " +
+          "the shared render key is installed. Your render modules have not finished picking it up yet " +
           `(checked ${readiness.attempts} times over ${readiness.elapsedMs}ms). This usually clears in ` +
-          "under a minute: retry this request to finish going live. Do not re-paste your key; nothing " +
-          "is wrong with it.",
+          "under a minute: retry this request to finish going live. There is no key for you to send.",
       },
       202,
       ),

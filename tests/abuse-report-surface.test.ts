@@ -62,16 +62,18 @@ describe("the report-abuse page exists and carries what a reporter needs", () =>
 
   it("says plainly what we CANNOT reach, so a report is not wasted on us", () => {
     expect(page).toMatch(/own hardware/i);
-    expect(page).toMatch(/RunPod/);
+    expect(page).toMatch(/We cannot switch off a copy/i);
   });
 
   it("collects nothing: no form, no script, no third-party call", () => {
     // A reporter should not have to run our JavaScript or be counted to tell us something is wrong.
     expect(page).not.toMatch(/<script/i);
     expect(page).not.toMatch(/<form/i);
-    // Only our own stylesheet and the NCMEC/INHOPE hotlines are reachable from here.
-    const externalHrefs = [...page.matchAll(/href="(https?:\/\/[^"]+)"/g)].map((m) => m[1]);
-    expect(externalHrefs.sort()).toEqual(["https://report.cybertip.org", "https://www.inhope.org"]);
+    // Hotlines stay. The OSS footer is our own repo, not a third-party tracker.
+    const externalHrefs = [...page.matchAll(/href="(https?:\/\/[^"]+)"/g)].map((m) => m[1]).sort();
+    expect(externalHrefs).toContain("https://report.cybertip.org");
+    expect(externalHrefs).toContain("https://www.inhope.org");
+    expect(externalHrefs.filter((h) => !h.startsWith("https://github.com/skyphusion-labs/") && !h.startsWith("https://report.cybertip.org") && !h.startsWith("https://www.inhope.org"))).toEqual([]);
   });
 });
 

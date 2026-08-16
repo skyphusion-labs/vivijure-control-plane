@@ -44,39 +44,26 @@ credential-shaped column that is not a `*_hash`.
 
 ## Key custody (the whole security story)
 
-Two keys, and the split is the point:
-
-| | Key A: provisioning | Key B: stored |
-|---|---|---|
-| Shape | Restricted, `api.runpod.io/graphql` = Read/Write, invoke = None | Restricted, invoke scoped to the tenant's 4 endpoints |
-| Lifetime | **Transient.** Used once, never stored anywhere | Stored as a secret on the tenant's own studio |
-| Blast radius | The whole RunPod account (RunPod's own stated risk) | Invoke those 4 endpoints, 403 elsewhere |
-
-**Onboarding is two-phase, and it has to be.** RunPod API keys are console-minted only (no API
-creates them), and a key cannot be scoped to endpoints that do not exist yet. So key B is
-physically impossible to create until key A has already provisioned the endpoints:
+Hosted tenants never paste a RunPod key. They ride the shared pool. The plane holds
+`SHARED_RUNPOD_INVOKE_KEY` and the tenant modules call the plane proxy, not RunPod.
 
 ```
-paste key A -> provision the 4 endpoints -> status awaiting_invoke_key
-            -> tenant mints key B in the RunPod console, scoped to those 4
-            -> paste key B -> verified, installed as a studio secret -> live
+sign up -> accept AUP -> name the studio -> build (shared pool) -> awaiting_go_live
+        -> empty POST /go-live installs OUR pool key -> live
 ```
 
-Key B is **verified before it is ever stored** (`runpod-invoke-key.ts`): if it can reach GraphQL it
-is a provisioning-capable key and is refused outright, because storing it would throw away the
-entire custody win. The tenant is told exactly why. The probe semantics are the empirically
-resolved #60 matrix, not documentation.
+A body that names `runpod_invoke_key` is refused (`invoke_key_not_accepted`), the same way
+operator provision refuses `runpod_api_key`. The install still runs `verifyInvokeKeyScope` on
+the plane's own restricted invoke key.
 
-A consequence worth stating plainly: because key A is never stored, a provision job that fails **in
-the RunPod steps** cannot resume itself. `/retry` answers `409 runpod_key_required` and the tenant
-re-pastes. CF-side steps (D1, R2, WfP upload) resume with no key at all. That is the honest cost of
-never holding the powerful key.
+The two-key tenant-paste dance (key A then key B) is gone. `awaiting_invoke_key` is a dead
+read alias for `awaiting_go_live`; writes never produce it.
 
 ## The AUP gate
 
 Versioned, blocking, logged, and in front of provisioning from day one, so no tenant studio can
 exist without a recorded acceptance by a known account. The CSAM bright line is absolute; the GPUs
-are the tenant's, the surface is ours.
+are ours, the surface is ours.
 
 The gate is a **lookup for the current version**, never a boolean on the account. Bumping
 `AUP_VERSION` re-gates everyone on their next request, by construction, with no migration and no
@@ -1784,6 +1771,10 @@ not an error and not a rollback: the data is untouched and only the next submit 
 lowering a ceiling under a heavy tenant should see it in the answer rather than in a support ticket.
 
 ## Finishing a repair: the owner-completed invoke-key handoff (cp#169)
+
+**SUPERSEDED for hosted.** The handoff page and tenant-paste path are gone. A shared-tier
+repair ends at `awaiting_go_live` and the owner clicks go live (empty POST; the plane installs
+the pool key). The historical notes below describe the BYOK repair that no longer ships.
 
 `POST /api/admin/tenants/:id/reprovision-runpod` (cp#137) rebuilds a live tenant's four RunPod
 endpoints. New endpoints get new ids, so the tenant's stored key B is scoped to ids that no longer

@@ -96,15 +96,8 @@ accepted it" and never dressed up as a check this page performed.
   script runs, records every value ever PASSED to them, and asserts no key value appears in that
   history -- plus a CONTROL that the shim records, or the negative proves nothing. Current result:
   the flow performs ZERO storage writes of any kind.
-- **Neither key is ever stored by this page.** Both live in closure variables, never in
-  localStorage/sessionStorage, never in a URL, never logged. Key A is cleared the moment the
-  endpoints exist (before key B is asked for, so the page never holds both); key B is cleared on a
-  failed verdict and at go-live. Live-verified, not just asserted.
-- **Two-phase custody is not optional** (#52 ruling). RunPod keys are console-minted only and
-  per-endpoint scoping can only name endpoints that already exist, so the second mint is forced.
-  Account-wide invoke as a shortcut was REJECTED for launch: do not add an option branch for it.
-- **Key B is verified before it is kept.** A full key passes every health check, so "it works" is a
-  useless test; the refusal hangs on graphql being DENIED. Never relax that to a truthy check.
+- **No tenant RunPod key is ever on this page.** Go-live is an empty POST. Do not add a key field.
+- **The plane installs the shared pool key.** A posted `runpod_invoke_key` is refused.
 - **Mock mode is an explicit opt-in** (`?mock=1`), never a fallback. A page that
   cannot reach its API must look broken, loudly. It must never quietly show a
   stranger invented quota numbers, invented costs, and a fake "your studio is

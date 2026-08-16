@@ -1746,28 +1746,30 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(JSON.stringify([...store.tenants.values()])).not.toContain(POOL_KEY);
   });
 
-  it("accepts the EXACT shape the wizard sends: an explicit empty runpod_invoke_key", async () => {
-    // THE TESTED SHAPE AND THE SHIPPED SHAPE WERE DIFFERENT, and the gap was invisible from both
-    // sides. The sibling above drives {}, and Conrad devtools workaround sends no body at all, so
-    // three shapes existed and only one was pinned. What the browser actually puts on the wire is
-    // this one: PlatformApi.invokeKey always serialises the field, so a pooled go-live is
-    // {"runpod_invoke_key":""} rather than an absent key. Measured at the harness, not assumed.
-    //
-    // It works only because the route coerces String(x ?? "") and branches on TRUTHINESS. Switch
-    // that to an in-test or a presence check and the UI breaks with every other test still green,
-    // which is precisely the failure this pins.
+  it("REFUSES a body that names runpod_invoke_key, even when the value is empty", async () => {
+    // Presence, not truthiness: the same rule as provision vs runpod_api_key.
     const { cookie } = await sharedTenantReady();
     wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
     const res = await handle(
       jsonReq("/api/tenant/ten_abc123/invoke-key", { runpod_invoke_key: "" }, { headers: { cookie } }),
       env(), ctx, deps,
     );
-    expect(res.status, "an explicit empty key is the wizard go-live request, not a pasted key").toBe(200);
-    expect(await res.json()).toMatchObject({ status: "live" });
-    // Same outcome as the {} shape: the PLANE key is installed, never the caller empty string.
-    const [, key] = wiring.installInvokeKey.mock.calls[0] as [{ id: string }, string];
-    expect(key).toBe(POOL_KEY);
-    expect(store.tenants.get("ten_abc123")?.status).toBe("live");
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invoke_key_not_accepted" });
+    expect(wiring.installInvokeKey).not.toHaveBeenCalled();
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_go_live");
+  });
+
+  it("go-live alias REFUSES a pasted key the same way", async () => {
+    const { cookie } = await sharedTenantReady();
+    wiring.sharedPoolInvokeKey = vi.fn(() => POOL_KEY);
+    const res = await handle(
+      jsonReq("/api/tenant/ten_abc123/go-live", { runpod_invoke_key: "rpa_customer" }, { headers: { cookie } }),
+      env(), ctx, deps,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invoke_key_not_accepted" });
+    expect(wiring.installInvokeKey).not.toHaveBeenCalled();
   });
 
   it("REFUSES with shared_pool_unconfigured when this deploy has no pool key", async () => {

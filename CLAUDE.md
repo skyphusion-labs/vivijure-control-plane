@@ -21,7 +21,7 @@ Version: see root `package.json` / latest `v*` tag / `CHANGELOG.md`.
 | `vivijure-cf` | Studio panel Worker (the bytes tenants run) |
 | `vivijure-core` | Shared orchestration / module contract (studio dep, not this plane) |
 | `vivijure-local` | Self-host Node panel (parity peer of cf) |
-| `vivijure-backend` + finish/train satellites | GPU render path tenants wire via their own RunPod |
+| `vivijure-backend` + finish/train satellites | GPU render path; hosted tenants reach it through the plane proxy + shared pool |
 | `vivijure-mcp` | Agent MCP door against a studio `STUDIO_URL` |
 | Hub `vivijure` | Docs / legal history only; not deployable studio |
 
@@ -41,7 +41,7 @@ Version: see root `package.json` / latest `v*` tag / `CHANGELOG.md`.
 - `docs/control-plane.md` -- what the plane owns, provision model, pins
 - `docs/deploy.md` + `docs/deploy-runbook.md` + `docs/deploy-config-injection.md` -- tag deploy path
 - `docs/hosted-tier.md` + `docs/hosted-routing.md` -- hosted product surface
-- `docs/managed-compute.md` -- BYOK / compute doors
+- `docs/managed-compute.md` -- prepaid credits design (BYOK path purged; shared pool is the product)
 - `docs/operator-access.md` + `docs/payment-rail.md` + `docs/cost-basis.md`
 - `docs/tenant-telemetry.md` + `docs/legal/`
 - README -- orientation for operators and competitors running their own plane

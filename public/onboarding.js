@@ -12,11 +12,8 @@
 // place that changes -- the screens read from the returned data, never from
 // hardcoded knowledge of what a plan contains.
 //
-// SECRET HYGIENE (hard rule): the pasted RunPod key lives in ONE closure
-// variable. It is never written to localStorage/sessionStorage, never put in a
-// URL, never logged, and never sent anywhere but the control plane over POST.
-// It is cleared the moment provisioning finishes. The input is type=password and
-// the reveal toggle is opt-in.
+// There is no tenant RunPod key on this page. Go-live is an empty POST that
+// attaches the plane shared pool. Do not add a key field.
 (function () {
   "use strict";
 
@@ -42,13 +39,6 @@
   const params = new URLSearchParams(window.location.search);
   const USE_MOCK =
     params.get("mock") === "1" || document.documentElement.dataset.mock === "1";
-
-  // ---- the keys, and nowhere else ---------------------------------------
-  // Shared go-live is an empty POST. There is no tenant RunPod key. The
-  // leftover names below are the old BYOK paste path and they stay empty.
-  // keeps either one: both live in a closure and go nowhere else.
-  let invokeKey = "";   // key B: invoke-only on the 4 created endpoints
-  function clearInvokeKey() { invokeKey = ""; }
 
   const state = {
     rulesAccepted: false,
@@ -199,8 +189,8 @@
       "A real render from our own history (" + ex.description + ", " + ex.rendered_on +
       "): " + minutes + " minutes, start to finish. At the " + ex.gpu_label + " rate of $" +
       ex.gpu_hourly_usd + "/hr, that costs you at most " + money +
-      ". Probably less: that clock includes queue and model-load time, and RunPod bills you for " +
-      "active GPU seconds. Your studio shows your real spend after the first render.";
+      ". Probably less: that clock includes queue and model-load time, and we are billed for " +
+      "active GPU seconds. Your studio shows the real figure after the first render.";
   }
 
   // The intro renders a REPRESENTATIVE example immediately, with NO network
@@ -522,10 +512,6 @@
   }
 
   function finishAndShowDone() {
-    // Both keys stop existing here. Key A was already dropped when the
-    // endpoints appeared; key B lives on the tenant's own studio now, not in
-    // this page.
-    clearInvokeKey();
     const link = $("#studio-link");
     if (link && state.studioUrl) {
       link.href = state.studioUrl;
@@ -594,17 +580,16 @@
     }
   }
 
-  // Key B: install it LIVE, then report what the control plane actually did.
-  // Keep it unless the KEY itself was refused -- see invokeKeyVerdict.
-  async function runInvokeKeyCheck() {
+  // Attach the shared pool and, on live, walk to done. One button, no key.
+  async function runGoLive() {
     const verdictEl = $("#invoke-verdict");
-    if (verdictEl) verdictEl.innerHTML = '<p class="small muted">Checking that key against your endpoints...</p>';
+    if (verdictEl) verdictEl.innerHTML = '<p class="small muted">Attaching the shared pool...</p>';
     state.invokeVerified = false;
     refreshGates();
 
     let verdict;
     try {
-      const res = await PlatformApi.invokeKey(state.tenantId, invokeKey);
+      const res = await PlatformApi.invokeKey(state.tenantId);
       // ONE call, one pure decision. Every branch that used to live here (204
       // installed, 501 not_implemented, res.probe, res.studio_url) was written
       // against shapes no route serves; they are gone rather than left as a
@@ -649,6 +634,13 @@
       verdictEl.appendChild(callout);
     }
     refreshGates();
+    if (verdict.live === true) {
+      try {
+        const me = await PlatformApi.me();
+        if (me && me.tenant && me.tenant.url) state.studioUrl = me.tenant.url;
+      } catch (err) { /* fall back to the derived address */ }
+      finishAndShowDone();
+    }
   }
 
   const TONE_CLASS = { good: "", warn: " callout-warn", pending: " callout-warn", bad: " callout-bad" };
@@ -698,11 +690,7 @@
     const goLive = $("#go-live");
     if (goLive) {
       goLive.addEventListener("click", function () {
-        // THE EMPTY-BODIED POST, which is the request that actually works for a pooled tenant.
-        // The plane reads runpod_invoke_key, sees nothing, fetches its OWN pool key and promotes
-        // the studio. Sending a key here is the one thing it refuses.
-        invokeKey = "";
-        runInvokeKeyCheck();
+        runGoLive();
       });
     }
     document.querySelectorAll("[data-next]").forEach(function (btn) {
@@ -735,17 +723,6 @@
             return;
           }
           hideAupError();
-        }
-
-        if (from === "go-live") {
-          // The tenant only becomes live once the key is installed, so re-read
-          // /api/me rather than assuming the URL we derived earlier is serving.
-          try {
-            const me = await PlatformApi.me();
-            if (me && me.tenant && me.tenant.url) state.studioUrl = me.tenant.url;
-          } catch (err) { /* fall back to the derived address */ }
-          finishAndShowDone();
-          return;
         }
 
         // Leaving the intro is where the flow truly begins, so this is where the

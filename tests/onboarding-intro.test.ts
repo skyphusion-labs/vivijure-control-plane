@@ -324,13 +324,15 @@ describe("the BYOK surface is GONE from the wizard (cp#427)", () => {
     expect(page).toContain("id=\"no-shared-capacity\"");
   });
 
-  it("clears the key BEFORE submitting, so the go-live POST carries none", () => {
+  it("one go-live button, empty POST, no tenant key on the wire", () => {
+    expect(page).toContain("id=\"go-live\"");
+    expect(page).not.toContain("data-next=\"go-live\"");
+    expect(js).toContain("function runGoLive()");
+    expect(js).not.toContain("let invokeKey");
+    expect(js).not.toContain("runpod_invoke_key");
     const start = js.indexOf("#go-live");
-    const body = js.slice(start, start + 700);
-    const cleared = body.indexOf("invokeKey = \"\"");
-    const submitted = body.indexOf("runInvokeKeyCheck()");
-    expect(cleared).toBeGreaterThan(-1);
-    expect(cleared).toBeLessThan(submitted);
+    const body = js.slice(start, start + 400);
+    expect(body).toContain("runGoLive()");
   });
 
   it("projects the plane capability and the tenant tier from the payloads", () => {

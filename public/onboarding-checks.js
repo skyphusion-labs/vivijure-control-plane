@@ -696,7 +696,7 @@
         pending: false,
         keyStored: true,
         clearKey: false,
-        message: "Your studio is live: your key checks out and every render module is ready.",
+        message: "Your studio is live. Every render module is ready.",
         notes: [],
         failures: [],
       };
@@ -715,7 +715,7 @@
         pending: true,
         keyStored: true,
         clearKey: false,
-        message: b.message || "Your key is installed and stored, but your studio is not live yet.",
+        message: b.message || "The shared render key is installed, but your studio is not live yet.",
         notes: [],
         failures: [],
       };

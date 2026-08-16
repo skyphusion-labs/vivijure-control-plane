@@ -66,9 +66,9 @@ export interface TenantView {
   /**
    * cp#439. Which render tier this tenant is on, or null while that is not yet decided.
    *
-   * The two tiers need different screens. A SHARED tenant has no RunPod account and no key to
-   * paste: its invoke-key install succeeds only on an EMPTY-bodied POST, and a posted key is
-   * refused with invoke_key_not_accepted. A DEDICATED tenant must paste one.
+   * Hosted go-live is an empty POST that installs the plane shared pool key.
+   * A body carrying runpod_invoke_key is refused. A dedicated row is a legacy
+   * leftover and cannot be completed on this plane.
    *
    * NULL means the tier is not settled yet, NOT dedicated. Treating null as dedicated is exactly
    * the bug cp#439 fixes. Optional here because an older plane does not send the field at all, so
@@ -155,7 +155,7 @@ export interface PlatformApi {
   plan(): Promise<ProvisionPlan>;
   provision(slug: string): Promise<ProvisionStarted>;
   job(tenantId: string): Promise<JobStatus>;
-  invokeKey(tenantId: string, key: string): Promise<InvokeKeyTransportResult>;
+  invokeKey(tenantId: string): Promise<InvokeKeyTransportResult>;
 }
 
 export function createPlatformApi(opts?: PlatformApiOptions): PlatformApi;
