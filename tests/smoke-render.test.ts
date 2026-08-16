@@ -379,10 +379,10 @@ describe("POST /api/admin/tenants/:id/smoke-render", () => {
   });
 
   it("409s a tenant that is not live, naming the status", async () => {
-    Object.assign(tenant, { status: "awaiting_invoke_key" });
+    Object.assign(tenant, { status: "awaiting_go_live" });
     const res = await handle(adminReq(`/api/admin/tenants/${TENANT_ID}/smoke-render`, "POST"), env(), ctx, deps);
     expect(res.status).toBe(409);
-    expect(await res.json()).toMatchObject({ error: "tenant_not_live", status: "awaiting_invoke_key" });
+    expect(await res.json()).toMatchObject({ error: "tenant_not_live", status: "awaiting_go_live" });
     expect(studio.calls.bundle).toBe(0);
   });
 

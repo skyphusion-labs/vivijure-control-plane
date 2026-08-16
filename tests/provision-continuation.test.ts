@@ -272,7 +272,7 @@ describe("runProvisionJob budget yielding", () => {
 
     const res = await runProvisionJob(deps(store), job.id, t, fakeClock(0), 15_000);
 
-    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(res).toEqual({ ok: true, status: "awaiting_go_live" });
     expect(store.jobs.get("job_1")!.status).toBe("succeeded");
     expect(JSON.parse(store.jobs.get("job_1")!.steps_done)).toEqual([...PROVISION_STEPS]);
   });
@@ -375,9 +375,9 @@ describe("continueProvisionJob", () => {
 
     const res = await continueProvisionJob(deps(store), job.id, t, stepsDone, fakeClock(0), 15_000);
 
-    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(res).toEqual({ ok: true, status: "awaiting_go_live" });
     expect(store.jobs.get("job_1")!.status).toBe("succeeded");
-    expect(store.tenants.get(t.id)!.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get(t.id)!.status).toBe("awaiting_go_live");
   });
 
   it("does NOT redo steps already recorded", async () => {
@@ -414,7 +414,7 @@ describe("continueProvisionJob", () => {
 
     const res = await continueProvisionJob(d, job.id, t, stepsDone, fakeClock(0), 15_000);
 
-    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(res).toEqual({ ok: true, status: "awaiting_go_live" });
     // EVERY module bundle fetch must ask for the tenant's release. Asserting on the calls rather
     // than on a count, because "it fetched something" is not the claim.
     const fetches = (d as unknown as { moduleBundle: { fetch: ReturnType<typeof vi.fn> } }).moduleBundle.fetch.mock.calls;
@@ -485,7 +485,7 @@ describe("continueProvisionJob", () => {
     // It must SUCCEED. The defect was never a failure -- asserting ok:false here would pass on a
     // provision broken for any unrelated reason, which is how six assertions went decorative on
     // cp#301. The claim is about WHICH RELEASE, so every assertion below names one.
-    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(res).toEqual({ ok: true, status: "awaiting_go_live" });
 
     const moduleFetches = (d as unknown as { moduleBundle: { fetch: ReturnType<typeof vi.fn> } })
       .moduleBundle.fetch.mock.calls;
@@ -646,7 +646,7 @@ describe("continueProvisionJob", () => {
     // "everything refuses", which any broken preamble would also satisfy.
     it("E6 (through wfp_upload) still RESUMES TO COMPLETION -- the control", async () => {
       const { res, store } = await resume(E.E6, "shared");
-      expect(res).toMatchObject({ ok: true, status: "awaiting_invoke_key" });
+      expect(res).toMatchObject({ ok: true, status: "awaiting_go_live" });
       expect(store.jobs.get("job_1")!.status).toBe("succeeded");
     });
 
@@ -831,7 +831,7 @@ describe("continueProvisionJob", () => {
     for (const id of ["E0", "E1", "E2", "E3", "E4", "E5"]) {
       it(`${id} (shared) RESUMES, re-mints the bucket credential, and REBINDS the worker with it`, async () => {
         const { res, mint, upload } = await drive(E[id]);
-        expect(res).toMatchObject({ ok: true, status: "awaiting_invoke_key" });
+        expect(res).toMatchObject({ ok: true, status: "awaiting_go_live" });
         // The value is never stored, so a resume that did not re-mint has nothing to bind.
         expect(mint, "the bucket credential must be re-minted on every resume").toHaveBeenCalled();
         // sha256("SECRET"), the fake minter's value. The worker must carry THIS, not an empty
@@ -963,9 +963,9 @@ describe("the runpod_endpoints -> wfp_upload yield strand (cp#18)", () => {
 
     // GREEN only when the first invocation reached wfp_upload; on today code the poll REFUSES (no
     // key A) and the job is stranded failed with 4 endpoints live.
-    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(res).toEqual({ ok: true, status: "awaiting_go_live" });
     expect(store.jobs.get("job_1")!.status).toBe("succeeded");
-    expect(store.tenants.get(t.id)!.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get(t.id)!.status).toBe("awaiting_go_live");
   });
 });
 
@@ -996,7 +996,7 @@ describe("cp#248e: provision RECORDS the module release", () => {
 
     const res = await runProvisionJob(deps(store), job.id, t, fakeClock(0), 15_000);
 
-    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(res).toEqual({ ok: true, status: "awaiting_go_live" });
     expect(store.tenants.get(t.id)!.modules_release).toBe("v1.0.0");
   });
 
@@ -1011,7 +1011,7 @@ describe("cp#248e: provision RECORDS the module release", () => {
 
     const res = await continueProvisionJob(deps(store), job.id, t, stepsDone, fakeClock(0), 15_000);
 
-    expect(res).toEqual({ ok: true, status: "awaiting_invoke_key" });
+    expect(res).toEqual({ ok: true, status: "awaiting_go_live" });
     expect(store.tenants.get(t.id)!.modules_release).toBe("v1.0.0");
   });
 
@@ -1382,7 +1382,7 @@ describe("cp#148: the lease means A DRIVER IS ALIVE, not A STEP BOUNDARY HAPPENE
       expect(await store.claimJob(job.id, 60)).toBe(false);
 
       release();
-      expect(await run).toEqual({ ok: true, status: "awaiting_invoke_key" });
+      expect(await run).toEqual({ ok: true, status: "awaiting_go_live" });
     } finally {
       vi.useRealTimers();
     }

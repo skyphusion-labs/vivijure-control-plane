@@ -37,21 +37,21 @@ describe("routingStatusFor", () => {
   });
 
   it("makes every non-routable lifecycle 'unknown' (fail closed)", () => {
-    const unroutable: TenantLifecycle[] = ["pending", "awaiting_invoke_key", "failed", "deleting", "deleted"];
+    const unroutable: TenantLifecycle[] = ["pending", "awaiting_go_live", "failed", "deleting", "deleted"];
     for (const status of unroutable) {
       expect(routingStatusFor(t({ status })), status).toBe("unknown");
     }
   });
 
-  it("keeps awaiting_invoke_key DARK even though its worker exists", () => {
+  it("keeps awaiting_go_live DARK even though its worker exists", () => {
     // The worker is uploaded and would serve, but it cannot render without key B, and key B is
     // pasted on the control-plane front door, not here. Serving a studio that cannot render is not
     // honest, so it stays dark until it is genuinely live.
-    expect(routingStatusFor(t({ status: "awaiting_invoke_key", script_name: "tenant-hero-studio" }))).toBe("unknown");
+    expect(routingStatusFor(t({ status: "awaiting_go_live", script_name: "tenant-hero-studio" }))).toBe("unknown");
   });
 
   it("SUSPENSION BEATS EVERYTHING, whatever the lifecycle says", () => {
-    const every: TenantLifecycle[] = ["pending", "provisioning", "awaiting_invoke_key", "live", "failed", "deleting", "deleted"];
+    const every: TenantLifecycle[] = ["pending", "provisioning", "awaiting_go_live", "live", "failed", "deleting", "deleted"];
     for (const status of every) {
       expect(routingStatusFor(t({ status, suspended_at: "now" })), status).toBe("suspended");
     }

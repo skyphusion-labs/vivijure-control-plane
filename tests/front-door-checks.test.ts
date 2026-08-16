@@ -98,7 +98,8 @@ describe("shellRoute", () => {
 
   it("routes each tenant status to its own screen", () => {
     const cases: Array<[string, string]> = [
-      ["awaiting_invoke_key", "resume-key"],
+      ["awaiting_go_live", "go-live"],
+      ["awaiting_invoke_key", "go-live"],
       ["live", "studio"],
       ["suspended", "suspended"],
       ["pending", "building"],
@@ -126,7 +127,7 @@ describe("shellRoute", () => {
   it("never routes a non-live tenant to the studio screen", () => {
     // The studio screen is the only one that hands out a URL, and tenantView
     // only returns one when the tenant is actually live.
-    for (const status of ["pending", "provisioning", "awaiting_invoke_key", "failed", "suspended", "deleting", "deleted", "bogus"]) {
+    for (const status of ["pending", "provisioning", "awaiting_go_live", "failed", "suspended", "deleting", "deleted", "bogus"]) {
       expect(shellRoute(me({ tenant: { id: "t", slug: "s", status } }))).not.toBe("studio");
     }
   });

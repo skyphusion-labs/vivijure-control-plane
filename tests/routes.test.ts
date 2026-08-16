@@ -149,7 +149,7 @@ const CLEAN_REBUILD = {
   missing_secrets: [] as string[],
   modules_release: "v1.6.0",
   modules_uploaded: ["modules_upload", "modules_install", "verify"],
-  status: "awaiting_invoke_key" as const,
+  status: "awaiting_go_live" as const,
   next_step: "mint a RESTRICTED RunPod invoke key scoped to exactly these endpoint ids (new-backend)",
 };
 
@@ -1531,7 +1531,7 @@ describe("POST /api/tenant/provision", () => {
 // FOUND, NOT DESIGNED: reading the job route for cp#43 showed driveJobIfNeeded has no `kind` check,
 // while claimJob matches any kind and a module_upgrade job is created `queued` with a NULL lease.
 // So a tenant polling their own job page during an admin module upgrade wins the claim and starts
-// continueProvisionJob against a LIVE tenant. That path ends with setTenantStatus("awaiting_invoke_key"),
+// continueProvisionJob against a LIVE tenant. That path ends with setTenantStatus("awaiting_go_live"),
 // which routingStatusFor treats as non-routable: the customer goes 503 on the path where the upgrade
 // SUCCEEDS. upgradeTenantModules documents at length that it must never write tenants.status for
 // exactly this reason; the poll reached around it.
@@ -1674,7 +1674,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
   async function tenantReady(endpoints: string | null, script: string | null = "tenant-hero-studio") {
     const s = await signedIn();
     await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
-    const t = await store.createTenant("ten_abc123", "hero", s.account.id, "awaiting_invoke_key");
+    const t = await store.createTenant("ten_abc123", "hero", s.account.id, "awaiting_go_live");
     t.endpoints_json = endpoints;
     t.script_name = script;
     // cp#396: the invoke-key route is SHARED-ONLY now, so the fixture records the tier every
@@ -1721,7 +1721,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(await res.json()).toMatchObject({ error: "invoke_key_not_accepted" });
     // REFUSED, not quietly ignored: no install ran and the tenant did not move.
     expect(wiring.installInvokeKey).not.toHaveBeenCalled();
-    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_go_live");
     expect(JSON.stringify([...store.tenants.values()])).not.toContain("rpa_customer");
   });
 
@@ -1783,7 +1783,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     const unconfigured = await handle(jsonReq("/api/tenant/ten_abc123/invoke-key", {}, { headers: { cookie } }), env(), ctx, deps);
     expect(unconfigured.status).toBe(503);
     expect(await unconfigured.json()).toMatchObject({ error: "shared_pool_unconfigured" });
-    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_go_live");
 
     // CONTROL: the very same request succeeds once a pool key exists, so the 503 above is about
     // deploy CONFIG and not about the route being incapable of installing a pool key at all.
@@ -2011,7 +2011,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect("ok" in body).toBe(false);
     expect(body.modules_ready).toBe(false);
     // And the tenant really is NOT live, which is what ok:true used to paper over.
-    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_go_live");
   });
 
   it("omits modules_unverified entirely when everything was PROVEN (no empty-array ambiguity)", async () => {
@@ -2067,9 +2067,9 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(String(body.message)).toMatch(/installed/i);
     expect(String(body.message)).toMatch(/retry/i);
     // The reported status is the TRUE stored one, not an invented label.
-    expect(body.status).toBe("awaiting_invoke_key");
+    expect(body.status).toBe("awaiting_go_live");
     // SAFETY: unconfirmed is never live. This is the entire point of the gate.
-    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_go_live");
 
     // cp#27: the STRUCTURED facts behind that sentence. These are the numbers a client otherwise
     // has to parse back out of English, and the three claims that were previously load-bearing by
@@ -2138,7 +2138,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(String(body.message)).toContain("ten-abc123-keyframe");
     expect(String(body.message)).toContain("not retryable");
     expect(String(body.message)).toContain("attempts=1");
-    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_go_live");
   });
 
   it("a NON-module install failure is still internal_error 500, not dressed up as a readiness problem", async () => {
@@ -2179,7 +2179,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ error: "provisioner_unconfigured" });
     expect(probes).not.toHaveBeenCalled();
-    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_go_live");
   });
 
   it("a failed install stays HONEST: 500, and the tenant is NOT promoted to live", async () => {
@@ -2195,7 +2195,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
       env(), ctx, deps,
     );
     expect(res.status).toBe(500);
-    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_go_live");
   });
 
   // ---- cp#396: the SHARED branch, which had NO coverage at all before the purge -----------------
@@ -2265,7 +2265,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(await res.json()).toMatchObject({ error: "tenant_not_on_shared_tier" });
     // Nothing installed, nothing promoted: a refusal must leave the tenant exactly as it was.
     expect(wiring.installInvokeKey).not.toHaveBeenCalled();
-    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_invoke_key");
+    expect(store.tenants.get("ten_abc123")?.status).toBe("awaiting_go_live");
   });
 });
 

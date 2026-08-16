@@ -141,7 +141,7 @@ describe("preflight refuses before anything is written", () => {
     // Otherwise complete: endpoints, token, script all present. ONLY the status differs, so this
     // proves the status guard rather than the absence of everything else.
     const tenant = await seedLiveTenant(store);
-    await store.setTenantStatus(tenant.id, "awaiting_invoke_key");
+    await store.setTenantStatus(tenant.id, "awaiting_go_live");
     const live = (await store.getTenantById(tenant.id)) as Tenant;
 
     const pre = await preflightModuleUpgrade(deps(store), live, NEW_RELEASE);
@@ -322,7 +322,7 @@ describe("upgradeTenantModules", () => {
       ],
     });
     const after = (await store.getTenantById(tenant.id)) as Tenant;
-    // THE RULE: status untouched. continueProvisionJob would have written awaiting_invoke_key here,
+    // THE RULE: status untouched. continueProvisionJob would have written awaiting_go_live here,
     // which is a 503 to the tenant own users -- on the SUCCESS path.
     expect(after.status).toBe("live");
     expect(routingStatusFor(after)).toBe("live");

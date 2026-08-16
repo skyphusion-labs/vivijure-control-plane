@@ -87,7 +87,7 @@ describe("Tier A -- never live", () => {
   });
 
   it("covers every never-live lifecycle, not just the one that was convenient to write", () => {
-    for (const status of ["pending", "provisioning", "awaiting_invoke_key", "failed"] as const) {
+    for (const status of ["pending", "provisioning", "awaiting_go_live", "failed"] as const) {
       const claim = classifySlugClaim(row({ status, live_at: null }), OWNER);
       expect(claim.available, `owner should reclaim a ${status} row`).toBe(true);
       expect(classifySlugClaim(row({ status, live_at: null }), STRANGER).available).toBe(false);
@@ -106,7 +106,7 @@ describe("Tier A -- the guards ISOLATED (each mutation-proven to bite on its own
     // job re-runs provisioning steps against a tenant that is already live. Without the never-live
     // guard this row reads as Tier A, and reclaiming it blanks the resource columns of a studio
     // that is still serving a customer -- orphaning their D1 and their R2 bucket of films.
-    for (const status of ["pending", "provisioning", "awaiting_invoke_key", "failed"] as const) {
+    for (const status of ["pending", "provisioning", "awaiting_go_live", "failed"] as const) {
       const wasLive = row({ status, live_at: "2026-07-01 00:00:00" });
       expect(classifySlugClaim(wasLive, OWNER).available, `${status} + live_at must not be Tier A`).toBe(false);
     }

@@ -124,7 +124,7 @@ export interface ProvisionerWiring {
    * Install the VERIFIED invoke key as the tenant studio secret, and on every tenant module script
    * EXCEPT where those modules are proxied, then PROVE the modules actually serve a credential
    * before the caller flips the tenant live (cf#114). Throws on API failure, and on a readiness
-   * probe that fails or times out -- the tenant then stays at awaiting_invoke_key rather than being
+   * probe that fails or times out -- the tenant then stays at awaiting_go_live rather than being
    * promoted on credentials nothing has proven.
    *
    * THE EXCEPTION IS THE POINT (cp#288). A proxied module reaches RunPod through the plane on its

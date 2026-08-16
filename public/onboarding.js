@@ -44,8 +44,8 @@
     params.get("mock") === "1" || document.documentElement.dataset.mock === "1";
 
   // ---- the keys, and nowhere else ---------------------------------------
-  // Two-phase custody (#52 ruling). Key A is transient and dies at the end of
-  // provisioning. Key B is verified before it is kept, and this page never
+  // Shared go-live is an empty POST. There is no tenant RunPod key. The
+  // leftover names below are the old BYOK paste path and they stay empty.
   // keeps either one: both live in a closure and go nowhere else.
   let invokeKey = "";   // key B: invoke-only on the 4 created endpoints
   function clearInvokeKey() { invokeKey = ""; }
@@ -420,10 +420,10 @@
 
   // Provisioning: start the job, poll it, then read the TENANT status to learn
   // where we landed. Job status (queued/running/succeeded/failed) and tenant
-  // status (provisioning/awaiting_invoke_key/live) are different machines in
+  // status (provisioning/awaiting_go_live/live) are different machines in
   // the #52 contract, and conflating them is how a UI ends up lying: a job can
   // succeed and the tenant still not be live, which is exactly the
-  // awaiting_invoke_key case.
+  // awaiting_go_live case.
   // The cadence, the boundary rule and the copy all live in onboarding-checks
   // (cp#124), where they are pure and tested. Nothing here re-decides them.
 
@@ -465,9 +465,6 @@
         return;
       }
 
-      // The endpoints exist, so key A has done its whole job. It stops existing
-      // here, BEFORE the tenant is asked for key B: we never hold both at once.
-
       const me = await PlatformApi.me();
       const tenant = (me && me.tenant) || null;
       state.createdEndpoints = (tenant && tenant.endpoints) || [];
@@ -477,15 +474,12 @@
       if (tenant && tenant.url) state.studioUrl = tenant.url;
       else if (tenant && tenant.slug) state.studioUrl = "https://" + tenant.slug + state.tenantDomainSuffix;
 
-      if (tenant && tenant.status === "awaiting_invoke_key") {
+      if (tenant && (tenant.status === "awaiting_go_live" || tenant.status === "awaiting_invoke_key")) {
         applyInvokeRequirement(tenant);
-        show("invoke");
+        show("go-live");
         return;
       }
       if (tenant && tenant.status === "live") {
-        // The contract says a provision lands in awaiting_invoke_key. Going
-        // straight to live means the control plane skipped the key-B phase,
-        // which is a contract change, not something to shrug past.
         finishAndShowDone();
         return;
       }
@@ -743,7 +737,7 @@
           hideAupError();
         }
 
-        if (from === "invoke") {
+        if (from === "go-live") {
           // The tenant only becomes live once the key is installed, so re-read
           // /api/me rather than assuming the URL we derived earlier is serving.
           try {
@@ -900,12 +894,12 @@
       return;
     }
 
-    if (target.step === "invoke") {
+    if (target.step === "go-live") {
       // THE SEAM cp#455 MARKED, now closed. A tenant arriving here BY RESUME must get the same
       // tier projection as one arriving BY PROVISION, or the two paths disagree about which of
       // the three go-live states this studio is in.
       applyInvokeRequirement(tenant);
-      show("invoke");
+      show("go-live");
       return;
     }
 

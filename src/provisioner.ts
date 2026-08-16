@@ -415,7 +415,7 @@ export interface ProvisionYielded {
 }
 
 export type ProvisionOutcome =
-  | { ok: true; status: "awaiting_invoke_key" }
+  | { ok: true; status: "awaiting_go_live" }
   | { ok: false; step: ProvisionStep; message: string }
   | ProvisionYielded;
 
@@ -991,9 +991,9 @@ export async function runProvisionJob(
 
     // The studio is built but cannot render until key B lands: RunPod will not let us mint that key
     // and it cannot be scoped to endpoints that did not exist a moment ago.
-    await deps.store.setTenantStatus(tenant.id, "awaiting_invoke_key");
+    await deps.store.setTenantStatus(tenant.id, "awaiting_go_live");
     await deps.store.finishJob(jobId, "succeeded", null, null);
-    return { ok: true, status: "awaiting_invoke_key" };
+    return { ok: true, status: "awaiting_go_live" };
   } catch (e) {
     // Out of invocation budget, not broken: leave the job RUNNING with its progress persisted so the
     // next poll picks it up. Writing a failure here would turn "not finished yet" into "failed".
@@ -1370,10 +1370,10 @@ export async function continueProvisionJob(
     // deps.release here would restate the current pin regardless of what these modules were built
     // from, which is the same defect one field over.
     await deps.store.setTenantModulesRelease(tenant.id, pinnedRelease);
-    await deps.store.setTenantStatus(tenant.id, "awaiting_invoke_key");
+    await deps.store.setTenantStatus(tenant.id, "awaiting_go_live");
     await deps.store.finishJob(jobId, "succeeded", null, null);
     deps.log("provision.resumed_to_completion", { tenant: tenant.id });
-    return { ok: true, status: "awaiting_invoke_key" };
+    return { ok: true, status: "awaiting_go_live" };
   } catch (e) {
     if (e instanceof ProvisionYield) {
       // cp#158: hand the lease back NOW rather than leaving it to expire. A yield means this driver
@@ -1433,7 +1433,7 @@ async function rollbackFailedProvision(deps: ProvisionDeps, tenantId: string): P
  * The module half of provisioning, as ONE subroutine shared by resume and upgrade (cf#103).
  *
  * WHAT IT DELIBERATELY DOES NOT DO: it writes no tenant status and finishes no job. Those are the
- * two things resume and upgrade must NOT share -- resume ends a provision (awaiting_invoke_key),
+ * two things resume and upgrade must NOT share -- resume ends a provision (awaiting_go_live),
  * upgrade must leave a live tenant exactly as live as it found it. Keeping both out of here is what
  * makes the sharing safe; a shared helper that also owned the terminal writes would be the
  * same-function-with-reset-state design that was rejected.
@@ -1685,7 +1685,7 @@ export type ModuleUpgradeOutcome =
  * Ship newly published modules to a LIVE tenant (cf#103 half two).
  *
  * WHY THIS IS A SIBLING OF continueProvisionJob AND NOT THAT FUNCTION WITH steps_done RESET:
- * that function ends a PROVISION. Its success path writes setTenantStatus("awaiting_invoke_key"),
+ * that function ends a PROVISION. Its success path writes setTenantStatus("awaiting_go_live"),
  * which routingStatusFor maps to a non-routable state and tenantRefusal answers with 503 "this
  * studio is still being set up". Pointed at a live tenant it would therefore take a paying customer
  * DARK on the path where everything went RIGHT. That is not a mismatch of intent to paper over; it

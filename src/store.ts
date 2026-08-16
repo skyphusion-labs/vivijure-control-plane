@@ -24,11 +24,25 @@ import type { HarvestedJob } from "./runpod-job-index";
 export type TenantLifecycle =
   | "pending"
   | "provisioning"
+  | "awaiting_go_live"
+  /** @deprecated BYOK name. Same parked state. Do not write. Reads still accept it. */
   | "awaiting_invoke_key"
   | "live"
   | "failed"
   | "deleting"
   | "deleted";
+
+/** Dead BYOK name for the same never-live parked state. Reads still accept it. Writes never produce it. */
+export const AWAITING_GO_LIVE_LEGACY = "awaiting_invoke_key";
+
+export function normalizeLifecycle(status: string): TenantLifecycle {
+  if (status === AWAITING_GO_LIVE_LEGACY) return "awaiting_go_live";
+  return status as TenantLifecycle;
+}
+
+export function isAwaitingGoLive(status: string | null | undefined): boolean {
+  return status === "awaiting_go_live" || status === AWAITING_GO_LIVE_LEGACY;
+}
 
 /** What the API projects. "suspended" is computed from suspended_at, never stored in `status`. */
 export type TenantStatus = TenantLifecycle | "suspended";
@@ -279,10 +293,11 @@ export interface OAuthState {
  * actually authorize the write). Two hand-written copies of a security predicate drift, and the
  * drift is silent because each side keeps passing its own tests. Both read this constant.
  */
-export const TIER_A_STATUSES: readonly TenantLifecycle[] = [
+export const TIER_A_STATUSES: readonly string[] = [
   "pending",
   "provisioning",
-  "awaiting_invoke_key",
+  "awaiting_go_live",
+  AWAITING_GO_LIVE_LEGACY,
   "failed",
 ];
 
@@ -629,7 +644,7 @@ export interface ControlPlaneStore {
    * The slug LEASE check (cf#103). A slug is a lease, not a permanent identity, and which tier a
    * slug falls into is decided by whether its hostname was ever publicly served.
    *
-   *   Tier A -- NEVER LIVE (live_at IS NULL, status pending/provisioning/awaiting_invoke_key/failed):
+   *   Tier A -- NEVER LIVE (live_at IS NULL, status pending/provisioning/awaiting_go_live/failed):
    *     the hostname never served anyone, so the OWNING account may reclaim it. Another account gets
    *     a refusal while the row exists.
    *   Tier B -- WAS LIVE, NOW DELETED (live_at IS NOT NULL, status='deleted'): the slug is

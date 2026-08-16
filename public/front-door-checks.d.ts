@@ -25,7 +25,7 @@ export interface PlatformConfig {
 // lockout it caused: the switch decides what that screen SAYS, never whether it
 // carries a sign-in form. signupsOpen() answers the copy question separately.
 export type ShellRoute =
-  | "auth" | "aup" | "onboarding" | "resume-key"
+  | "auth" | "aup" | "onboarding" | "go-live"
   | "studio" | "suspended" | "building" | "failed" | "deleted" | "unknown";
 
 export const METHOD_LABELS: Record<string, string>;

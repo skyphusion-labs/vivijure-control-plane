@@ -74,7 +74,9 @@
     if (!tenant) return "onboarding";
 
     switch (tenant.status) {
-      case "awaiting_invoke_key": return "resume-key";
+      case "awaiting_go_live":
+      case "awaiting_invoke_key":
+        return "go-live";
       case "live": return "studio";
       case "suspended": return "suspended";
       case "pending":

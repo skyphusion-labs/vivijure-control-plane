@@ -42,8 +42,8 @@ export function routingStatusFor(tenant: Tenant): RoutingStatus {
       return "live";
     case "provisioning":
       return "provisioning";
-    // pending | awaiting_invoke_key | failed | deleting | deleted are all NOT routable.
-    // awaiting_invoke_key is the interesting one: the tenant's worker exists and would happily
+    // pending | awaiting_go_live | failed | deleting | deleted are all NOT routable.
+    // awaiting_go_live is the interesting one: the tenant's worker exists and would happily
     // serve, but it cannot render without key B, and key B is pasted on the control-plane front
     // door, not on the tenant studio. Serving a studio that cannot render is not honest, so it
     // stays dark until it is genuinely live.

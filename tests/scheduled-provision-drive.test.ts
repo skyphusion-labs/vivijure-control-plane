@@ -54,7 +54,7 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     vi.fn(async (jobId: string, tenant: { id: string }) => {
       await store.updateJobProgress(jobId, "verify", JSON.stringify(["wfp_upload", "verify"]));
       await store.finishJob(jobId, "succeeded", null, null);
-      await store.setTenantStatus(tenant.id, "awaiting_invoke_key");
+      await store.setTenantStatus(tenant.id, "awaiting_go_live");
     });
 
   /** A driver that ran and then stopped beating: the one state a new driver may take over. */
@@ -103,7 +103,7 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     await runScheduledTick(env(), deps);
 
     // AFTER: committed SQL, read back. This is the whole point of the test.
-    expect(tenantRow("ten_1").status).toBe("awaiting_invoke_key");
+    expect(tenantRow("ten_1").status).toBe("awaiting_go_live");
     expect(jobRow("job_1").status).toBe("succeeded");
   });
 
@@ -176,7 +176,7 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     await runScheduledTick(env(), deps);
 
     expect(resume).toHaveBeenCalledTimes(1);
-    expect(tenantRow("ten_6").status).toBe("awaiting_invoke_key");
+    expect(tenantRow("ten_6").status).toBe("awaiting_go_live");
   });
 
   // ---- cp#437: the TOTAL-AGE cap ---------------------------------------------------------------
@@ -216,7 +216,7 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
 
     await runScheduledTick(env(), deps);
 
-    expect(tenantRow("ten_young").status).toBe("awaiting_invoke_key");
+    expect(tenantRow("ten_young").status).toBe("awaiting_go_live");
     expect(resume).toHaveBeenCalledTimes(1);
   });
 
@@ -355,7 +355,7 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
       }
       await store.updateJobProgress(jobId, "verify", JSON.stringify(["wfp_upload", "verify"]));
       await store.finishJob(jobId, "succeeded", null, null);
-      await store.setTenantStatus(tenant.id, "awaiting_invoke_key");
+      await store.setTenantStatus(tenant.id, "awaiting_go_live");
     });
   };
 
@@ -372,7 +372,7 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
     // THE ASSERTION. Not that the tenant finished -- it could finish for other reasons -- but that
     // ONE tick drove it twice. A single-drive tick calls this once and leaves the row behind.
     expect(resume).toHaveBeenCalledTimes(2);
-    expect(tenantRow("ten_7").status).toBe("awaiting_invoke_key");
+    expect(tenantRow("ten_7").status).toBe("awaiting_go_live");
     expect(jobRow("job_7").status).toBe("succeeded");
   });
 
@@ -523,6 +523,6 @@ describe("the cron drives provisions that nobody is polling (cp#429)", () => {
 
     expect(resume).toHaveBeenCalledTimes(2);
     expect(jobRow("job_inside").status).toBe("succeeded");
-    expect(tenantRow("ten_inside").status).toBe("awaiting_invoke_key");
+    expect(tenantRow("ten_inside").status).toBe("awaiting_go_live");
   });
 });

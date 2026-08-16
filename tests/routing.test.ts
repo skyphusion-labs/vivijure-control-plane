@@ -154,7 +154,7 @@ describe("tenantRefusal -- suspension is OFF the lifecycle", () => {
   });
 
   it("403s a suspended tenant at ANY lifecycle state", () => {
-    const states: TenantLifecycle[] = ["pending", "provisioning", "awaiting_invoke_key", "live", "failed"];
+    const states: TenantLifecycle[] = ["pending", "provisioning", "awaiting_go_live", "live", "failed"];
     for (const status of states) {
       expect(tenantRefusal(tenant({ status, suspended_at: "2026-07-17T00:00:00Z" }))?.status).toBe(403);
     }
@@ -167,7 +167,7 @@ describe("tenantRefusal -- suspension is OFF the lifecycle", () => {
   it.each([
     ["pending", 503],
     ["provisioning", 503],
-    ["awaiting_invoke_key", 503],
+    ["awaiting_go_live", 503],
     ["failed", 503],
     ["deleting", 404],
     ["deleted", 404],

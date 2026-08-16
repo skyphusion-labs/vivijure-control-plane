@@ -940,7 +940,7 @@ async function tenantRoutes(
       });
     }
 
-    if (request.method === "POST" && action === "invoke-key") {
+    if (request.method === "POST" && (action === "go-live" || action === "invoke-key")) {
       return await installInvokeKey(request, deps, tenant);
     }
   }
@@ -1752,10 +1752,10 @@ async function operatorProvision(
       runpod_mode: "shared",
       aup_accepted: false,
       message:
-        "The account exists and the studio is being built. It will stop at awaiting_invoke_key and " +
+        "The account exists and the studio is being built. It will stop at awaiting_go_live and " +
         "stay unreachable until the owner signs in at the front door, accepts the AUP themselves, " +
-        "and completes the invoke-key install. No acceptance has been recorded on their behalf and " +
-        "no RunPod key was issued.",
+        "and clicks go live. No acceptance has been recorded on their behalf and " +
+        "no RunPod key is involved.",
     },
     202,
   );
