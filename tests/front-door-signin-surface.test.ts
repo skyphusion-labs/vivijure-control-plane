@@ -21,8 +21,6 @@ import { describe, expect, it } from "vitest";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const readAsset = (name: string) => readFileSync(join(HERE, "..", "public", name), "utf8");
 
-const QUICKSTART = "vivijure-cf/blob/main/docs/quickstart.md";
-
 describe("the front door always carries a way in (cp#428)", () => {
   const page = readAsset("index.html");
 
@@ -48,12 +46,11 @@ describe("the front door always carries a way in (cp#428)", () => {
     }
   });
 
-  it("keeps the closed-signups voice, including the self-host framing", () => {
-    // The copy was never the bug and it does not get rewritten on the way past: the honest
-    // alternative is the actual product, and saying so is the point of the paragraph.
+  it("keeps the closed-signups voice, without a paste-a-key or self-host pitch", () => {
     expect(page).toMatch(/not taking new studios/i);
-    expect(page).toContain(QUICKSTART);
-    expect(page).toMatch(/not a\s+consolation prize, it is the actual product/i);
+    expect(page).not.toMatch(/paste a key/i);
+    expect(page).not.toMatch(/The GPUs are yours/i);
+    expect(page).toMatch(/We run the GPUs/i);
   });
 
   it("still says the SAME thing for every address after a sign-in attempt", () => {

@@ -365,11 +365,14 @@ describe("the tenant studio transport contract (cp#396)", () => {
         expect(names.has(door.doorTokenBinding), door.doorTokenBinding + " bound on the studio").toBe(false);
       }
     }
-    // CONTROL: the studio DOES still carry the video-finish door, which it genuinely reads
-    // (render-frames.ts, video-finish-availability.ts). Without this the assertion above would
-    // also pass on a studio carrying no vpc_service binding for any reason at all.
-    const withFinish = await provisionAndCaptureStudioBindings({ videoFinishServiceId: "svc-video-finish" });
-    expect(withFinish.some((b) => b.name === "VIDEO_FINISH_VPC" && b.type === "vpc_service")).toBe(true);
+    // CONTROL: the studio carries Traefik media doors when configured, never a vpc_service.
+    // Without this the assertion above would also pass on a studio carrying no finish binding
+    // for any reason at all.
+    const withFinish = await provisionAndCaptureStudioBindings({
+      mediaDoorUrls: { VIDEO_FINISH_URL: "https://video-finish.skyphusion.org" },
+    });
+    expect(withFinish.some((b) => b.name === "VIDEO_FINISH_URL" && b.type === "plain_text")).toBe(true);
+    expect(withFinish.some((b) => b.type === "vpc_service")).toBe(false);
   });
 
   it("EXACTLY ONE TRANSPORT per capability, counted across the whole plan", () => {
