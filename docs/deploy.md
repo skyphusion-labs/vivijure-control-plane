@@ -129,6 +129,7 @@ Repository **variables**:
 - `STUDIO_RELEASES_BUCKET`, `STUDIO_RELEASE`
 - `AUP_VERSION`, `AUP_URL`, `POSTERN_SEND_URL`
 - `GOOGLE_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_ID`
+- `PAYPAL_CLIENT_ID`, `PAYPAL_WEBHOOK_ID`, `PAYPAL_ENV` (cp#193; empty = PayPal rail not offered / sandbox)
 - `APPLE_TEAM_ID`, `APPLE_SERVICES_ID` (empty = Apple SSO is not offered)
 - `TENANT_AI_GATEWAY_ID` (cf#56) -- the AI Gateway that tenant MODULE workers bind as `GATEWAY_ID`.
   Set it to **`vivijure-hosted`**, the dedicated hosted-tenant gateway (authentication ON: a valid
@@ -333,7 +334,8 @@ recorded together.
 Worker **secrets** (`wrangler secret put`, never in Actions): `POSTERN_SEND_TOKEN`,
 `GOOGLE_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `APPLE_PRIVATE_KEY`,
 `CONTROL_PLANE_ADMIN_TOKEN`, `CF_PROVISIONER_TOKEN`, `CF_WORKER_UPLOAD_TOKEN`,
-`VIDEO_FINISH_VPC_SERVICE_ID`, `STUDIO_TOKEN_KEK`, `AI_GATEWAY_READ_TOKEN` (cp#185), and -- only
+`VIDEO_FINISH_VPC_SERVICE_ID`, `STUDIO_TOKEN_KEK`, `AI_GATEWAY_READ_TOKEN` (cp#185),
+`PAYPAL_CLIENT_SECRET` (cp#193), and -- only
 while a rotation is in progress -- `STUDIO_TOKEN_KEK_NEXT` (cp#95).
 
 `VIDEO_FINISH_VPC_SERVICE_ID` is NOT a credential; it is a Connectivity Directory service id.
@@ -366,6 +368,7 @@ So: **a worker secret is not considered set until this table names its owner and
 | `GOOGLE_OAUTH_CLIENT_SECRET` | unset (SSO not offered) |
 | `GITHUB_OAUTH_CLIENT_SECRET` | unset (SSO not offered) |
 | `APPLE_PRIVATE_KEY` | unset (SSO not offered) |
+| `PAYPAL_CLIENT_SECRET` | unset (PayPal rail not offered until Conrad puts it; cp#193) |
 | `STUDIO_TOKEN_KEK_NEXT` | only exists while a rotation window is open (cp#95) |
 
 Owner and home for each row above are tracked internally, on this hosted deployment; that is
@@ -472,6 +475,7 @@ gives the BAR for being on it, deliberately without repeating a count that goes 
 - **A feature is simply not offered.** `GOOGLE_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_ID`,
   `APPLE_TEAM_ID`, `APPLE_SERVICES_ID` -- each is half of an SSO pair, and a provider is offered
   only when both halves are present, so an unconfigured provider is *absent* rather than broken.
+  Same for `PAYPAL_CLIENT_ID`, `PAYPAL_WEBHOOK_ID`, `PAYPAL_ENV` (empty ENV = sandbox).
   These are additionally **absent** as repository variables rather than empty, because the GitHub
   API rejects an empty variable value with a 422.
 - **The operator has not chosen a number, and has therefore not asked for the thing.**

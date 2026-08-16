@@ -23,10 +23,13 @@ import {
 } from "./credits-api";
 import {
   DEFAULT_MANUAL_CREDIT_CEILING_MICRO_USD,
+  MIN_TENANT_TOPUP_MICRO_USD,
   ManualRail,
+  PaymentRailError,
   applySettlement,
   validateCreditAmount,
 } from "./payment-rail";
+import { PayPalRail, paypalCredentialsPresent } from "./paypal-rail";
 import type { CreditStore, OperatorCredential } from "./store";
 import { ApiTokenError } from "./tenant-api-token";
 import { acceptAup, fetchAupSha256, hasAcceptedCurrent, isAupExempt, lastAcceptance } from "./aup";
@@ -383,7 +386,14 @@ export async function handle(
   // CSRF: a state-changing request must come from our own origin. The SSO callback is a GET
   // carrying its own single-use state. The magic-link consume is a POST of a single-use token
   // (the GET only renders the confirm page and does not spend it). The origin check covers /api/.
-  if (request.method !== "GET" && request.method !== "HEAD" && path.startsWith("/api/")) {
+  // PayPal's webhook POST is not a browser request and will not carry our origin. The body is
+  // authenticated by parseSettlement (verify-webhook-signature), not by Origin.
+  if (
+    request.method !== "GET" &&
+    request.method !== "HEAD" &&
+    path.startsWith("/api/") &&
+    path !== "/api/webhooks/paypal"
+  ) {
     const origin = request.headers.get("origin");
     if (origin && origin !== publicOrigin(env)) return err("bad_origin", 403);
   }
@@ -498,6 +508,11 @@ export async function handle(
     // -- is refused HERE rather than reaching anything else.
     const proxyRoute = matchProxyRoute(request.method, path);
     if (proxyRoute) return await runpodProxyRoutes(request, env, deps, proxyRoute);
+
+    // ---- PayPal settlement webhook (cp#193). ABOVE THE SESSION GATE: PayPal holds no cookie. ----
+    if (request.method === "POST" && path === "/api/webhooks/paypal") {
+      return await paypalWebhook(request, env, deps);
+    }
 
     // ---- admin (bearer, not session) ----
     if (path.startsWith("/api/admin/")) return await adminRoutes(request, env, deps, path, url, ctx);
@@ -696,6 +711,51 @@ const CREDIT_ACTIVITY_LIMIT = 50;
 /** Stateless, so one instance. A per-request `new` would imply state this rail does not have. */
 const MANUAL_RAIL = new ManualRail();
 
+function paypalRailFromEnv(env: ControlPlaneEnv, fetchImpl: typeof fetch): PayPalRail | null {
+  if (!paypalCredentialsPresent(env)) return null;
+  return new PayPalRail({
+    clientId: env.PAYPAL_CLIENT_ID ?? "",
+    clientSecret: env.PAYPAL_CLIENT_SECRET ?? "",
+    webhookId: env.PAYPAL_WEBHOOK_ID ?? "",
+    paypalEnv: env.PAYPAL_ENV,
+    fetchImpl,
+  });
+}
+
+async function paypalWebhook(
+  request: Request,
+  env: ControlPlaneEnv,
+  deps: ControlPlaneDeps,
+): Promise<Response> {
+  const rail = paypalRailFromEnv(env, deps.fetch);
+  if (!rail) return err("not_configured", 503);
+  if (!deps.credits) return err("credits_unconfigured", 503);
+
+  let event;
+  try {
+    event = await rail.parseSettlement(request);
+  } catch (e) {
+    if (e instanceof PaymentRailError && e.code === "unverified") return err("unverified", 400);
+    if (e instanceof PaymentRailError && e.code === "not_configured") return err("not_configured", 503);
+    return err("webhook_failed", 503);
+  }
+  // Unrelated event types are not settlements. 200 so PayPal stops retrying them.
+  if (!event) return json({ applied: false });
+
+  const now = new Date(deps.now()).toISOString();
+  try {
+    const { applied } = await applySettlement(deps.credits, {
+      railId: rail.id,
+      event,
+      rowId: newId("led"),
+      now,
+    });
+    return json({ applied });
+  } catch {
+    return err("credit_failed", 503);
+  }
+}
+
 async function readCreditActivity(
   credits: CreditStore,
   tenantId: string,
@@ -819,6 +879,34 @@ async function tenantRoutes(
     return json({ endpoints: provisionPlanView() });
   }
 
+  // Owner checkout (cp#193). Separate regex: the scoped matcher below only allows one extra
+  // segment, so /credits/topup would 404 without this.
+  const topup = /^\/api\/tenant\/(ten_[a-f0-9]+)\/credits\/topup$/.exec(path);
+  if (request.method === "POST" && topup) {
+    const tenant = await deps.store.getTenantById(topup[1]);
+    if (!tenant || tenant.account_id !== account.id) return err("not_found", 404);
+    if (!deps.credits) return err("credits_unconfigured", 503);
+    const rail = paypalRailFromEnv(env, deps.fetch);
+    if (!rail) return err("not_configured", 503);
+
+    const body = (await readJson(request)) as { amount_micro_usd?: unknown } | null;
+    const raw = body?.amount_micro_usd;
+    if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < MIN_TENANT_TOPUP_MICRO_USD) {
+      return err("invalid_amount", 400, {
+        message: `amount_micro_usd must be a whole number of micro-USD of at least ${MIN_TENANT_TOPUP_MICRO_USD} (USD 10)`,
+      });
+    }
+    try {
+      const intent = await rail.createTopUp({ tenantId: tenant.id, amountMicroUsd: raw });
+      return json({ checkout_url: intent.checkout_url, external_ref: intent.external_ref, rail: rail.id });
+    } catch (e) {
+      if (e instanceof PaymentRailError) {
+        return err(e.code, e.code === "not_configured" ? 503 : 400, { message: e.message });
+      }
+      return err("topup_failed", 503);
+    }
+  }
+
   const scoped = /^\/api\/tenant\/(ten_[a-f0-9]+)(?:\/([a-z-]+))?$/.exec(path);
   if (scoped) {
     const tenant = await deps.store.getTenantById(scoped[1]);
@@ -846,7 +934,7 @@ async function tenantRoutes(
           enforcing: parseEnforcing(env.CREDITS_ENFORCING),
           truncated: read.truncated,
           creditsApply: creditsApplyToTenant(tenant),
-          topUpAvailable: topUpAvailable(),
+          topUpAvailable: topUpAvailable(env),
         }),
       );
     }
@@ -2750,7 +2838,7 @@ async function adminRoutes(
         enforcing: parseEnforcing(env.CREDITS_ENFORCING),
         truncated: read.truncated,
         creditsApply: creditsApplyToTenant(tenant),
-        topUpAvailable: topUpAvailable(),
+        topUpAvailable: topUpAvailable(env),
       }),
     );
   }

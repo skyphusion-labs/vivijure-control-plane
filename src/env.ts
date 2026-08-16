@@ -95,6 +95,22 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    */
   MANUAL_CREDIT_CEILING_MICRO_USD?: string;
 
+  /**
+   * PayPal REST app client id (cp#193). A VAR: it is a public identifier, the same class as
+   * GOOGLE_OAUTH_CLIENT_ID. Empty = the PayPal rail is not constructed.
+   */
+  PAYPAL_CLIENT_ID?: string;
+  /**
+   * PayPal webhook endpoint id (cp#193). A VAR: it identifies the webhook we registered, it is not
+   * the HMAC secret (PayPal verification is an authenticated API call). Empty = top-up is not
+   * advertised, even if client id+secret are set, because we could not verify a settlement.
+   */
+  PAYPAL_WEBHOOK_ID?: string;
+  /**
+   * `live` -> api-m.paypal.com. Anything else, including empty, is sandbox (api-m.sandbox.paypal.com).
+   */
+  PAYPAL_ENV?: string;
+
   // SSO client identifiers. A provider is OFFERED only when its id AND secret are both present,
   // which is what makes /api/platform/config a projection rather than a hardcoded list.
   GOOGLE_OAUTH_CLIENT_ID?: string;
@@ -114,6 +130,13 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   GITHUB_OAUTH_CLIENT_SECRET?: string;
   /** The Apple .p8 signing key. Parked with the rest of the Apple seam. */
   APPLE_PRIVATE_KEY?: string;
+
+  /**
+   * PayPal REST app secret (cp#193). A SECRET, delivered by `wrangler secret put` from a chmod 600
+   * file, never a var and never a chat paste. Paired with PAYPAL_CLIENT_ID; either alone offers no
+   * checkout.
+   */
+  PAYPAL_CLIENT_SECRET?: string;
 
   /** Admin gate. Bearer, compared constant-time; mirrors the studio's proven token gate. */
   CONTROL_PLANE_ADMIN_TOKEN?: string;
@@ -448,6 +471,8 @@ export const ENV_SECRETS = [
   "GOOGLE_OAUTH_CLIENT_SECRET",
   "GITHUB_OAUTH_CLIENT_SECRET",
   "APPLE_PRIVATE_KEY",
+  // cp#193: PayPal checkout secret. wrangler secret put, never a deploy-list var.
+  "PAYPAL_CLIENT_SECRET",
   "CONTROL_PLANE_ADMIN_TOKEN",
   "CF_PROVISIONER_TOKEN",
   "CF_WORKER_UPLOAD_TOKEN",

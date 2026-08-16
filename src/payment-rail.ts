@@ -1,11 +1,9 @@
 // The payment rail seam (cp#193, under cp#173).
 //
-// WHAT THIS FILE DELIBERATELY DOES NOT CONTAIN: any payment processor. No Stripe client, no API key,
-// no SDK, no test-mode credential, no signup. Conrad provisions the rail himself and has not yet, so
-// building against a real one would mean either inventing credentials or waiting. Instead the ledger
-// gets an INTERFACE and one rail that needs no processor at all, which is enough to prove the whole
-// purchase path end to end. `docs/payment-rail.md` is the list of what he must create, written to be
-// executable without reading this code.
+// WHAT THIS FILE DELIBERATELY DOES NOT CONTAIN: any payment processor client. The processor lives
+// in `paypal-rail.ts` behind this interface. No credential lives in the repo. ManualRail stays: it
+// is how an operator comps or corrects without a checkout. `docs/payment-rail.md` is the list of
+// what Conrad must create in the PayPal Business account.
 //
 // THE ONE RULE THAT SHAPES EVERYTHING BELOW: a settlement is money appearing from outside. Processors
 // retry webhooks by design and an attacker will happily replay one, so "credit this tenant" must be
@@ -48,7 +46,7 @@ export class PaymentRailError extends Error {
  * Two methods, because a rail does exactly two things: send a tenant somewhere to pay, and tell us
  * when money arrived. Everything else (pricing, balance, refusal) belongs to the ledger and stays
  * there. The rail never sees the ledger's internals and the ledger never imports a rail, so swapping
- * Stripe for anything else is a new class rather than a migration.
+ * PayPal for anything else is a new class rather than a migration.
  */
 export interface PaymentRail {
   readonly id: string;
@@ -109,7 +107,7 @@ export function validateCreditAmount(
 /**
  * Operator-credited top-ups. A REAL rail, not a stub, and the distinction is the point.
  *
- * It has real uses that outlive Stripe: comping an account, correcting an incident, honouring a
+ * It has real uses that outlive PayPal: comping an account, correcting an incident, honouring a
  * refund. It is also what lets the entire credit system be proven end to end -- purchase, hold,
  * capture, balance, refusal -- with zero payment integration, and what lets counting mode graduate to
  * enforcing before a processor exists.

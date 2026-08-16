@@ -133,12 +133,21 @@ export function creditsApplyToTenant(_tenant: { id: string }): boolean {
 }
 
 /**
- * Is there a working purchase door? Also always false today, for a different and equally real reason:
- * no rail is provisioned (cp#193 built the seam and `ManualRail`; Stripe is Conrad's pre-launch task).
- * Kept separate from the above so the two can flip independently, because they will.
+ * Is there a working purchase door?
+ *
+ * True only when the PayPal rail can both send a tenant to checkout AND verify the money arriving:
+ * client id, secret, and webhook id all set. Missing any one would advertise a door that cannot
+ * settle. Independent of `creditsApplyToTenant` (still false until compute_mode): a configured rail
+ * does not invent a billing relationship for a BYOK tenant.
  */
-export function topUpAvailable(): boolean {
-  return false;
+export function topUpAvailable(env: {
+  PAYPAL_CLIENT_ID?: string;
+  PAYPAL_CLIENT_SECRET?: string;
+  PAYPAL_WEBHOOK_ID?: string;
+}): boolean {
+  return Boolean(
+    env.PAYPAL_CLIENT_ID?.trim() && env.PAYPAL_CLIENT_SECRET?.trim() && env.PAYPAL_WEBHOOK_ID?.trim(),
+  );
 }
 
 export function buildTenantCreditView(args: {

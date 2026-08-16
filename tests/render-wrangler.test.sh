@@ -124,6 +124,12 @@ check "explicitly-empty SSO ids are allowed (provider simply not offered)" pass
 set_full_env; export GOOGLE_OAUTH_CLIENT_ID="g-client" GITHUB_OAUTH_CLIENT_ID="gh-client"
 check "populated SSO ids are allowed" pass
 
+set_full_env; export PAYPAL_CLIENT_ID="" PAYPAL_WEBHOOK_ID="" PAYPAL_ENV=""
+check "explicitly-empty PayPal vars are allowed (rail simply not offered)" pass
+
+set_full_env; export PAYPAL_CLIENT_ID="paypal-client" PAYPAL_WEBHOOK_ID="wh-1" PAYPAL_ENV="sandbox"
+check "populated PayPal vars are allowed" pass
+
 # ---------------------------------------------------------------------------
 # SHARED_RUNPOD_ENDPOINTS carries JSON, and JSON carries quotes (cp#285).
 #
