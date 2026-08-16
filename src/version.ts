@@ -11,4 +11,4 @@
  * them via CF_VERSION_METADATA on GET /api/platform/version (`build.id` /
  * `build.timestamp`), or via the Worker artifact (`modified_on`).
  */
-export const CONTROL_PLANE_VERSION = "1.28.1";
+export const CONTROL_PLANE_VERSION = "1.29.0";
