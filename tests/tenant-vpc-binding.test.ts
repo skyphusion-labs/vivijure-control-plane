@@ -134,11 +134,14 @@ beforeEach(async () => {
 });
 
 describe("the video-finish binding on a tenant studio (cf#118)", () => {
-  it("attaches it, with the CONFIGURED service id, when the plane offers the tier", async () => {
-    await provision(deps({ videoFinishServiceId: SERVICE_ID }));
-    const vpc = studioUpload()!.bindings.find((b) => b.type === "vpc_service");
-    expect(vpc, `no vpc_service binding in ${JSON.stringify(studioUpload()?.bindings.map((b) => b.type))}`).toBeDefined();
-    expect(vpc).toEqual({ type: "vpc_service", name: "VIDEO_FINISH_VPC", service_id: SERVICE_ID });
+  it("never attaches a vpc_service, even if a leftover service id is configured", async () => {
+    await provision(deps({
+      videoFinishServiceId: SERVICE_ID,
+      mediaDoorUrls: { VIDEO_FINISH_URL: "https://video-finish.skyphusion.org" },
+    }));
+    expect(studioUpload(), "the studio was uploaded").toBeDefined();
+    expect(studioUpload()!.bindings.some((b) => b.type === "vpc_service")).toBe(false);
+    expect(studioUpload()!.bindings.some((b) => (b as { name?: string }).name === "VIDEO_FINISH_URL")).toBe(true);
   });
 
   it("attaches NOTHING when the plane does not offer it, and that absence stops nothing", async () => {
@@ -168,8 +171,7 @@ describe("the video-finish binding on a tenant studio (cf#118)", () => {
     expect(studioUpload()!.via).toBe("scriptUpload");
   });
 
-  it("REFUSES the provision, with a NAMED error, when the credential cannot attach the binding", async () => {
-    // The live 10196 shape, from the real probe: same upload, credential not authorized for VPC.
+  it("REFUSES the provision when the studio upload fails, and does not invent a VPC story", async () => {
     const refusing = fakeCf("scriptUpload", {
       uploadUserWorker: vi.fn(async () => {
         throw new CfApiError("wfp.upload", 403, [
@@ -178,15 +180,8 @@ describe("the video-finish binding on a tenant studio (cf#118)", () => {
       }) as unknown as CfApi["uploadUserWorker"],
     });
     const res = await provision(deps({ videoFinishServiceId: SERVICE_ID, scriptUploadCf: refusing }));
-
     expect(res.ok).toBe(false);
     expect(res.step).toBe("wfp_upload");
-    // The message must point at the PLANE's credential. CF's own words are accurate and blame the
-    // wrong owner; an operator reading a failed provision needs to know it is not about the tenant.
-    expect(res.message).toMatch(/SCRIPT UPLOAD credential/);
-    expect(res.message).toMatch(/CF_WORKER_UPLOAD_TOKEN/);
-    expect(res.message).toMatch(/VIDEO_FINISH_VPC_SERVICE_ID/);
-    // NOT provisioned-anyway: the tenant must not be left looking complete without the tier.
     expect((await store.getTenantById("ten_1"))!.status).not.toBe("live");
   });
 
