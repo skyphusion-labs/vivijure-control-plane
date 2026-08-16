@@ -85,6 +85,7 @@ function recordingDeps() {
     },
     sharedPoolInvokeKey: "rpa_poolkey",
     videoFinishServiceId: null,
+    mediaDoorUrls: {},
     vpcDoors: TEST_VPC_DOORS,
     runpod: { createEndpoints: vi.fn(async () => ENDPOINTS), convergeTemplateImages: vi.fn(async () => []) },
     tokenMinter: {
@@ -375,7 +376,7 @@ describe("the tenant studio transport contract (cp#396)", () => {
     // was DROPPED from one that MOVED transport, and telling those apart is the entire point.
     expect(endpointBackedPlan()).toHaveLength(2);
     expect(vpcBackedPlan()).toHaveLength(2);
-    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "lipsync"]);
+    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "lipsync", "wan-train"]);
     expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["audio-upscale", "upscale"]);
   });
 });

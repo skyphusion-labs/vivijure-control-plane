@@ -800,6 +800,7 @@ describe("every route that reaches into ONE tenant leaves a record (the merged p
   // gap cp#219 closed and writes were always audited; keeping them apart makes a regression legible.
   const AUDITED_READS = [
     "GET /api/admin/tenants/ten_x/credits",
+    "GET /api/admin/tenants/ten_x/usage",
     "GET /api/admin/tenants/ten_x/module-readiness",
     "GET /api/admin/tenants/ten_x/preservation-holds",
     "GET /api/admin/tenants/ten_x/smoke-render/smk_x",

@@ -575,6 +575,31 @@ export interface ProxyJobClose {
   terminal_at: number;
 }
 
+/** One RunPod (or public-slug) job on the operator usage view. */
+export interface TenantRunpodJob {
+  job_id: string;
+  tenant_slug: string;
+  module: string | null;
+  endpoint_id: string | null;
+  outcome: string | null;
+  status_raw: string | null;
+  execution_ms: number | null;
+  delay_ms: number | null;
+  submitted_at: number | null;
+  terminal_at: number | null;
+  source: string | null;
+}
+
+/** One attributed AI Gateway row. */
+export interface TenantLlmEvent {
+  source_id: string;
+  model: string | null;
+  cost_micro_usd: number | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  occurred_at: string;
+}
+
 /**
  * A recorded AUP acceptance, projected back to the account that made it (cp#433).
  *
@@ -855,6 +880,12 @@ export interface ControlPlaneStore {
    * duplicate rather than reading a silent no-op as success.
    */
   closeRunpodProxyJob(row: ProxyJobClose): Promise<number>;
+
+  /** Every recorded RunPod job for one tenant, newest first. Operator usage view. */
+  listTenantRunpodJobs(tenantId: string, limit: number): Promise<TenantRunpodJob[]>;
+
+  /** Attributed AI Gateway rows for one tenant, newest first. */
+  listTenantLlmEvents(tenantId: string, limit: number): Promise<TenantLlmEvent[]>;
 
   /**
    * The reconciler's work queue: rows the proxy opened and no terminal write has closed (cp#290).

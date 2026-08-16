@@ -94,6 +94,7 @@ function fakeCf(over: Partial<Record<string, unknown>> = {}) {
 const ENDPOINTS = [
   { key: "backend", label: "Render", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
   { key: "lipsync", label: "Lip sync", id: "ep3", name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+  { key: "wan-train", label: "Cast LoRA training (Wan)", id: "ep4", name: "n4", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
 ];
 
 function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
@@ -102,6 +103,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     store,
     cf,
     videoFinishServiceId: null,
+    mediaDoorUrls: {},
     // cp#396: the DEFAULT fixture configures BOTH own-iron doors, because a fully-wired plane is
     // what a deploy is. uploadTenantModules refuses a vpc-backed module with no door, so an absent
     // default would fail every case in this file for a reason none of them are about.
@@ -247,9 +249,10 @@ const SHARED_POOL = {
   endpoints: [
     { key: "backend", label: "Render", id: "pool-1", name: "vivijure-prod-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
     { key: "lipsync", label: "Lip sync", id: "pool-3", name: "vivijure-prod-lipsync", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+    { key: "wan-train", label: "Cast LoRA training (Wan)", id: "pool-4", name: "vivijure-prod-wan-train", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
   ],
-  ids: new Set(["pool-1", "pool-3"]),
-  names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync"]),
+  ids: new Set(["pool-1", "pool-3", "pool-4"]),
+  names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync", "vivijure-prod-wan-train"]),
 };
 // cp#396: endpoint ids now come from the POOL, since nothing creates per-tenant endpoints. Derived
 // from the fixture rather than re-hardcoded, so a pool fixture change cannot leave these stale.

@@ -106,6 +106,7 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     },
     sharedPoolInvokeKey: "rpa_poolkey",
     videoFinishServiceId: null,
+    mediaDoorUrls: {},
     // cp#396: both own-iron doors configured, which is what a wired plane looks like. Absent, every
     // case in this file would die at modules_upload on the vpc-backed modules refusing to upload
     // with no route to their door.

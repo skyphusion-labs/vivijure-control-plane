@@ -25,7 +25,7 @@
 //   - Moving a pin means the mirrored production endpoint moved first. If you are tempted to pin
 //     ahead of production, the thing to change is production.
 
-export type SatelliteKey = "backend" | "upscale" | "lipsync" | "audio-upscale";
+export type SatelliteKey = "backend" | "upscale" | "lipsync" | "audio-upscale" | "wan-train";
 
 /** The GHCR org every satellite image lives under. The ONE place this string appears. */
 export const GHCR_ORG = "skyphusion-labs";
@@ -71,6 +71,11 @@ export const SATELLITE_PINS: Record<SatelliteKey, SatellitePin> = {
     repo: "vivijure-audio-upscale",
     tag: "1.0.7",
     mirrors: { endpointId: "sj0btgpjdtswa7", readAt: "2026-07-25" },
+  },
+  "wan-train": {
+    repo: "vivijure-wan-train",
+    tag: "train-0.2.1",
+    mirrors: { endpointId: "zqb7tougbqfkqa", readAt: "2026-08-16" },
   },
 };
 

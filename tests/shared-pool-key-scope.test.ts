@@ -143,8 +143,9 @@ describe("the gate carries the own-iron refusal too (cp#396)", () => {
     const clean = JSON.stringify({
       backend: { id: "ep-backend", name: "b" },
       lipsync: { id: "ep-lipsync", name: "l" },
+      "wan-train": { id: "ep-wan-train", name: "w" },
     });
-    const v = await verifySharedPoolScope(clean, KEY, fakeRunPod(["ep-backend", "ep-lipsync"]));
+    const v = await verifySharedPoolScope(clean, KEY, fakeRunPod(["ep-backend", "ep-lipsync", "ep-wan-train"]));
     expect(v.ok).toBe(true);
     expect(v.state).toBe("scope_verified");
   });

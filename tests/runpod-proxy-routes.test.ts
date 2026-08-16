@@ -27,6 +27,7 @@ const TENANT_ID = "ten_1";
 const POOL_JSON = JSON.stringify({
   backend: { id: "pool-backend", name: "vivijure-prod-backend" },
   lipsync: { id: "pool-lipsync", name: "vivijure-prod-lipsync" },
+  "wan-train": { id: "pool-wan-train", name: "vivijure-prod-wan-train" },
 });
 
 /** A public model slug from the eight-entry cost-door list. Deliberately narration-gen's: it is

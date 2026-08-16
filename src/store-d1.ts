@@ -1182,6 +1182,52 @@ export class D1Store implements ControlPlaneStore, CreditStore {
     };
   }
 
+  async listTenantRunpodJobs(tenantId: string, limit: number): Promise<import("./store").TenantRunpodJob[]> {
+    const cap = Math.max(1, Math.min(limit, 500));
+    const rows = await this.db
+      .prepare(
+        "SELECT job_id, tenant_slug, module, endpoint_id, outcome, status_raw, " +
+          "execution_ms, delay_ms, submitted_at, terminal_at, source " +
+          "FROM runpod_job_index WHERE tenant_id = ?1 " +
+          "ORDER BY COALESCE(submitted_at, 0) DESC LIMIT ?2",
+      )
+      .bind(tenantId, cap)
+      .all<Record<string, unknown>>();
+    return (rows.results ?? []).map((r) => ({
+      job_id: String(r.job_id),
+      tenant_slug: String(r.tenant_slug ?? ""),
+      module: r.module == null ? null : String(r.module),
+      endpoint_id: r.endpoint_id == null ? null : String(r.endpoint_id),
+      outcome: r.outcome == null ? null : String(r.outcome),
+      status_raw: r.status_raw == null ? null : String(r.status_raw),
+      execution_ms: r.execution_ms == null ? null : Number(r.execution_ms),
+      delay_ms: r.delay_ms == null ? null : Number(r.delay_ms),
+      submitted_at: r.submitted_at == null ? null : Number(r.submitted_at),
+      terminal_at: r.terminal_at == null ? null : Number(r.terminal_at),
+      source: r.source == null ? null : String(r.source),
+    }));
+  }
+
+  async listTenantLlmEvents(tenantId: string, limit: number): Promise<import("./store").TenantLlmEvent[]> {
+    const cap = Math.max(1, Math.min(limit, 500));
+    const rows = await this.db
+      .prepare(
+        "SELECT source_id, model, cost_micro_usd, tokens_in, tokens_out, occurred_at " +
+          "FROM llm_spend_events WHERE tenant_id = ?1 " +
+          "ORDER BY occurred_at DESC LIMIT ?2",
+      )
+      .bind(tenantId, cap)
+      .all<Record<string, unknown>>();
+    return (rows.results ?? []).map((r) => ({
+      source_id: String(r.source_id),
+      model: r.model == null ? null : String(r.model),
+      cost_micro_usd: r.cost_micro_usd == null ? null : Number(r.cost_micro_usd),
+      tokens_in: r.tokens_in == null ? null : Number(r.tokens_in),
+      tokens_out: r.tokens_out == null ? null : Number(r.tokens_out),
+      occurred_at: String(r.occurred_at),
+    }));
+  }
+
   async closeRunpodProxyJob(row: ProxyJobClose): Promise<number> {
     // FIRST TERMINAL WRITE WINS. `terminal_at IS NULL` is what makes a webhook retry, a reconciler
     // sweep and a forged duplicate all safe to point at the same row -- and RunPod really does

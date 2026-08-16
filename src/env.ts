@@ -144,6 +144,11 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    * self-hoster without the container gets.
    */
   VIDEO_FINISH_VPC_SERVICE_ID?: string;
+  VIDEO_FINISH_URL?: string;
+  AUDIO_MIX_URL?: string;
+  AUDIO_BEAT_SYNC_URL?: string;
+  IMAGE_PREP_URL?: string;
+  AUDIO_MASTER_URL?: string;
   /**
    * THE OWN-IRON DOORS (cp#396). One pair per vpc-backed PROVISION_PLAN capability.
    *
@@ -191,6 +196,8 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    * production endpoint as orphaned debris.
    */
   SHARED_RUNPOD_ENDPOINTS?: string;
+  /** JSON price book for GET /api/admin/tenants/:id/usage. Unset = jobs listed, costs null. */
+  SPEND_PRICEBOOK?: string;
 
   /**
    * The invoke key for the shared pool (cp#270). A SECRET, and a per-function one.

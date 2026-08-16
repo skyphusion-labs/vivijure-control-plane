@@ -202,6 +202,8 @@ export interface ProvisionDeps {
    * degrades to per-shot clips with the reason stated, which is what tenants get today.
    */
   videoFinishServiceId: string | null;
+  /** Traefik SUBMIT origins (VIDEO_FINISH_URL etc). Empty = that door off. */
+  mediaDoorUrls: Record<string, string>;
   /**
    * The own-iron doors (cp#396), keyed by PROVISION_PLAN key. See TenantModuleDeps.vpcDoors for
    * the both-or-neither rule; resolved once in deps.ts so the module upload and any future studio
@@ -855,6 +857,11 @@ export async function runProvisionJob(
         ...(deps.videoFinishServiceId
           ? [{ type: "vpc_service" as const, name: "VIDEO_FINISH_VPC", service_id: deps.videoFinishServiceId }]
           : []),
+        ...Object.entries(deps.mediaDoorUrls).map(([name, text]) => ({
+          type: "plain_text" as const,
+          name,
+          text,
+        })),
         // cp#136: the finish-tier STATE, projected from the tenant record rather than decided here.
         // Normally empty -- a tenant being provisioned now is reachable by definition -- but a
         // re-provision or a resumed provision of a DECLARED-unreachable tenant must re-state the var,

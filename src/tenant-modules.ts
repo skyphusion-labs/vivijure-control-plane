@@ -196,6 +196,14 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   { module: "narration-gen", publicEndpoint: "minimax-speech-02-hd", recordsRunpodJobs: true, writesTenantRenders: true },
   { module: "seedance", publicEndpoint: "seedance-v1-5-pro-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
   { module: "vidu-q3", publicEndpoint: "vidu-q3-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
+  // Cloudflare AI Gateway i2v. Same selling point as the eight RunPod slugs: hosted tenants
+  // get the cloud motion backends. needsAiGateway for the trio; writesTenantRenders for R2.
+  // Workflows (I2V_WORKFLOW) are still a FLAG if WfP cannot bind them -- invoke will fail
+  // loud rather than silently omit the module from the catalog.
+  { module: "cf-grok-video", needsAiGateway: true, writesTenantRenders: true },
+  { module: "cf-seedance", needsAiGateway: true, writesTenantRenders: true },
+  { module: "cf-flux-3-video", needsAiGateway: true, writesTenantRenders: true },
+  { module: "cf-hh1-r2v", needsAiGateway: true, writesTenantRenders: true },
 ];
 
 /**

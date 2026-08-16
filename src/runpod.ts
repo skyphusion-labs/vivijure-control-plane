@@ -211,6 +211,14 @@ export const PROVISION_PLAN: PlannedCapability[] = [
     endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID",
   },
   {
+    ...pinned("wan-train"),
+    backing: "runpod",
+    label: "Cast LoRA training (Wan)",
+    maxWorkers: 2,
+    gpuTypeIds: BACKEND_GPUS,
+    endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID",
+  },
+  {
     ...pinned("audio-upscale"),
     // OWN IRON, same ruling, same credential posture and the same two boxes as the upscale entry.
     backing: "vpc",
