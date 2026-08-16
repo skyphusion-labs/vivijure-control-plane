@@ -66,8 +66,9 @@ export function looksLikeEmail(email: string): boolean {
  * token an attacker cannot forge, and tenant workers run the trusted studio artifact (not attacker
  * code), so no sibling origin can Set-Cookie here. Recorded honestly (auth ruling 2026-07-18).
  *
- * SameSite=Lax (not Strict) is REQUIRED: the magic-link click and the SSO callback are both
- * top-level cross-site GETs, and Strict would drop the cookie on exactly those hops.
+ * SameSite=Lax (not Strict) is REQUIRED: the SSO callback is a top-level cross-site GET
+ * that sets the session, and Strict would drop the cookie on that hop. The magic-link
+ * confirm POST is same-origin (the GET only renders the form and does not spend the token).
  */
 export function sessionCookie(token: string, maxAgeSeconds: number, domain?: string): string {
   return [
@@ -174,6 +175,84 @@ export async function redeemMagicLink(
   const row = await store.consumeLoginToken(await sha256Hex(token), iso(now));
   if (!row) return { ok: false, reason: "unavailable" };
   return await upsertAccountForVerifiedEmail(store, "email", row.email, row.email, allowCreate);
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Confirm page for a magic-link GET. The token is NOT spent here. Mail scanners and prefetch
+ * land on this page and change nothing; only the POST spends the token (cp#437).
+ */
+export function magicLinkConfirmPage(token: string): string {
+  const safe = escapeHtml(token);
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign in to Vivijure</title>
+    <link rel="stylesheet" href="/platform.css" />
+    <meta name="robots" content="noindex, nofollow" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Vivijure">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Vivijure</span>
+      </a>
+      <span class="tag">hosted studio</span>
+    </header>
+    <main class="shell">
+      <section class="panel">
+        <h1>Finish signing in</h1>
+        <p class="lede">
+          This extra step is so a mail scanner or preview fetch cannot use your link.
+          Nothing has happened yet.
+        </p>
+        <form method="post" action="/auth/email/callback" class="actions">
+          <input type="hidden" name="token" value="${safe}" />
+          <button type="submit" class="primary">Continue</button>
+        </form>
+        <p class="muted small">If you did not ask for a sign-in link, close this page.</p>
+      </section>
+    </main>
+  </body>
+</html>
+`;
+}
+
+export function magicLinkConfirmResponse(token: string): Response {
+  return new Response(magicLinkConfirmPage(token), {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+      "x-robots-tag": "noindex, nofollow",
+    },
+  });
+}
+
+/** Token from the confirm form only. A POST of the mailed GET URL, with no body, spends nothing. */
+export async function magicLinkTokenFromPost(request: Request): Promise<string> {
+  const ct = request.headers.get("content-type") ?? "";
+  if (!ct.includes("application/x-www-form-urlencoded") && !ct.includes("multipart/form-data")) {
+    return "";
+  }
+  try {
+    const form = await request.formData();
+    const token = form.get("token");
+    return typeof token === "string" ? token : "";
+  } catch {
+    return "";
+  }
 }
 
 /**

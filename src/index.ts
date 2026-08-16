@@ -34,6 +34,8 @@ import {
   clearedSessionCookie,
   endSession,
   looksLikeEmail,
+  magicLinkConfirmResponse,
+  magicLinkTokenFromPost,
   normalizeEmail,
   redeemMagicLink,
   resolveSession,
@@ -378,8 +380,9 @@ export async function handle(
   const url = new URL(request.url);
   const path = url.pathname;
 
-  // CSRF: a state-changing request must come from our own origin. The SSO and magic-link callbacks
-  // are GETs (not state-changing in this sense) and carry their own single-use state/token guard.
+  // CSRF: a state-changing request must come from our own origin. The SSO callback is a GET
+  // carrying its own single-use state. The magic-link consume is a POST of a single-use token
+  // (the GET only renders the confirm page and does not spend it). The origin check covers /api/.
   if (request.method !== "GET" && request.method !== "HEAD" && path.startsWith("/api/")) {
     const origin = request.headers.get("origin");
     if (origin && origin !== publicOrigin(env)) return err("bad_origin", 403);
@@ -452,6 +455,16 @@ export async function handle(
 
     if (request.method === "GET" && path === "/auth/email/callback") {
       const token = url.searchParams.get("token") ?? "";
+      if (!token) return redirectTo(env, "/?error=link_invalid");
+      // GET does not consume. Prefetch, mail scanners, and preview fetches land here and change
+      // nothing; the POST below is the spend (cp#437).
+      return magicLinkConfirmResponse(token);
+    }
+
+    if (request.method === "POST" && path === "/auth/email/callback") {
+      const origin = request.headers.get("origin");
+      if (origin && origin !== publicOrigin(env)) return err("bad_origin", 403);
+      const token = await magicLinkTokenFromPost(request);
       if (!token) return redirectTo(env, "/?error=link_invalid");
       const signupsEnabled = (await deps.store.getSetting("signups_enabled")) !== "false";
       const result = await redeemMagicLink(deps.store, token, signupsEnabled, deps.now());
@@ -1425,7 +1438,39 @@ async function provision(
     // Reap from the row the CLAIM returned, not from the earlier check handle. The claim is the
     // serialization point, so these are the authoritative ids; the check ran before we held
     // anything and its handle can already be stale.
+    const reclaimActor = `account:${account.id}`;
+    const reclaimTargets = tenantResourceSnapshot(claimed.tenant);
+    // Intent FIRST (cp#398 / cp#456). The owner path is deleteData:true and reachable without an
+    // operator watching; an unaudited destroy is the thing this write exists to prevent. A failed
+    // write aborts before anything is deleted.
+    await deps.store.recordAdminAction(
+      reclaimActor,
+      "tenant.reclaim_teardown.intent",
+      claimed.tenant.id,
+      JSON.stringify({ delete_data: true, slug: claimed.tenant.slug, ...reclaimTargets }),
+    );
+
     const reaped = await deps.provisioner.teardown(claimed.tenant, { deleteData: true });
+    const afterTeardown = await deps.store.getTenantById(claimed.tenant.id);
+    const reapedCols = tenantReapedColumns(claimed.tenant, afterTeardown);
+    const refused = reaped.failures.filter((f) => f.error.startsWith("refused:"));
+    const failed = reaped.failures.filter((f) => !f.error.startsWith("refused:"));
+    await deps.store.recordAdminAction(
+      reclaimActor,
+      "tenant.reclaim_teardown",
+      claimed.tenant.id,
+      JSON.stringify({
+        delete_data: true,
+        ok: reaped.ok,
+        slug: claimed.tenant.slug,
+        targets: reclaimTargets,
+        reaped: reapedCols,
+        refused: refused.length,
+        failed: failed.length,
+        absent: reaped.absent.map((a) => a.resource),
+        failures: reaped.failures,
+      }),
+    );
     if (!reaped.ok) {
       // DO NOT COMPLETE. reclaimSlug blanks the resource columns, so completing now would erase the
       // only record of the resources we just failed to delete and nothing would ever reap them. The
@@ -1454,7 +1499,7 @@ async function provision(
       // refused here even though our token still matches. That refusal is CORRECT: by now another
       // attempt may hold the row and be reaping it, and completing would blank the row underneath
       // them. We have already destroyed the old resources, so this must be loud -- it is the one
-      // path where we did real work and cannot record it.
+      // path where we did real work; the intent and completion audit rows are the record.
       console.error("reclaim.completion_refused", {
         tenant: claim.reclaim.tenant_id,
         reason: "lease expired or no longer held; teardown DID run",
@@ -2918,6 +2963,17 @@ async function adminRoutes(
 
     // TEAR DOWN FROM THE LEASED ROW, not from the row read before the lease: beginTeardown is the
     // serialization point, so those are the authoritative ids (same rule the reclaim path states).
+    // Intent FIRST (cp#398): if this write fails, nothing has been destroyed yet.
+    await deps.store.recordAdminAction(
+      actor,
+      "tenant.teardown.intent",
+      tenant.id,
+      JSON.stringify({
+        delete_data: deleteData,
+        i_own: ignoreTombstoneReferrers ? tenant.id : null,
+        ...tenantResourceSnapshot(lease.tenant),
+      }),
+    );
     const result = await deps.provisioner.teardown(lease.tenant, {
       deleteData,
       ignoreTombstoneReferrers,
@@ -3745,6 +3801,24 @@ async function readJson(request: Request): Promise<unknown> {
 
 function redirectTo(env: ControlPlaneEnv, path: string, headers: Record<string, string> = {}): Response {
   return new Response(null, { status: 302, headers: { location: `${publicOrigin(env)}${path}`, ...headers } });
+}
+
+function tenantResourceSnapshot(t: Pick<Tenant, "script_name" | "d1_database_id" | "r2_bucket_name" | "r2_token_id">) {
+  return {
+    script_name: t.script_name,
+    d1_database_id: t.d1_database_id,
+    r2_bucket_name: t.r2_bucket_name,
+    r2_token_id: t.r2_token_id,
+  };
+}
+
+function tenantReapedColumns(
+  before: Pick<Tenant, "script_name" | "d1_database_id" | "r2_bucket_name" | "r2_token_id">,
+  after: Pick<Tenant, "script_name" | "d1_database_id" | "r2_bucket_name" | "r2_token_id"> | null,
+): string[] {
+  return (["script_name", "d1_database_id", "r2_bucket_name", "r2_token_id"] as const).filter(
+    (col) => before[col] !== null && after?.[col] === null,
+  );
 }
 
 /**

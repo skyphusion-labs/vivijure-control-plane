@@ -456,18 +456,98 @@ describe("GET /auth/email/callback", () => {
     return new URL(sent[0].text.split("\n").find((l) => l.startsWith("http"))!).searchParams.get("token")!;
   }
 
+  function unspent(): boolean {
+    return [...store.loginTokens.values()].every((row) => row.consumed_at === null);
+  }
+
+  it("renders a confirm page and does NOT spend the token (cp#437)", async () => {
+    const token = await link();
+    const res = await handle(req(`/auth/email/callback?token=${token}`), env(), ctx, deps);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(res.headers.get("set-cookie")).toBeNull();
+    const html = await res.text();
+    expect(html).toContain("Finish signing in");
+    expect(html).toContain(`value="${token}"`);
+    expect(html).toContain('method="post"');
+    expect(await store.getAccountByEmail("new@b.com")).toBeNull();
+    expect(unspent()).toBe(true);
+  });
+
+  it("a prefetch GET is the same as a human GET: the token stays live", async () => {
+    const token = await link();
+    const res = await handle(
+      req(`/auth/email/callback?token=${token}`, { headers: { purpose: "prefetch", "sec-purpose": "prefetch" } }),
+      env(),
+      ctx,
+      deps,
+    );
+    expect(res.status).toBe(200);
+    expect(unspent()).toBe(true);
+    expect(await store.getAccountByEmail("new@b.com")).toBeNull();
+  });
+
+  it("two GETs do not burn the link (the mailed URL is not the spend)", async () => {
+    const token = await link();
+    expect((await handle(req(`/auth/email/callback?token=${token}`), env(), ctx, deps)).status).toBe(200);
+    expect((await handle(req(`/auth/email/callback?token=${token}`), env(), ctx, deps)).status).toBe(200);
+    expect(unspent()).toBe(true);
+  });
+
+  it("REFUSES a GET with no token", async () => {
+    const res = await handle(req("/auth/email/callback"), env(), ctx, deps);
+    expect(res.headers.get("location")).toContain("error=link_invalid");
+  });
+
+  it("escapes a hostile token in the confirm page", async () => {
+    const hostile = `"><img src=x onerror=alert(1)>`;
+    const res = await handle(req(`/auth/email/callback?token=${encodeURIComponent(hostile)}`), env(), ctx, deps);
+    const html = await res.text();
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&quot;&gt;");
+    expect(unspent()).toBe(true);
+  });
+});
+
+describe("POST /auth/email/callback", () => {
+  async function link(email = "new@b.com"): Promise<string> {
+    await handle(jsonReq("/api/auth/email/start", { email }), env(), ctx, deps);
+    await flush();
+    return new URL(sent[0].text.split("\n").find((l) => l.startsWith("http"))!).searchParams.get("token")!;
+  }
+
+  const formReq = (token: string, init: RequestInit = {}) =>
+    req("/auth/email/callback", {
+      method: "POST",
+      body: new URLSearchParams({ token }).toString(),
+      ...init,
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        ...(init.headers as Record<string, string> | undefined),
+      },
+    });
+
   it("redeems a fresh link, creates the account, and sets a session", async () => {
-    const res = await handle(req(`/auth/email/callback?token=${await link()}`), env(), ctx, deps);
+    const token = await link();
+    await handle(req(`/auth/email/callback?token=${token}`), env(), ctx, deps);
+    const res = await handle(formReq(token), env(), ctx, deps);
     expect(res.status).toBe(302);
     expect(res.headers.get("set-cookie")).toContain(SESSION_COOKIE);
     expect(await store.getAccountByEmail("new@b.com")).not.toBeNull();
   });
 
+  it("REFUSES a POST of the mailed URL with no form body (query token is not a spend)", async () => {
+    const token = await link();
+    const res = await handle(req(`/auth/email/callback?token=${token}`, { method: "POST" }), env(), ctx, deps);
+    expect(res.headers.get("location")).toContain("error=link_invalid");
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect([...store.loginTokens.values()][0].consumed_at).toBeNull();
+  });
+
   it("REFUSES a replayed link (single-use), even though it just worked", async () => {
     const token = await link();
-    expect((await handle(req(`/auth/email/callback?token=${token}`), env(), ctx, deps)).headers.get("set-cookie"))
-      .toContain(SESSION_COOKIE);
-    const replay = await handle(req(`/auth/email/callback?token=${token}`), env(), ctx, deps);
+    expect((await handle(formReq(token), env(), ctx, deps)).headers.get("set-cookie")).toContain(SESSION_COOKIE);
+    const replay = await handle(formReq(token), env(), ctx, deps);
     expect(replay.headers.get("location")).toContain("error=link_invalid");
     expect(replay.headers.get("set-cookie")).toBeNull();
   });
@@ -475,21 +555,33 @@ describe("GET /auth/email/callback", () => {
   it("REFUSES an expired link", async () => {
     const token = await link();
     const later = { ...deps, now: () => deps.now() + 16 * 60 * 1000 };
-    const res = await handle(req(`/auth/email/callback?token=${token}`), env(), ctx, later);
+    const res = await handle(formReq(token), env(), ctx, later);
     expect(res.headers.get("location")).toContain("error=link_invalid");
   });
 
   it("REFUSES a forged token", async () => {
-    const res = await handle(req("/auth/email/callback?token=deadbeef"), env(), ctx, deps);
+    const res = await handle(formReq("deadbeef"), env(), ctx, deps);
     expect(res.headers.get("location")).toContain("error=link_invalid");
   });
 
   it("REFUSES to create an account if signups closed AFTER the link was mailed", async () => {
     const token = await link();
     store.settings.set("signups_enabled", "false"); // the switch flips mid-flight
-    const res = await handle(req(`/auth/email/callback?token=${token}`), env(), ctx, deps);
+    const res = await handle(formReq(token), env(), ctx, deps);
     expect(res.headers.get("location")).toContain("error=signups_closed");
     expect(await store.getAccountByEmail("new@b.com")).toBeNull(); // and leaves nothing behind
+  });
+
+  it("REFUSES a cross-origin POST", async () => {
+    const token = await link();
+    const res = await handle(
+      formReq(token, { headers: { origin: "https://evil.example" } }),
+      env(),
+      ctx,
+      deps,
+    );
+    expect(res.status).toBe(403);
+    expect([...store.loginTokens.values()][0].consumed_at).toBeNull();
   });
 });
 
@@ -1173,6 +1265,24 @@ describe("POST /api/tenant/provision", () => {
     expect(after?.status).toBe("pending");
     expect(after?.d1_database_id).toBeNull();
     expect(wiring.start).toHaveBeenCalledTimes(1);
+
+    const trail = store.audit.filter((a) => a.target === "ten_halfbuilt");
+    expect(trail.map((a) => a.action)).toEqual([
+      "tenant.reclaim_teardown.intent",
+      "tenant.reclaim_teardown",
+    ]);
+    expect(trail.every((a) => a.actor === `account:${account.id}`)).toBe(true);
+    expect(JSON.parse(trail[0].detail!)).toMatchObject({
+      delete_data: true,
+      slug: "hero",
+      d1_database_id: "db-old",
+      r2_token_id: "tok-old",
+    });
+    expect(JSON.parse(trail[1].detail!)).toMatchObject({
+      delete_data: true,
+      ok: true,
+      targets: { d1_database_id: "db-old", r2_token_id: "tok-old" },
+    });
   });
 
   it("LOST the claim: destroys NOTHING and says the name is being reset", async () => {
@@ -1254,6 +1364,13 @@ describe("POST /api/tenant/provision", () => {
     expect(after?.r2_bucket_name).toBe("vivijure-tenant-hero");
     expect(after?.status).toBe("failed");
     expect(wiring.start).not.toHaveBeenCalled();
+    const done = store.audit.find((a) => a.action === "tenant.reclaim_teardown");
+    expect(done, "a failed reclaim teardown must still leave an audit row").toBeDefined();
+    expect(JSON.parse(done!.detail!)).toMatchObject({
+      delete_data: true,
+      ok: false,
+      failures: [{ resource: "r2_bucket", error: "bucket is not empty" }],
+    });
   });
 
   it("TEARDOWN OVERRUN: completion refused after a real teardown is loud, not silent", async () => {
@@ -1297,6 +1414,50 @@ describe("POST /api/tenant/provision", () => {
     expect(wiring.teardown).not.toHaveBeenCalled();
     const after = await store.getTenantById("ten_halfbuilt");
     expect(after?.d1_database_id).toBe("db-old");
+  });
+
+  it("FAILS THE RECLAIM when the intent audit write fails, destroying nothing (cp#456 / cp#398)", async () => {
+    const { cookie, account } = await ready();
+    await halfBuilt(account.id);
+    const failing = new Proxy(store, {
+      get(target, prop, receiver) {
+        if (prop === "recordAdminAction") {
+          return async () => {
+            throw new Error("admin_audit is unwritable");
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const res = await handle(
+      jsonReq("/api/tenant/provision", { slug: "hero", runpod_api_key: "rpa_x" }, { headers: { cookie } }),
+      env(),
+      ctx,
+      { ...deps, store: failing },
+    );
+    expect(res.status).toBe(500);
+    expect(wiring.teardown).not.toHaveBeenCalled();
+    expect(wiring.start).not.toHaveBeenCalled();
+    const after = await store.getTenantById("ten_halfbuilt");
+    expect(after?.d1_database_id).toBe("db-old");
+    expect(after?.r2_bucket_name).toBe("vivijure-tenant-hero");
+    expect(store.audit).toHaveLength(0);
+
+    // The failed attempt held a claim lease; drop it so the control is the same operation, not a 409.
+    const held = (await store.getTenantById("ten_halfbuilt"))!;
+    held.reclaim_lease_until = null;
+    held.reclaim_lease_token = null;
+
+    // POSITIVE CONTROL: the same request against the live store reaps.
+    const ok = await handle(
+      jsonReq("/api/tenant/provision", { slug: "hero", runpod_api_key: "rpa_x" }, { headers: { cookie } }),
+      env(),
+      ctx,
+      deps,
+    );
+    expect(ok.status).toBe(202);
+    expect(wiring.teardown).toHaveBeenCalledTimes(1);
   });
 
   // cp#43: the job row is where a failed module upgrade keeps the ONLY surviving copy of the
@@ -2448,6 +2609,63 @@ describe("POST /api/admin/tenants/:id/teardown", () => {
     expect(entry, "the teardown must be audited").toBeDefined();
     // The detail has to carry WHAT happened, not just that something did.
     expect(JSON.parse(entry!.detail!)).toMatchObject({ delete_data: true, refused: 0, failed: 0 });
+    const intent = store.audit.find((a) => a.action === "tenant.teardown.intent" && a.target === "ten_abc123");
+    expect(intent, "intent must be recorded before the destructive pass (cp#398)").toBeDefined();
+    expect(JSON.parse(intent!.detail!)).toMatchObject({
+      delete_data: true,
+      script_name: "tenant-hero-studio",
+      d1_database_id: "db-1",
+    });
+  });
+
+  it("FAILS THE OPERATION when the intent audit write fails, leaving resources (cp#398)", async () => {
+    await provisionedTenant();
+    reaps(["script_name", "d1_database_id", "r2_bucket_name", "r2_token_id"]);
+    const failing = new Proxy(store, {
+      get(target, prop, receiver) {
+        if (prop === "recordAdminAction") {
+          return async () => {
+            throw new Error("admin_audit is unwritable");
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const res = await handle(
+      jsonReq(
+        "/api/admin/tenants/ten_abc123/teardown",
+        { confirm_slug: "hero", delete_data: true },
+        { headers: admin() },
+      ),
+      env(),
+      ctx,
+      { ...deps, store: failing },
+    );
+    expect(res.status).toBe(500);
+    expect(wiring.teardown).not.toHaveBeenCalled();
+    const row = (await store.getTenantById("ten_abc123"))!;
+    expect(row.d1_database_id).toBe("db-1");
+    expect(row.script_name).toBe("tenant-hero-studio");
+    expect(row.deleted_at).toBeNull();
+
+    // beginTeardown held the lease before the intent write; drop it so the control is the same call.
+    row.reclaim_lease_until = null;
+    row.reclaim_lease_token = null;
+
+    // POSITIVE CONTROL: same request against the live store tears down.
+    const ok = await handle(
+      jsonReq(
+        "/api/admin/tenants/ten_abc123/teardown",
+        { confirm_slug: "hero", delete_data: true },
+        { headers: admin() },
+      ),
+      env(),
+      ctx,
+      deps,
+    );
+    expect(ok.status).toBe(200);
+    expect(wiring.teardown).toHaveBeenCalledTimes(1);
   });
 });
 
