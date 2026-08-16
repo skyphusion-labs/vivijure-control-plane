@@ -261,6 +261,14 @@ MANUAL_CREDIT_CEILING_MICRO_USD = "${MANUAL_CREDIT_CEILING_MICRO_USD}"
 PAYPAL_CLIENT_ID = "${PAYPAL_CLIENT_ID}"
 PAYPAL_WEBHOOK_ID = "${PAYPAL_WEBHOOK_ID}"
 PAYPAL_ENV = "${PAYPAL_ENV}"
+# Traefik finish doors stamped onto tenant studios. EMPTY = that door is off.
+VIDEO_FINISH_URL = "${VIDEO_FINISH_URL}"
+AUDIO_MIX_URL = "${AUDIO_MIX_URL}"
+AUDIO_BEAT_SYNC_URL = "${AUDIO_BEAT_SYNC_URL}"
+IMAGE_PREP_URL = "${IMAGE_PREP_URL}"
+AUDIO_MASTER_URL = "${AUDIO_MASTER_URL}"
+# Operator spend pricebook JSON. EMPTY = no pricebook bound.
+SPEND_PRICEBOOK = "${SPEND_PRICEBOOK}"
 # cp#183: the per-tenant R2 storage ceiling in BYTES, bound onto every tenant studio as
 # R2_STORAGE_QUOTA_BYTES and enforced there at submit (vivijure-core core#52: honest 507 with both
 # real numbers, fail-CLOSED 503 if the quota is set and its check cannot run).
