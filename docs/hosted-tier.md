@@ -54,7 +54,8 @@ it: this studio does not use your account.
 ## What a render costs
 
 GPU seconds land on our RunPod account, not yours. A daily ceiling on the tenant studio
-(`TENANT_SPEND_DAILY_CEILING`) is the bound on what any one tenant can spend on the pool.
+(`TENANT_SPEND_DAILY_CEILING`) is a count of spend-route submits per UTC day, not
+dollars (cp#419). A Wan train and a keyframe both count as 1.
 
 The planner's AI is pennies per storyboard; in the hosted tier we cover it.
 

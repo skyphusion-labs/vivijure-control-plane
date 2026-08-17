@@ -283,10 +283,12 @@ can drift, and a reader built from a recorded sample is only as fresh as the sam
   tenant. Bytes only, no unit suffixes (`107374182400` = 100 GiB). A non-empty value that is not a
   positive integer REFUSES the provision, the studio-upgrade preflight and the converge route rather
   than being read as "off" -- see `docs/control-plane.md`.
-- `TENANT_SPEND_DAILY_CEILING` (cp#218) -- the per-tenant daily spend ceiling in USD, bound onto
-  every tenant studio as `SPEND_DAILY_CEILING`. Empty = the plane default of 25, which is what it
-  has always sent. Declared as of cp#218: it was typed in `env.ts` and read in `deps.ts` while being
-  in no list at all, so the knob documented as operator-tunable could not be tuned.
+- `TENANT_SPEND_DAILY_CEILING` (cp#218 / cp#419) -- the per-tenant daily spend
+  ceiling as a SUBMISSION COUNT, not USD. Bound onto every tenant studio as
+  `SPEND_DAILY_CEILING`. Empty = the plane default of 25 (twenty-five spend-route
+  submits per UTC day). A Wan train and a keyframe both count as 1. Declared as
+  of cp#218: it was typed in `env.ts` and read in `deps.ts` while being in no
+  list at all, so the knob documented as operator-tunable could not be tuned.
 - `STUDIO_TOKEN_KEK_ENCRYPT_SLOT` (cp#95) -- which installed KEK new ciphertext is written under.
   Empty = `primary`, the only correct value outside a rotation. Declared as of cp#218: the template
   line was commented out, which made the rotation runbook step below unperformable without a repo

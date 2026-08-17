@@ -295,8 +295,11 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
 
   // ---- optional ----
 
-  /** Per-tenant daily spend ceiling ($) set as the tenant studio's SPEND_DAILY_CEILING at provision
-   *  time. Unset -> the studio's own default applies. A var, not a secret (a public policy number). */
+  /** Per-tenant daily spend ceiling as a SUBMISSION COUNT (not USD). Bound as the tenant
+   *  studio's SPEND_DAILY_CEILING at provision time. Unset -> the studio's own default
+   *  applies. A var, not a secret (a public policy number). cp#419: the name still
+   *  says "spend"; the unit is one counted submit per spend-route, so a Wan train
+   *  and a keyframe both cost 1. Do not invent dollar prices here. */
   TENANT_SPEND_DAILY_CEILING?: string;
 
   /**
