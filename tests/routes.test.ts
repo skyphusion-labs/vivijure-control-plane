@@ -194,7 +194,7 @@ function makeWiring(): WiringDouble {
     // A queued provision job IS driven by the poll route; without resume the route TypeErrors.
     resume: vi.fn(async () => {}),
     installInvokeKey: vi.fn(async () => ({
-      verified: ["keyframe", "own-gpu", "finish-upscale", "finish-lipsync", "speech-upscale"],
+      verified: ["keyframe", "own-gpu", "finish-upscale", "speech-upscale"],
       unverified: [],
       unconfirmed: [],
       notProbed: [],

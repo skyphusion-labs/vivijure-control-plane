@@ -1717,17 +1717,14 @@ export type ModuleUpgradeOutcome =
  * (from_release) precisely because modules_release is NULLed before the first write.
  *
  * CROSS-MODULE COMPATIBILITY of a partially-upgraded state, stated from the catalog rather than
- * assumed from the conformance gate: the six RunPod catalog modules serve four hooks -- keyframe
+ * assumed from the conformance gate: the hosted RunPod catalog modules serve four hooks -- keyframe
  * (`keyframe`), own-gpu (`motion.backend`), speech-upscale (`speech`), and finish-upscale +
- * finish-lipsync + finish-rife (all three `finish`). Modules on DIFFERENT hooks never see each
- * other output, so those three groups are mutually independent and a mixed state across them is not
- * expressible.
+ * finish-rife (both `finish`). Hosted does not provision finish-lipsync (MuseTalk is self-host
+ * only). Modules on DIFFERENT hooks never see each other output, so those groups are mutually
+ * independent and a mixed state across them is not expressible.
  *
- * cp#284 MADE THE `finish` GROUP A CHAIN OF THREE, AND THIS PARAGRAPH IS STILL WRITTEN FOR TWO.
- * The chaining argument below is sound for any adjacent pair in the chain and has NOT been
- * re-derived for a three-long chain -- specifically, whether a mixed state across three links can
- * express an incompatibility the two-link argument does not cover is an open question, not a
- * settled one. Flagged rather than silently generalised. The coupled group is the `finish`
+ * Hosted finish is again a pair (upscale + rife). finish-lipsync is not provisioned here.
+ * The chaining argument below is for an adjacent pair. The coupled group is the `finish`
  * modules, which CHAIN: each takes FinishInput{shot_id, clip_key} and returns
  * FinishOutput{clip_key}, so each consumes the output key of the one before it. A mixed
  * finish chain therefore means two vendored copies of that contract meeting on one clip. That is

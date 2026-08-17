@@ -158,7 +158,8 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   { module: "keyframe", endpointKey: "backend", recordsRunpodJobs: true },
   { module: "own-gpu", endpointKey: "backend", recordsRunpodJobs: true },
   { module: "finish-upscale", endpointKey: "upscale", recordsRunpodJobs: true },
-  { module: "finish-lipsync", endpointKey: "lipsync", recordsRunpodJobs: true },
+  // Not a paywall. Hosted will not run MuseTalk; talking is native AV on our keyframes.
+  // Self-host still binds finish-lipsync via vivijure-cf wrangler.toml.example SATELLITE.
   { module: "speech-upscale", endpointKey: "audio-upscale", recordsRunpodJobs: true },
   // cp#284 / cf#394 wave 0. Rides the SAME shared backend endpoint as keyframe and own-gpu, which
   // is read off the module rather than chosen here: its wrangler.toml binds RUNPOD_ENDPOINT_ID from

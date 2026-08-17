@@ -195,7 +195,7 @@ describe("preflight refuses before anything is written", () => {
         fetch: vi.fn(async (_r: string, name: string) => {
           // The FOURTH catalog module is the missing one, so any fetch-then-upload interleaving
           // would already have uploaded three scripts by the time this throws.
-          if (name === "finish-lipsync") throw new Error("no such object in the release mirror");
+          if (name === "speech-upscale") throw new Error("no such object in the release mirror");
           return { mainModule: "i.js", moduleText: "export default {}", compatibilityDate: "2026-06-01" };
         }),
       } as unknown as ProvisionDeps["moduleBundle"],
@@ -207,7 +207,7 @@ describe("preflight refuses before anything is written", () => {
     if (pre.ok) throw new Error("unreachable");
     expect(pre.refusal.code).toBe("module_bundle_unavailable");
     expect(pre.refusal.status).toBe(422);
-    expect(pre.refusal.message).toContain("finish-lipsync");
+    expect(pre.refusal.message).toContain("speech-upscale");
     // The whole point.
     expect(cf.uploadUserWorker).not.toHaveBeenCalled();
     // And the tenant row is untouched: still recorded at the release it was already on.
@@ -236,7 +236,7 @@ describe("preflight refuses before anything is written", () => {
     expect(pre.context.bundles).toBeInstanceOf(Map);
     // It carries the release the OPERATOR asked for, never the plane-wide deps.release.
     expect(pre.context.release).toBe(NEW_RELEASE);
-    expect(pre.context.bundles.size).toBe(19);   // + cf-grok/seedance/flux/hh1
+    expect(pre.context.bundles.size).toBe(18);   // hosted catalog; no finish-lipsync
   });
 
   it("fetches every bundle at the REQUESTED release, not the plane-wide pin", async () => {
@@ -251,7 +251,7 @@ describe("preflight refuses before anything is written", () => {
 
     await preflightModuleUpgrade(d, tenant, NEW_RELEASE);
 
-    expect(fetchSpy).toHaveBeenCalledTimes(19);   // + cf-grok/seedance/flux/hh1
+    expect(fetchSpy).toHaveBeenCalledTimes(18);   // hosted catalog; no finish-lipsync
     // deps.release is OLD_RELEASE; if the explicit release were being dropped this would be it.
     for (const call of fetchSpy.mock.calls as unknown as [string, string][]) {
       expect(call[0]).toBe(NEW_RELEASE);
@@ -275,10 +275,10 @@ describe("upgradeTenantModules", () => {
 
     expect(out.ok).toBe(true);
     // All SIX catalog modules, uploaded and installed again (cf#56 added plan-enhance).
-    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(19);   // + cf-grok/seedance/flux/hh1
+    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(18);   // hosted catalog; no finish-lipsync
     const installs = (d.callTenantStudio as unknown as { mock: { calls: [string, { path: string }][] } }).mock.calls
       .filter((c) => c[1].path === "/api/modules/install");
-    expect(installs).toHaveLength(19);  // + cf-grok/seedance/flux/hh1
+    expect(installs).toHaveLength(18);  // hosted catalog; no finish-lipsync
   });
 
   it("uses the PRE-FETCHED bundles; it does not re-fetch during upload", async () => {
@@ -315,7 +315,7 @@ describe("upgradeTenantModules", () => {
         // cp#284 added the 8 cost-door rows. STILL A HAND LIST, deliberately: deriving it from
         // TENANT_MODULE_CATALOG would make it agree with whatever the catalog says, which is
         // this assertion inverted. It exists to FAIL when the catalog moves.
-        "keyframe", "own-gpu", "finish-upscale", "finish-lipsync",
+        "keyframe", "own-gpu", "finish-upscale",
         "speech-upscale", "finish-rife", "plan-enhance",
         "alibaba-wan", "alibaba-wan-lora", "google-veo", "kling",
         "minimax-hailuo", "narration-gen", "seedance", "vidu-q3",
