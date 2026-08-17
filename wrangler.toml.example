@@ -314,11 +314,13 @@ DISPATCH_NAMESPACE = "${TENANT_DISPATCH_NAMESPACE}"
 TENANT_MODULE_NAMESPACE = "${TENANT_MODULE_NAMESPACE}"
 # The pinned studio release every new tenant gets (the golden-checkpoint pin; see the Q4 ruling).
 STUDIO_RELEASE = "${STUDIO_RELEASE}"
-# cp#218: the per-tenant daily spend ceiling in USD, bound onto every tenant studio as
-# SPEND_DAILY_CEILING at provision time. EMPTY IS MEANINGFUL and is the shipped default: the plane
-# supplies 25, which is what it has always done (src/deps.ts). This line exists because the var was
-# typed in src/env.ts and read in deps.ts while being declared in NO list, so the knob documented as
-# operator-tunable could not actually be tuned. Declared empty here changes nothing and makes it
+# cp#218 / cp#419: the per-tenant daily spend ceiling as a SUBMISSION COUNT (not
+# USD), bound onto every tenant studio as SPEND_DAILY_CEILING at provision time.
+# EMPTY IS MEANINGFUL and is the shipped default: the plane supplies 25 submits
+# per UTC day (src/deps.ts). A Wan train and a keyframe both count as 1. This
+# line exists because the var was typed in src/env.ts and read in deps.ts while
+# being declared in NO list, so the knob documented as operator-tunable could
+# not actually be tuned. Declared empty here changes nothing and makes it
 # settable.
 TENANT_SPEND_DAILY_CEILING = "${TENANT_SPEND_DAILY_CEILING}"
 # cp#45: the operator smoke-render bounds. EMPTY IS MEANINGFUL for all three -- the documented

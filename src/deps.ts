@@ -597,6 +597,8 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     // only catches undefined -- every tenant would have been provisioned with SPEND_DAILY_CEILING
     // set to the empty string, which is not a ceiling. Same rule kekRing() and videoFinishServiceId
     // already use.
+    // cp#419: this string is a submission count, not dollars. Default 25 = 25
+    // spend-route submits per UTC day. Do not treat it as USD.
     spendDailyCeiling: env.TENANT_SPEND_DAILY_CEILING?.trim() || "25",
     // cf#56: the AI Gateway that AI-Gateway-backed tenant modules bind as GATEWAY_ID. NO default:
     // an unset var means this plane names no gateway, and plan-enhance then runs on the free local
