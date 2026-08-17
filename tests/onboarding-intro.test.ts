@@ -87,6 +87,19 @@ describe("intro: there is a representative example to render with no fetch", () 
   it("the representative worker total is real, so the intro is never an empty plan", () => {
     expect(planWorkerTotal(REPRESENTATIVE_PLAN.endpoints)).toBeGreaterThan(0);
   });
+
+  it("paints filmmaker purposes, not image repos or GPU SKUs", () => {
+    expect(REPRESENTATIVE_PLAN.endpoints.map((ep) => ep.label)).toEqual([
+      "Render",
+      "Sharper video",
+      "Lip sync",
+      "Cleaner audio",
+    ]);
+    REPRESENTATIVE_PLAN.endpoints.forEach((ep) => {
+      expect(ep.label).not.toMatch(/ghcr\.io|H200|B200/i);
+      expect(ep.purpose).not.toMatch(/ghcr\.io|H200|B200/i);
+    });
+  });
 });
 
 describe("intro: the cost line resolves to a real dollar amount, never a stuck spinner", () => {
@@ -152,18 +165,37 @@ describe("intro: the placeholders are not spinners", () => {
     expect(html).not.toMatch(/id="plan-preview"[^>]*>loading/);
   });
 
-  it("the intro labels the example as representative", () => {
-    expect(html).toContain("representative example");
+  it("the intro is name-your-studio, not a provisioner bill of materials", () => {
+    expect(html).toContain("You name the studio. We build it.");
+    expect(html).not.toContain("What gets set up");
+    expect(html).not.toContain("representative example");
   });
 
   it("the review step no longer claims the plan is the owner's RunPod account (cp#474)", () => {
     expect(html).not.toMatch(/create on your RunPod account/i);
     expect(html).not.toMatch(/Create these endpoints on my RunPod account/i);
-    expect(html).toMatch(/Build my studio with this plan/i);
+    expect(html).toMatch(/Build my studio/i);
   });
 
   it("CONTROL: the loading-text scan can fail", () => {
     expect("<p>loading a real example...</p>").toContain("loading a real example");
+  });
+
+  it("the hosted display path does not paint image repos, GPU SKUs, or a dollar example", () => {
+    const src = readAsset("onboarding.js");
+    const page = readAsset("onboarding.html");
+    const plan = fnBody(src, "function renderPlan(");
+    expect(plan).toContain("consumerEndpointLabel");
+    expect(plan).not.toContain("ep.image");
+    expect(plan).not.toContain("planRowMeta");
+    const cost = fnBody(src, "function renderCostExample(");
+    expect(cost).not.toContain("gpu_hourly_usd");
+    expect(cost).not.toContain("job_id");
+    expect(page).not.toMatch(/ghcr\.io/i);
+    expect(page).not.toMatch(/H200|B200/);
+    expect(page).not.toContain("film-2294");
+    expect(page).not.toContain("Creating your database");
+    expect(page).not.toContain("Creating your storage bucket");
   });
 });
 

@@ -156,6 +156,8 @@ export function invokeRejectionCopy(
   detail?: string | null,
 ): string;
 export function planWorkerTotal(plan: PlannedEndpoint[] | null | undefined): number;
+/** Filmmaker-facing row name. Image repos and GPU SKUs are not painted. */
+export function consumerEndpointLabel(ep: PlannedEndpoint | null | undefined): string;
 /** Meta line for one review row. Own-iron is not scale-to-zero. */
 export function planRowMeta(ep: PlannedEndpoint | null | undefined): string;
 /** One-line total under the review list. */

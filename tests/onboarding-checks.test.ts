@@ -13,6 +13,7 @@ import {
   formatUsd,
   keyShapeHint,
   planWorkerTotal,
+  consumerEndpointLabel,
   planRowMeta,
   planSummaryCopy,
   aupAcceptFailureCopy,
@@ -103,6 +104,21 @@ describe("planWorkerTotal", () => {
       { key: "c", label: "c", purpose: "", image: "", max_workers: 2 },
     ] as PlannedEndpoint[];
     expect(planWorkerTotal(junk)).toBe(2);
+  });
+});
+
+describe("consumerEndpointLabel", () => {
+  it("maps known keys to filmmaker purposes", () => {
+    expect(consumerEndpointLabel({ key: "backend", label: "Render (keyframes, video)" })).toBe("Render");
+    expect(consumerEndpointLabel({ key: "upscale", label: "Video upscale" })).toBe("Sharper video");
+    expect(consumerEndpointLabel({ key: "lipsync", label: "Lip sync" })).toBe("Lip sync");
+    expect(consumerEndpointLabel({ key: "audio-upscale", label: "Audio upscale" })).toBe("Cleaner audio");
+  });
+
+  it("falls back to the plan label for an unknown key rather than inventing one", () => {
+    expect(consumerEndpointLabel({ key: "wan-train", label: "Cast LoRA training (Wan)" }))
+      .toBe("Cast LoRA training (Wan)");
+    expect(consumerEndpointLabel(null)).toBe("");
   });
 });
 

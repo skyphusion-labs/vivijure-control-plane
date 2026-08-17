@@ -67,16 +67,19 @@
   // The intro is a projection of THIS constant the same way the review screen
   // is a projection of the fetched plan; neither hardcodes a per-feature
   // section. Keep the fields in step with the PlannedEndpoint shape the review
-  // rows read, so the two render identically.
+  // rows read. Labels and purposes are filmmaker-facing; image / gpu / job_id
+  // stay on the object so the contract does not smash, and the page does not
+  // paint them.
   const REPRESENTATIVE_PLAN = {
     endpoints: [
-      // Labels match PROVISION_PLAN. backing is what lets the intro tell own-iron
-      // from the shared pool without inventing four RunPod endpoints (cp#474).
+      // Labels are filmmaker purposes (Render, Sharper video, Lip sync, Cleaner
+      // audio). backing is what lets the intro tell own-iron from the shared
+      // pool without inventing four RunPod endpoints (cp#474).
       // cp#303: purpose matches the plan -- training is not on this endpoint.
-      { key: "backend", label: "Render (keyframes, video)", purpose: "The main render: keyframes and video", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "H200 / B200", backing: "runpod" },
-      { key: "upscale", label: "Video upscale", purpose: "Makes finished video sharper", image: "ghcr.io/skyphusion-labs/vivijure-upscale", gpu: "our hardware", backing: "door" },
+      { key: "backend", label: "Render", purpose: "Keyframes and video", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "H200 / B200", backing: "runpod" },
+      { key: "upscale", label: "Sharper video", purpose: "Makes finished video sharper", image: "ghcr.io/skyphusion-labs/vivijure-upscale", gpu: "our hardware", backing: "door" },
       { key: "lipsync", label: "Lip sync", purpose: "Matches mouth movement to dialogue", image: "ghcr.io/skyphusion-labs/vivijure-musetalk", max_workers: 1, gpu: "RTX 6000 Pro", backing: "runpod" },
-      { key: "audio-upscale", label: "Audio upscale", purpose: "Cleans up and sharpens audio", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", gpu: "our hardware", backing: "door" },
+      { key: "audio-upscale", label: "Cleaner audio", purpose: "Cleans up and sharpens audio", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", gpu: "our hardware", backing: "door" },
     ],
     // A real, named render from our own history (film-2294a9d7, 2026-07-14: 2
     // shots, 10s of finished video, final quality). wall_clock_ms is wall-clock
@@ -165,6 +168,21 @@
       const n = ep && typeof ep.max_workers === "number" ? ep.max_workers : 0;
       return sum + (Number.isFinite(n) && n > 0 ? n : 0);
     }, 0);
+  }
+
+  // Filmmaker-facing name for a plan row. Image repos and GPU SKUs stay on the
+  // plan object; this is the string the hosted wizard is allowed to paint.
+  const CONSUMER_ENDPOINT_LABELS = {
+    backend: "Render",
+    upscale: "Sharper video",
+    lipsync: "Lip sync",
+    "audio-upscale": "Cleaner audio",
+  };
+
+  function consumerEndpointLabel(ep) {
+    const row = ep || {};
+    if (row.key && CONSUMER_ENDPOINT_LABELS[row.key]) return CONSUMER_ENDPOINT_LABELS[row.key];
+    return row.label || row.key || "";
   }
 
   // The meta line under a review row. Own-iron is not scale-to-zero and has no
@@ -306,8 +324,7 @@
       "thing we will not store, so we have not kept it. Mint a key with api.runpod.io/graphql set " +
       "to None, and only the invoke surface enabled.",
     bad_prefix:
-      "That does not look like a current RunPod key. Newer keys start with rpa_. Check you copied " +
-      "the whole thing.",
+      "That key was not accepted. This studio uses our render pool; there is no key for you to paste.",
     endpoint_out_of_scope:
       "That key cannot reach all four of your endpoints. Check you gave it Read/Write on exactly " +
       "the four listed above.",
@@ -815,12 +832,12 @@
    * tests/onboarding-checks.test.ts pins these against the server list.
    */
   const PROVISION_ROWS = [
-    { key: "database", label: "Creating your database", steps: ["d1_create", "d1_migrate"] },
-    { key: "storage", label: "Creating your storage bucket", steps: ["r2_bucket", "r2_token"] },
-    { key: "endpoints", label: "Connecting to our render pool", steps: ["runpod_endpoints"] },
-    { key: "studio", label: "Deploying your studio", steps: ["wfp_upload"] },
-    { key: "modules", label: "Installing your render modules", steps: ["modules_upload", "modules_install"] },
-    { key: "verify", label: "Checking it all works", steps: ["verify"] },
+    { key: "database", label: "Setting up your studio", steps: ["d1_create", "d1_migrate"] },
+    { key: "storage", label: "Setting up your studio", steps: ["r2_bucket", "r2_token"] },
+    { key: "endpoints", label: "Setting up your studio", steps: ["runpod_endpoints"] },
+    { key: "studio", label: "Setting up your studio", steps: ["wfp_upload"] },
+    { key: "modules", label: "Setting up your studio", steps: ["modules_upload", "modules_install"] },
+    { key: "verify", label: "Setting up your studio", steps: ["verify"] },
   ];
 
   function provisionStepsDone(job) {
@@ -922,6 +939,7 @@
     aupPinningRefusalCopy: aupPinningRefusalCopy,
     REJECTION_COPY: REJECTION_COPY,
     planWorkerTotal: planWorkerTotal,
+    consumerEndpointLabel: consumerEndpointLabel,
     planRowMeta: planRowMeta,
     planSummaryCopy: planSummaryCopy,
     quotaFit: quotaFit,
