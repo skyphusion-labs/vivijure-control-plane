@@ -215,7 +215,9 @@ function scriptsFor(htmlPath) {
   const out = [];
   for (const m of html.matchAll(/<script[^>]*\ssrc="([^"]+)"/g)) {
     if (/^https?:/.test(m[1])) continue; // external: not ours to resolve
-    out.push(join(dir, m[1]));
+    // Cache-bust query (?v=1.29.3) is not part of the file name.
+    const src = m[1].split("?")[0];
+    out.push(join(dir, src));
   }
   return out;
 }

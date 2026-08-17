@@ -6,6 +6,14 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.29.3 -- 2026-08-17
+
+### deploy: interpolate hosted STUDIO_RELEASE v1.32.9
+
+GitHub var is already v1.32.9. Live Worker still binds v1.32.3 until
+this plane deploy. New tenants get studio 1.32.9. Existing tenants
+do not move.
+
 ## v1.29.2 -- 2026-08-16
 
 ### fix(deploy): declare Traefik door URL vars so the census lets 1.29 ship
