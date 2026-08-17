@@ -61,9 +61,10 @@ function fnBody(src: string, decl: string): string {
 }
 
 describe("intro: there is a representative example to render with no fetch", () => {
-  it("REPRESENTATIVE_PLAN carries the four product endpoints", () => {
+  it("REPRESENTATIVE_PLAN carries the hosted product endpoints, and not lip sync", () => {
     expect(Array.isArray(REPRESENTATIVE_PLAN.endpoints)).toBe(true);
-    expect(REPRESENTATIVE_PLAN.endpoints.length).toBe(4);
+    expect(REPRESENTATIVE_PLAN.endpoints.length).toBe(3);
+    expect(REPRESENTATIVE_PLAN.endpoints.map((ep) => ep.key)).not.toContain("lipsync");
   });
 
   it("every representative row has the fields the plan renderer reads, so no row is blank", () => {
@@ -92,7 +93,6 @@ describe("intro: there is a representative example to render with no fetch", () 
     expect(REPRESENTATIVE_PLAN.endpoints.map((ep) => ep.label)).toEqual([
       "Render",
       "Sharper video",
-      "Lip sync",
       "Cleaner audio",
     ]);
     REPRESENTATIVE_PLAN.endpoints.forEach((ep) => {

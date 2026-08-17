@@ -175,17 +175,19 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
   // optional, and cp#396 made it possible for a key to exist with NO endpoint by design -- the risk
   // of both changes is that they silently soften THIS check.
   //
-  // The missing capability is DERIVED, not named. It used to read /needs the upscale endpoint/, and
-  // upscale is now vpc-backed, so that literal would have made this test assert a refusal that can
-  // no longer happen. Taking the second endpoint-backed key keeps the claim true whatever the plan
-  // holds: provisioning only the FIRST endpoint must still be refused, by name.
+  // Withhold a key the CATALOG still needs, not "the second plan key". The plan can carry pool
+  // types (lipsync) that hosted no longer provisions; omitting those would pass and the guard
+  // would go green on the wrong subject.
   it("still refuses loudly when an ENDPOINT-BACKED module has no endpoint", async () => {
     const { d } = deps();
-    const backed = endpointBackedPlan();
-    expect(backed.length, "need at least two endpoint-backed capabilities to withhold one").toBeGreaterThan(1);
-    const withheld = backed[1].key;
+    const needed = TENANT_MODULE_CATALOG.find(
+      (s) => s.endpointKey && endpointBackedPlan().some((c) => c.key === s.endpointKey),
+    );
+    expect(needed?.endpointKey, "catalog must still have an endpoint-backed module").toBeTruthy();
+    const withheld = needed!.endpointKey!;
+    const remaining = ENDPOINTS.filter((e) => e.key !== withheld);
     await expect(
-      uploadTenantModules(d, "v1.0.0", "ten_1", "acme-films", [ENDPOINTS[0]], TENANT_D1, TENANT_BUCKET, "dedicated", undefined, "AIG_SECRET_VALUE"),
+      uploadTenantModules(d, "v1.0.0", "ten_1", "acme-films", remaining, TENANT_D1, TENANT_BUCKET, "dedicated", undefined, "AIG_SECRET_VALUE"),
     ).rejects.toThrow(new RegExp(`needs the ${withheld} endpoint`));
   });
 

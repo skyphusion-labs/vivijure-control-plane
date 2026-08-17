@@ -40,8 +40,9 @@ We run the same public release images we publish on GHCR. You never create endpo
 |---|---|
 | **backend** | The main render: keyframes and video |
 | **upscale** | Makes finished video sharper |
-| **lipsync** | Matches mouth movement to dialogue |
 | **audio-upscale** | Cleans up and sharpens audio |
+
+Talking is native AV on our keyframes. Hosted does not run a separate lip-sync pass.
 
 Those workers scale to zero. Nothing running means nothing billed on our GPU bill. Idle is $0.
 
