@@ -109,6 +109,13 @@
     return AUTH_ERRORS[code] || "Something went wrong signing you in. Please try again.";
   }
 
+  // cp#432: a one-shot projection is fine for a signed-out page and wrong
+  // for a page about work in progress. building/failed must re-check /api/me.
+  // go-live is a click-through, not a progress screen.
+  function shouldWatch(route) {
+    return route === "building" || route === "failed";
+  }
+
   return {
     METHOD_LABELS: METHOD_LABELS,
     AUTH_ERRORS: AUTH_ERRORS,
@@ -117,5 +124,6 @@
     shellRoute: shellRoute,
     signupsOpen: signupsOpen,
     authErrorCopy: authErrorCopy,
+    shouldWatch: shouldWatch,
   };
 });

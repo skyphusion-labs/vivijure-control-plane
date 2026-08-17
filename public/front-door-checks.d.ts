@@ -35,3 +35,4 @@ export function orderMethods(methods: string[] | null | undefined): string[];
 export function shellRoute(me: MePayload | null | undefined): ShellRoute;
 export function signupsOpen(config?: PlatformConfig | null): boolean;
 export function authErrorCopy(code: string | null | undefined): string | null;
+export function shouldWatch(route: ShellRoute | string | null | undefined): boolean;

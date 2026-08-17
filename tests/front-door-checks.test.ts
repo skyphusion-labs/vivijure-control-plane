@@ -6,6 +6,7 @@ import {
   methodLabel,
   orderMethods,
   shellRoute,
+  shouldWatch,
   signupsOpen,
   type MePayload,
 } from "../public/front-door-checks.js";
@@ -129,6 +130,19 @@ describe("shellRoute", () => {
     // only returns one when the tenant is actually live.
     for (const status of ["pending", "provisioning", "awaiting_go_live", "failed", "suspended", "deleting", "deleted", "bogus"]) {
       expect(shellRoute(me({ tenant: { id: "t", slug: "s", status } }))).not.toBe("studio");
+    }
+  });
+});
+
+describe("shouldWatch (cp#432)", () => {
+  it("re-checks only the in-flight and failed panels", () => {
+    expect(shouldWatch("building")).toBe(true);
+    expect(shouldWatch("failed")).toBe(true);
+  });
+
+  it("does not poll signed-out, live, or click-through screens", () => {
+    for (const route of ["auth", "aup", "onboarding", "go-live", "studio", "suspended", "deleted", "unknown", "link-sent"]) {
+      expect(shouldWatch(route), route).toBe(false);
     }
   });
 });
