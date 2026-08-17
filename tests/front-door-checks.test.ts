@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   AUTH_ERRORS,
   authErrorCopy,
+  aupCopyKind,
+  aupReturningLede,
   methodLabel,
   orderMethods,
   shellRoute,
@@ -165,5 +167,30 @@ describe("authErrorCopy", () => {
 
   it("gives an honest generic for a code it does not know", () => {
     expect(authErrorCopy("brand_new_code")).toBeTruthy();
+  });
+});
+
+describe("aupCopyKind (cp#452)", () => {
+  it("is first-run when last_accepted is missing or null", () => {
+    expect(aupCopyKind(me({ aup: { required_version: "v3", accepted: false } }))).toBe("first");
+    expect(aupCopyKind(me({ aup: { required_version: "v3", accepted: false, last_accepted: null } }))).toBe("first");
+  });
+
+  it("is returning when last_accepted names a prior accept", () => {
+    expect(aupCopyKind(me({
+      aup: {
+        required_version: "v4",
+        accepted: false,
+        last_accepted: { version: "v3", accepted_at: "2026-07-12T09:31:04Z" },
+      },
+    }))).toBe("returning");
+  });
+
+  it("names the prior version and day in the returning lede", () => {
+    const lede = aupReturningLede({ version: "v3", accepted_at: "2026-07-12T09:31:04Z" });
+    expect(lede).toContain("version v3");
+    expect(lede).toContain("2026-07-12");
+    expect(lede).toMatch(/studio keeps running/i);
+    expect(lede).not.toMatch(/set up a studio/i);
   });
 });

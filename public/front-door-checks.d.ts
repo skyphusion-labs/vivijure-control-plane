@@ -11,7 +11,11 @@ export interface MeTenant {
 
 export interface MePayload {
   account?: { id: string; email: string; created_at?: string } | null;
-  aup?: { required_version: string; accepted: boolean } | null;
+  aup?: {
+    required_version: string;
+    accepted: boolean;
+    last_accepted?: { version: string; accepted_at: string } | null;
+  } | null;
   tenant?: MeTenant | null;
 }
 
@@ -36,3 +40,5 @@ export function shellRoute(me: MePayload | null | undefined): ShellRoute;
 export function signupsOpen(config?: PlatformConfig | null): boolean;
 export function authErrorCopy(code: string | null | undefined): string | null;
 export function shouldWatch(route: ShellRoute | string | null | undefined): boolean;
+export function aupCopyKind(me: MePayload | null | undefined): "first" | "returning";
+export function aupReturningLede(last: { version?: string; accepted_at?: string } | null | undefined): string;

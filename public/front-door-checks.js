@@ -116,6 +116,26 @@
     return route === "building" || route === "failed";
   }
 
+  // cp#452: last_accepted present means a returning owner, not a first signup.
+  // null last_accepted is first-run even when accepted is false.
+  function aupCopyKind(me) {
+    const last = me && me.aup && me.aup.last_accepted;
+    if (!last || typeof last !== "object") return "first";
+    if (last.version || last.accepted_at) return "returning";
+    return "first";
+  }
+
+  function aupReturningLede(last) {
+    const ver = last && last.version ? String(last.version) : "a previous version";
+    const day = last && last.accepted_at ? String(last.accepted_at).slice(0, 10) : "";
+    if (day) {
+      return "The policy changed since you accepted version " + ver + " on " + day +
+        ". Your studio keeps running; please review and accept to continue.";
+    }
+    return "The policy changed since you accepted version " + ver +
+      ". Your studio keeps running; please review and accept to continue.";
+  }
+
   return {
     METHOD_LABELS: METHOD_LABELS,
     AUTH_ERRORS: AUTH_ERRORS,
@@ -125,5 +145,7 @@
     signupsOpen: signupsOpen,
     authErrorCopy: authErrorCopy,
     shouldWatch: shouldWatch,
+    aupCopyKind: aupCopyKind,
+    aupReturningLede: aupReturningLede,
   };
 });

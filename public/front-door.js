@@ -170,6 +170,23 @@
   // Both variants ship in index.html and this only picks one, for the same reason the rest of
   // this page keeps its words in the markup: copy gets reviewed as copy. What it must never do
   // is remove the sign-in form, which is what routing a closed signup to its own panel did.
+  function applyAupCopy(me) {
+    const returning = checks.aupCopyKind(me) === "returning";
+    [
+      ["#aup-title-first", "#aup-title-returning"],
+      ["#aup-lede-first", "#aup-lede-returning"],
+    ].forEach(function (pair) {
+      const firstEl = $(pair[0]);
+      const retEl = $(pair[1]);
+      if (firstEl) firstEl.hidden = returning;
+      if (retEl) retEl.hidden = !returning;
+    });
+    if (returning) {
+      const lede = $("#aup-lede-returning");
+      if (lede) lede.textContent = checks.aupReturningLede(me.aup && me.aup.last_accepted);
+    }
+  }
+
   function applySignedOutCopy(open) {
     [
       ["#auth-title-open", "#auth-title-closed"],
@@ -316,6 +333,11 @@
       // closed, which is what the plane has done all along (cp#428).
       applySignedOutCopy(checks.signupsOpen(config));
       renderAuthMethods(config.auth_methods);
+    }
+
+    // cp#452: first-run vs returning-owner AUP. last_accepted is the discriminator.
+    if (route === "aup") {
+      applyAupCopy(me);
     }
 
     if (route === "studio" && me.tenant && me.tenant.url) {
