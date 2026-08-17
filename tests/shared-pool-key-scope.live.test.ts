@@ -13,10 +13,11 @@ import { verifyInvokeKeyScope } from "../src/runpod-invoke-key";
 
 declare const process: { env: Record<string, string | undefined> };
 
-/** vivijure-video-upscale. REAL and LIVE on the account, and the shared invoke key is minted with
- *  NO access to it. That is what makes it a control rather than a guess: a made-up id would also
- *  refuse, for a different reason, and read the same. */
-const OUT_OF_SCOPE_CONTROL = "4q8idwbk6tyqbq";
+/** A REAL public RunPod endpoint the shared invoke key must not cover.
+ *  The old control (4q8idwbk6tyqbq, vivijure-video-upscale) was deleted when upscale
+ *  moved to the fleet. A 404 reads as endpoint_unreachable, which is not the
+ *  instrument. infinitetalk is live public and returns 401 without our scope. */
+const OUT_OF_SCOPE_CONTROL = "infinitetalk";
 
 const REQUIRED = process.env.SHARED_POOL_SCOPE_REQUIRED === "1";
 const POOL = process.env.SHARED_RUNPOD_ENDPOINTS;

@@ -6,6 +6,14 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.29.4 -- 2026-08-17
+
+### fix(deploy): live scope control uses a public endpoint that still exists
+
+v1.29.3 preflight died because 4q8idwbk6tyqbq (old RunPod video-upscale)
+is gone. The negative control is now the live public `infinitetalk`
+door, so the gate can still fail for out-of-scope rather than 404.
+
 ## v1.29.3 -- 2026-08-17
 
 ### deploy: interpolate hosted STUDIO_RELEASE v1.32.9
