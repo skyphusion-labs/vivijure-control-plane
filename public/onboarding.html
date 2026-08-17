@@ -57,22 +57,21 @@
 
         <div class="callout">
           <p><strong>The GPUs are ours. You just write the film.</strong> This is our hosted studio.
-          You do not install anything, and you do not bring a GPU account.</p>
+          You do not install anything.</p>
         </div>
 
-        <h3>What gets set up</h3>
+        <h3>What you can make</h3>
         <p class="small muted">
-          A representative example. Nothing is created until you say go, and you will see this exact
-          list again with your account's real numbers at the review step, before anything happens.
+          You name the studio. We build it. Nothing happens until you say go.
         </p>
         <!-- Rendered from checks.REPRESENTATIVE_PLAN by renderRepresentativePlan(), synchronously and
              with NO network call. The empty div is the pre-JS state, not a spinner: there is no fetch
-             to wait on, so nothing sits "loading". -->
+             to wait on, so nothing sits "loading". Rows are filmmaker purposes only; image repos,
+             GPU SKUs and dollar examples stay off this page. -->
         <div class="rows" id="plan-preview" aria-live="polite"></div>
 
         <div class="callout">
           <p><strong>Idle costs you $0.</strong> When nothing is rendering, nothing is billed.</p>
-          <p class="small muted" id="cost-example"></p>
         </div>
 
         <div class="actions">
@@ -126,8 +125,8 @@
              not a resume, so the gate needs an act rather than a Continue click. -->
         <div class="callout callout-bad" id="slug-reclaim" hidden>
           <p><strong>You already have a studio with this name.</strong></p>
-          <p class="small">It was set up for you, and its database, its file storage and its studio
-          worker exist right now. <strong>Continuing does not carry on where it left off. It deletes
+          <p class="small">It was set up for you, and its storyboards, its films and the studio
+          itself exist right now. <strong>Continuing does not carry on where it left off. It deletes
           all of that and builds a new one under the same name.</strong> What is deleted is not
           recoverable.</p>
           <p class="small muted">If you came here to finish setting up a studio somebody else
@@ -148,7 +147,7 @@
       </section>
       <section class="panel" data-step="review" hidden>
         <h2>Review, then we build</h2>
-        <p class="lede">This is everything we will set up. Last stop before anything happens.</p>
+        <p class="lede">Last stop before we build. You named it; we do the rest.</p>
         <div class="rows" id="plan-review"></div>
         <p class="small muted" id="plan-total"></p>
 
@@ -158,7 +157,7 @@
 
         <div class="checkbox-row">
           <input type="checkbox" id="confirm-create" />
-          <label for="confirm-create">Build my studio with this plan.</label>
+          <label for="confirm-create">Build my studio.</label>
         </div>
 
         <div class="actions">
@@ -231,13 +230,12 @@
         <p><a id="studio-link" href="#" class="row-name">Open my studio</a></p>
 
         <div class="callout">
-          <p><strong>What we keep:</strong> the studio, its database, and its files.</p>
+          <p><strong>What we keep:</strong> your studio, your storyboards, and your films.</p>
         </div>
 
         <div class="callout">
-          <p><strong>If you ever want out.</strong> Your storyboards and render history live in your
-          own database, and your films live in your own storage bucket. Delete your studio and we
-          offer you the export first: a SQL file and your files, yours to take.</p>
+          <p><strong>If you ever want out.</strong> Your storyboards and films stay yours. Delete
+          your studio and we offer you the export first, yours to take.</p>
           <p class="small"><a href="https://github.com/skyphusion-labs/vivijure-control-plane/blob/main/docs/hosted-tier.md">The full story: costs, and how to leave</a></p>
         </div>
       </section>

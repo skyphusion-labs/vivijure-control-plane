@@ -143,14 +143,8 @@
       head.className = "row-head";
       const name = document.createElement("span");
       name.className = "row-name";
-      name.textContent = ep.label || ep.key;
+      name.textContent = checks.consumerEndpointLabel(ep);
       head.appendChild(name);
-
-      const meta = document.createElement("span");
-      meta.className = "row-meta";
-      // Own-iron rows are not scale-to-zero and have no worker pin (cp#474).
-      meta.textContent = checks.planRowMeta(ep);
-      head.appendChild(meta);
       row.appendChild(head);
 
       if (ep.purpose) {
@@ -159,12 +153,9 @@
         why.textContent = ep.purpose;
         row.appendChild(why);
       }
-      if (ep.image && (!opts || opts.showImage !== false)) {
-        const img = document.createElement("p");
-        img.className = "row-why row-image";
-        img.textContent = ep.image;
-        row.appendChild(img);
-      }
+      // Hosted consumer page: filmmaker purpose only. Image repos, GPU SKUs,
+      // worker pins and dollar examples stay on the plan object and are not
+      // painted here.
       el.appendChild(row);
     });
   }
@@ -178,19 +169,11 @@
   function renderCostExample(ex) {
     const el = $("#cost-example");
     if (!el) return;
-    if (!ex) { el.textContent = ""; return; }
-    const ceiling = checks.costCeilingUsd(ex.wall_clock_ms, ex.gpu_hourly_usd);
-    const money = checks.formatUsd(ceiling);
-    if (!money) { el.textContent = ""; return; }
-    const minutes = Math.round(ex.wall_clock_ms / 60000);
-    // The word "at most" is not hedging, it is the truth: wall-clock includes
-    // queue and model-load time, and RunPod bills active worker seconds.
-    el.textContent =
-      "A real render from our own history (" + ex.description + ", " + ex.rendered_on +
-      "): " + minutes + " minutes, start to finish. At the " + ex.gpu_label + " rate of $" +
-      ex.gpu_hourly_usd + "/hr, that costs you at most " + money +
-      ". Probably less: that clock includes queue and model-load time, and we are billed for " +
-      "active GPU seconds. Your studio shows the real figure after the first render.";
+    // CREDITS_ENFORCING is off. Do not paint job ids, hourly GPU rates, or a
+    // dollar example on the hosted signup page. The object may still carry
+    // those fields for the contract; this function just does not show them.
+    el.textContent = "";
+    el.hidden = true;
   }
 
   // The intro renders a REPRESENTATIVE example immediately, with NO network
@@ -418,7 +401,7 @@
   // (cp#124), where they are pure and tested. Nothing here re-decides them.
 
   async function runProvision() {
-    renderProgress([{ key: "start", label: "Starting setup", status: "running" }]);
+    renderProgress([{ key: "start", label: "Setting up your studio", status: "running" }]);
     try {
       const job = await PlatformApi.provision(state.slug);
       state.tenantId = job.tenant_id;
@@ -752,7 +735,9 @@
   function renderTotal() {
     const el = $("#plan-total");
     if (!el) return;
-    el.textContent = checks.planSummaryCopy(state.plan);
+    // Worker pins and "our own hardware" totals are provisioner BOM. The
+    // review callout already says renders run on our pool.
+    el.textContent = "";
   }
 
   // cp#439: PROJECT THE TIER ONTO BOTH STEPS THAT ASSUMED BYOK.
