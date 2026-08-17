@@ -82,6 +82,31 @@ describe("front-door.js wires the switch to the COPY, never to the door", () => 
   });
 });
 
+describe("the building panel re-checks state (cp#432)", () => {
+  const page = readAsset("index.html");
+  const js = readAsset("front-door.js");
+
+  it("CONTROL: the building panel is in the shipped markup", () => {
+    expect(page).toContain("data-shell=\"building\"");
+    expect(js).toContain("checks.shouldWatch(route)");
+  });
+
+  it("does not tell the owner to leave the one page that can show progress", () => {
+    expect(page).not.toMatch(/You can leave this page; it keeps going/i);
+    expect(page).toMatch(/Stay on this page/i);
+    expect(page).toMatch(/slower background job/i);
+  });
+
+  it("arms one interval on building/failed and refreshes on tab focus", () => {
+    expect(js).toContain("setInterval");
+    expect(js).toContain("startWatch");
+    expect(js).toContain("stopWatch");
+    expect(js).toContain("visibilitychange");
+    // Replaced, not stacked: a second startWatch is a no-op while armed.
+    expect(js).toContain("if (watchTimer !== null) return");
+  });
+});
+
 describe("onboarding.js does not freeze an account that already exists (cp#428)", () => {
   const js = readAsset("onboarding.js");
 

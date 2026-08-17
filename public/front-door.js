@@ -16,6 +16,10 @@
   const creditChecks = window.creditsChecks;
   const API_BASE = window.HOSTED_API_BASE || "";
   const $ = function (sel) { return document.querySelector(sel); };
+  // Same cadence as onboarding.html's provision poll. Only armed on
+  // building/failed (cp#432). One timer, replaced not stacked.
+  const WATCH_MS = 2500;
+  let watchTimer = null;
 
   const Api = {
     async json(path, init) {
@@ -291,6 +295,9 @@
         detail.textContent = "We could not reach the studio control plane: " + err.message +
           ". This is our problem, not yours. Please try again in a minute.";
       }
+      // Keep the watch armed so a transient plane outage does not freeze
+      // a building tenant on the error panel.
+      startWatch();
       return;
     }
 
@@ -350,6 +357,23 @@
     }
 
     show(route);
+    // cp#432: a frozen building panel used to tell you to leave, which
+    // removed the only driver the owner was looking at. Re-check /api/me
+    // while the tenant is in flight (or failed, so a retry becomes visible).
+    if (checks.shouldWatch(route)) startWatch();
+    else stopWatch();
+  }
+
+  function stopWatch() {
+    if (watchTimer !== null) {
+      clearInterval(watchTimer);
+      watchTimer = null;
+    }
+  }
+
+  function startWatch() {
+    if (watchTimer !== null) return;
+    watchTimer = setInterval(function () { boot(); }, WATCH_MS);
   }
 
   function wire() {
@@ -362,6 +386,9 @@
     }
     const again = $("#link-again");
     if (again) again.addEventListener("click", function () { boot(); });
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible" && watchTimer !== null) boot();
+    });
   }
 
   if (document.readyState === "loading") {
