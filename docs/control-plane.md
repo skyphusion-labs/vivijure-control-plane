@@ -500,28 +500,31 @@ Stated honestly rather than as "seamless": module scripts are replaced by in-pla
 for Platforms has no atomic multi-script swap, so a module invocation inside the swap window may
 execute old or new bytes. Both are conformance-gated, so neither is broken.
 
-### Mixed module state, and the one coupled pair
+### Mixed module state, and the finish chain
 
 A partial failure can leave some modules at the new release and some at the old. Whether that is
 safe is a question about the CATALOG, not about the conformance gate (which is per-module and says
 nothing about pairs):
 
-- The endpoint-backed RunPod catalog modules serve four hooks: `keyframe` (keyframe), `own-gpu`
-  (motion.backend), `speech-upscale` (speech), and `finish-upscale` + `finish-lipsync` +
-  `finish-rife` (all three `finish`). **cp#284 wave 0 made `finish` a chain of THREE, not a pair**
-  -- measured at vivijure-cf `origin/main`, all three manifests declare `hooks: ["finish"]`. What a
-  three-long chain does to the mixed-state analysis below is NOT re-derived here; the pair argument
-  is stated for two and has not been re-run for three. The eight public-slug cost-door modules
-  (wave 1) are motion/audio doors on separate hooks from this finish chain; a mixed state across
-  those and the finish set is not an incompatibility either.
+- The endpoint-backed RunPod catalog modules serve these hooks: `keyframe` (keyframe), `own-gpu`
+  (motion.backend), `speech-upscale` (speech), and a four-long `finish` chain:
+  `finish-upscale`, `finish-lipsync`, `finish-rife`, `finish-blender` (all four `finish`).
+  **Count four (cp#408).** Derived from the UNION of modules that declare `hooks: ["finish"]`,
+  confirmed independently by `GET /api/modules` at studio_release 1.27.0. An intersection over
+  repo lists returns three, because `finish-blender` is only appended when
+  `BLENDER_RUNPOD_ENDPOINT_ID` is set; that is a deploy condition, not the catalog size. What a
+  four-long chain does to the mixed-state analysis below is NOT re-derived here; the pair
+  argument is stated for two and has not been re-run for four. The eight public-slug cost-door
+  modules (wave 1) are motion/audio doors on separate hooks from this finish chain; a mixed
+  state across those and the finish set is not an incompatibility either.
 - Modules on **different** hooks never see each other output, so a mixed state across those is not
   expressible as an incompatibility.
-- The one coupled pair is the two `finish` modules, which **chain**: each takes
-  `FinishInput{shot_id, clip_key}` and returns `FinishOutput{clip_key}`, so the second consumes the
-  output key of the first. A mixed finish chain is two vendored copies of that contract meeting on
-  one clip.
+- The coupled members are the `finish` modules, which **chain**: each takes
+  `FinishInput{shot_id, clip_key}` and returns `FinishOutput{clip_key}`, so each later hop
+  consumes the output key of the previous. A mixed finish chain is two vendored copies of that
+  contract meeting on one clip.
 
-That pair is bounded by the `api: "vivijure-module/2"` version the contract carries: an incompatible
+That chain is bounded by the `api: "vivijure-module/2"` version the contract carries: an incompatible
 change to the finish payload requires bumping it, and the studio install gate rejects an api it does
 not accept, so an incompatible mixed chain fails at INSTALL, leaving the old module resident and the
 tenant serving.

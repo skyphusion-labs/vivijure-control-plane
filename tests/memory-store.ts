@@ -486,6 +486,11 @@ export class MemoryStore implements ControlPlaneStore {
     const prior = this.ownership.get(this.ownershipKey(kind, resourceKey));
     if (prior && prior !== ownerTenantId) {
       const priorRow = this.tenants.get(prior);
+      // cp#106 D / cp#399: do not steal from a LIVE owner. This early return is the safety
+      // property, not dead code. The interface comment used to claim INSERT OR REPLACE; both
+      // implementations refuse a live prior owner. Deleting this return silently permits
+      // ownership theft across every suite that uses this double. Covered by
+      // tests/memory-store-ownership.test.ts -- that file must redden if this goes away.
       if (priorRow && priorRow.status !== "deleted" && priorRow.status !== "failed") {
         return;
       }

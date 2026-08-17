@@ -321,11 +321,25 @@ async function recordTickHeartbeat(
  * Refusing when the meter is unconfigured is the important half. An unconfigured plane must write
  * NO period row: a period is an assertion that an observation happened, and an empty one would
  * manufacture a billable-looking window of zero spend out of a missing secret.
+ *
+ * When `ran` is true the discriminating fields travel with it (cp#369). A tick that detected a
+ * gap, dropped rows, or failed its control is not the same observation as a clean one, and the
+ * durable audit row must be able to tell them apart after Worker logs have aged out.
  */
+export type LlmMeterTickResult =
+  | {
+      ran: true;
+      status: string;
+      controlPassed: boolean;
+      gapDetected: boolean;
+      rowsDropped: number;
+    }
+  | { ran: false; reason: string };
+
 export async function runLlmMeterTick(
   env: ControlPlaneEnv,
   deps: ControlPlaneDeps,
-): Promise<{ ran: boolean; reason?: string }> {
+): Promise<LlmMeterTickResult> {
   if (!deps.llmSpend || !deps.gatewayLogs) {
     // LOUD, and it names which half is missing, because the two have different fixes: no reader
     // means CF_ACCOUNT_ID / TENANT_AI_GATEWAY_ID / AI_GATEWAY_READ_TOKEN, no store means the
@@ -357,7 +371,13 @@ export async function runLlmMeterTick(
         note: outcome.note,
       }),
     );
-    return { ran: true };
+    return {
+      ran: true,
+      status: outcome.status,
+      controlPassed: outcome.controlPassed,
+      gapDetected: outcome.gapDetected,
+      rowsDropped: outcome.rowsDropped,
+    };
   } catch (e) {
     // The tick swallows nothing silently. A throw here has already left an unfinished period (or
     // none), which the windowed read reports as incomplete; the log is how anyone finds out WHY.
@@ -2524,7 +2544,13 @@ async function adminRoutes(
       "llm_meter",
       JSON.stringify(
         outcome.ran
-          ? { ran: true }
+          ? {
+              ran: true,
+              status: outcome.status,
+              controlPassed: outcome.controlPassed,
+              gapDetected: outcome.gapDetected,
+              rowsDropped: outcome.rowsDropped,
+            }
           : { ran: false, reason: outcome.reason ?? "unknown" },
       ),
     );
@@ -2533,7 +2559,13 @@ async function adminRoutes(
       // getting a success back has been told the meter ran.
       return err("llm_meter_unavailable", 503, { reason: outcome.reason });
     }
-    return json({ ran: true });
+    return json({
+      ran: true,
+      status: outcome.status,
+      controlPassed: outcome.controlPassed,
+      gapDetected: outcome.gapDetected,
+      rowsDropped: outcome.rowsDropped,
+    });
   }
 
   if (request.method === "GET" && path === "/api/admin/llm-spend") {

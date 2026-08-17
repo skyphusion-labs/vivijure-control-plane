@@ -29,6 +29,12 @@
 #   - `git check-attr` run AFTER a conflicted merge reports `union`, because the merge
 #     itself pulled this file in from main. It is describing a state that did not exist
 #     when the driver was chosen. Query it on the clean pre-merge checkout or not at all.
+#     Recovery if you already ran it during a conflict: `git merge --abort` restores the
+#     honest pre-merge reading (`unspecified` on a legacy branch). Measured (cp#370):
+#     pre-merge unspecified; during conflict union (this file arrived via the merge that
+#     failed for lack of it); after abort unspecified again. Main ADDS this file and a
+#     legacy branch has no competing version, so it lands cleanly even while
+#     CHANGELOG.md conflicts (zero unmerged entries for this path).
 #   - Merging the PR head INTO a main checkout DOES apply union and looks like proof. It is
 #     the opposite direction from a drain: there the tree git consults is main, which
 #     carries the attribute. Direction is not a property of the merge; it is which side you
@@ -76,6 +82,15 @@
 #
 # Run it on the CLEAN PRE-MERGE checkout (see the check-attr trap above; after a conflicted
 # merge it reports `union` about a state that did not exist when the driver was chosen).
+#
+# THE ARMING CHECK IS UNAMBIGUOUS ONLY PRE-MERGE. Same command, two epochs, opposite
+# provenance (cp#370):
+#   - Pre-merge, on a legacy tree with no `.gitattributes` in it at all, `union` can ONLY
+#     have come from the flag. Unambiguous proof the flag armed.
+#   - Post-merge, the same output can ONLY have come from the merge. Proof of nothing
+#     about the flag.
+# A reader who runs it at the wrong moment gets a confident answer to a question they
+# did not ask.
 #
 # WHY THIS AND NOT "the flag is always required": it closes a SILENT-PASS state the flag has
 # on its own. A typo'd path in the flag file arms nothing, the merge runs with `unspecified`,
