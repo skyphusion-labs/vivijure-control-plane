@@ -236,5 +236,6 @@ Stated so nobody reads more into it than is there.
 - **`POST /api/admin/llm-meter/run` and `POST /api/admin/meter-settle` are platform-action audits,
   not tenant reads (cp#243).** Both are gated `meter:operate` and write `admin_audit` rows under
   `meter.tick_llm` / `meter.settle_llm` with the authenticated operator, what was run, and the
-  outcome (ran / refusal reason, or the settlement report counts). They are deliberately NOT
+  outcome (ran plus status / controlPassed / gapDetected / rowsDropped, or the refusal
+  reason; or the settlement report counts). They are deliberately NOT
   `tenant.read.*`: they act on the plane's meter watermark and money rows, not one tenant's material.

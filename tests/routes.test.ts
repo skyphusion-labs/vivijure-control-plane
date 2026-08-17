@@ -3790,13 +3790,52 @@ describe("LLM meter admin surfaces", () => {
     });
     const res = await handle(req("/api/admin/llm-meter/run", { method: "POST", headers: admin() }), env(), ctx, d);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ran: true });
+    expect(await res.json()).toEqual({
+      ran: true,
+      status: "complete",
+      controlPassed: true,
+      gapDetected: false,
+      rowsDropped: 0,
+    });
   });
 
   // PLATFORM action (cp#243), not a tenant read: a manual tick advances the watermark that later
   // statements are built from. Exact action name so a renamed or hollowed call fails the test.
-  it("AUDITS a successful tick: who, and that it ran", async () => {
+  //
+  // cp#369: the durable row must discriminate a clean tick from one that failed its control.
+  // The previous pin was `{ ran: true }` for both, which is exactly the defect.
+  it("AUDITS a clean tick with status / control / gap / drops, not just ran:true", async () => {
     store.audit.length = 0;
+    const d = meterDeps(null, {
+      gatewayLogs: {
+        async list() {
+          return { rows: [], totalCount: 3 };
+        },
+        async probe() {
+          return { total: 3, oldest: null };
+        },
+      },
+    });
+    const res = await handle(req("/api/admin/llm-meter/run", { method: "POST", headers: admin() }), env(), ctx, d);
+    expect(res.status).toBe(200);
+    const actions = store.audit.map((a: { action: string }) => a.action);
+    expect(actions).toContain("meter.tick_llm");
+    expect(actions.some((a) => a.startsWith("tenant.read."))).toBe(false);
+    const row = store.audit.find((a: { action: string }) => a.action === "meter.tick_llm")!;
+    expect(row.target).toBe("llm_meter");
+    expect(JSON.parse(row.detail as string)).toEqual({
+      ran: true,
+      status: "complete",
+      controlPassed: true,
+      gapDetected: false,
+      rowsDropped: 0,
+    });
+  });
+
+  it("AUDITS a failed-control tick differently from a clean one (cp#369)", async () => {
+    store.audit.length = 0;
+    // Probe total 0 is the positive-control failure: empty is indistinguishable from
+    // wrong-gateway. The tick still ran; the row must say the control failed.
     const d = meterDeps(null, {
       gatewayLogs: {
         async list() {
@@ -3809,12 +3848,42 @@ describe("LLM meter admin surfaces", () => {
     });
     const res = await handle(req("/api/admin/llm-meter/run", { method: "POST", headers: admin() }), env(), ctx, d);
     expect(res.status).toBe(200);
-    const actions = store.audit.map((a: { action: string }) => a.action);
-    expect(actions).toContain("meter.tick_llm");
-    expect(actions.some((a) => a.startsWith("tenant.read."))).toBe(false);
     const row = store.audit.find((a: { action: string }) => a.action === "meter.tick_llm")!;
-    expect(row.target).toBe("llm_meter");
-    expect(JSON.parse(row.detail as string)).toEqual({ ran: true });
+    const detail = JSON.parse(row.detail as string) as {
+      ran: boolean;
+      controlPassed: boolean;
+      rowsDropped: number;
+    };
+    expect(detail.ran).toBe(true);
+    expect(detail.controlPassed).toBe(false);
+    expect(detail).not.toEqual({
+      ran: true,
+      status: "complete",
+      controlPassed: true,
+      gapDetected: false,
+      rowsDropped: 0,
+    });
+  });
+
+  it("AUDITS dropped rows as a non-zero, so a drop is not a clean tick (cp#369)", async () => {
+    store.audit.length = 0;
+    const d = meterDeps(null, {
+      gatewayLogs: {
+        async list() {
+          // Missing id + timestamp is unparseable and counted as dropped.
+          return { rows: [{ id: "", created_at: "" }], totalCount: 1 };
+        },
+        async probe() {
+          return { total: 1, oldest: "2026-07-27T00:00:00Z" };
+        },
+      },
+    });
+    const res = await handle(req("/api/admin/llm-meter/run", { method: "POST", headers: admin() }), env(), ctx, d);
+    expect(res.status).toBe(200);
+    const row = store.audit.find((a: { action: string }) => a.action === "meter.tick_llm")!;
+    const detail = JSON.parse(row.detail as string) as { ran: boolean; rowsDropped: number };
+    expect(detail.ran).toBe(true);
+    expect(detail.rowsDropped).toBeGreaterThan(0);
   });
 
   // The refusal is the outcome too: an operator who forced a tick that could not run leaves a row

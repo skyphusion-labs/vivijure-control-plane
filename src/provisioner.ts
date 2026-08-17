@@ -2344,7 +2344,17 @@ export async function teardownTenant(
     // complete harvest of nothing. That is the normal state for a provision that died before its
     // migrations ran, which is exactly the population rollbackFailedProvision tears down -- so
     // treating an absent table as an error would make every failed provision unreapable.
-    if (tenant.d1_database_id && !(await guarded("d1"))) {
+    //
+    // Evaluate the d1 guard ONCE (cp#406). guarded() is not a predicate: a refusal pushes onto
+    // `failures` and logs teardown.refused, so calling it twice recorded one refused resource as
+    // two and doubled the ownership lookup. Same pattern as r2_token above (`tokenGuarded`).
+    //
+    // Reusing the verdict under harvestFailed is safe today: the guard result cannot change
+    // mid-pass (the blocked map and ownership are read, not written, by harvest). The harvest
+    // may push its own failure; that is why the delete gate still checks harvestFailed
+    // separately rather than re-asking the guard.
+    const d1Guarded = tenant.d1_database_id ? await guarded("d1") : false;
+    if (tenant.d1_database_id && !d1Guarded) {
       try {
         const harvest = await harvestTenantJobLog(deps.cf, tenant.d1_database_id);
         if (!harvest.complete) {
@@ -2374,7 +2384,7 @@ export async function teardownTenant(
     // harvest failure also stops the delete, instead of a new failure mode quietly bypassing the
     // one interlock that protects the mapping.
     const harvestFailed = failures.some((f) => f.resource === "job_index_harvest");
-    if (tenant.d1_database_id && !(await guarded("d1")) && !harvestFailed) {
+    if (tenant.d1_database_id && !d1Guarded && !harvestFailed) {
       await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!), "d1");
     }
     // EMPTY-THEN-DELETE (cf#72), wired here by this issue caller work.

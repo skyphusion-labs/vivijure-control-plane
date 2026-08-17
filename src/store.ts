@@ -806,8 +806,13 @@ export interface ControlPlaneStore {
   clearTenantResource(id: string, resource: TenantResourceKind): Promise<void>;
 
   /**
-   * Record who provisioned a physical resource (cp#106 option D). INSERT OR REPLACE so a re-provision
-   * of the same name updates the owner rather than stranding a stale claim.
+   * Record who provisioned a physical resource (cp#106 option D).
+   *
+   * Conflict rule is NOT a blind INSERT OR REPLACE. A live (or otherwise non-tombstone) prior
+   * owner keeps the row: slug reuse re-claims only after the prior tenant is deleted/failed.
+   * Stealing from a live tenant would point the teardown guard at the wrong owner. A tombstone
+   * prior owner, or no prior owner, is replaced so a re-provision of the same name does not
+   * strand a stale claim.
    */
   claimResourceOwnership(
     kind: TenantResourceKind,

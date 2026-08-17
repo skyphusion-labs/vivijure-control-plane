@@ -181,6 +181,12 @@ describe("teardown referential guard", () => {
       expect(refused[r], `${r} must be refused`).toMatch(/^refused:/);
       expect(refused[r], `${r} must name the live referrer`).toContain("ten_live");
       expect(refused[r]).toContain("AT LEAST ONE IS NOT DELETED");
+      // COUNT, not presence (cp#406). find()/fromEntries hide a doubled d1 refusal;
+      // the audit row consumes the count, so one refused resource must be length 1.
+      expect(
+        res.failures.filter((f) => f.resource === r),
+        `${r} must appear once; a second guarded() call records one refusal as two`,
+      ).toHaveLength(1);
     }
 
     // THE ASSERTION THAT MATTERS: nothing was even asked for.
