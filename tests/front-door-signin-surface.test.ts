@@ -53,6 +53,16 @@ describe("the front door always carries a way in (cp#428)", () => {
     expect(page).toMatch(/We run the GPUs/i);
   });
 
+  it("ships both first-run and returning-owner AUP copy (cp#452)", () => {
+    expect(page).toContain("id=\"aup-title-first\"");
+    expect(page).toContain("id=\"aup-title-returning\"");
+    expect(page).toContain("id=\"aup-lede-first\"");
+    expect(page).toContain("id=\"aup-lede-returning\"");
+    expect(page).toMatch(/One thing before you start/);
+    expect(page).toMatch(/The policy changed/);
+    expect(page).toMatch(/Your studio keeps running/);
+  });
+
   it("still says the SAME thing for every address after a sign-in attempt", () => {
     // Enumeration safety is not collateral of the fix: the link-sent screen is the single
     // answer for every outcome, and it must stay that way now that more people reach it.
@@ -79,6 +89,11 @@ describe("front-door.js wires the switch to the COPY, never to the door", () => 
     expect(js).toContain("checks.signupsOpen(config)");
     expect(js).toContain("applySignedOutCopy");
     expect(js).toContain("renderAuthMethods(config.auth_methods)");
+  });
+
+  it("branches AUP copy on last_accepted (cp#452)", () => {
+    expect(js).toContain("applyAupCopy(me)");
+    expect(js).toContain("checks.aupCopyKind(me)");
   });
 });
 
