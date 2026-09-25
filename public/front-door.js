@@ -16,6 +16,10 @@
   const creditChecks = window.creditsChecks;
   const API_BASE = window.HOSTED_API_BASE || "";
   const $ = function (sel) { return document.querySelector(sel); };
+  // Same cadence as onboarding.html's provision poll. Only armed on
+  // building/failed (cp#432). One timer, replaced not stacked.
+  const WATCH_MS = 2500;
+  let watchTimer = null;
 
   const Api = {
     async json(path, init) {
@@ -166,6 +170,23 @@
   // Both variants ship in index.html and this only picks one, for the same reason the rest of
   // this page keeps its words in the markup: copy gets reviewed as copy. What it must never do
   // is remove the sign-in form, which is what routing a closed signup to its own panel did.
+  function applyAupCopy(me) {
+    const returning = checks.aupCopyKind(me) === "returning";
+    [
+      ["#aup-title-first", "#aup-title-returning"],
+      ["#aup-lede-first", "#aup-lede-returning"],
+    ].forEach(function (pair) {
+      const firstEl = $(pair[0]);
+      const retEl = $(pair[1]);
+      if (firstEl) firstEl.hidden = returning;
+      if (retEl) retEl.hidden = !returning;
+    });
+    if (returning) {
+      const lede = $("#aup-lede-returning");
+      if (lede) lede.textContent = checks.aupReturningLede(me.aup && me.aup.last_accepted);
+    }
+  }
+
   function applySignedOutCopy(open) {
     [
       ["#auth-title-open", "#auth-title-closed"],
@@ -291,6 +312,9 @@
         detail.textContent = "We could not reach the studio control plane: " + err.message +
           ". This is our problem, not yours. Please try again in a minute.";
       }
+      // Keep the watch armed so a transient plane outage does not freeze
+      // a building tenant on the error panel.
+      startWatch();
       return;
     }
 
@@ -309,6 +333,11 @@
       // closed, which is what the plane has done all along (cp#428).
       applySignedOutCopy(checks.signupsOpen(config));
       renderAuthMethods(config.auth_methods);
+    }
+
+    // cp#452: first-run vs returning-owner AUP. last_accepted is the discriminator.
+    if (route === "aup") {
+      applyAupCopy(me);
     }
 
     if (route === "studio" && me.tenant && me.tenant.url) {
@@ -350,6 +379,23 @@
     }
 
     show(route);
+    // cp#432: a frozen building panel used to tell you to leave, which
+    // removed the only driver the owner was looking at. Re-check /api/me
+    // while the tenant is in flight (or failed, so a retry becomes visible).
+    if (checks.shouldWatch(route)) startWatch();
+    else stopWatch();
+  }
+
+  function stopWatch() {
+    if (watchTimer !== null) {
+      clearInterval(watchTimer);
+      watchTimer = null;
+    }
+  }
+
+  function startWatch() {
+    if (watchTimer !== null) return;
+    watchTimer = setInterval(function () { boot(); }, WATCH_MS);
   }
 
   function wire() {
@@ -362,6 +408,9 @@
     }
     const again = $("#link-again");
     if (again) again.addEventListener("click", function () { boot(); });
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible" && watchTimer !== null) boot();
+    });
   }
 
   if (document.readyState === "loading") {

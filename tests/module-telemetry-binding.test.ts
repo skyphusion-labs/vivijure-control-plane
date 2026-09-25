@@ -100,7 +100,7 @@ describe("the catalog says WHICH modules record", () => {
     // against two controls (keyframe records, plan-enhance does not), never from the row.
     expect(RECORDING.sort()).toEqual(
       [
-        "alibaba-wan", "alibaba-wan-lora", "finish-lipsync", "finish-rife", "finish-upscale",
+        "alibaba-wan", "alibaba-wan-lora", "finish-rife", "finish-upscale",
         "google-veo", "keyframe", "kling", "minimax-hailuo", "narration-gen", "own-gpu",
         "seedance", "speech-upscale", "vidu-q3",
       ],
@@ -108,6 +108,12 @@ describe("the catalog says WHICH modules record", () => {
     expect(NOT_RECORDING.sort()).toEqual(
       ["cf-flux-3-video", "cf-grok-video", "cf-hh1-r2v", "cf-seedance", "plan-enhance"].sort(),
     );
+  });
+
+  it("hosted catalog does not include finish-lipsync", () => {
+    // MuseTalk is self-host only. A row here would upload and bind it on every hosted tenant.
+    expect(TENANT_MODULE_CATALOG.map((s) => s.module)).not.toContain("finish-lipsync");
+    expect(TENANT_MODULE_CATALOG.some((s) => s.endpointKey === "lipsync")).toBe(false);
   });
 
   it("finish-rife is catalogued AND recording, so the upstream set is fully covered (cp#284)", () => {

@@ -72,13 +72,15 @@
   // paint them.
   const REPRESENTATIVE_PLAN = {
     endpoints: [
-      // Labels are filmmaker purposes (Render, Sharper video, Lip sync, Cleaner
-      // audio). backing is what lets the intro tell own-iron from the shared
-      // pool without inventing four RunPod endpoints (cp#474).
+      // Labels are filmmaker purposes (Render, Sharper video, Cleaner audio).
+      // backing is what lets the intro tell own-iron from the shared pool
+      // without inventing four RunPod endpoints (cp#474).
+      // Lip sync is not a hosted shared-tier capability (MuseTalk is self-host
+      // only). CONSUMER_ENDPOINT_LABELS still names it if a self-host plan
+      // row arrives. Talking is native AV on our keyframes.
       // cp#303: purpose matches the plan -- training is not on this endpoint.
       { key: "backend", label: "Render", purpose: "Keyframes and video", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "H200 / B200", backing: "runpod" },
       { key: "upscale", label: "Sharper video", purpose: "Makes finished video sharper", image: "ghcr.io/skyphusion-labs/vivijure-upscale", gpu: "our hardware", backing: "door" },
-      { key: "lipsync", label: "Lip sync", purpose: "Matches mouth movement to dialogue", image: "ghcr.io/skyphusion-labs/vivijure-musetalk", max_workers: 1, gpu: "RTX 6000 Pro", backing: "runpod" },
       { key: "audio-upscale", label: "Cleaner audio", purpose: "Cleans up and sharpens audio", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", gpu: "our hardware", backing: "door" },
     ],
     // A real, named render from our own history (film-2294a9d7, 2026-07-14: 2

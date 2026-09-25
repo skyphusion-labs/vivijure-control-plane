@@ -73,7 +73,7 @@ flowchart TD
     end
 
     subgraph NS2["Dispatch namespace: tenant modules"]
-        M1["alice: keyframe, own-gpu,<br/>finish-upscale, finish-lipsync,<br/>speech-upscale"]
+        M1["alice: keyframe, own-gpu,<br/>finish-upscale,<br/>speech-upscale"]
     end
 
     subgraph RP["Alice's own RunPod account"]
@@ -200,9 +200,10 @@ A freshly built studio with four GPU endpoints still cannot render anything, bec
 ids are read by **module workers**, and nothing creates those. So the provisioner creates them,
 the same way a self-hosted studio does.
 
-Five module workers (`keyframe`, `own-gpu`, `finish-upscale`, `finish-lipsync`, `speech-upscale`)
-are uploaded into one shared dispatch namespace, named with the tenant id in front so cleanup is a
-simple sweep. Each one carries only its own endpoint id. Which module maps to which endpoint is
+Hosted module workers (`keyframe`, `own-gpu`, `finish-upscale`, `speech-upscale`, and the rest of
+the catalog) are uploaded into one shared dispatch namespace, named with the tenant id in front so
+cleanup is a simple sweep. Each one carries only its own endpoint id. Hosted does not provision
+`finish-lipsync` (MuseTalk stays self-host). Which module maps to which endpoint is
 plain **data** in the catalog, so extending the tier is a row in a table, not new code.
 
 The studio then installs them **through its own install route**, running its own real conformance

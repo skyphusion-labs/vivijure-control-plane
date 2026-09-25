@@ -53,6 +53,16 @@ describe("the front door always carries a way in (cp#428)", () => {
     expect(page).toMatch(/We run the GPUs/i);
   });
 
+  it("ships both first-run and returning-owner AUP copy (cp#452)", () => {
+    expect(page).toContain("id=\"aup-title-first\"");
+    expect(page).toContain("id=\"aup-title-returning\"");
+    expect(page).toContain("id=\"aup-lede-first\"");
+    expect(page).toContain("id=\"aup-lede-returning\"");
+    expect(page).toMatch(/One thing before you start/);
+    expect(page).toMatch(/The policy changed/);
+    expect(page).toMatch(/Your studio keeps running/);
+  });
+
   it("still says the SAME thing for every address after a sign-in attempt", () => {
     // Enumeration safety is not collateral of the fix: the link-sent screen is the single
     // answer for every outcome, and it must stay that way now that more people reach it.
@@ -79,6 +89,36 @@ describe("front-door.js wires the switch to the COPY, never to the door", () => 
     expect(js).toContain("checks.signupsOpen(config)");
     expect(js).toContain("applySignedOutCopy");
     expect(js).toContain("renderAuthMethods(config.auth_methods)");
+  });
+
+  it("branches AUP copy on last_accepted (cp#452)", () => {
+    expect(js).toContain("applyAupCopy(me)");
+    expect(js).toContain("checks.aupCopyKind(me)");
+  });
+});
+
+describe("the building panel re-checks state (cp#432)", () => {
+  const page = readAsset("index.html");
+  const js = readAsset("front-door.js");
+
+  it("CONTROL: the building panel is in the shipped markup", () => {
+    expect(page).toContain("data-shell=\"building\"");
+    expect(js).toContain("checks.shouldWatch(route)");
+  });
+
+  it("does not tell the owner to leave the one page that can show progress", () => {
+    expect(page).not.toMatch(/You can leave this page; it keeps going/i);
+    expect(page).toMatch(/Stay on this page/i);
+    expect(page).toMatch(/slower background job/i);
+  });
+
+  it("arms one interval on building/failed and refreshes on tab focus", () => {
+    expect(js).toContain("setInterval");
+    expect(js).toContain("startWatch");
+    expect(js).toContain("stopWatch");
+    expect(js).toContain("visibilitychange");
+    // Replaced, not stacked: a second startWatch is a no-op while armed.
+    expect(js).toContain("if (watchTimer !== null) return");
   });
 });
 

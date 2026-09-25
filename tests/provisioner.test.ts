@@ -212,7 +212,6 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
               { name: "keyframe" },
               { name: "own-gpu" },
               { name: "finish-upscale" },
-              { name: "finish-lipsync" },
               { name: "speech-upscale" },
             ],
           }),
@@ -1121,7 +1120,7 @@ describe("cf#99 tenant module bridge", () => {
       mock: { calls: [{ namespace: string; scriptName: string; bindings: { type: string; name: string; text?: string }[] }][] };
     }).mock.calls.map((c) => c[0]);
 
-  it("uploads all 15 tenant module scripts into the modules namespace, tenant-id-prefixed", async () => {
+  it("uploads the hosted catalog into the modules namespace, tenant-id-prefixed", async () => {
     const t = await tenant();
     const d = deps();
     const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
@@ -1135,7 +1134,6 @@ describe("cf#99 tenant module bridge", () => {
         // this assertion inverted. It exists to FAIL when the catalog moves.
         `${t.id}-alibaba-wan`,
         `${t.id}-alibaba-wan-lora`,
-        `${t.id}-finish-lipsync`,
         `${t.id}-finish-rife`,
         `${t.id}-finish-upscale`,
         `${t.id}-google-veo`,
@@ -1170,11 +1168,11 @@ describe("cf#99 tenant module bridge", () => {
         .map((u) => [u.scriptName, u.bindings]),
     );
     const pre = (n: string) => `${t.id}-${n}`.replace(/_/g, "-");
-    // keyframe + own-gpu ride the backend endpoint (ep1); finish-lipsync gets its own (ep3).
+    // keyframe + own-gpu ride the backend endpoint. Hosted does not upload finish-lipsync.
     const epOf = (script: string, name: string) => byScript.get(script)!.find((b) => b.name === name)?.text;
     expect(epOf(pre("keyframe"), "RUNPOD_ENDPOINT_ID")).toBe(POOL_ID.backend);
     expect(epOf(pre("own-gpu"), "RUNPOD_ENDPOINT_ID")).toBe(POOL_ID.backend);
-    expect(epOf(pre("finish-lipsync"), "RUNPOD_ENDPOINT_ID")).toBe(POOL_ID.lipsync);
+    expect(byScript.has(pre("finish-lipsync"))).toBe(false);
     // cp#396: finish-upscale and speech-upscale are OWN IRON, so their transport is a vpc_service
     // binding plus the door bearer, and NO endpoint id. All three asserted per module, on purpose:
     // a missing RUNPOD_ENDPOINT_ID on its own reads exactly like a module that was never uploaded,
@@ -1236,7 +1234,7 @@ describe("cf#99 tenant module bridge", () => {
       (c) => c[1] as { method: string; path: string; body?: string },
     );
     const installs = studioCalls.filter((c) => c.path === "/api/modules/install");
-    expect(installs).toHaveLength(19);  // + cf-grok/seedance/flux/hh1 cloud i2v
+    expect(installs).toHaveLength(18);  // hosted catalog; no finish-lipsync
     // Each install carries the tenant-prefixed script name (not the bare module name).
     const scriptNames = installs.map((c) => JSON.parse(c.body!).script_name).sort();
     expect(scriptNames).toEqual(
@@ -1244,7 +1242,7 @@ describe("cf#99 tenant module bridge", () => {
         // cp#284 added the 8 cost-door rows. STILL A HAND LIST, deliberately: deriving it from
         // TENANT_MODULE_CATALOG would make it agree with whatever the catalog says, which is
         // this assertion inverted. It exists to FAIL when the catalog moves.
-        "keyframe", "own-gpu", "finish-upscale", "finish-lipsync",
+        "keyframe", "own-gpu", "finish-upscale",
         "speech-upscale", "finish-rife", "plan-enhance",
         "alibaba-wan", "alibaba-wan-lora", "google-veo", "kling",
         "minimax-hailuo", "narration-gen", "seedance", "vidu-q3",

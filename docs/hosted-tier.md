@@ -40,8 +40,9 @@ We run the same public release images we publish on GHCR. You never create endpo
 |---|---|
 | **backend** | The main render: keyframes and video |
 | **upscale** | Makes finished video sharper |
-| **lipsync** | Matches mouth movement to dialogue |
 | **audio-upscale** | Cleans up and sharpens audio |
+
+Talking is native AV on our keyframes. Hosted does not run a separate lip-sync pass.
 
 Those workers scale to zero. Nothing running means nothing billed on our GPU bill. Idle is $0.
 
@@ -54,7 +55,8 @@ it: this studio does not use your account.
 ## What a render costs
 
 GPU seconds land on our RunPod account, not yours. A daily ceiling on the tenant studio
-(`TENANT_SPEND_DAILY_CEILING`) is the bound on what any one tenant can spend on the pool.
+(`TENANT_SPEND_DAILY_CEILING`) is a count of spend-route submits per UTC day, not
+dollars (cp#419). A Wan train and a keyframe both count as 1.
 
 The planner's AI is pennies per storyboard; in the hosted tier we cover it.
 

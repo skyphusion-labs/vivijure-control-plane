@@ -1717,17 +1717,14 @@ export type ModuleUpgradeOutcome =
  * (from_release) precisely because modules_release is NULLed before the first write.
  *
  * CROSS-MODULE COMPATIBILITY of a partially-upgraded state, stated from the catalog rather than
- * assumed from the conformance gate: the six RunPod catalog modules serve four hooks -- keyframe
+ * assumed from the conformance gate: the hosted RunPod catalog modules serve four hooks -- keyframe
  * (`keyframe`), own-gpu (`motion.backend`), speech-upscale (`speech`), and finish-upscale +
- * finish-lipsync + finish-rife (all three `finish`). Modules on DIFFERENT hooks never see each
- * other output, so those three groups are mutually independent and a mixed state across them is not
- * expressible.
+ * finish-rife (both `finish`). Hosted does not provision finish-lipsync (MuseTalk is self-host
+ * only). Modules on DIFFERENT hooks never see each other output, so those groups are mutually
+ * independent and a mixed state across them is not expressible.
  *
- * cp#284 MADE THE `finish` GROUP A CHAIN OF THREE, AND THIS PARAGRAPH IS STILL WRITTEN FOR TWO.
- * The chaining argument below is sound for any adjacent pair in the chain and has NOT been
- * re-derived for a three-long chain -- specifically, whether a mixed state across three links can
- * express an incompatibility the two-link argument does not cover is an open question, not a
- * settled one. Flagged rather than silently generalised. The coupled group is the `finish`
+ * Hosted finish is again a pair (upscale + rife). finish-lipsync is not provisioned here.
+ * The chaining argument below is for an adjacent pair. The coupled group is the `finish`
  * modules, which CHAIN: each takes FinishInput{shot_id, clip_key} and returns
  * FinishOutput{clip_key}, so each consumes the output key of the one before it. A mixed
  * finish chain therefore means two vendored copies of that contract meeting on one clip. That is
@@ -2344,7 +2341,17 @@ export async function teardownTenant(
     // complete harvest of nothing. That is the normal state for a provision that died before its
     // migrations ran, which is exactly the population rollbackFailedProvision tears down -- so
     // treating an absent table as an error would make every failed provision unreapable.
-    if (tenant.d1_database_id && !(await guarded("d1"))) {
+    //
+    // Evaluate the d1 guard ONCE (cp#406). guarded() is not a predicate: a refusal pushes onto
+    // `failures` and logs teardown.refused, so calling it twice recorded one refused resource as
+    // two and doubled the ownership lookup. Same pattern as r2_token above (`tokenGuarded`).
+    //
+    // Reusing the verdict under harvestFailed is safe today: the guard result cannot change
+    // mid-pass (the blocked map and ownership are read, not written, by harvest). The harvest
+    // may push its own failure; that is why the delete gate still checks harvestFailed
+    // separately rather than re-asking the guard.
+    const d1Guarded = tenant.d1_database_id ? await guarded("d1") : false;
+    if (tenant.d1_database_id && !d1Guarded) {
       try {
         const harvest = await harvestTenantJobLog(deps.cf, tenant.d1_database_id);
         if (!harvest.complete) {
@@ -2374,7 +2381,7 @@ export async function teardownTenant(
     // harvest failure also stops the delete, instead of a new failure mode quietly bypassing the
     // one interlock that protects the mapping.
     const harvestFailed = failures.some((f) => f.resource === "job_index_harvest");
-    if (tenant.d1_database_id && !(await guarded("d1")) && !harvestFailed) {
+    if (tenant.d1_database_id && !d1Guarded && !harvestFailed) {
       await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!), "d1");
     }
     // EMPTY-THEN-DELETE (cf#72), wired here by this issue caller work.
