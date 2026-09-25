@@ -27,7 +27,7 @@
     "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.9",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10",
+    "vitest": "^4.1.11",
     "wrangler": "^4.121.0"
   }
 }
