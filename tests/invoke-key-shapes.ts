@@ -50,7 +50,7 @@ export const LIVE_PROVEN = {
   status: "live",
   verified_endpoints: 4,
   modules_ready: true,
-  modules_verified: ["backend", "upscale", "wan-train", "audio-upscale"],
+  modules_verified: ["backend", "upscale", "wan-train"],
 };
 
 // 200, LIVE BUT NOT PROVEN. The subtle one: a real, non-failing state where a
@@ -68,7 +68,7 @@ export const LIVE_UNVERIFIED = {
   // A fixture is only as honest as its value types.
   modules_unverified: [
     { module: "wan-train", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-wan-train" },
-    { module: "audio-upscale", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-audio" },
+    { module: "wan-train-2", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-wan-train-2" },
   ],
 };
 
@@ -81,7 +81,7 @@ export const UNCONFIRMED = {
   verified_endpoints: 4,
   modules_ready: false,
   modules_verified: ["backend"],
-  modules_unconfirmed: ["wan-train", "audio-upscale"],
+  modules_unconfirmed: ["wan-train", "wan-train-2"],
   // cp#27: the FACTS behind the sentence, so a client can compose its own copy (and localise it)
   // instead of echoing ours. attempts/elapsed_ms are the numbers a client currently has to parse
   // back out of English; the three booleans are the claims MESSAGE_MUST_SAY could previously only

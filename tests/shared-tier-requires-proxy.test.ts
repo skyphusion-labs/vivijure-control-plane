@@ -25,10 +25,10 @@ const SIGNING_KEY = "cp285-signing-key-not-the-default";
 // A pool whose shape parseSharedPool accepts. Ids and names are distinctive so a binding that
 // silently carried something else would be visible rather than plausible.
 //
-// ONLY the ENDPOINT-BACKED keys (cp#396). upscale and audio-upscale run on hardware we operate and
-// are reached over a Workers VPC binding, so parseSharedPool REFUSES a pool that names either --
-// naming one here would make every case in this file fail on the pool rather than on the proxy,
-// which is the fixture testing itself instead of the gate.
+// ONLY the ENDPOINT-BACKED keys (cp#396). upscale runs on hardware we operate and is reached over
+// an HTTPS door, so parseSharedPool REFUSES a pool that names it (audio-upscale was the second such
+// key until cp#519 retired it) -- naming one here would make every case in this file fail on the
+// pool rather than on the proxy, which is the fixture testing itself instead of the gate.
 const POOL = JSON.stringify({
   backend: { id: "ep-cp285-backend", name: "pool-backend" },
   "wan-train": { id: "ep-cp285-wan-train", name: "pool-wan-train" },

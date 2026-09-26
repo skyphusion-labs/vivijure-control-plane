@@ -51,7 +51,6 @@
     endpoints: [
       { key: "backend", label: "backend", id: "abc123backend", name: "vivijure-backend-your-studio" },
       { key: "upscale", label: "upscale", id: "abc123upscale", name: "vivijure-upscale-your-studio" },
-      { key: "audio-upscale", label: "audio-upscale", id: "abc123audio", name: "vivijure-audio-upscale-your-studio" },
     ],
   };
 
@@ -79,7 +78,6 @@
           { key: "backend", label: "Render (keyframes, video)", backing: "runpod", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "NVIDIA H200 / NVIDIA B200" },
           { key: "upscale", label: "Video upscale", backing: "door", image: "ghcr.io/skyphusion-labs/vivijure-upscale", max_workers: null, gpu: "our hardware" },
           { key: "wan-train", label: "Cast LoRA training (Wan)", backing: "runpod", image: "ghcr.io/skyphusion-labs/vivijure-wan-train", max_workers: 2, gpu: "NVIDIA H200 / NVIDIA B200" },
-          { key: "audio-upscale", label: "Audio upscale", backing: "door", image: "ghcr.io/skyphusion-labs/vivijure-audio-upscale", max_workers: null, gpu: "our hardware" },
         ],
         // A real, named render from our own history (film-2294a9d7, 2026-07-14:
         // 2 shots, 10s of finished video, final quality). wall_clock_ms is
@@ -128,9 +126,9 @@
         status: 200,
         body: {
           status: "live",
-          verified_endpoints: 3,
+          verified_endpoints: 2,
           modules_ready: true,
-          modules_verified: ["backend", "upscale", "audio-upscale"],
+          modules_verified: ["backend", "upscale"],
         },
       };
     },

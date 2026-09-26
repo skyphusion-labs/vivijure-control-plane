@@ -153,7 +153,21 @@ export const TENANT_STUDIO_VAR_DISPOSITION: Record<string, { disposition: VarDis
   IMAGE_PREP_URL: { disposition: "conditional", why: "Traefik image-prep origin. Unset = rembg off." },
   AUDIO_MASTER_URL: { disposition: "conditional", why: "Traefik audio-master origin. Unset = master off." },
   FINISH_UPSCALE_DOORS: { disposition: "conditional", why: "Comma-separated HTTPS origins for finish-upscale poll." },
-  SPEECH_UPSCALE_DOORS: { disposition: "conditional", why: "Comma-separated HTTPS origins for speech-upscale poll." },
+  // THIS ENTRY OUTLIVES THE CAPABILITY, ON PURPOSE (cp#519). The plane no longer reads this var:
+  // the `speech-upscale` module, its `audio-upscale` plan key and its door are all gone. But the
+  // PINNED studio release still DECLARES it in required_vars (measured on v1.33.9: one of 28), and
+  // assertDispositionCoversContract throws on a declared var with no disposition, which would
+  // refuse EVERY provision and EVERY studio upgrade on the pinned release. That is precisely the
+  // v1.12.0 outage this file exists to prevent, so the entry stays until a vivijure-cf release
+  // drops the var from required_vars AND STUDIO_RELEASE is bumped to it. `conditional` with no
+  // plane-side source now means it is simply never bound, which is the honest state.
+  SPEECH_UPSCALE_DOORS: {
+    disposition: "conditional",
+    why:
+      "RETIRED capability (cp#519): nothing on this plane supplies it any more, so it is never " +
+      "bound. Kept because the pinned studio release still declares it in required_vars, and an " +
+      "undeclared disposition refuses every provision and every upgrade",
+  },
   FINISH_BLENDER_DOORS: { disposition: "conditional", why: "Comma-separated HTTPS origins for blender poll." },
   RUNPOD_WAN_TRAIN_ENDPOINT_ID: {
     disposition: "conditional",

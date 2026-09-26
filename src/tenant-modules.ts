@@ -114,10 +114,12 @@ export interface TenantModuleSpec {
    * This module writes finished render bytes into the TENANT's R2 bucket, so it needs an
    * `r2_bucket` binding named R2_RENDERS (cp#284 / cf#394 wave 1).
    *
-   * MEASURED FROM THE MODULE SOURCES, not assumed: across the fifteen catalog modules the split is
-   * exact and has no overlap with `endpointKey`. The eight cost-door modules declare `R2_RENDERS`
-   * in their Env and do one `env.R2_RENDERS.put` in the Worker; the other seven declare it nowhere,
-   * because their far end writes and the studio imports the result.
+   * MEASURED FROM THE MODULE SOURCES, not assumed: the split is exact and has no overlap with
+   * `endpointKey`. The flag is set on twelve of the seventeen rows, the cost-door and AI-Gateway
+   * video modules, which declare `R2_RENDERS` in their Env and do one `env.R2_RENDERS.put` in the
+   * Worker; the other five declare it nowhere, because their far end writes and the studio imports
+   * the result. (The counts read "fifteen / eight / seven" until cp#519 and had been stale since
+   * the cf-* rows landed; they are re-derived from the catalog flags above.)
    *
    * WITHOUT THIS BINDING THE ROW IS WORSE THAN ABSENT. A tenant module uploaded with no R2_RENDERS
    * does not fail: the self-host wrangler.toml names the OPERATOR bucket, so the tenant's renders
@@ -136,7 +138,8 @@ export interface TenantModuleSpec {
  * more, which is what this paragraph used to claim: cp#284 / cf#394 wave 1 added the eight
  * GPUless cost-door modules, which reach RunPod through PUBLIC vendor slugs and declare no
  * endpoint of ours at all. Derive the populations from the catalog, never from this prose --
- * `reachesRunpod` is the RunPod-reaching set (14 of 15 today, `plan-enhance` the only exclusion),
+ * `reachesRunpod` is the RunPod-reaching set (12 of 17 today; `plan-enhance` and the four cf-*
+ * AI-Gateway video modules are the exclusions),
  * `spec.endpointKey` the endpoint-backed subset, `spec.writesTenantRenders` the tenant-R2 writers.
  * The binding set below branches on each of those separately. Extending the hosted tier is a row
  * here, plus the matching endpoint in runpod.ts for an endpoint-backed module.
@@ -163,7 +166,13 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   // module is retired with it. Hosted talking stays native AV on our keyframes, and audio-driven
   // lip-sync is infinitetalk on the `motion.backend` door, which is not a finish pass and so has
   // no row to take here.
-  { module: "speech-upscale", endpointKey: "audio-upscale", recordsRunpodJobs: true },
+  //
+  // NO speech-upscale ROW either, as of cp#519, and it went for four reasons at once: its
+  // `audio-upscale` endpoint no longer exists (cf#757), its only planner trigger was the same
+  // `finish-lipsync` checkbox cf#785 removed, the dialogue cleanup it did existed to feed the
+  // post-hoc mouth replacement that infinitetalk now does at motion time, and resemble-enhance is
+  // CUDA. The `speech` hook therefore has no hosted module at all; the plan key is retired to
+  // RETIRED_ENDPOINT_KEYS in runpod.ts, not deleted, because its debris outlives it.
   // cp#284 / cf#394 wave 0. Rides the SAME shared backend endpoint as keyframe and own-gpu, which
   // is read off the module rather than chosen here: its wrangler.toml binds RUNPOD_ENDPOINT_ID from
   // the store secret BACKEND_RUNPOD_ENDPOINT_ID. Records, so it takes TELEMETRY_DB; endpoint-backed,
@@ -296,7 +305,7 @@ export const reachesRunpod = (spec: TenantModuleSpec): boolean =>
  *
  * PER TENANT, NOT PER MODULE. The mint is a pure HMAC over the tenant id, so every module in the
  * catalog computes the identical answer. Hoisting it out of the upload loop makes that a stated
- * property rather than something that happens to hold fifteen times.
+ * property rather than something that happens to hold seventeen times.
  */
 export async function tenantModuleProxyBinding(
   runpodMode: RunPodMode,
@@ -1200,7 +1209,8 @@ export function classifyReadyResponse(status: number, text: string, expectedModu
   // encoded an assumption that every probed module reaches RunPod at an endpoint of ours. Two
   // whole module families do not, and BOTH were in the probe population:
   //
-  //   DOOR-BACKED (finish-upscale, speech-upscale). Runs on our own hardware through a door, so
+  //   DOOR-BACKED (finish-upscale; speech-upscale too until cp#519). Runs on our own hardware
+  //   through a door, so
   //   the plane binds NO endpoint id BY DESIGN (PlannedVpcCapability: "no endpoint id to bind ...
   //   on purpose rather than by omission"). It reported endpoint_id:false and landed on
   //   `misconfigured`, which is not retryable and throws. The emitting module already says this

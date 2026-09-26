@@ -194,7 +194,7 @@ function makeWiring(): WiringDouble {
     // A queued provision job IS driven by the poll route; without resume the route TypeErrors.
     resume: vi.fn(async () => {}),
     installInvokeKey: vi.fn(async () => ({
-      verified: ["keyframe", "own-gpu", "finish-upscale", "speech-upscale"],
+      verified: ["keyframe", "own-gpu", "finish-upscale", "finish-rife"],
       unverified: [],
       unconfirmed: [],
       notProbed: [],
@@ -1899,7 +1899,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
       verified: ["backend"],
       unverified: [
         { module: "wan-train", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-wan-train" },
-        { module: "audio-upscale", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-audio" },
+        { module: "wan-train-2", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-wan-train-2" },
       ],
       unconfirmed: [],
       attempts: 1, elapsedMs: 120,
@@ -1920,7 +1920,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(body.modules_ready).toBe(false);
     expect((body.modules_unverified as { module: string }[]).map((u) => u.module)).toEqual([
       "wan-train",
-      "audio-upscale",
+      "wan-train-2",
     ]);
     // Second key set, per the optional-key rule: allowing one optional key inside a single set is a
     // subset match wearing a disguise, so the with-unverified shape gets its own exact assertion.
@@ -1938,7 +1938,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
       verified: ["keyframe", "own-gpu"],
       unverified: [
         { module: "finish-upscale", reason: "unverifiable", script: "ten-abc123-finish-upscale", detail: "d1" },
-        { module: "speech-upscale", reason: "unverifiable", script: "ten-abc123-speech-upscale", detail: "d2" },
+        { module: "finish-rife", reason: "unverifiable", script: "ten-abc123-finish-rife", detail: "d2" },
       ],
       unconfirmed: [],
       attempts: 1,
@@ -1965,7 +1965,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(store.tenants.get("ten_abc123")?.status).toBe("live");
     expect(body.modules_ready).toBe(false);
     expect(body.modules_verified).toEqual(["keyframe", "own-gpu"]);
-    expect(body.modules_unverified.map((u) => u.module)).toEqual(["finish-upscale", "speech-upscale"]);
+    expect(body.modules_unverified.map((u) => u.module)).toEqual(["finish-upscale", "finish-rife"]);
   });
 
   // cp#20: NEITHER invoke-key outcome may carry a summary `ok`. The 202 is the dangerous one (a

@@ -55,21 +55,28 @@ function fakeRunPod(opts: { endpoints?: unknown[]; templates?: unknown[]; quotaE
 }
 
 describe("the provisioning plan", () => {
-  it("holds 4 capabilities: 2 endpoint-backed, 2 on our own iron", () => {
-    // cp#517 dropped the lipsync entry (musetalk ruled out, endpoint gone). Both numbers are
-    // asserted because one cannot distinguish a capability that was DROPPED from one that MOVED
-    // transport, and the worker sum is asserted because it is what the account-wide quota is spent
-    // against: 5 -> 4 is the quota this excision hands back.
-    expect(PROVISION_PLAN).toHaveLength(4);
+  it("holds 3 capabilities: 2 endpoint-backed, 1 on our own iron", () => {
+    // cp#517 dropped the lipsync entry (musetalk ruled out, endpoint gone); cp#519 dropped
+    // audio-upscale with the speech-upscale module. ALL THREE numbers are asserted because a total
+    // alone cannot distinguish a capability that was DROPPED from one that MOVED transport.
+    //
+    // THE WORKER SUM IS UNCHANGED AT 4, and that is the honest reading: audio-upscale was
+    // door-backed, so it spent NO account-wide worker quota and its removal hands none back. Saying
+    // otherwise would be inventing a saving. What cp#517 handed back was 1, from an ENDPOINT.
+    expect(PROVISION_PLAN).toHaveLength(3);
     expect(endpointBackedPlan()).toHaveLength(2);
-    expect(vpcBackedPlan()).toHaveLength(2);
+    expect(vpcBackedPlan()).toHaveLength(1);
     expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "wan-train"]);
-    expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["audio-upscale", "upscale"]);
+    expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["upscale"]);
     expect(endpointBackedPlan().reduce((n, e) => n + e.maxWorkers, 0)).toBe(4);
-    // The retired key is not reachable from the plan by any route, which is what stops it being
-    // provisioned, pinned or demanded of a pool. It survives ONLY for reconcile attribution.
+    // A retired key is not reachable from the plan by any route, which is what stops it being
+    // provisioned, pinned or demanded of a pool. It survives ONLY for reconcile attribution, and
+    // BOTH halves are asserted per key: absent from the plan, present in the retired list. Assert
+    // only the first and the attribution can be dropped silently, which is the cp#517 defect.
     expect(PROVISION_PLAN.map((c) => c.key)).not.toContain("lipsync");
     expect(RETIRED_ENDPOINT_KEYS).toContain("lipsync");
+    expect(PROVISION_PLAN.map((c) => c.key)).not.toContain("audio-upscale");
+    expect(RETIRED_ENDPOINT_KEYS).toContain("audio-upscale");
   });
 
   it("pins max_workers EXPLICITLY on every ENDPOINT (RunPod default of 3 would overrun the quota)", () => {

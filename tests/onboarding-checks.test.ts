@@ -49,9 +49,9 @@ import { PROVISION_STEPS } from "../src/provisioner";
 // a guard.
 
 // The max_workers here are ARITHMETIC INPUTS for the quotaFit cases below (they sum to 5, which is
-// the boundary those tests are tuned to), NOT the plan's real pins: upscale and audio-upscale carry
-// a worker count while actually being own-iron with none. The third row named lipsync until cp#517
-// retired that key; it is filler for the sum either way.
+// the boundary those tests are tuned to), NOT the plan's real pins: upscale carries a worker count
+// while actually being own-iron with none, and the fourth row names a key cp#519 retired outright.
+// The third row named lipsync until cp#517 retired that key; both are filler for the sum either way.
 const PLAN: PlannedEndpoint[] = [
   { key: "backend", label: "backend", purpose: "render", image: "ghcr.io/x/backend", max_workers: 2 },
   { key: "upscale", label: "upscale", purpose: "sharper", image: "ghcr.io/x/upscale", max_workers: 1 },
@@ -115,7 +115,6 @@ describe("consumerEndpointLabel", () => {
   it("maps known keys to filmmaker purposes", () => {
     expect(consumerEndpointLabel({ key: "backend", label: "Render (keyframes, video)" })).toBe("Render");
     expect(consumerEndpointLabel({ key: "upscale", label: "Video upscale" })).toBe("Sharper video");
-    expect(consumerEndpointLabel({ key: "audio-upscale", label: "Audio upscale" })).toBe("Cleaner audio");
   });
 
   it("falls back to the plan label for an unknown key rather than inventing one", () => {
@@ -125,6 +124,8 @@ describe("consumerEndpointLabel", () => {
     // fallback as any unknown one, which is the honest outcome: the wizard paints whatever label a
     // payload carries rather than a filmmaker-facing name for a capability that cannot run.
     expect(consumerEndpointLabel({ key: "lipsync", label: "Lip sync" })).toBe("Lip sync");
+    // cp#519 removed audio-upscale from the map for the same reason, so it takes the same fallback.
+    expect(consumerEndpointLabel({ key: "audio-upscale", label: "Audio upscale" })).toBe("Audio upscale");
     expect(consumerEndpointLabel(null)).toBe("");
   });
 });
@@ -161,6 +162,9 @@ describe("planRowMeta / planSummaryCopy (cp#474)", () => {
       { key: "backend", label: "Render", backing: "runpod", max_workers: 2 },
       { key: "upscale", label: "Video upscale", backing: "door" },
       { key: "wan-train", label: "Cast LoRA training (Wan)", backing: "runpod", max_workers: 2 },
+      // Two door rows KEPT on purpose: this case exercises the PLURAL own-iron sentence, which the
+      // real plan can no longer produce on its own since cp#519 left one door. A fixture reduced to
+      // match today's plan would stop testing the plural branch that a second door would restore.
       { key: "audio-upscale", label: "Audio upscale", backing: "door" },
     ]);
     expect(copy).toMatch(/4 workers/);

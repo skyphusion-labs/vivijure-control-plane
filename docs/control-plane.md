@@ -161,7 +161,7 @@ but not through.
 The provisioner closes it the SAME way self-host does (Phase-3 dynamic dispatch), per tenant:
 
 1. **Module scripts.** Tenant-configured copies of every module in `TENANT_MODULE_CATALOG`
-   (`src/tenant-modules.ts`, currently fifteen) upload into ONE shared dispatch namespace
+   (`src/tenant-modules.ts`, currently seventeen) upload into ONE shared dispatch namespace
    (`TENANT_MODULE_NAMESPACE`, e.g. `vivijure-tenant-modules`), script names prefixed with the
    TENANT ID (stable across renames; teardown is a prefix sweep). The catalog is DATA; extending
    the tier is a row there (plus a matching endpoint in `runpod.ts` only when the module is
@@ -507,7 +507,8 @@ safe is a question about the CATALOG, not about the conformance gate (which is p
 nothing about pairs):
 
 - The endpoint-backed RunPod catalog modules serve these hooks: `keyframe` (keyframe), `own-gpu`
-  (motion.backend), `speech-upscale` (speech), and the `finish` chain.
+  (motion.backend), and the `finish` chain. The `speech` hook was a fourth until cp#519 retired
+  `speech-upscale`; no hosted module serves it now.
   **The chain measured FOUR at studio_release 1.27.0 (cp#408):** `finish-upscale`,
   `finish-lipsync`, `finish-rife`, `finish-blender`, derived from the UNION of modules that declare
   `hooks: ["finish"]` and confirmed independently by `GET /api/modules`. An intersection over repo
@@ -923,8 +924,8 @@ The install succeeded and is reported as such; what could not be done is PROVING
   "modules_unverified": [
     { "module": "finish-upscale", "reason": "unverifiable",
       "script": "ten-abc123-finish-upscale", "detail": "..." },
-    { "module": "speech-upscale", "reason": "unverifiable",
-      "script": "ten-abc123-speech-upscale", "detail": "..." }
+    { "module": "finish-rife", "reason": "unverifiable",
+      "script": "ten-abc123-finish-rife", "detail": "..." }
   ] }
 ```
 
