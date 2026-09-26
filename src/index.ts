@@ -15,6 +15,7 @@
 // "queued" job until that runner ships. Nothing here claims otherwise to the caller.
 
 import { balanceFromSums, parseEnforcing, parseMicroUsd, type Balance, type HoldRow, type LedgerRow } from "./credits";
+import { settingEnabled } from "./settings";
 import {
   buildAdminCreditView,
   buildTenantCreditView,
@@ -422,7 +423,7 @@ export async function handle(
     // ---- public ----
     if (request.method === "GET" && path === "/api/platform/config") {
       return json({
-        signups_enabled: (await deps.store.getSetting("signups_enabled")) !== "false",
+        signups_enabled: settingEnabled(await deps.store.getSetting("signups_enabled")),
         aup_version: env.AUP_VERSION,
         // Projected from what is actually configured, never hardcoded. Joan renders from this.
         auth_methods: ["email", ...configuredProviders(env)],
@@ -496,7 +497,7 @@ export async function handle(
       if (origin && origin !== publicOrigin(env)) return err("bad_origin", 403);
       const token = await magicLinkTokenFromPost(request);
       if (!token) return redirectTo(env, "/?error=link_invalid");
-      const signupsEnabled = (await deps.store.getSetting("signups_enabled")) !== "false";
+      const signupsEnabled = settingEnabled(await deps.store.getSetting("signups_enabled"));
       const result = await redeemMagicLink(deps.store, token, signupsEnabled, deps.now());
       if (!result.ok) {
         return redirectTo(env, result.reason === "signups_closed" ? "/?error=signups_closed" : "/?error=link_invalid");
@@ -612,7 +613,7 @@ async function emailStart(
     return accepted();
   }
 
-  const signupsEnabled = (await deps.store.getSetting("signups_enabled")) !== "false";
+  const signupsEnabled = settingEnabled(await deps.store.getSetting("signups_enabled"));
   const existing = await deps.store.getAccountByEmail(email);
   // Signups-off closes the door to NEW accounts only; it never locks out people who already have one.
   if (!existing && !signupsEnabled) return accepted();
@@ -677,7 +678,7 @@ async function finishSso(
 
   // Signups-off must close the SSO door to NEW accounts too, or it is not a switch at all. Decided
   // before creation, so a closed signup leaves nothing behind.
-  const signupsEnabled = (await deps.store.getSetting("signups_enabled")) !== "false";
+  const signupsEnabled = settingEnabled(await deps.store.getSetting("signups_enabled"));
   const result = await upsertAccountForVerifiedEmail(
     deps.store,
     identity.provider,
@@ -2500,7 +2501,7 @@ async function adminRoutes(
   }
 
   if (request.method === "GET" && path === "/api/admin/settings") {
-    return json({ signups_enabled: (await deps.store.getSetting("signups_enabled")) !== "false" });
+    return json({ signups_enabled: settingEnabled(await deps.store.getSetting("signups_enabled")) });
   }
 
   // cp#436: IS THE CRON ALIVE. The three scheduled halves report to console only, so before this
