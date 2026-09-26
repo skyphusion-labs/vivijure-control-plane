@@ -348,6 +348,7 @@ Specified here so the launch-gate flip is mechanical rather than a rewrite under
 | Section 8 | liability capped at $0 because the software is free | Revisit. Tier 1 is free, so the reasoning survives tier 1, but it does not survive tier 2 and counsel should look at it now (T2-3). |
 | Section 10 | "the project is not an online hosting provider and there is no provider takedown role here" | **False at launch.** We will host content at the direction of users. This is the DMCA agent item (T1-2). |
 | Section 11 | termination | Add the hosted levers: suspend, terminate, and the honest limit that we cannot touch their RunPod account. |
+| Section 6 | "When you self-host, these are YOUR own accounts with those providers" | Split into 6.1 (self-host: still true, and it now names the provider conduct terms that change what the software may lawfully do: BFL ToS 1.3(n) no training on Output, 1.2(c), 1.3(m), 1.3(p), Usage Policy; Gemini API 18+ and no under-18-directed service) and 6.2 (hosted: those providers run on OUR accounts, bind us, and are flowed down through `aup/1.2.0.md` section 3.2). Text is drafted on vivijure-cf#755 and held unmerged; 6.1 is true today and could land alone if Conrad rules the hosted door is not open. Counsel item T1-15. |
 
 ### `vivijure docs/legal/ACCEPTABLE-USE.md` (hub-canonical) and `vivijure-cf docs/legal/README.md`
 Both state that Skyphusion Labs does not host instances for other people. Update the framing and
