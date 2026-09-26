@@ -75,9 +75,11 @@
       // Labels are filmmaker purposes (Render, Sharper video, Cleaner audio).
       // backing is what lets the intro tell own-iron from the shared pool
       // without inventing four RunPod endpoints (cp#474).
-      // Lip sync is not a hosted shared-tier capability (MuseTalk is self-host
-      // only). CONSUMER_ENDPOINT_LABELS still names it if a self-host plan
-      // row arrives. Talking is native AV on our keyframes.
+      // There is no lip-sync row because there is no lip-sync ENDPOINT (cp#517):
+      // MuseTalk is ruled out as a provider and the plan key went with it.
+      // Talking is native AV on our keyframes. Lip-sync itself is not gone from
+      // the product -- it is audio-driven infinitetalk on the motion door, which
+      // is not one of these pool endpoints and so has no row here to render.
       // cp#303: purpose matches the plan -- training is not on this endpoint.
       { key: "backend", label: "Render", purpose: "Keyframes and video", image: "ghcr.io/skyphusion-labs/vivijure-backend", max_workers: 2, gpu: "H200 / B200", backing: "runpod" },
       { key: "upscale", label: "Sharper video", purpose: "Makes finished video sharper", image: "ghcr.io/skyphusion-labs/vivijure-upscale", gpu: "our hardware", backing: "door" },
@@ -174,10 +176,12 @@
 
   // Filmmaker-facing name for a plan row. Image repos and GPU SKUs stay on the
   // plan object; this is the string the hosted wizard is allowed to paint.
+  // cp#517: no lipsync entry. An unknown key falls back to the label the payload
+  // carries, which is what should happen to a retired one: the wizard must not
+  // paint a filmmaker-facing name for a capability that cannot run.
   const CONSUMER_ENDPOINT_LABELS = {
     backend: "Render",
     upscale: "Sharper video",
-    lipsync: "Lip sync",
     "audio-upscale": "Cleaner audio",
   };
 

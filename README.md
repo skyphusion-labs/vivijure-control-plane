@@ -202,8 +202,10 @@ the same way a self-hosted studio does.
 
 Hosted module workers (`keyframe`, `own-gpu`, `finish-upscale`, `speech-upscale`, and the rest of
 the catalog) are uploaded into one shared dispatch namespace, named with the tenant id in front so
-cleanup is a simple sweep. Each one carries only its own endpoint id. Hosted does not provision
-`finish-lipsync` (MuseTalk stays self-host). Which module maps to which endpoint is
+cleanup is a simple sweep. Each one carries only its own endpoint id. Hosted has never provisioned
+`finish-lipsync`, and as of cp#517 that module is retired outright rather than left to self-host:
+MuseTalk is ruled out as a lip-sync provider. Lip-sync itself is not retired -- `infinitetalk` serves
+it as an audio-driven motion door. Which module maps to which endpoint is
 plain **data** in the catalog, so extending the tier is a row in a table, not new code.
 
 The studio then installs them **through its own install route**, running its own real conformance

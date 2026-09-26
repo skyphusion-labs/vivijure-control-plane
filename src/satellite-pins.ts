@@ -25,7 +25,7 @@
 //   - Moving a pin means the mirrored production endpoint moved first. If you are tempted to pin
 //     ahead of production, the thing to change is production.
 
-export type SatelliteKey = "backend" | "upscale" | "lipsync" | "audio-upscale" | "wan-train";
+export type SatelliteKey = "backend" | "upscale" | "audio-upscale" | "wan-train";
 
 /** The GHCR org every satellite image lives under. The ONE place this string appears. */
 export const GHCR_ORG = "skyphusion-labs";
@@ -46,10 +46,16 @@ export interface SatellitePin {
 /**
  * Pins as MEASURED off the production endpoints on 2026-07-25 (cp#126).
  *
- * Deliberately NOT the newest published tags on that date (upscale 1.0.5, musetalk 1.0.6,
- * audio-upscale 1.0.8): production had not adopted them. musetalk 1.0.6 in particular adds a whole
- * HTTP serve path production has never run, and a tenant is not the place to find out how it
- * behaves. When production adopts them, `check:pins:prod` goes red and this file follows it.
+ * Deliberately NOT the newest published tags on that date (upscale 1.0.5, audio-upscale 1.0.8):
+ * production had not adopted them, and a tenant is not the place to find out how a tag production
+ * has never run behaves. When production adopts them, `check:pins:prod` goes red and this file
+ * follows it.
+ *
+ * NO LIPSYNC PIN (cp#517). There was one, `vivijure-musetalk:1.0.5` mirroring endpoint
+ * zw6pt4lymf69pk. MuseTalk is ruled out permanently as a lip-sync provider and that endpoint no
+ * longer exists, so the pin mirrored nothing and `check:pins:prod` had nothing to read it against.
+ * Lip-sync itself is NOT retired: `infinitetalk` serves it as an audio-driven `motion.backend`
+ * door, which is not a satellite endpoint this plane provisions and so takes no pin here.
  */
 export const SATELLITE_PINS: Record<SatelliteKey, SatellitePin> = {
   backend: {
@@ -61,11 +67,6 @@ export const SATELLITE_PINS: Record<SatelliteKey, SatellitePin> = {
     repo: "vivijure-upscale",
     tag: "1.0.4",
     mirrors: { endpointId: "4q8idwbk6tyqbq", readAt: "2026-07-25" },
-  },
-  lipsync: {
-    repo: "vivijure-musetalk",
-    tag: "1.0.5",
-    mirrors: { endpointId: "zw6pt4lymf69pk", readAt: "2026-07-25" },
   },
   "audio-upscale": {
     repo: "vivijure-audio-upscale",

@@ -158,8 +158,11 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   { module: "keyframe", endpointKey: "backend", recordsRunpodJobs: true },
   { module: "own-gpu", endpointKey: "backend", recordsRunpodJobs: true },
   { module: "finish-upscale", endpointKey: "upscale", recordsRunpodJobs: true },
-  // Not a paywall. Hosted will not run MuseTalk; talking is native AV on our keyframes.
-  // Self-host still binds finish-lipsync via vivijure-cf wrangler.toml.example SATELLITE.
+  // NO finish-lipsync ROW, and as of cp#517 the reason is no longer a hosted/self-host split:
+  // MuseTalk is ruled out as a lip-sync provider everywhere, and the post-hoc mouth-patch finish
+  // module is retired with it. Hosted talking stays native AV on our keyframes, and audio-driven
+  // lip-sync is infinitetalk on the `motion.backend` door, which is not a finish pass and so has
+  // no row to take here.
   { module: "speech-upscale", endpointKey: "audio-upscale", recordsRunpodJobs: true },
   // cp#284 / cf#394 wave 0. Rides the SAME shared backend endpoint as keyframe and own-gpu, which
   // is read off the module rather than chosen here: its wrangler.toml binds RUNPOD_ENDPOINT_ID from

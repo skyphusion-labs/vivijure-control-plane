@@ -48,7 +48,6 @@ const TENANT_BUCKET = "vivijure-tenant-acme-films";
 const ENDPOINTS = [
   { key: "backend", label: "Backend", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
   { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
-  { key: "lipsync", label: "Lip sync", id: "ep3", name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
   { key: "wan-train", label: "Cast LoRA training (Wan)", id: "ep4", name: "n4", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
   { key: "audio-upscale", label: "Audio", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
 ];

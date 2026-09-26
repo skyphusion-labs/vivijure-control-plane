@@ -30,7 +30,6 @@ const TENANT_BUCKET = "vivijure-tenant-acme-films";
 const ENDPOINTS = [
   { key: "backend", label: "Backend", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
   { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
-  { key: "lipsync", label: "Lip sync", id: "ep3", name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
   { key: "wan-train", label: "Cast LoRA training (Wan)", id: "ep4", name: "n4", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
   { key: "audio-upscale", label: "Audio", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
 ];
@@ -111,7 +110,10 @@ describe("the catalog says WHICH modules record", () => {
   });
 
   it("hosted catalog does not include finish-lipsync", () => {
-    // MuseTalk is self-host only. A row here would upload and bind it on every hosted tenant.
+    // Still true and still worth asserting, but the REASON changed (cp#517): this was a
+    // hosted/self-host split, and MuseTalk is now ruled out as a lip-sync provider everywhere, so
+    // finish-lipsync is retired outright. A row here would upload and bind a module that no longer
+    // exists, against an endpoint key the plan no longer carries.
     expect(TENANT_MODULE_CATALOG.map((s) => s.module)).not.toContain("finish-lipsync");
     expect(TENANT_MODULE_CATALOG.some((s) => s.endpointKey === "lipsync")).toBe(false);
   });

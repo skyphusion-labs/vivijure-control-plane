@@ -248,17 +248,16 @@ beforeEach(() => {
 const SHARED_POOL = {
   endpoints: [
     { key: "backend", label: "Render", id: "pool-1", name: "vivijure-prod-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
-    { key: "lipsync", label: "Lip sync", id: "pool-3", name: "vivijure-prod-lipsync", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
     { key: "wan-train", label: "Cast LoRA training (Wan)", id: "pool-4", name: "vivijure-prod-wan-train", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
   ],
-  ids: new Set(["pool-1", "pool-3", "pool-4"]),
-  names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync", "vivijure-prod-wan-train"]),
+  ids: new Set(["pool-1", "pool-4"]),
+  names: new Set(["vivijure-prod-backend", "vivijure-prod-wan-train"]),
 };
 // cp#396: endpoint ids now come from the POOL, since nothing creates per-tenant endpoints. Derived
 // from the fixture rather than re-hardcoded, so a pool fixture change cannot leave these stale.
 const POOL_ID = {
   backend: SHARED_POOL.endpoints[0].id,
-  lipsync: SHARED_POOL.endpoints[1].id,
+  wanTrain: SHARED_POOL.endpoints[1].id,
 };
 
 describe("runProvisionJob on the SHARED pool (cp#270)", () => {
@@ -322,7 +321,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
       bindings: { name: string; text?: string }[];
     };
     expect(upload.bindings.find((b) => b.name === "RUNPOD_ENDPOINT_ID")?.text).toBe("pool-1");
-    expect(upload.bindings.find((b) => b.name === "MUSETALK_RUNPOD_ENDPOINT_ID")?.text).toBe("pool-3");
+    expect(upload.bindings.find((b) => b.name === "RUNPOD_WAN_TRAIN_ENDPOINT_ID")?.text).toBe("pool-4");
   });
 
 
@@ -605,7 +604,10 @@ describe("runProvisionJob", () => {
     expect(byName.get("ASSETS")?.type).toBe("assets");
     // Each endpoint id is wired into the var the studio reads it from (spec.endpointVar).
     expect(byName.get("RUNPOD_ENDPOINT_ID")?.text).toBe(POOL_ID.backend);
-    expect(byName.get("MUSETALK_RUNPOD_ENDPOINT_ID")?.text).toBe(POOL_ID.lipsync);
+    expect(byName.get("RUNPOD_WAN_TRAIN_ENDPOINT_ID")?.text).toBe(POOL_ID.wanTrain);
+    // cp#517: the retired lipsync var is bound on NO tenant any more. Asserted as an absence
+    // because a stale plan entry would have bound it silently and nothing else would have noticed.
+    expect(byName.has("MUSETALK_RUNPOD_ENDPOINT_ID")).toBe(false);
     // ...and own iron carries NO endpoint id, so the studio is handed no var for one (cp#396). Both
     // directions asserted: a present var proves the wiring, an absent one proves the split, and an
     // empty string bound to satisfy a shape would upload clean and die at the tenant first render.

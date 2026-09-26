@@ -112,12 +112,13 @@ describe("the deploy-time shared-pool scope gate (cp#396)", () => {
     const boom = async (url: RequestInfo | URL): Promise<Response> => {
       const u = String(url);
       if (u.includes("graphql")) return new Response("{}", { status: 401 });
-      if (u.includes("ep-lipsync")) throw new Error("connection reset");
+      if (u.includes(UNREACHABLE)) throw new Error("connection reset");
       return new Response("{}", { status: 200 });
     };
     const v = await verifySharedPoolScope(POOL_FULL, KEY, boom);
     expect(v.ok).toBe(false);
-    expect(v.outOfScope).toContain("ep-lipsync");
+    // DERIVED from the plan, like POOL_FULL. This named ep-lipsync until cp#517 retired that key.
+    expect(v.outOfScope).toContain(UNREACHABLE);
   });
 });
 
@@ -129,10 +130,10 @@ describe("the gate carries the own-iron refusal too (cp#396)", () => {
     // the CORRECT config until the transport split.
     const withOwnIron = JSON.stringify({
       backend: { id: "ep-backend", name: "b" },
-      lipsync: { id: "ep-lipsync", name: "l" },
+      "wan-train": { id: "ep-wan-train", name: "w" },
       upscale: { id: "4q8idwbk6tyqbq", name: "vivijure-video-upscale" },
     });
-    const v = await verifySharedPoolScope(withOwnIron, KEY, fakeRunPod(["ep-backend", "ep-lipsync"]));
+    const v = await verifySharedPoolScope(withOwnIron, KEY, fakeRunPod(["ep-backend", "ep-wan-train"]));
     expect(v.ok).toBe(false);
     expect(v.state).toBe("pool_unparseable");
     expect(v.detail).toContain("upscale");
@@ -142,10 +143,9 @@ describe("the gate carries the own-iron refusal too (cp#396)", () => {
   it("CONTROL: the SAME pool minus that key passes, so the refusal is the key and not the shape", async () => {
     const clean = JSON.stringify({
       backend: { id: "ep-backend", name: "b" },
-      lipsync: { id: "ep-lipsync", name: "l" },
       "wan-train": { id: "ep-wan-train", name: "w" },
     });
-    const v = await verifySharedPoolScope(clean, KEY, fakeRunPod(["ep-backend", "ep-lipsync", "ep-wan-train"]));
+    const v = await verifySharedPoolScope(clean, KEY, fakeRunPod(["ep-backend", "ep-wan-train"]));
     expect(v.ok).toBe(true);
     expect(v.state).toBe("scope_verified");
   });

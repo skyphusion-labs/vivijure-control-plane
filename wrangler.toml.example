@@ -216,8 +216,13 @@ APPLE_SERVICES_ID = "${APPLE_SERVICES_ID}"
 # both, and the provisioner binds NEITHER when either is missing (tenant-modules.ts).
 TENANT_AI_GATEWAY_ID = "${TENANT_AI_GATEWAY_ID}"
 
-# cp#270: the SHARED RunPod endpoint pool, as JSON keyed by PROVISION_PLAN key:
-#   {"backend":{"id":"...","name":"..."},"upscale":{...},"lipsync":{...},"audio-upscale":{...}}
+# cp#270: the SHARED RunPod endpoint pool, as JSON keyed by ENDPOINT-BACKED PROVISION_PLAN key:
+#   {"backend":{"id":"...","name":"..."},"wan-train":{"id":"...","name":"..."}}
+#
+# cp#517 corrected this example. It named upscale, lipsync and audio-upscale, and all three were
+# wrong: upscale and audio-upscale are own-iron and parseSharedPool REFUSES a config naming either
+# (cp#396), and lipsync retired with the musetalk endpoint. An example the code rejects is worse
+# than no example, because it is the thing an operator copies.
 #
 # EMPTY MEANS THIS PLANE OFFERS NO SHARED TIER, and every tenant must bring its own RunPod key --
 # which is exactly the behaviour before pooling existed. Set it and a tenant that brings no key

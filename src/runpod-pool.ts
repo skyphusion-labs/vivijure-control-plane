@@ -19,9 +19,16 @@
 // carry the credential by accident.
 //
 // THE HAZARD THIS FILE IS SHAPED AGAINST. A partially-configured pool is worse than an absent one: a
-// tenant whose keyframe module has an endpoint and whose lipsync module does not is a studio that
-// provisions green, serves, and then fails on the one render path nobody smoke-tested. So a pool is
+// tenant whose keyframe module has an endpoint and whose cast-LoRA training does not is a studio
+// that provisions green, serves, and then fails on the one path nobody smoke-tested. So a pool is
 // ALL-OR-NOTHING, and an incomplete one REFUSES rather than resolving the keys it happens to have.
+//
+// THE WORKED EXAMPLE USED TO BE LIPSYNC. It was retired with the musetalk endpoint (cp#517), and
+// nothing else in this file changed, which is the design working: every key list here is DERIVED
+// from endpointBackedPlan(), so a plan that loses an entry makes that key's absence valid with no
+// edit. A stale "lipsync" left in a deployed SHARED_RUNPOD_ENDPOINTS is IGNORED rather than
+// refused, deliberately: the loop below iterates PLAN keys, and turning a merely stale config value
+// into a deploy failure would break a correct plane over a key that no longer means anything.
 
 import { endpointBackedPlan, vpcBackedPlan } from "./runpod";
 import type { TenantEndpoint } from "./provisioner";
@@ -79,8 +86,12 @@ export const requiredPoolKeys = (): string[] => endpointBackedPlan().map((spec) 
 /**
  * Parse the SHARED_RUNPOD_ENDPOINTS var into a pool.
  *
- * SHAPE: a JSON object keyed by PROVISION_PLAN key.
- *   {"backend":{"id":"abc123","name":"vivijure-prod-backend"}, "upscale":{...}, ...}
+ * SHAPE: a JSON object keyed by ENDPOINT-BACKED PROVISION_PLAN key.
+ *   {"backend":{"id":"abc123","name":"vivijure-prod-backend"}, "wan-train":{...}}
+ *
+ * The example named "upscale" until cp#517 and was a config this function REFUSES: upscale and
+ * audio-upscale are own-iron (cp#396) and naming either is rejected forty lines below. An example
+ * that the code rejects is worse than none, because it is what an operator copies.
  *
  * ONE shape, no shorthand. A bare-string form ("backend":"abc123") would be friendlier and would
  * also mean two parse paths and a name that is sometimes absent -- and the name is exactly what the
@@ -162,8 +173,8 @@ export function parseSharedPool(raw: string | undefined | null): PoolConfigResul
     });
   }
 
-  // ALL OR NOTHING. See the header: a pool covering three of four capabilities provisions a tenant
-  // that renders keyframes and dies on lip sync, green the whole way.
+  // ALL OR NOTHING. See the header: a pool covering some of the endpoint-backed capabilities
+  // provisions a tenant that renders keyframes and dies on cast-LoRA training, green the whole way.
   if (missing.length) {
     return {
       ok: false,

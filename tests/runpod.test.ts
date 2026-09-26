@@ -9,6 +9,7 @@ import {
   vpcBackedPlan,
   provisionPlanView,
   NO_TRAINING_CLAUSE,
+  RETIRED_ENDPOINT_KEYS,
 
 
 
@@ -54,13 +55,21 @@ function fakeRunPod(opts: { endpoints?: unknown[]; templates?: unknown[]; quotaE
 }
 
 describe("the provisioning plan", () => {
-  it("holds 5 capabilities: 3 endpoint-backed, 2 on our own iron", () => {
-    expect(PROVISION_PLAN).toHaveLength(5);
-    expect(endpointBackedPlan()).toHaveLength(3);
+  it("holds 4 capabilities: 2 endpoint-backed, 2 on our own iron", () => {
+    // cp#517 dropped the lipsync entry (musetalk ruled out, endpoint gone). Both numbers are
+    // asserted because one cannot distinguish a capability that was DROPPED from one that MOVED
+    // transport, and the worker sum is asserted because it is what the account-wide quota is spent
+    // against: 5 -> 4 is the quota this excision hands back.
+    expect(PROVISION_PLAN).toHaveLength(4);
+    expect(endpointBackedPlan()).toHaveLength(2);
     expect(vpcBackedPlan()).toHaveLength(2);
-    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "lipsync", "wan-train"]);
+    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "wan-train"]);
     expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["audio-upscale", "upscale"]);
-    expect(endpointBackedPlan().reduce((n, e) => n + e.maxWorkers, 0)).toBe(5);
+    expect(endpointBackedPlan().reduce((n, e) => n + e.maxWorkers, 0)).toBe(4);
+    // The retired key is not reachable from the plan by any route, which is what stops it being
+    // provisioned, pinned or demanded of a pool. It survives ONLY for reconcile attribution.
+    expect(PROVISION_PLAN.map((c) => c.key)).not.toContain("lipsync");
+    expect(RETIRED_ENDPOINT_KEYS).toContain("lipsync");
   });
 
   it("pins max_workers EXPLICITLY on every ENDPOINT (RunPod default of 3 would overrun the quota)", () => {

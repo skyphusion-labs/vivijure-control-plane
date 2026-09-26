@@ -1898,7 +1898,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     wiring.installInvokeKey.mockResolvedValueOnce({
       verified: ["backend"],
       unverified: [
-        { module: "lipsync", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-lipsync" },
+        { module: "wan-train", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-wan-train" },
         { module: "audio-upscale", reason: "unverifiable", detail: "no /ready route", script: "tenant-x-audio" },
       ],
       unconfirmed: [],
@@ -1919,7 +1919,7 @@ describe("POST /api/tenant/:id/invoke-key", () => {
     expect(body.status).toBe("live");
     expect(body.modules_ready).toBe(false);
     expect((body.modules_unverified as { module: string }[]).map((u) => u.module)).toEqual([
-      "lipsync",
+      "wan-train",
       "audio-upscale",
     ]);
     // Second key set, per the optional-key rule: allowing one optional key inside a single set is a

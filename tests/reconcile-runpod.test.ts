@@ -36,6 +36,11 @@ const ORIGIN = `https://${ROOT_HOST}`;
 const ADMIN_TOKEN = "a".repeat(64);
 const READ_AT = "2026-07-26T12:00:00.000Z";
 
+// The four keys a dedicated tenant was provisioned with when these fixtures were written.
+// "lipsync" IS RETIRED (cp#517) and stays here ON PURPOSE: this file's job is debris that outlives
+// the plan, and a torn-down tenant's vivijure-<slug>-lipsync template is exactly that. The orphan
+// counts below (4 templates, 8 findings) are what proved the excision had dropped the attribution,
+// so they are load-bearing against RETIRED_ENDPOINT_KEYS regressing, not stale fixture data.
 const KEYS = ["backend", "upscale", "lipsync", "audio-upscale"] as const;
 
 /** Endpoint ids in the shape RunPod issues, distinct per tenant so a mix-up cannot pass. */
