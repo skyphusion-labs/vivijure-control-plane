@@ -25,7 +25,7 @@
 //   - Moving a pin means the mirrored production endpoint moved first. If you are tempted to pin
 //     ahead of production, the thing to change is production.
 
-export type SatelliteKey = "backend" | "upscale" | "audio-upscale" | "wan-train";
+export type SatelliteKey = "backend" | "upscale" | "wan-train";
 
 /** The GHCR org every satellite image lives under. The ONE place this string appears. */
 export const GHCR_ORG = "skyphusion-labs";
@@ -56,6 +56,14 @@ export interface SatellitePin {
  * longer exists, so the pin mirrored nothing and `check:pins:prod` had nothing to read it against.
  * Lip-sync itself is NOT retired: `infinitetalk` serves it as an audio-driven `motion.backend`
  * door, which is not a satellite endpoint this plane provisions and so takes no pin here.
+ *
+ * NO AUDIO-UPSCALE PIN (cp#519). There was one, `vivijure-audio-upscale:1.0.7` mirroring endpoint
+ * sj0btgpjdtswa7, and it is gone for four reasons at once: that endpoint no longer exists (cf#757),
+ * the only planner control that could select `speech-upscale` left with the `finish-lipsync`
+ * checkbox (cf#785), the dialogue cleanup it did existed to feed POST-HOC mouth replacement that
+ * `infinitetalk` now does at motion time, and resemble-enhance is CUDA, which the finishing tier's
+ * destination cannot host (fc#2234). So the pin mirrored nothing and no code consumes the image.
+ * Nothing replaces this key.
  */
 export const SATELLITE_PINS: Record<SatelliteKey, SatellitePin> = {
   backend: {
@@ -67,11 +75,6 @@ export const SATELLITE_PINS: Record<SatelliteKey, SatellitePin> = {
     repo: "vivijure-upscale",
     tag: "1.0.4",
     mirrors: { endpointId: "4q8idwbk6tyqbq", readAt: "2026-07-25" },
-  },
-  "audio-upscale": {
-    repo: "vivijure-audio-upscale",
-    tag: "1.0.7",
-    mirrors: { endpointId: "sj0btgpjdtswa7", readAt: "2026-07-25" },
   },
   "wan-train": {
     repo: "vivijure-wan-train",

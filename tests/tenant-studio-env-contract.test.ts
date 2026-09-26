@@ -378,8 +378,9 @@ describe("the tenant studio transport contract (cp#396)", () => {
     // The summary claim, asserted as BOTH numbers. One figure cannot distinguish a capability that
     // was DROPPED from one that MOVED transport, and telling those apart is the entire point.
     expect(endpointBackedPlan()).toHaveLength(2);
-    expect(vpcBackedPlan()).toHaveLength(2);
+    // ONE own-iron capability since cp#519 retired audio-upscale with the speech-upscale module.
+    expect(vpcBackedPlan()).toHaveLength(1);
     expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "wan-train"]);
-    expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["audio-upscale", "upscale"]);
+    expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["upscale"]);
   });
 });

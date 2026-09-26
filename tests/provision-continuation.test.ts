@@ -30,10 +30,10 @@ const RING = kekRing(KEK);
 const MIGRATIONS = [{ name: "0001_init.sql", sql: "CREATE TABLE IF NOT EXISTS projects (id TEXT);" }];
 // BOTH endpoint-backed capabilities, because the module catalog maps a module onto each one and a
 // short list fails at modules_upload rather than testing what this file is about. It is two rather
-// than four since cp#396: upscale and audio-upscale are served by our own iron, so no endpoint is
-// created for them and the module reaches them over the doors in vpcDoors below. Their modules are
-// still uploaded -- the capability MOVED transport, it was not dropped, and a missing door would
-// still fail modules_upload here.
+// than four: cp#396 moved upscale and audio-upscale onto our own iron, so no endpoint is created
+// for them and the module reaches the door in vpcDoors below, and cp#519 then retired
+// audio-upscale outright. finish-upscale is still uploaded -- that capability MOVED transport, it
+// was not dropped, and a missing door would still fail modules_upload here.
 const ENDPOINTS = [
   { key: "backend", label: "Render", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
   { key: "wan-train", label: "Cast LoRA training (Wan)", id: "ep4", name: "n4", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },

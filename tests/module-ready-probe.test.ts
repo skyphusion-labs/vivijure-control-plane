@@ -404,7 +404,10 @@ describe("classifyReadyResponse: RUNPOD-BACKED is unchanged (the control)", () =
   });
 
   it("the ECHO check still applies to a door-backed body", () => {
-    expect(classifyReadyResponse(200, JSON.stringify(LIVE_DOOR_BODY), "speech-upscale")).toBe("misconfigured");
+    // The expected module must DIFFER from the body's own `module`, or this asserts the happy path
+    // by accident. LIVE_DOOR_BODY echoes finish-upscale; the mismatch subject was speech-upscale
+    // until cp#519 retired it, and finish-rife is a live catalog module that is not this body.
+    expect(classifyReadyResponse(200, JSON.stringify(LIVE_DOOR_BODY), "finish-rife")).toBe("misconfigured");
   });
 });
 

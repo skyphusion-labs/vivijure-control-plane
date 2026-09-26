@@ -89,9 +89,9 @@ export const requiredPoolKeys = (): string[] => endpointBackedPlan().map((spec) 
  * SHAPE: a JSON object keyed by ENDPOINT-BACKED PROVISION_PLAN key.
  *   {"backend":{"id":"abc123","name":"vivijure-prod-backend"}, "wan-train":{...}}
  *
- * The example named "upscale" until cp#517 and was a config this function REFUSES: upscale and
- * audio-upscale are own-iron (cp#396) and naming either is rejected forty lines below. An example
- * that the code rejects is worse than none, because it is what an operator copies.
+ * The example named "upscale" until cp#517 and was a config this function REFUSES: upscale is
+ * own-iron (cp#396) and naming it is rejected forty lines below. An example that the code rejects
+ * is worse than none, because it is what an operator copies.
  *
  * ONE shape, no shorthand. A bare-string form ("backend":"abc123") would be friendlier and would
  * also mean two parse paths and a name that is sometimes absent -- and the name is exactly what the
@@ -121,10 +121,11 @@ export function parseSharedPool(raw: string | undefined | null): PoolConfigResul
 
   // OWN IRON MUST NOT BE POOLED, and naming one here is REFUSED rather than ignored (cp#396).
   //
-  // A config naming upscale or audio-upscale says somebody believes there is a RunPod endpoint for
-  // a capability that runs on hardware we operate. The belief is not merely redundant: the shared
-  // invoke key grants NO ACCESS to those endpoints, so the id would be unreachable and the failure
-  // would surface at a tenant FIRST RENDER rather than here.
+  // A config naming upscale says somebody believes there is a RunPod endpoint for a capability
+  // that runs on hardware we operate. The belief is not merely redundant: the shared invoke key
+  // grants NO ACCESS to that endpoint, so the id would be unreachable and the failure would
+  // surface at a tenant FIRST RENDER rather than here. (audio-upscale was the second such key
+  // until cp#519 retired it.)
   //
   // Silently dropping a key an operator deliberately wrote is the quiet-degrade shape this whole
   // file exists to refuse, and it would leave them believing the pool covers something it does not.

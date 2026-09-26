@@ -71,9 +71,10 @@ tenant studio (managed mode)
 
 ## Pricing shape
 
-- Unit: RunPod `executionTime` (ms) per job, per endpoint class (render / upscale / audio-upscale /
-  wan-train). This is the number RunPod bills US on, so cost capture is exact. The list carried a
-  `musetalk` class until cp#517 retired that endpoint.
+- Unit: RunPod `executionTime` (ms) per job, per endpoint class (render / upscale / wan-train).
+  This is the number RunPod bills US on, so cost capture is exact. The list carried a `musetalk`
+  class until cp#517 retired that endpoint, and an `audio-upscale` class until cp#519 retired
+  `speech-upscale`.
 - `rate_card` maps endpoint class -> credit price per second, versioned with effective dates.
   Rates derive from RunPod list price for the underlying GPU class plus the published markup.
 - Credits are prepaid in fixed packs; purchase mechanics (payment processor) are OUT of this

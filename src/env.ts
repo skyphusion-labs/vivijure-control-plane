@@ -173,7 +173,6 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
   IMAGE_PREP_URL?: string;
   AUDIO_MASTER_URL?: string;
   FINISH_UPSCALE_DOORS?: string;
-  SPEECH_UPSCALE_DOORS?: string;
   LOCAL_FINISH_TOKEN?: string;
   MEDIA_FINISH_TOKEN?: string;
   /**
@@ -192,14 +191,10 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    */
   FINISH_UPSCALE_VPC_SERVICE_ID?: string;
   FINISH_DOOR_TOKEN?: string;
-  SPEECH_UPSCALE_VPC_SERVICE_ID?: string;
-  SPEECH_DOOR_TOKEN?: string;
   /** cp#396 second door: the propagandhi box. Same pair shape; see PlannedDoor for why the legacy
    *  pair above keeps its position and its bare binding name. */
   FINISH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID?: string;
   FINISH_DOOR_TOKEN_PROPAGANDHI?: string;
-  SPEECH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID?: string;
-  SPEECH_DOOR_TOKEN_PROPAGANDHI?: string;
 
   /**
    * The SHARED RunPod endpoint pool for the hosted shared tier (cp#270), as JSON keyed by
@@ -208,8 +203,9 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    *   {"backend":{"id":"...","name":"..."},"wan-train":{...}}
    *
    * ENDPOINT-BACKED keys only. This example named upscale, lipsync and audio-upscale until cp#517;
-   * all three were wrong. upscale and audio-upscale are own-iron and parseSharedPool REFUSES a
-   * config naming either (cp#396), and lipsync retired with the musetalk endpoint.
+   * all three were wrong. upscale is own-iron and parseSharedPool REFUSES a config naming it
+   * (cp#396); lipsync retired with the musetalk endpoint, and audio-upscale with speech-upscale
+   * (cp#519).
    *
    * A VAR, not a secret: endpoint ids and names are identifiers. The key that can invoke them is
    * SHARED_RUNPOD_INVOKE_KEY below, deliberately a separate value so an error message or a log
@@ -489,12 +485,8 @@ export const ENV_SECRETS = [
   "VIDEO_FINISH_VPC_SERVICE_ID",
   "FINISH_UPSCALE_VPC_SERVICE_ID",
   "FINISH_DOOR_TOKEN",
-  "SPEECH_UPSCALE_VPC_SERVICE_ID",
-  "SPEECH_DOOR_TOKEN",
   "FINISH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID",
   "FINISH_DOOR_TOKEN_PROPAGANDHI",
-  "SPEECH_UPSCALE_PROPAGANDHI_VPC_SERVICE_ID",
-  "SPEECH_DOOR_TOKEN_PROPAGANDHI",
   "LOCAL_FINISH_TOKEN",
   "MEDIA_FINISH_TOKEN",
   // cp#185, classified from the tracked evidence rather than from the name: docs/deploy.md records

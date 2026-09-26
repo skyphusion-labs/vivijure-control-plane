@@ -24,8 +24,9 @@ const BACKEND_GPUS = ["NVIDIA H200", "NVIDIA B200"];
  * so the compiler enumerates every site that assumed an endpoint id exists.
  *
  * WHY THE SPLIT EXISTS AT ALL. The shared invoke key is endpoint-scoped, and it was minted with NO
- * access to vivijure-video-upscale or vivijure-audio-upscale: those two run as long-lived serve
- * containers on our own GPU boxes. SHARED_RUNPOD_ENDPOINTS is all-or-nothing across plan keys, so
+ * access to vivijure-video-upscale or vivijure-audio-upscale: those two ran as long-lived serve
+ * containers on our own GPU boxes. (audio-upscale retired with cp#519; `upscale` is the surviving
+ * door and the split still holds for it.) SHARED_RUNPOD_ENDPOINTS is all-or-nothing across plan keys, so
  * before this split the correct pool config could not be WRITTEN AT ALL -- four keys demanded, two
  * of which must not exist. The ruling lived in the credential and not in the code, and nothing
  * could report the disagreement.
@@ -62,8 +63,8 @@ export interface PlannedEndpoint extends PlannedCapabilityBase {
 }
 
 /**
- * One bearer the MODULE worker reads. Names are what vivijure-cf finish-upscale / speech-upscale
- * declare: FINISH_DOOR_TOKEN (+ optional FINISH_DOOR_TOKEN_PROPAGANDHI), same for SPEECH_.
+ * One bearer the MODULE worker reads. Names are what vivijure-cf finish-upscale declares:
+ * FINISH_DOOR_TOKEN, plus the optional per-host FINISH_DOOR_TOKEN_PROPAGANDHI.
  */
 export interface PlannedDoorToken {
   bindingName: string;
@@ -75,7 +76,6 @@ export interface PlannedDoorToken {
  * not Workers VPC and not RunPod. Binding goes on the MODULE, not the studio.
  *
  *   finish-upscale  FINISH_UPSCALE_DOORS + FINISH_DOOR_TOKEN
- *   speech-upscale  SPEECH_UPSCALE_DOORS + SPEECH_DOOR_TOKEN
  *
  * First URL in the comma-separated list is the legacy door.
  */
@@ -151,6 +151,15 @@ export const RETIRED_ENDPOINT_KEYS: readonly string[] = [
   // gone. Lip-sync lives on as infinitetalk on the `motion.backend` door, which this plane never
   // provisioned an endpoint for, so nothing replaces this key.
   "lipsync",
+  // cp#519: audio-upscale, the endpoint key behind the vivijure-cf `speech-upscale` module. Retired
+  // outright, and here for exactly the reason the key above is: every dedicated tenant provisioned
+  // before cp#396 made this capability own-iron got a `vivijure-<slug>-audio-upscale` endpoint AND
+  // the template under it, off endpoint sj0btgpjdtswa7 (now gone, cf#757). Dropping the plan entry
+  // alone makes that surviving debris report as "unattributed" instead of as that tenant's orphan,
+  // and the slug is what an operator acts on. Nothing replaces this key: the dialogue cleanup it
+  // did fed post-hoc mouth replacement, which infinitetalk does at motion time on the
+  // `motion.backend` door, and that door is not an endpoint this plane provisions.
+  "audio-upscale",
 ];
 
 export const PROVISION_PLAN: PlannedCapability[] = [
@@ -179,16 +188,6 @@ export const PROVISION_PLAN: PlannedCapability[] = [
     maxWorkers: 2,
     gpuTypeIds: BACKEND_GPUS,
     endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID",
-  },
-  {
-    ...pinned("audio-upscale"),
-    backing: "door",
-    label: "Audio upscale",
-    doorsUrlVar: "SPEECH_UPSCALE_DOORS",
-    tokens: [
-      { bindingName: "SPEECH_DOOR_TOKEN", envVar: "SPEECH_DOOR_TOKEN" },
-      { bindingName: "SPEECH_DOOR_TOKEN_PROPAGANDHI", envVar: "SPEECH_DOOR_TOKEN_PROPAGANDHI" },
-    ],
   },
 ];
 

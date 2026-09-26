@@ -9,8 +9,9 @@
 // had to cover the upscale plan key and the shared invoke key could not reach that endpoint --
 // which was the live, un-arm-able state of the shared tier and the reason for cp#396.
 //
-// That pairing is now GONE at the source: upscale and audio-upscale are vpc-backed, so a pool is
-// two endpoint-backed keys and naming the video-upscale endpoint here is REFUSED outright by
+// That pairing is now GONE at the source: upscale is vpc-backed (and audio-upscale retired with
+// cp#519), so a pool is two endpoint-backed keys and naming the video-upscale endpoint here is
+// REFUSED outright by
 // parseSharedPool. Keeping it as a pool fixture would document a configuration the code now
 // rejects.
 //

@@ -30,12 +30,13 @@ const RING = kekRing(KEK);
 const OLD_RELEASE = "v1.0.0";
 const NEW_RELEASE = "v1.1.0";
 
-/** All four endpoints: the catalog maps a module onto each, so a short list fails at upload for a
- *  reason that has nothing to do with what is under test. */
+/** Every endpoint the catalog maps a module onto, so a short list cannot fail at upload for a
+ *  reason that has nothing to do with what is under test. The audio-upscale row left with cp#519:
+ *  the provisioner no longer creates it, so a fixture carrying it would model a state production
+ *  cannot produce (the cp#378 producible-values rule). */
 const ENDPOINTS = [
   { key: "backend", label: "Render", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
   { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
-  { key: "audio-upscale", label: "Audio", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
 ];
 
 function fakeCf(over: Record<string, unknown> = {}) {
@@ -52,7 +53,6 @@ function fakeCf(over: Record<string, unknown> = {}) {
       { type: "ratelimit", name: "SPEND_RATE_LIMITER" },
       { type: "plain_text", name: "RUNPOD_ENDPOINT_ID" },
       { type: "plain_text", name: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
-      { type: "plain_text", name: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
     ]),
     getScriptSecretNames: vi.fn(async () => ["R2_S3_SECRET_ACCESS_KEY", "STUDIO_API_TOKEN"]),
     ...over,
@@ -192,8 +192,9 @@ describe("preflight refuses before anything is written", () => {
       moduleBundle: {
         fetch: vi.fn(async (_r: string, name: string) => {
           // The FOURTH catalog module is the missing one, so any fetch-then-upload interleaving
-          // would already have uploaded three scripts by the time this throws.
-          if (name === "speech-upscale") throw new Error("no such object in the release mirror");
+          // would already have uploaded three scripts by the time this throws. It was
+          // speech-upscale until cp#519 retired that module; finish-rife is the fourth row now.
+          if (name === "finish-rife") throw new Error("no such object in the release mirror");
           return { mainModule: "i.js", moduleText: "export default {}", compatibilityDate: "2026-06-01" };
         }),
       } as unknown as ProvisionDeps["moduleBundle"],
@@ -205,7 +206,7 @@ describe("preflight refuses before anything is written", () => {
     if (pre.ok) throw new Error("unreachable");
     expect(pre.refusal.code).toBe("module_bundle_unavailable");
     expect(pre.refusal.status).toBe(422);
-    expect(pre.refusal.message).toContain("speech-upscale");
+    expect(pre.refusal.message).toContain("finish-rife");
     // The whole point.
     expect(cf.uploadUserWorker).not.toHaveBeenCalled();
     // And the tenant row is untouched: still recorded at the release it was already on.
@@ -234,7 +235,7 @@ describe("preflight refuses before anything is written", () => {
     expect(pre.context.bundles).toBeInstanceOf(Map);
     // It carries the release the OPERATOR asked for, never the plane-wide deps.release.
     expect(pre.context.release).toBe(NEW_RELEASE);
-    expect(pre.context.bundles.size).toBe(18);   // hosted catalog; no finish-lipsync
+    expect(pre.context.bundles.size).toBe(17);   // hosted catalog; no finish-lipsync, no speech-upscale
   });
 
   it("fetches every bundle at the REQUESTED release, not the plane-wide pin", async () => {
@@ -249,7 +250,7 @@ describe("preflight refuses before anything is written", () => {
 
     await preflightModuleUpgrade(d, tenant, NEW_RELEASE);
 
-    expect(fetchSpy).toHaveBeenCalledTimes(18);   // hosted catalog; no finish-lipsync
+    expect(fetchSpy).toHaveBeenCalledTimes(17);   // hosted catalog; no finish-lipsync, no speech-upscale
     // deps.release is OLD_RELEASE; if the explicit release were being dropped this would be it.
     for (const call of fetchSpy.mock.calls as unknown as [string, string][]) {
       expect(call[0]).toBe(NEW_RELEASE);
@@ -272,11 +273,11 @@ describe("upgradeTenantModules", () => {
     const out = await upgradeTenantModules(d, job.id, tenant, await contextFor(d, tenant));
 
     expect(out.ok).toBe(true);
-    // All SIX catalog modules, uploaded and installed again (cf#56 added plan-enhance).
-    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(18);   // hosted catalog; no finish-lipsync
+    // EVERY catalog module, uploaded and installed again. 17 since cp#519 removed speech-upscale.
+    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(17);
     const installs = (d.callTenantStudio as unknown as { mock: { calls: [string, { path: string }][] } }).mock.calls
       .filter((c) => c[1].path === "/api/modules/install");
-    expect(installs).toHaveLength(18);  // hosted catalog; no finish-lipsync
+    expect(installs).toHaveLength(17);
   });
 
   it("uses the PRE-FETCHED bundles; it does not re-fetch during upload", async () => {
@@ -314,7 +315,7 @@ describe("upgradeTenantModules", () => {
         // TENANT_MODULE_CATALOG would make it agree with whatever the catalog says, which is
         // this assertion inverted. It exists to FAIL when the catalog moves.
         "keyframe", "own-gpu", "finish-upscale",
-        "speech-upscale", "finish-rife", "plan-enhance",
+        "finish-rife", "plan-enhance",
         "alibaba-wan", "alibaba-wan-lora", "google-veo", "kling",
         "minimax-hailuo", "narration-gen", "seedance", "vidu-q3",
         "cf-grok-video", "cf-seedance", "cf-flux-3-video", "cf-hh1-r2v",

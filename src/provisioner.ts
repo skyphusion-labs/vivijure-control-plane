@@ -1717,10 +1717,11 @@ export type ModuleUpgradeOutcome =
  * (from_release) precisely because modules_release is NULLed before the first write.
  *
  * CROSS-MODULE COMPATIBILITY of a partially-upgraded state, stated from the catalog rather than
- * assumed from the conformance gate: the hosted RunPod catalog modules serve four hooks -- keyframe
- * (`keyframe`), own-gpu (`motion.backend`), speech-upscale (`speech`), and finish-upscale +
- * finish-rife (both `finish`). Modules on DIFFERENT hooks never see each other output, so those
- * groups are mutually independent and a mixed state across them is not expressible.
+ * assumed from the conformance gate: the hosted RunPod catalog modules serve three hooks -- keyframe
+ * (`keyframe`), own-gpu (`motion.backend`), and finish-upscale + finish-rife (both `finish`). The
+ * `speech` hook was the fourth and left the hosted catalog with speech-upscale (cp#519). Modules on
+ * DIFFERENT hooks never see each other output, so those groups are mutually independent and a mixed
+ * state across them is not expressible.
  *
  * Hosted finish is a pair (upscale + rife). finish-lipsync is not in the catalog: hosted never
  * provisioned it, and as of cp#517 it is retired outright rather than left to self-host, because

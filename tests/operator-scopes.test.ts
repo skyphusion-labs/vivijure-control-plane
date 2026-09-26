@@ -580,7 +580,7 @@ describe("scoped operator credentials (cp#219)", () => {
             { module: "plan-enhance", script: "ten-x-plan-enhance", status: 404, ok: null, credentials: null, job_log: null, records_runpod_jobs: false, readings: ["unreachable", "unreachable"], reads: 2, settled: true },
             // THE cp#254 ROW: an "ok" the samples did not agree on. Its job_log is identical to
             // keyframe above, and it must not be summarised identically.
-            { module: "speech-upscale", script: "ten-x-speech-upscale", status: 200, ok: true, credentials: null, job_log: "ok", records_runpod_jobs: true, readings: ["unavailable", "ok"], reads: 2, settled: false },
+            { module: "seedance", script: "ten-x-seedance", status: 200, ok: true, credentials: null, job_log: "ok", records_runpod_jobs: true, readings: ["unavailable", "ok"], reads: 2, settled: false },
           ],
         },
       } as unknown as ControlPlaneDeps;
@@ -602,14 +602,16 @@ describe("scoped operator credentials (cp#219)", () => {
       // is a worker that could not tell, null is an image too old to say. Three causes, three
       // remedies, one consequence -- rows nobody will get.
       //
-      // speech-upscale is the fourth cause (cp#254): it answered "ok", exactly like keyframe, on a
+      // The fourth cause (cp#254) is a module that answered "ok", exactly like keyframe, on a
       // reading its own samples contradicted. An unsettled "ok" is not proof, so it is unproven,
       // and keyframe next to it is what makes that a discrimination rather than a blanket refusal.
+      // The subject was speech-upscale until cp#519 retired that module; seedance carries the case
+      // now, because a fixture naming a module the catalog no longer has could not be produced.
       expect(body.records_unproven).toEqual([
-        "own-gpu", "finish-rife", "finish-upscale", "speech-upscale",
+        "own-gpu", "finish-rife", "finish-upscale", "seedance",
       ]);
       // And it is NAMED as mid-convergence, so an operator re-asks rather than re-provisioning.
-      expect(body.unsettled).toEqual(["speech-upscale"]);
+      expect(body.unsettled).toEqual(["seedance"]);
       expect(body.modules).toHaveLength(6);
 
       const rows = await store.listAdminAudit({ target: TEN, limit: 20 });

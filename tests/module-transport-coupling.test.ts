@@ -79,18 +79,15 @@ describe("every catalog endpointKey has a transport in the plan (cp#396)", () =>
   it("the vpc binding names are the ones vivijure-cf ACTUALLY declares (cf#480)", () => {
     // Pinned as literals ON PURPOSE. These names live in another repo, so nothing in this one can
     // catch a typo -- and a wrong binding name is SILENT: it uploads clean and the module simply
-    // never sees a door. Sourced from modules/finish-upscale and modules/speech-upscale Env
-    // declarations at v1.28.0, the pinned STUDIO_RELEASE, where BOTH build a doorPool of two.
+    // never sees a door. Sourced from the modules/finish-upscale Env declaration at the pinned
+    // STUDIO_RELEASE, where it builds a doorPool of two. The speech-upscale pair was asserted here
+    // too until cp#519 retired that module and its audio-upscale key.
     const byKey = Object.fromEntries(vpcBackedPlan().map((c) => [c.key, c]));
+    expect(Object.keys(byKey).sort()).toEqual(["upscale"]);
     expect(byKey.upscale.doorsUrlVar).toBe("FINISH_UPSCALE_DOORS");
     expect(byKey.upscale.tokens.map((tok) => tok.bindingName)).toEqual([
       "FINISH_DOOR_TOKEN",
       "FINISH_DOOR_TOKEN_PROPAGANDHI",
-    ]);
-    expect(byKey["audio-upscale"].doorsUrlVar).toBe("SPEECH_UPSCALE_DOORS");
-    expect(byKey["audio-upscale"].tokens.map((tok) => tok.bindingName)).toEqual([
-      "SPEECH_DOOR_TOKEN",
-      "SPEECH_DOOR_TOKEN_PROPAGANDHI",
     ]);
   });
 

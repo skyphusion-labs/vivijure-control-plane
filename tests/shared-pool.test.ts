@@ -15,8 +15,9 @@ import { reconcileRunPod, type RunPodInventory, type TenantCensus } from "../src
 import { PROVISION_PLAN, endpointBackedPlan, vpcBackedPlan } from "../src/runpod";
 import type { Tenant, TenantLifecycle } from "../src/store";
 
-// cp#396: a pool covers the ENDPOINT-BACKED plan keys only. Naming upscale or audio-upscale here
-// is now REFUSED outright (they run on our own iron), so this fixture is derived from the plan
+// cp#396: a pool covers the ENDPOINT-BACKED plan keys only. Naming upscale here is now REFUSED
+// outright (it runs on our own iron; audio-upscale was the second such key until cp#519 retired
+// it), so this fixture is derived from the plan
 // rather than listed -- a hand-written pool is the shape that silently stops matching the code.
 const POOL_JSON = JSON.stringify(
   Object.fromEntries(
@@ -55,9 +56,9 @@ describe("parseSharedPool", () => {
     // The whole point. A pool covering keyframes and not lip sync provisions a tenant that is green
     // through verify and dies at the first finish render, which is the silent-degrade shape.
     //
-    // The expectation is DERIVED (cp#396): it used to name upscale and audio-upscale as missing,
-    // and those are now served by our own iron, so demanding them would assert a refusal the code
-    // must no longer produce.
+    // The expectation is DERIVED (cp#396): it used to name upscale and audio-upscale as missing.
+    // upscale is now served by our own iron and audio-upscale is retired (cp#519), so demanding
+    // either would assert a refusal the code must no longer produce.
     const first = endpointBackedPlan()[0];
     const res = parseSharedPool(JSON.stringify({ [first.key]: { id: "a", name: "n" } }));
     expect(res.ok).toBe(false);

@@ -83,6 +83,11 @@ MEASURED July 2026 dollars off the RunPod billing API, and the production total 
 with them: deleting the row would falsify a measurement and leave a total that no longer sums. It is
 marked retired instead. A rate card should not carry this class; the July cost basis must.
 
+**The audio-upscale row is KEPT and marked RETIRED for the same reason (cp#519).**
+`speech-upscale` is retired, endpoint `sj0btgpjdtswa7` no longer exists, and no future month
+carries this class either. The July 2026 dollars below are MEASURED and the production total was
+computed with them, so the row stays and is labelled.
+
 `$/GPU-hr` is computed on `gpu + fee` (the compute charge); `disk` is reported separately because it
 is a storage charge, not a per-second compute rate. The audio-upscale row lands at 3.494 against a
 published 3.49, which is the tightest available confirmation that the derivation is sound.
@@ -210,7 +215,7 @@ fee. Applying `cost x 1.05` to the measured basis:
 | --- | ---: | ---: |
 | Render (keyframe + i2v), per GPU-hour | 6.353 | **6.671** |
 | Cast-LoRA training, per GPU-hour | 6.772 | **7.111** |
-| Upscale / audio-upscale, per GPU-hour (the retired lip-sync class sat in this band) | 3.454 to 3.494 | **3.627 to 3.669** |
+| Upscale / audio-upscale, per GPU-hour (the retired lip-sync and audio-upscale classes sat in this band) | 3.454 to 3.494 | **3.627 to 3.669** |
 | One cast-LoRA training run (`:train-0.2.1`) | 13.13 | **13.79** |
 | One film (July mean, per submitted film) | 0.914 | **0.960** |
 
