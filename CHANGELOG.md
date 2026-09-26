@@ -6,6 +6,27 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(settings): a settings-backed switch requires an explicit affirmative
+
+`signups_enabled` was read as `getSetting(...) !== "false"` at all five call
+sites. `getSetting` returns `string | null`, so every value except that one
+literal meant enabled: an unwritten row, an empty string, whitespace, and a
+value stored with the wrong case all read as ENABLED. Measured against the
+previous reader, `False`, `FALSE`, `0`, `""`, `"  "`, `off` and `no` every one
+of them projected `true`.
+
+Now read through `settingEnabled` in `src/settings.ts`: trimmed,
+case-normalised, and enabled only for a recognised affirmative (`true` or `1`).
+Unset and unrecognised both read as disabled, so the absence of a stored
+decision is not taken for a decision to enable. Same shape as `parseEnforcing`
+in `credits.ts`, deliberately, rather than a second dialect for the same job.
+
+What the setting MEANS is unchanged: per the 2026-07-17 product ruling it gates
+whether NEW accounts can be created, full stop.
+
+No behaviour change for a deployment that has the row stored, which is the
+canonical state the admin route writes (`true` / `false`).
+
 ## v1.29.4 -- 2026-08-17
 
 ### fix(deploy): live scope control uses a public endpoint that still exists
