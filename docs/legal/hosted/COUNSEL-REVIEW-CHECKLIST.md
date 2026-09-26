@@ -303,6 +303,29 @@ one is ordinary support access to ordinary tenant content.
 that needs tighter wording or an explicit consent mechanic; say whether the operator-access
 audit record itself needs a defined retention period.
 
+### T1-15. Do BFL's Terms of Service reach Cloudflare partner consumption, and is a cast LoRA a "fine-tune"?
+**Question:** Cloudflare's Workers AI model pages for `@cf/black-forest-labs/flux-2-klein-9b`,
+`flux-2-klein-4b` and `flux-2-dev` link "Terms and License" to `https://bfl.ai/legal/terms-of-service`,
+and Cloudflare's Developer Platform Service-Specific Terms (Workers AI section) say that by using a
+partner model "you agree to the applicable third-party terms, including any acceptable use policies
+or other restrictions on use of such model." BFL's ToS 1.3(n) forbids using Output "to train, distill
+or fine-tune any other AI models", but the ToS scopes itself to "the Services" operated by BFL. Two
+questions: (1) does 1.3(n) bind Skyphusion Labs when it consumes those models through Cloudflare
+rather than through BFL's own API; (2) if so, is training a cast LoRA on `cast.image` outputs a
+"fine-tune" of "any other AI model" (our read: yes; "fine-tune" is not ambiguous about a LoRA).
+Texts read 2026-09-26; sha256s and retrieval times are on vivijure-local#269.
+
+**Why it is T1:** the hosted `cast.image` default is `@cf/black-forest-labs/flux-2-klein-9b` and
+its purpose is a LoRA training set. If (1) is yes, the hosted default violates the provider terms
+on day one. Tracked as vivijure-cf#751 (Conrad's ruling) and cp#514 (the `aup/1.2.0.md` section 3.2
+clause that flows the restriction to tenants; 1.2.0 cannot be served before this is answered).
+
+**A usable answer:** yes/no on (1); if yes, whether the local Apache-2.0 FLUX.2 Klein 4B path (no
+output term in Apache-2.0) or `google/nano-banana-pro` (Gemini terms forbid only developing "models
+that compete with the Services") is the lawful training-reference path for hosted tenants; and
+whether the flow-down belongs in the hosted AUP (section 3.2 as drafted) or in the hosted service
+terms (T1-6).
+
 ---
 
 ## Band T2: before our-GPUs and payments

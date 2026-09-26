@@ -35,3 +35,10 @@
 # 1.0.0 carries. A gate that hard-blocks live accounts until they accept a document cannot ask
 # them to accept one that disclaims its own force. Not yet served at the time of writing.
 1.1.0 0ea90aaf7095cdd8d6299f6cd69a0804939a67c11707c13a898c94b91e2b01fd
+
+# 1.2.0 -- 1.1.0 plus section 3.2 (cp#514): the model-provider conduct terms that bind Skyphusion
+# Labs on its own Cloudflare account (BFL Terms of Service incl. 1.3(n) no training on Output,
+# BFL Usage Policy, Gemini API Additional Terms incl. the 18+ floor) flowed down to tenants as
+# conditions, and the age floor made explicit at 18. 1.1.0 was never served; SHA256SUMS is
+# append-only, so this is a new version rather than an edit. Not yet served at the time of writing.
+1.2.0 26c2ae2383eef5e220555988e66fc6af30073b27914a03852fdd6f6eb0995619
