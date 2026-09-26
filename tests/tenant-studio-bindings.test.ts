@@ -33,6 +33,11 @@ const SCRIPT = "tenant-hero-studio";
  * The REAL binding census of the live tenant studio, read off the Cloudflare API 2026-07-25
  * (18 bindings, no VIDEO_FINISH_VPC). Using the real shape rather than a two-item invention is what
  * makes "every existing binding is carried forward" mean something.
+ *
+ * MUSETALK_RUNPOD_ENDPOINT_ID STAYS IN THIS LIST (cp#517). The plane no longer BINDS it, but this
+ * is a dated measurement of scripts that already carry it, and carry-forward is the property under
+ * test: deleting the line would both falsify the measurement and remove the only case where a
+ * binding the current plane would not write must survive a refresh.
  */
 const LIVE_BINDINGS: { type: string; name: string }[] = [
   { type: "assets", name: "ASSETS" },

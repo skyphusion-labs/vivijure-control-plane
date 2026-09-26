@@ -31,7 +31,6 @@ const SIGNING_KEY = "cp285-signing-key-not-the-default";
 // which is the fixture testing itself instead of the gate.
 const POOL = JSON.stringify({
   backend: { id: "ep-cp285-backend", name: "pool-backend" },
-  lipsync: { id: "ep-cp285-lipsync", name: "pool-lipsync" },
   "wan-train": { id: "ep-cp285-wan-train", name: "pool-wan-train" },
 });
 

@@ -26,7 +26,6 @@ const SERVICE_ID = "019ecbe6-9fc1-70a0-9946-14bbec0f51bc";
 const ENDPOINTS = [
   { key: "backend", label: "Render", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
   { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
-  { key: "lipsync", label: "Lip sync", id: "ep3", name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
   { key: "wan-train", label: "Cast LoRA training (Wan)", id: "ep4", name: "n4", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
   { key: "audio-upscale", label: "Audio upscale", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
 ];
@@ -62,10 +61,10 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
     sharedPool: {
       endpoints: [
         { key: "backend", label: "Render", id: "pool-1", name: "vivijure-prod-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
-        { key: "lipsync", label: "Lip sync", id: "pool-3", name: "vivijure-prod-lipsync", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+        { key: "wan-train", label: "Cast LoRA training (Wan)", id: "pool-4", name: "vivijure-prod-wan-train", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
       ],
-      ids: new Set(["pool-1", "pool-3"]),
-      names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync"]),
+      ids: new Set(["pool-1", "pool-4"]),
+      names: new Set(["vivijure-prod-backend", "vivijure-prod-wan-train"]),
     },
     sharedPoolInvokeKey: "rpa_poolkey",
     videoFinishServiceId: null,

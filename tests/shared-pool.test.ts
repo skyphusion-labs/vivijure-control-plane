@@ -75,15 +75,18 @@ describe("parseSharedPool", () => {
 
   it("refuses an entry missing its NAME, which is what the reconcile exclusion depends on", () => {
     const broken = JSON.parse(POOL_JSON) as Record<string, { id: string; name?: string }>;
-    delete broken.lipsync.name;
+    // DERIVED, like the fixture itself: this named .lipsync until cp#517 retired that key, and a
+    // hand-named member is how a fixture silently stops exercising the code.
+    const victim = endpointBackedPlan()[endpointBackedPlan().length - 1].key;
+    delete broken[victim].name;
     const res = parseSharedPool(JSON.stringify(broken));
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.detail).toContain("lipsync");
+    if (!res.ok) expect(res.detail).toContain(victim);
   });
 
   it("refuses a duplicated endpoint id, which is a copy-paste rather than a pool", () => {
     const dup = JSON.parse(POOL_JSON) as Record<string, { id: string; name: string }>;
-    dup.lipsync.id = dup.backend.id;
+    dup[endpointBackedPlan()[endpointBackedPlan().length - 1].key].id = dup.backend.id;
     const res = parseSharedPool(JSON.stringify(dup));
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.detail).toContain(dup.backend.id);

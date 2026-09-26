@@ -48,10 +48,14 @@ import { PROVISION_STEPS } from "../src/provisioner";
 // gates get negative tests: a guard that has never been watched to FAIL is not
 // a guard.
 
+// The max_workers here are ARITHMETIC INPUTS for the quotaFit cases below (they sum to 5, which is
+// the boundary those tests are tuned to), NOT the plan's real pins: upscale and audio-upscale carry
+// a worker count while actually being own-iron with none. The third row named lipsync until cp#517
+// retired that key; it is filler for the sum either way.
 const PLAN: PlannedEndpoint[] = [
   { key: "backend", label: "backend", purpose: "render", image: "ghcr.io/x/backend", max_workers: 2 },
   { key: "upscale", label: "upscale", purpose: "sharper", image: "ghcr.io/x/upscale", max_workers: 1 },
-  { key: "lipsync", label: "lipsync", purpose: "mouths", image: "ghcr.io/x/musetalk", max_workers: 1 },
+  { key: "wan-train", label: "wan-train", purpose: "training", image: "ghcr.io/x/wan-train", max_workers: 1 },
   { key: "audio-upscale", label: "audio-upscale", purpose: "audio", image: "ghcr.io/x/audio", max_workers: 1 },
 ];
 
@@ -111,13 +115,16 @@ describe("consumerEndpointLabel", () => {
   it("maps known keys to filmmaker purposes", () => {
     expect(consumerEndpointLabel({ key: "backend", label: "Render (keyframes, video)" })).toBe("Render");
     expect(consumerEndpointLabel({ key: "upscale", label: "Video upscale" })).toBe("Sharper video");
-    expect(consumerEndpointLabel({ key: "lipsync", label: "Lip sync" })).toBe("Lip sync");
     expect(consumerEndpointLabel({ key: "audio-upscale", label: "Audio upscale" })).toBe("Cleaner audio");
   });
 
   it("falls back to the plan label for an unknown key rather than inventing one", () => {
     expect(consumerEndpointLabel({ key: "wan-train", label: "Cast LoRA training (Wan)" }))
       .toBe("Cast LoRA training (Wan)");
+    // cp#517 removed the lipsync entry from the label map. A retired key now takes the SAME
+    // fallback as any unknown one, which is the honest outcome: the wizard paints whatever label a
+    // payload carries rather than a filmmaker-facing name for a capability that cannot run.
+    expect(consumerEndpointLabel({ key: "lipsync", label: "Lip sync" })).toBe("Lip sync");
     expect(consumerEndpointLabel(null)).toBe("");
   });
 });
@@ -153,10 +160,10 @@ describe("planRowMeta / planSummaryCopy (cp#474)", () => {
     const copy = planSummaryCopy([
       { key: "backend", label: "Render", backing: "runpod", max_workers: 2 },
       { key: "upscale", label: "Video upscale", backing: "door" },
-      { key: "lipsync", label: "Lip sync", backing: "runpod", max_workers: 1 },
+      { key: "wan-train", label: "Cast LoRA training (Wan)", backing: "runpod", max_workers: 2 },
       { key: "audio-upscale", label: "Audio upscale", backing: "door" },
     ]);
-    expect(copy).toMatch(/3 workers/);
+    expect(copy).toMatch(/4 workers/);
     expect(copy).toMatch(/shared GPU pool/);
     expect(copy).toMatch(/2 capabilities on our own hardware/);
     expect(copy).not.toMatch(/across 4 endpoints, all scale-to-zero/);

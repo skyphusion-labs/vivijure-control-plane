@@ -175,9 +175,9 @@ describe("uploadTenantModules -- the AI Gateway trio", () => {
   // optional, and cp#396 made it possible for a key to exist with NO endpoint by design -- the risk
   // of both changes is that they silently soften THIS check.
   //
-  // Withhold a key the CATALOG still needs, not "the second plan key". The plan can carry pool
-  // types (lipsync) that hosted no longer provisions; omitting those would pass and the guard
-  // would go green on the wrong subject.
+  // Withhold a key the CATALOG still needs, not "the second plan key". The plan can carry keys no
+  // hosted module maps onto (wan-train); omitting one of those would pass and the guard would go
+  // green on the wrong subject. It read "lipsync" until cp#517 retired that key.
   it("still refuses loudly when an ENDPOINT-BACKED module has no endpoint", async () => {
     const { d } = deps();
     const needed = TENANT_MODULE_CATALOG.find(

@@ -26,7 +26,6 @@ const TENANT_ID = "ten_1";
 // about own iron reaches this file: those modules take a VPC door, never a proxied RunPod route.
 const POOL_JSON = JSON.stringify({
   backend: { id: "pool-backend", name: "vivijure-prod-backend" },
-  lipsync: { id: "pool-lipsync", name: "vivijure-prod-lipsync" },
   "wan-train": { id: "pool-wan-train", name: "vivijure-prod-wan-train" },
 });
 
@@ -254,7 +253,7 @@ describe("the endpoint allow-list", () => {
   });
 
   it("allows a POOL endpoint id, which arrives as DATA from SHARED_RUNPOD_ENDPOINTS", async () => {
-    expect((await handle(submitReq("pool-lipsync", await goodToken()), env(), ctx, deps)).status).toBe(200);
+    expect((await handle(submitReq("pool-wan-train", await goodToken()), env(), ctx, deps)).status).toBe(200);
   });
 
   it("allows the SPEECH slug in the cost-door list: the membership rule is BILLS RUNPOD, not i2v", async () => {

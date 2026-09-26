@@ -17,8 +17,6 @@ const RUNPOD_API = "https://rest.runpod.io/v1";
 
 /** GPU classes for the render backend. Same-class (sm_90+) only; see runpod-provision.py section 4. */
 const BACKEND_GPUS = ["NVIDIA H200", "NVIDIA B200"];
-/** The finish satellites are CPU-light GPU work; RTX 6000 Pro class, as live-verified 2026-07-15. */
-const SATELLITE_GPUS = ["NVIDIA RTX 6000 Ada Generation", "NVIDIA L40S"];
 
 /**
  * A plan capability is satisfied EITHER by a RunPod endpoint we provision, OR by hardware we
@@ -128,6 +126,33 @@ const pinned = (key: SatelliteKey) => ({
 
 export const NO_TRAINING_CLAUSE = /lora|train/i;
 
+/**
+ * Plan keys this plane USED to provision and no longer does.
+ *
+ * NOT a plan entry and deliberately not reachable from one: nothing provisions these, no pool key
+ * is demanded for them, no pin exists and no studio var is bound. The ONLY consumer is
+ * reconcile-runpod.ts, which attributes a RunPod resource to a tenant by the name the provisioner
+ * WOULD have given it (`vivijure-<slug>-<key>`).
+ *
+ * WHY THIS IS NOT DEAD CODE. Every dedicated tenant ever provisioned got a
+ * `vivijure-<slug>-lipsync` endpoint AND the template under it. When such a tenant is torn down, or
+ * its endpoints_json is nulled, that template is exactly the cp#117 debris the reconcile exists to
+ * find. Dropping the key from the plan alone made those resources report as "unattributed" instead
+ * of as that tenant's orphan -- still visible, but with the slug lost, and the slug is what an
+ * operator acts on. reconcile-runpod.test.ts asserts the old counts UNCHANGED, which is what caught
+ * this: a retired capability's debris outlives the capability.
+ *
+ * Retiring a key means MOVING it here, never deleting it, for as long as resources of that name can
+ * exist on the account. This list can only ever ADD attribution to a report; reconcile writes
+ * nothing, and the live-record checks (claimedEndpointIds, liveNames) run before it.
+ */
+export const RETIRED_ENDPOINT_KEYS: readonly string[] = [
+  // cp#517: musetalk. Ruled out permanently as a lip-sync provider; endpoint zw6pt4lymf69pk is
+  // gone. Lip-sync lives on as infinitetalk on the `motion.backend` door, which this plane never
+  // provisioned an endpoint for, so nothing replaces this key.
+  "lipsync",
+];
+
 export const PROVISION_PLAN: PlannedCapability[] = [
   {
     ...pinned("backend"),
@@ -146,14 +171,6 @@ export const PROVISION_PLAN: PlannedCapability[] = [
       { bindingName: "FINISH_DOOR_TOKEN", envVar: "FINISH_DOOR_TOKEN" },
       { bindingName: "FINISH_DOOR_TOKEN_PROPAGANDHI", envVar: "FINISH_DOOR_TOKEN_PROPAGANDHI" },
     ],
-  },
-  {
-    ...pinned("lipsync"),
-    backing: "runpod",
-    label: "Lip sync",
-    maxWorkers: 1,
-    gpuTypeIds: SATELLITE_GPUS,
-    endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID",
   },
   {
     ...pinned("wan-train"),

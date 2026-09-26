@@ -38,7 +38,7 @@
 // was not proven whole is reported as unproven rather than asserted. A check that could not be
 // performed never reads here as a check that passed.
 
-import { PROVISION_PLAN, tenantEndpointName } from "./runpod";
+import { PROVISION_PLAN, RETIRED_ENDPOINT_KEYS, tenantEndpointName } from "./runpod";
 import { readRunPodMode } from "./runpod-pool";
 import type { SharedRunPodPool } from "./runpod-pool";
 import type { Tenant } from "./store";
@@ -241,11 +241,19 @@ export function reconcileRunPod(
   // endpoint of this name", and a pooled tenant owns none -- it would never have created
   // `vivijure-<its-slug>-backend`, so claiming a resource of that name for it would be attributing
   // someone else's endpoint to a tenant that could not have made it.
+  //
+  // RETIRED KEYS ARE INCLUDED (cp#517), and that is not tidiness. A capability we stopped
+  // provisioning leaves its endpoint AND its template behind on the account, and those outlive the
+  // plan entry by definition. Attributing by the CURRENT plan alone would quietly move a retired
+  // capability's debris from "tenant hero's orphan" to "unattributed", which is the report going
+  // vaguer exactly where a torn-down tenant's leftovers are. The name is still deterministically
+  // that tenant's, so say so.
   const owningTenantByName = new Map<string, { tenant: Tenant; key: string }>();
+  const attributableKeys = [...PROVISION_PLAN.map((spec) => spec.key), ...RETIRED_ENDPOINT_KEYS];
   for (const tenant of census.tenants) {
     if (readRunPodMode(tenant.runpod_mode) === "shared") continue;
-    for (const spec of PROVISION_PLAN) {
-      owningTenantByName.set(tenantEndpointName(tenant.slug, spec.key), { tenant, key: spec.key });
+    for (const key of attributableKeys) {
+      owningTenantByName.set(tenantEndpointName(tenant.slug, key), { tenant, key });
     }
   }
 
