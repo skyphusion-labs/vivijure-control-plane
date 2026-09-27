@@ -30,13 +30,13 @@ const RING = kekRing(KEK);
 const MIGRATIONS = [{ name: "0001_init.sql", sql: "CREATE TABLE IF NOT EXISTS projects (id TEXT);" }];
 // BOTH endpoint-backed capabilities, because the module catalog maps a module onto each one and a
 // short list fails at modules_upload rather than testing what this file is about. It is two rather
-// than four since cp#396: upscale and audio-upscale are served by our own iron, so no endpoint is
-// created for them and the module reaches them over the doors in vpcDoors below. Their modules are
-// still uploaded -- the capability MOVED transport, it was not dropped, and a missing door would
-// still fail modules_upload here.
+// than four: cp#396 moved upscale and audio-upscale onto our own iron, so no endpoint is created
+// for them and the module reaches the door in vpcDoors below, and cp#519 then retired
+// audio-upscale outright. finish-upscale is still uploaded -- that capability MOVED transport, it
+// was not dropped, and a missing door would still fail modules_upload here.
 const ENDPOINTS = [
   { key: "backend", label: "Render", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
-  { key: "lipsync", label: "Lipsync", id: "ep3", name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+  { key: "wan-train", label: "Cast LoRA training (Wan)", id: "ep4", name: "n4", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
 ];
 
 /**
@@ -78,7 +78,7 @@ function fakeCf(over: Record<string, unknown> = {}) {
       { type: "ratelimit", name: "SPEND_RATE_LIMITER" },
       // cp#396: only the endpoint-backed vars, which is what a real upload now carries.
       { type: "plain_text", name: "RUNPOD_ENDPOINT_ID" },
-      { type: "plain_text", name: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+      { type: "plain_text", name: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
     ]),
     getScriptSecretNames: vi.fn(async () => ["R2_S3_SECRET_ACCESS_KEY", "STUDIO_API_TOKEN"]),
     createAssetsUploadSession: vi.fn(async () => ({ jwt: "j", buckets: [] })),
@@ -99,10 +99,10 @@ function deps(store: MemoryStore, over: Partial<ProvisionDeps> = {}): ProvisionD
     sharedPool: {
       endpoints: [
         { key: "backend", label: "Render", id: "pool-1", name: "vivijure-prod-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
-        { key: "lipsync", label: "Lip sync", id: "pool-3", name: "vivijure-prod-lipsync", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
+        { key: "wan-train", label: "Cast LoRA training (Wan)", id: "pool-4", name: "vivijure-prod-wan-train", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
       ],
-      ids: new Set(["pool-1", "pool-3"]),
-      names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync"]),
+      ids: new Set(["pool-1", "pool-4"]),
+      names: new Set(["vivijure-prod-backend", "vivijure-prod-wan-train"]),
     },
     sharedPoolInvokeKey: "rpa_poolkey",
     videoFinishServiceId: null,
@@ -1040,7 +1040,7 @@ describe("readTenantEndpoints", () => {
     // here because it is carried as a door on the module worker, not because a tenant lost it.
     expect(readTenantEndpoints(t).map((e) => e.endpointVar)).toEqual([
       "RUNPOD_ENDPOINT_ID",
-      "MUSETALK_RUNPOD_ENDPOINT_ID",
+      "RUNPOD_WAN_TRAIN_ENDPOINT_ID",
     ]);
   });
 

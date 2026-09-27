@@ -71,9 +71,9 @@ function fakeCf(over: Partial<Record<string, unknown>> = {}) {
       { type: "ratelimit", name: "SPEND_RATE_LIMITER" },
       { type: "dispatch_namespace", name: "MODULE_DISPATCH" },
       // cp#396: the endpoint-id vars a REAL upload carries are the endpoint-backed ones only.
-      // upscale and audio-upscale are own-iron and reach their door from the MODULE worker, so the
-      // studio never holds a var for them and a census that listed one would be asserting a
-      // binding production does not create.
+      // upscale is own-iron and reaches its door from the MODULE worker, so the studio never holds
+      // a var for it and a census that listed one would be asserting a binding production does not
+      // create. audio-upscale was the second such capability until cp#519 retired it.
       { type: "plain_text", name: "RUNPOD_ENDPOINT_ID" },
       { type: "plain_text", name: "MUSETALK_RUNPOD_ENDPOINT_ID" },
       { type: "plain_text", name: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
@@ -88,9 +88,10 @@ function fakeCf(over: Partial<Record<string, unknown>> = {}) {
   return cf as unknown as CfApi;
 }
 
-// What createTenantEndpoints returns: the ENDPOINT-BACKED capabilities only (cp#396). upscale and
-// audio-upscale run on hardware we operate, so no endpoint is created for them and none comes back;
-// their transport is a door bound on the module worker (see vpcDoors below). Ids stay ep1/ep3 so
+// What createTenantEndpoints returns: the ENDPOINT-BACKED capabilities only (cp#396). upscale runs
+// on hardware we operate, so no endpoint is created for it and none comes back; its transport is a
+// door bound on the module worker (see vpcDoors below). audio-upscale was the second such
+// capability until cp#519 retired it with the speech-upscale module. Ids stay ep1/ep3 so
 // every assertion that already named one still names the same capability.
 const ENDPOINTS = [
   { key: "backend", label: "Render", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
@@ -212,7 +213,7 @@ function deps(over: Partial<ProvisionDeps> = {}): ProvisionDeps {
               { name: "keyframe" },
               { name: "own-gpu" },
               { name: "finish-upscale" },
-              { name: "speech-upscale" },
+              { name: "finish-rife" },
             ],
           }),
         };
@@ -242,23 +243,22 @@ beforeEach(() => {
 // cp#270: the SHARED pool fixture. Ids and names only -- the invoke key is a separate dep, exactly
 // as it is in production, so a test that forgets one cannot accidentally get the other.
 // The pool carries the ENDPOINT-BACKED keys only (cp#396): parseSharedPool REFUSES a pool naming
-// upscale or audio-upscale, because the shared invoke key has no access to endpoints that do not
-// exist. A shared tenant keeps both capabilities and reaches them over the same doors a dedicated
-// tenant does, which is why nothing here shrinks except the endpoint list.
+// upscale, because the shared invoke key has no access to an endpoint that does not exist. A shared
+// tenant keeps that capability and reaches it over the same door a dedicated tenant does, which is
+// why nothing here shrinks except the endpoint list.
 const SHARED_POOL = {
   endpoints: [
     { key: "backend", label: "Render", id: "pool-1", name: "vivijure-prod-backend", endpointVar: "RUNPOD_ENDPOINT_ID" },
-    { key: "lipsync", label: "Lip sync", id: "pool-3", name: "vivijure-prod-lipsync", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
     { key: "wan-train", label: "Cast LoRA training (Wan)", id: "pool-4", name: "vivijure-prod-wan-train", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
   ],
-  ids: new Set(["pool-1", "pool-3", "pool-4"]),
-  names: new Set(["vivijure-prod-backend", "vivijure-prod-lipsync", "vivijure-prod-wan-train"]),
+  ids: new Set(["pool-1", "pool-4"]),
+  names: new Set(["vivijure-prod-backend", "vivijure-prod-wan-train"]),
 };
 // cp#396: endpoint ids now come from the POOL, since nothing creates per-tenant endpoints. Derived
 // from the fixture rather than re-hardcoded, so a pool fixture change cannot leave these stale.
 const POOL_ID = {
   backend: SHARED_POOL.endpoints[0].id,
-  lipsync: SHARED_POOL.endpoints[1].id,
+  wanTrain: SHARED_POOL.endpoints[1].id,
 };
 
 describe("runProvisionJob on the SHARED pool (cp#270)", () => {
@@ -322,7 +322,7 @@ describe("runProvisionJob on the SHARED pool (cp#270)", () => {
       bindings: { name: string; text?: string }[];
     };
     expect(upload.bindings.find((b) => b.name === "RUNPOD_ENDPOINT_ID")?.text).toBe("pool-1");
-    expect(upload.bindings.find((b) => b.name === "MUSETALK_RUNPOD_ENDPOINT_ID")?.text).toBe("pool-3");
+    expect(upload.bindings.find((b) => b.name === "RUNPOD_WAN_TRAIN_ENDPOINT_ID")?.text).toBe("pool-4");
   });
 
 
@@ -605,7 +605,10 @@ describe("runProvisionJob", () => {
     expect(byName.get("ASSETS")?.type).toBe("assets");
     // Each endpoint id is wired into the var the studio reads it from (spec.endpointVar).
     expect(byName.get("RUNPOD_ENDPOINT_ID")?.text).toBe(POOL_ID.backend);
-    expect(byName.get("MUSETALK_RUNPOD_ENDPOINT_ID")?.text).toBe(POOL_ID.lipsync);
+    expect(byName.get("RUNPOD_WAN_TRAIN_ENDPOINT_ID")?.text).toBe(POOL_ID.wanTrain);
+    // cp#517: the retired lipsync var is bound on NO tenant any more. Asserted as an absence
+    // because a stale plan entry would have bound it silently and nothing else would have noticed.
+    expect(byName.has("MUSETALK_RUNPOD_ENDPOINT_ID")).toBe(false);
     // ...and own iron carries NO endpoint id, so the studio is handed no var for one (cp#396). Both
     // directions asserted: a present var proves the wiring, an absent one proves the split, and an
     // empty string bound to satisfy a shape would upload clean and die at the tenant first render.
@@ -1144,7 +1147,6 @@ describe("cf#99 tenant module bridge", () => {
         `${t.id}-own-gpu`,
         `${t.id}-plan-enhance`,
         `${t.id}-seedance`,
-        `${t.id}-speech-upscale`,
         `${t.id}-vidu-q3`,
         `${t.id}-cf-grok-video`,
         `${t.id}-cf-seedance`,
@@ -1173,8 +1175,9 @@ describe("cf#99 tenant module bridge", () => {
     expect(epOf(pre("keyframe"), "RUNPOD_ENDPOINT_ID")).toBe(POOL_ID.backend);
     expect(epOf(pre("own-gpu"), "RUNPOD_ENDPOINT_ID")).toBe(POOL_ID.backend);
     expect(byScript.has(pre("finish-lipsync"))).toBe(false);
-    // cp#396: finish-upscale and speech-upscale are OWN IRON, so their transport is a vpc_service
-    // binding plus the door bearer, and NO endpoint id. All three asserted per module, on purpose:
+    // cp#396: finish-upscale is OWN IRON, so its transport is a vpc_service binding plus the door
+    // bearer, and NO endpoint id. speech-upscale was the second such module until cp#519 retired
+    // it. All three asserted per module, on purpose:
     // a missing RUNPOD_ENDPOINT_ID on its own reads exactly like a module that was never uploaded,
     // and a bound door on its own would not catch an endpoint id bound beside it -- the
     // both-transports state that uploads clean and dies at the tenant first render.
@@ -1185,7 +1188,7 @@ describe("cf#99 tenant module bridge", () => {
     // DERIVED from the same fixture the deps carry, over EVERY door in the pool. Hardcoding a
     // service id here would re-create the defect this suite already tripped over: a fixture that
     // states a value the code no longer produces.
-    const moduleFor: Record<string, string> = { upscale: "finish-upscale", "audio-upscale": "speech-upscale" };
+    const moduleFor: Record<string, string> = { upscale: "finish-upscale" };
     for (const capability of vpcBackedPlan()) {
       const script = pre(moduleFor[capability.key]);
       const want = TEST_VPC_DOORS[capability.key];
@@ -1234,7 +1237,7 @@ describe("cf#99 tenant module bridge", () => {
       (c) => c[1] as { method: string; path: string; body?: string },
     );
     const installs = studioCalls.filter((c) => c.path === "/api/modules/install");
-    expect(installs).toHaveLength(18);  // hosted catalog; no finish-lipsync
+    expect(installs).toHaveLength(17);  // hosted catalog; no finish-lipsync, no speech-upscale
     // Each install carries the tenant-prefixed script name (not the bare module name).
     const scriptNames = installs.map((c) => JSON.parse(c.body!).script_name).sort();
     expect(scriptNames).toEqual(
@@ -1243,7 +1246,7 @@ describe("cf#99 tenant module bridge", () => {
         // TENANT_MODULE_CATALOG would make it agree with whatever the catalog says, which is
         // this assertion inverted. It exists to FAIL when the catalog moves.
         "keyframe", "own-gpu", "finish-upscale",
-        "speech-upscale", "finish-rife", "plan-enhance",
+        "finish-rife", "plan-enhance",
         "alibaba-wan", "alibaba-wan-lora", "google-veo", "kling",
         "minimax-hailuo", "narration-gen", "seedance", "vidu-q3",
         "cf-grok-video", "cf-seedance", "cf-flux-3-video", "cf-hh1-r2v",

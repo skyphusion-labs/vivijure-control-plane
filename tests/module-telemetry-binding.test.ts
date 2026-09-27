@@ -30,9 +30,7 @@ const TENANT_BUCKET = "vivijure-tenant-acme-films";
 const ENDPOINTS = [
   { key: "backend", label: "Backend", id: "ep1", name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
   { key: "upscale", label: "Upscale", id: "ep2", name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
-  { key: "lipsync", label: "Lip sync", id: "ep3", name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
   { key: "wan-train", label: "Cast LoRA training (Wan)", id: "ep4", name: "n4", endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID" },
-  { key: "audio-upscale", label: "Audio", id: "ep4", name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
 ];
 
 type Upload = { scriptName: string; bindings: WorkerBinding[] };
@@ -86,7 +84,7 @@ const RECORDING = TENANT_MODULE_CATALOG.filter((s) => s.recordsRunpodJobs).map((
 const NOT_RECORDING = TENANT_MODULE_CATALOG.filter((s) => !s.recordsRunpodJobs).map((s) => s.module);
 
 describe("the catalog says WHICH modules record", () => {
-  it("six modules record, and plan-enhance does not", () => {
+  it("twelve modules record, and five do not", () => {
     // A LIST, deliberately, and still hand-maintained: if a seventh becomes recording, this fails
     // and somebody re-reads the upstream module set instead of assuming the catalog kept up. It is
     // not derived from the catalog on purpose -- a derived expectation agrees with whatever the
@@ -98,11 +96,13 @@ describe("the catalog says WHICH modules record", () => {
     // cp#284 moved this from six to FOURTEEN: the eight cost-door modules each import
     // runpod-job-log and read TELEMETRY_DB exactly as keyframe does. Established BY EFFECT
     // against two controls (keyframe records, plan-enhance does not), never from the row.
+    // cp#519 moved it to TWELVE by removing speech-upscale, whose endpoint is gone. The removal is
+    // one NAME off this list and nothing else: no other module's recording status changed.
     expect(RECORDING.sort()).toEqual(
       [
         "alibaba-wan", "alibaba-wan-lora", "finish-rife", "finish-upscale",
         "google-veo", "keyframe", "kling", "minimax-hailuo", "narration-gen", "own-gpu",
-        "seedance", "speech-upscale", "vidu-q3",
+        "seedance", "vidu-q3",
       ],
     );
     expect(NOT_RECORDING.sort()).toEqual(
@@ -110,10 +110,17 @@ describe("the catalog says WHICH modules record", () => {
     );
   });
 
-  it("hosted catalog does not include finish-lipsync", () => {
-    // MuseTalk is self-host only. A row here would upload and bind it on every hosted tenant.
+  it("hosted catalog does not include finish-lipsync or speech-upscale", () => {
+    // Still true and still worth asserting, but the REASON changed (cp#517): this was a
+    // hosted/self-host split, and MuseTalk is now ruled out as a lip-sync provider everywhere, so
+    // finish-lipsync is retired outright. A row here would upload and bind a module that no longer
+    // exists, against an endpoint key the plan no longer carries.
     expect(TENANT_MODULE_CATALOG.map((s) => s.module)).not.toContain("finish-lipsync");
     expect(TENANT_MODULE_CATALOG.some((s) => s.endpointKey === "lipsync")).toBe(false);
+    // cp#519, same two halves for the same reason: the MODULE name and the PLAN KEY are separate
+    // facts, and a row could come back under either one alone.
+    expect(TENANT_MODULE_CATALOG.map((s) => s.module)).not.toContain("speech-upscale");
+    expect(TENANT_MODULE_CATALOG.some((s) => s.endpointKey === "audio-upscale")).toBe(false);
   });
 
   it("finish-rife is catalogued AND recording, so the upstream set is fully covered (cp#284)", () => {

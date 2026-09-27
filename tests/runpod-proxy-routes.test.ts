@@ -21,12 +21,12 @@ const POOL_KEY = "runpod-pool-key-under-test";
 const TENANT_ID = "ten_1";
 
 // The pool is the ENDPOINT-BACKED capabilities only (cp#396). parseSharedPool REFUSES a pool that
-// names upscale or audio-upscale, so naming one here would empty the allow-list entirely and every
-// case below would pass or fail on a parse error rather than on the proxy it is testing. Nothing
-// about own iron reaches this file: those modules take a VPC door, never a proxied RunPod route.
+// names upscale (audio-upscale was the second such key until cp#519 retired it), so naming one here
+// would empty the allow-list entirely and every case below would pass or fail on a parse error
+// rather than on the proxy it is testing. Nothing about own iron reaches this file: that module
+// takes a door, never a proxied RunPod route.
 const POOL_JSON = JSON.stringify({
   backend: { id: "pool-backend", name: "vivijure-prod-backend" },
-  lipsync: { id: "pool-lipsync", name: "vivijure-prod-lipsync" },
   "wan-train": { id: "pool-wan-train", name: "vivijure-prod-wan-train" },
 });
 
@@ -254,7 +254,7 @@ describe("the endpoint allow-list", () => {
   });
 
   it("allows a POOL endpoint id, which arrives as DATA from SHARED_RUNPOD_ENDPOINTS", async () => {
-    expect((await handle(submitReq("pool-lipsync", await goodToken()), env(), ctx, deps)).status).toBe(200);
+    expect((await handle(submitReq("pool-wan-train", await goodToken()), env(), ctx, deps)).status).toBe(200);
   });
 
   it("allows the SPEECH slug in the cost-door list: the membership rule is BILLS RUNPOD, not i2v", async () => {

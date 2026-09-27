@@ -161,7 +161,7 @@ but not through.
 The provisioner closes it the SAME way self-host does (Phase-3 dynamic dispatch), per tenant:
 
 1. **Module scripts.** Tenant-configured copies of every module in `TENANT_MODULE_CATALOG`
-   (`src/tenant-modules.ts`, currently fifteen) upload into ONE shared dispatch namespace
+   (`src/tenant-modules.ts`, currently seventeen) upload into ONE shared dispatch namespace
    (`TENANT_MODULE_NAMESPACE`, e.g. `vivijure-tenant-modules`), script names prefixed with the
    TENANT ID (stable across renames; teardown is a prefix sweep). The catalog is DATA; extending
    the tier is a row there (plus a matching endpoint in `runpod.ts` only when the module is
@@ -507,13 +507,20 @@ safe is a question about the CATALOG, not about the conformance gate (which is p
 nothing about pairs):
 
 - The endpoint-backed RunPod catalog modules serve these hooks: `keyframe` (keyframe), `own-gpu`
-  (motion.backend), `speech-upscale` (speech), and a four-long `finish` chain:
-  `finish-upscale`, `finish-lipsync`, `finish-rife`, `finish-blender` (all four `finish`).
-  **Count four (cp#408).** Derived from the UNION of modules that declare `hooks: ["finish"]`,
-  confirmed independently by `GET /api/modules` at studio_release 1.27.0. An intersection over
-  repo lists returns three, because `finish-blender` is only appended when
-  `BLENDER_RUNPOD_ENDPOINT_ID` is set; that is a deploy condition, not the catalog size. What a
-  four-long chain does to the mixed-state analysis below is NOT re-derived here; the pair
+  (motion.backend), and the `finish` chain. The `speech` hook was a fourth until cp#519 retired
+  `speech-upscale`; no hosted module serves it now.
+  **The chain measured FOUR at studio_release 1.27.0 (cp#408):** `finish-upscale`,
+  `finish-lipsync`, `finish-rife`, `finish-blender`, derived from the UNION of modules that declare
+  `hooks: ["finish"]` and confirmed independently by `GET /api/modules`. An intersection over repo
+  lists returns three, because `finish-blender` is only appended when `BLENDER_RUNPOD_ENDPOINT_ID`
+  is set; that is a deploy condition, not the catalog size.
+  **`finish-lipsync` is retired (cp#517):** MuseTalk is ruled out as a lip-sync provider, and the
+  module is removed in vivijure-cf. The chain is three from the studio release that drops it. That
+  count is stated as a CONSEQUENCE and has not been re-measured against `GET /api/modules` here;
+  re-run the cp#408 derivation on the release that lands it rather than trusting this line.
+  Lip-sync is not gone from the product: `infinitetalk` serves it as an audio-driven
+  `motion.backend` door, which is a different hook and so is not part of this chain at all.
+  What a four-long chain does to the mixed-state analysis below is NOT re-derived here; the pair
   argument is stated for two and has not been re-run for four. The eight public-slug cost-door
   modules (wave 1) are motion/audio doors on separate hooks from this finish chain; a mixed
   state across those and the finish set is not an incompatibility either.
@@ -633,6 +640,11 @@ newest tag).
 Every tenant endpoint is created from a pinned container image, and all four pins live in exactly one
 place: `src/satellite-pins.ts`. `src/runpod.ts` decides layout, labels, GPU class and worker counts,
 and never decides a version; a test asserts no image literal can come back into it.
+
+**There is no lipsync pin (cp#517).** There was one, `vivijure-musetalk:1.0.5` mirroring endpoint
+`zw6pt4lymf69pk`. MuseTalk is ruled out as a lip-sync provider and that endpoint no longer exists, so
+the pin mirrored nothing and `check:pins:prod` had nothing to read it against. The musetalk tags named
+below are HISTORY of the cp#126 drift and are left as measured.
 
 **The authority for a pin is what PRODUCTION runs, not what is newest.** A pin mirrors a specific
 production endpoint (recorded on the pin, with the date it was read), so a hosted tenant renders on
@@ -912,8 +924,8 @@ The install succeeded and is reported as such; what could not be done is PROVING
   "modules_unverified": [
     { "module": "finish-upscale", "reason": "unverifiable",
       "script": "ten-abc123-finish-upscale", "detail": "..." },
-    { "module": "speech-upscale", "reason": "unverifiable",
-      "script": "ten-abc123-speech-upscale", "detail": "..." }
+    { "module": "finish-rife", "reason": "unverifiable",
+      "script": "ten-abc123-finish-rife", "detail": "..." }
   ] }
 ```
 

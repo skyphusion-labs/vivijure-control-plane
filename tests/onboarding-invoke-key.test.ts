@@ -62,11 +62,11 @@ describe("invoke-key: 200, LIVE BUT NOT PROVEN (the subtle one)", () => {
     expect(v.tone).toBe("warn");
     const shown = [v.message, ...v.notes].join(" ");
     expect(shown).toMatch(/could not confirm/i);
-    expect(shown).toContain("lipsync");
-    expect(shown).toContain("audio-upscale");
+    expect(shown).toContain("wan-train");
+    expect(shown).toContain("wan-train-2");
     // The tripwire. This assertion already read correctly and still passed while the
     // page rendered "([object Object], [object Object])" -- because the FIXTURE carried
-    // strings and the route emits objects, so "lipsync" was present for the wrong reason.
+    // strings and the route emits objects, so the module name was present for the wrong reason.
     // Stringified objects reaching a customer is the failure; name it explicitly so a
     // future shape change cannot make this test pass vacuously again.
     expect(shown).not.toContain("[object Object]");

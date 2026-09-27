@@ -62,9 +62,14 @@ function fnBody(src: string, decl: string): string {
 
 describe("intro: there is a representative example to render with no fetch", () => {
   it("REPRESENTATIVE_PLAN carries the hosted product endpoints, and not lip sync", () => {
+    // Was already true before cp#517 (hosted talking is native AV) and is now true twice over:
+    // lipsync is not a plan key at all any more. Kept as a standing guard on the consumer surface,
+    // because this list is hand-written copy and nothing else stops a row being pasted back in.
     expect(Array.isArray(REPRESENTATIVE_PLAN.endpoints)).toBe(true);
-    expect(REPRESENTATIVE_PLAN.endpoints.length).toBe(3);
+    // TWO since cp#519 dropped the cleaner-audio row with the speech-upscale module.
+    expect(REPRESENTATIVE_PLAN.endpoints.length).toBe(2);
     expect(REPRESENTATIVE_PLAN.endpoints.map((ep) => ep.key)).not.toContain("lipsync");
+    expect(REPRESENTATIVE_PLAN.endpoints.map((ep) => ep.key)).not.toContain("audio-upscale");
   });
 
   it("every representative row has the fields the plan renderer reads, so no row is blank", () => {
@@ -93,7 +98,6 @@ describe("intro: there is a representative example to render with no fetch", () 
     expect(REPRESENTATIVE_PLAN.endpoints.map((ep) => ep.label)).toEqual([
       "Render",
       "Sharper video",
-      "Cleaner audio",
     ]);
     REPRESENTATIVE_PLAN.endpoints.forEach((ep) => {
       expect(ep.label).not.toMatch(/ghcr\.io|H200|B200/i);

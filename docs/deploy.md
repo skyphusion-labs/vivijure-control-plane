@@ -139,8 +139,12 @@ Repository **variables**:
   Empty = no gateway named, so `plan-enhance` runs on the free local Workers AI provider.
 
 - `SHARED_RUNPOD_ENDPOINTS` (cp#270) -- the SHARED RunPod endpoint pool, as JSON keyed by
-  `PROVISION_PLAN` key:
-  `{"backend":{"id":"...","name":"..."},"upscale":{...},"lipsync":{...},"audio-upscale":{...}}`.
+  ENDPOINT-BACKED `PROVISION_PLAN` key:
+  `{"backend":{"id":"...","name":"..."},"wan-train":{"id":"...","name":"..."}}`.
+  Those are the only two keys, and naming any other is REFUSED rather than ignored: `upscale` is
+  own-iron reached over an HTTPS door (cp#396), `lipsync` retired with the musetalk endpoint
+  (cp#517), and `audio-upscale` retired with `speech-upscale` (cp#519). This example named all
+  three until cp#517 and would have been refused on paste.
   Empty = this plane offers no shared tier and every tenant must bring its own RunPod key, which is
   the behaviour before pooling existed. See the section below before setting it.
 

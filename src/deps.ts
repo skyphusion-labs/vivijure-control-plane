@@ -410,7 +410,7 @@ export function llmMeterReader(env: ControlPlaneEnv): GatewayLogReader | undefin
 const TENANT_STUDIO_FETCH_TIMEOUT_MS = 5_000;
 
 /**
- * Fallback names for the door bearer. Module Env still reads FINISH_DOOR_TOKEN / SPEECH_DOOR_TOKEN.
+ * Fallback names for the door bearer. Module Env still reads FINISH_DOOR_TOKEN.
  */
 const DOOR_TOKEN_FALLBACKS = ["FINISH_DOOR_TOKEN", "LOCAL_FINISH_TOKEN", "MEDIA_FINISH_TOKEN"] as const;
 

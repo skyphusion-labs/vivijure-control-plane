@@ -73,9 +73,20 @@ July 2026, production endpoints only. Dollars are MEASURED (RunPod billing API, 
 | Keyframe batch + i2v shot (render) | `t9wcvlxh8rc5la` | 122.961 | 88.491 | 33.087 | 1.383 | 19.136 | **6.353** | 0.001765 | 20% B200 / 80% H200 |
 | Cast-LoRA training (Wan) | `zqb7tougbqfkqa` | 56.983 | 40.558 | 16.003 | 0.421 | 8.352 | **6.772** | 0.001881 | 38% B200 / 62% H200 |
 | Upscale pass (video) | `4q8idwbk6tyqbq` | 7.680 | 4.420 | 3.250 | 0.009 | 2.221 | **3.454** | 0.000959 | RTX PRO 6000 |
-| Lip-sync pass (MuseTalk) | `zw6pt4lymf69pk` | 7.905 | 4.539 | 3.354 | 0.012 | 2.281 | **3.460** | 0.000961 | RTX PRO 6000 |
+| Lip-sync pass (MuseTalk) *(retired, cp#517)* | `zw6pt4lymf69pk` | 7.905 | 4.539 | 3.354 | 0.012 | 2.281 | **3.460** | 0.000961 | RTX PRO 6000 |
 | Audio upscale pass | `sj0btgpjdtswa7` | 0.381 | 0.217 | 0.164 | 0.000 | 0.109 | **3.494** | 0.000971 | RTX PRO 6000 |
 | **Production total** | | **195.909** | | | | **32.099** | | | |
+
+**The MuseTalk row is KEPT, not deleted (cp#517).** MuseTalk is ruled out as a lip-sync provider and
+endpoint `zw6pt4lymf69pk` no longer exists, so no future month carries this class. But these are
+MEASURED July 2026 dollars off the RunPod billing API, and the production total below was computed
+with them: deleting the row would falsify a measurement and leave a total that no longer sums. It is
+marked retired instead. A rate card should not carry this class; the July cost basis must.
+
+**The audio-upscale row is KEPT and marked RETIRED for the same reason (cp#519).**
+`speech-upscale` is retired, endpoint `sj0btgpjdtswa7` no longer exists, and no future month
+carries this class either. The July 2026 dollars below are MEASURED and the production total was
+computed with them, so the row stays and is labelled.
 
 `$/GPU-hr` is computed on `gpu + fee` (the compute charge); `disk` is reported separately because it
 is a storage charge, not a per-second compute rate. The audio-upscale row lands at 3.494 against a
@@ -204,7 +215,7 @@ fee. Applying `cost x 1.05` to the measured basis:
 | --- | ---: | ---: |
 | Render (keyframe + i2v), per GPU-hour | 6.353 | **6.671** |
 | Cast-LoRA training, per GPU-hour | 6.772 | **7.111** |
-| Upscale / lip-sync / audio-upscale, per GPU-hour | 3.454 to 3.494 | **3.627 to 3.669** |
+| Upscale / audio-upscale, per GPU-hour (the retired lip-sync and audio-upscale classes sat in this band) | 3.454 to 3.494 | **3.627 to 3.669** |
 | One cast-LoRA training run (`:train-0.2.1`) | 13.13 | **13.79** |
 | One film (July mean, per submitted film) | 0.914 | **0.960** |
 
@@ -212,7 +223,8 @@ Three observations the credit design will need, offered as input to cp#173 and n
 
 1. **Two meter classes cover the GPU surface, not five.** The measured rates cluster hard: about
    6.35 to 6.77 per GPU-hour for the B200/H200 pool (render, train) and about 3.45 to 3.49 for the
-   RTX PRO 6000 pool (upscale, lip-sync, audio). Within a cluster the spread is scheduling variance.
+   RTX PRO 6000 pool (upscale, audio, and the retired lip-sync class). Within a cluster the spread
+   is scheduling variance.
 2. **Failed jobs cost real money** and are roughly a third of all submissions. Whether the tenant or
    the house eats a failed render is a pricing decision with a measurable price tag, not a detail.
 3. **The 5% is thinner than it looks.** Cloudflare charges 5% on credit purchase (100 of credit for

@@ -366,8 +366,6 @@ async function readyReport(phase: string): Promise<Map<string, SettledRow>> {
 const endpoints: TenantEndpoint[] = [
   { key: "backend", label: "Backend", id: `${RUN_PREFIX}-ep-backend`, name: "n1", endpointVar: "RUNPOD_ENDPOINT_ID" },
   { key: "upscale", label: "Upscale", id: `${RUN_PREFIX}-ep-upscale`, name: "n2", endpointVar: "VIDEO_UPSCALE_RUNPOD_ENDPOINT_ID" },
-  { key: "lipsync", label: "Lipsync", id: `${RUN_PREFIX}-ep-lipsync`, name: "n3", endpointVar: "MUSETALK_RUNPOD_ENDPOINT_ID" },
-  { key: "audio-upscale", label: "Audio", id: `${RUN_PREFIX}-ep-audio`, name: "n4", endpointVar: "AUDIO_UPSCALE_RUNPOD_ENDPOINT_ID" },
 ];
 
 function makeDeps(): TenantModuleDeps {

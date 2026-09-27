@@ -15,8 +15,9 @@ import { reconcileRunPod, type RunPodInventory, type TenantCensus } from "../src
 import { PROVISION_PLAN, endpointBackedPlan, vpcBackedPlan } from "../src/runpod";
 import type { Tenant, TenantLifecycle } from "../src/store";
 
-// cp#396: a pool covers the ENDPOINT-BACKED plan keys only. Naming upscale or audio-upscale here
-// is now REFUSED outright (they run on our own iron), so this fixture is derived from the plan
+// cp#396: a pool covers the ENDPOINT-BACKED plan keys only. Naming upscale here is now REFUSED
+// outright (it runs on our own iron; audio-upscale was the second such key until cp#519 retired
+// it), so this fixture is derived from the plan
 // rather than listed -- a hand-written pool is the shape that silently stops matching the code.
 const POOL_JSON = JSON.stringify(
   Object.fromEntries(
@@ -55,9 +56,9 @@ describe("parseSharedPool", () => {
     // The whole point. A pool covering keyframes and not lip sync provisions a tenant that is green
     // through verify and dies at the first finish render, which is the silent-degrade shape.
     //
-    // The expectation is DERIVED (cp#396): it used to name upscale and audio-upscale as missing,
-    // and those are now served by our own iron, so demanding them would assert a refusal the code
-    // must no longer produce.
+    // The expectation is DERIVED (cp#396): it used to name upscale and audio-upscale as missing.
+    // upscale is now served by our own iron and audio-upscale is retired (cp#519), so demanding
+    // either would assert a refusal the code must no longer produce.
     const first = endpointBackedPlan()[0];
     const res = parseSharedPool(JSON.stringify({ [first.key]: { id: "a", name: "n" } }));
     expect(res.ok).toBe(false);
@@ -75,15 +76,18 @@ describe("parseSharedPool", () => {
 
   it("refuses an entry missing its NAME, which is what the reconcile exclusion depends on", () => {
     const broken = JSON.parse(POOL_JSON) as Record<string, { id: string; name?: string }>;
-    delete broken.lipsync.name;
+    // DERIVED, like the fixture itself: this named .lipsync until cp#517 retired that key, and a
+    // hand-named member is how a fixture silently stops exercising the code.
+    const victim = endpointBackedPlan()[endpointBackedPlan().length - 1].key;
+    delete broken[victim].name;
     const res = parseSharedPool(JSON.stringify(broken));
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.detail).toContain("lipsync");
+    if (!res.ok) expect(res.detail).toContain(victim);
   });
 
   it("refuses a duplicated endpoint id, which is a copy-paste rather than a pool", () => {
     const dup = JSON.parse(POOL_JSON) as Record<string, { id: string; name: string }>;
-    dup.lipsync.id = dup.backend.id;
+    dup[endpointBackedPlan()[endpointBackedPlan().length - 1].key].id = dup.backend.id;
     const res = parseSharedPool(JSON.stringify(dup));
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.detail).toContain(dup.backend.id);

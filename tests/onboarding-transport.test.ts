@@ -296,7 +296,9 @@ describe("transport: mock mode is a real short circuit, not a fallback", () => {
     const api = createPlatformApi({ useMock: true });
     const me = await api.me();
     expect(me.tenant?.status).toBe("awaiting_go_live");
-    expect(me.tenant?.endpoints?.length).toBe(4);
+    // Three since cp#517 dropped the musetalk row from the mock, two since cp#519 dropped the
+    // audio-upscale row with the speech-upscale module.
+    expect(me.tenant?.endpoints?.length).toBe(2);
   });
 });
 

@@ -143,7 +143,10 @@ check "populated PayPal vars are allowed" pass
 # The defect it missed: the template rendered this into a BASIC string, so the value's own double
 # quotes terminated it and the document did not parse. The render step still exited 0, and the
 # failure surfaced three steps downstream as a message about a missing R2 object.
-POOL_JSON='{"backend":{"id":"aaa111","name":"vivijure-backend"},"upscale":{"id":"bbb222","name":"vivijure-video-upscale"},"lipsync":{"id":"ccc333","name":"vivijure-musetalk"},"audio-upscale":{"id":"ddd444","name":"vivijure-audio-upscale"}}'
+# cp#517: the endpoint-backed keys only. This fixture is about TOML QUOTING of a JSON value, not
+# about pool membership (the renderer never parses it), but a fixture naming a retired key and a
+# dead image is one a future reader has to re-triage.
+POOL_JSON='{"backend":{"id":"aaa111","name":"vivijure-backend"},"wan-train":{"id":"ddd444","name":"vivijure-wan-train"}}'
 
 set_full_env; export SHARED_RUNPOD_ENDPOINTS="$POOL_JSON"
 check "a JSON pool value renders (this exact case was RED before cp#285)" pass
