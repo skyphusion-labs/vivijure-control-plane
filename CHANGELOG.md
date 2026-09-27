@@ -6,6 +6,8 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.30.0 -- 2026-09-27
+
 ### fix(credits): PayPal top-ups are now CAPTURED, so approved money actually arrives
 
 `createTopUp` opened an order with `intent: "CAPTURE"` and nothing ever called
@@ -186,6 +188,208 @@ whether NEW accounts can be created, full stop.
 
 No behaviour change for a deployment that has the row stored, which is the
 canonical state the admin route writes (`true` / `false`).
+
+### fix(cp): teardown d1 once; honest meter-tick audit
+
+`guarded("d1")` evaluated once per teardown (cp#406).
+`claimResourceOwnership` comment and MemoryStore test match the
+live-owner exception (cp#399). Meter-tick audit carries status /
+controlPassed / gapDetected / rowsDropped (cp#369). Finish-chain
+docs count four including finish-blender (cp#408). `.gitattributes`
+adds abort recovery and two-epoch provenance (cp#370). Smoke has a
+structural pin against a local job_log parse (cp#384).
+
+### docs(spend): TENANT_SPEND_DAILY_CEILING is a submit count
+
+The knob was documented in USD and enforced as a count of spend-route
+submits per UTC day. Docs and comments now say the unit the code
+implements. No price list. CREDITS_ENFORCING unchanged.
+
+### fix(front-door): re-check a building studio instead of telling you to leave
+
+The building panel was a one-shot snapshot whose copy said to leave the
+page. The poll is the engine. Stay here, re-check `/api/me` every 2.5s
+on building/failed, refresh on tab focus. Leaving still works, slower.
+
+### fix(front-door): returning-owner AUP copy branches on last_accepted
+
+A policy bump is not a first signup. When `aup.last_accepted` is
+present the front door says the policy changed and the studio keeps
+running. First-run copy is unchanged.
+
+### fix(onboarding): hosted door talks to a hosted consumer only
+
+Signup is someone joining our shared pool. No self-host pitch, no
+paid-tier denial, no paste-a-key, no RunPod account. Abuse page
+matches: we can stop our pool, not a stranger's install.
+
+### fix(onboarding): hosted does not create "your 4 RunPod endpoints"
+
+Shared tenants attach to the existing pool. The progress row said we were
+minting four personal endpoints, which is the thing we refuse to do.
+
+### fix(provision): do not bind VIDEO_FINISH_VPC on tenant studios
+
+Hosted finish is Traefik HTTPS. A leftover vpc_service on every new
+studio was the 10196 unauthorized failure. mediaDoorUrls stay.
+
+### fix(ui): WordPress-style OSS credit in the footer
+
+Hosted door stays a hosted product. Bottom line: Vivijure is open
+source, run it yourself, link to vivijure-cf.
+
+### fix(onboarding): hosted go-live never accepts a tenant RunPod key
+
+One button attaches the shared pool. A body naming `runpod_invoke_key`
+is refused the same way provision refuses `runpod_api_key`.
+
+### fix(provision): rip Workers VPC; hosted doors are Traefik HTTPS
+
+Tenant studio upload never attaches vpc_service. Own-iron modules
+(finish-upscale, speech-upscale) bind FINISH_UPSCALE_DOORS /
+SPEECH_UPSCALE_DOORS plus bearer secrets, matching vivijure-cf.
+Plan backing is `door`, not `vpc`. Refresh does not re-add VPC;
+detach still strips leftovers. No HTTPS list refuses honestly.
+
+### docs(legal): hosted AUP 1.2.0 flows down the model-provider conduct terms (cp#514)
+
+New version `aup/1.2.0.md` = 1.1.0 plus section 3.2. On the hosted studio, Workers AI FLUX and
+`google/nano-banana-pro` run on our Cloudflare account, so those providers' terms bind Skyphusion
+Labs and tenants are not parties to them. 3.2 carries the conduct rules as conditions: the 18+
+floor (Gemini API Additional Terms), consent for real, identifiable individuals, no passing off,
+no stripping AI marking, the prohibited fields of use, and no competing models. New version
+rather than an edit of the unserved 1.1.0 because `SHA256SUMS` is append-only. Not served until
+`AUP_VERSION` is pinned.
+
+3.2 carries no clause on training with FLUX outputs. The draft had one; vivijure-cf#751 was ruled
+2026-09-26 (the Cloudflare path is compliant, per business counsel), so it was removed before
+this version landed. Also: counsel item T1-15 records that ruling, and the PRIVACY-DELTA section
+7 row for cf `TERMS.md` section 6.
+
+Refs https://github.com/skyphusion-labs/vivijure-cf/issues/751
+
+### fix(runpod): retire the musetalk lipsync endpoint from the provision plan and the pins
+
+MuseTalk is ruled out permanently as a lip-sync provider and its endpoint
+`zw6pt4lymf69pk` no longer exists, so the plane was pinning
+`vivijure-musetalk:1.0.5` against nothing and provisioning a dedicated endpoint
+that could not serve. Dropped the `lipsync` plan entry, the pin, and the
+`SATELLITE_GPUS` class it was the last consumer of; the plan is now 4
+capabilities, 2 endpoint-backed, and hands back 1 of the account-wide worker
+quota. No tenant is bound `MUSETALK_RUNPOD_ENDPOINT_ID` any more.
+
+Lip-sync is NOT retired as a capability: `infinitetalk` serves it as an
+audio-driven `motion.backend` door, which this plane never provisioned an
+endpoint for. Hosted tenants were already excluded from `finish-lipsync`, so no
+hosted behaviour changes.
+
+`requiredPoolKeys()` and `parseSharedPool` derive from `endpointBackedPlan()`, so
+a pool no longer needs a `lipsync` key with no code change, and a stale one left
+in a deployed `SHARED_RUNPOD_ENDPOINTS` is ignored rather than refused.
+
+Also corrected the documented `SHARED_RUNPOD_ENDPOINTS` example in `src/env.ts`,
+`src/runpod-pool.ts`, `wrangler.toml.example` and `docs/deploy.md`: all four named
+`upscale` and `audio-upscale`, which `parseSharedPool` refuses outright as
+own-iron (cp#396), so the example would have been rejected on paste.
+
+Added `RETIRED_ENDPOINT_KEYS`, read only by `reconcile-runpod.ts`, so a
+torn-down tenant's surviving `vivijure-<slug>-lipsync` endpoint and template are
+still attributed to that tenant instead of dropping to "unattributed". A retired
+capability's debris outlives the capability, and the slug is what an operator
+acts on.
+
+### fix(runpod): remove speech-upscale and its audio-upscale plan key
+
+Conrad ruled `speech-upscale` out on 2026-09-26, for four reasons at once: its
+RunPod endpoint `sj0btgpjdtswa7` no longer exists (cf#757), so the plane pinned
+`vivijure-audio-upscale:1.0.7` against nothing; its only planner trigger was the
+`finish-lipsync` checkbox removed in cf#785, so nothing could select it; the
+dialogue cleanup it did existed to feed POST-HOC mouth replacement, which
+`infinitetalk` now does at motion time taking Cast audio directly; and
+resemble-enhance is CUDA, one of the three GPU stages the finishing tier's
+destination cannot host (fc#2234).
+
+`speech-upscale` (the vivijure-cf module) and `audio-upscale` (the plan key and
+the `vivijure-audio-upscale` image) were two names for one capability, joined by
+the `TENANT_MODULE_CATALOG` row, so both leave together. Dropped: the catalog row
+(18 modules to 17), the `PROVISION_PLAN` door entry (4 capabilities to 3, 1
+own-iron instead of 2), the `SatelliteKey` union member and its pin, the five
+`SPEECH_*` fields in `ControlPlaneEnv` with their `ENV_SECRETS` entries, and
+`SPEECH_UPSCALE_DOORS` from all four var lists together. The account-wide worker
+quota is UNCHANGED at 4: this capability was door-backed and spent none, so no
+saving is claimed.
+
+The removal hands back no quota but it does remove a door: `SPEECH_UPSCALE_DOORS`
+pointed at `speech-upscale-fatmike` and `-propagandhi`, Traefik hosts on the
+retired Hetzner fleet, so the module had been reaching nothing for weeks while the
+finish tier booked the degrade as `completed`.
+
+`audio-upscale` is added to `RETIRED_ENDPOINT_KEYS` rather than deleted. Every
+dedicated tenant provisioned before cp#396 got a `vivijure-<slug>-audio-upscale`
+endpoint and the template under it; dropping the plan key alone makes that
+surviving debris report as `unattributed` instead of as that tenant's orphan, and
+the slug is what an operator acts on. Proved load-bearing: removing just that one
+string turns four assertions red across `reconcile-runpod.test.ts` and
+`runpod.test.ts`, including the orphan counts (4 templates to 3, 8 findings to 6).
+
+`TENANT_STUDIO_VAR_DISPOSITION.SPEECH_UPSCALE_DOORS` is KEPT, and that is
+deliberate. The pinned `STUDIO_RELEASE` (v1.33.9) still declares the var in its
+`required_vars` (measured: one of 28), and `assertDispositionCoversContract`
+throws on a declared var with no disposition, which would refuse every provision
+and every studio upgrade on the pinned release. That is the v1.12.0 outage shape.
+The entry can only leave after a vivijure-cf release drops the var from
+`required_vars` and `STUDIO_RELEASE` is bumped to it.
+
+Onboarding copy no longer advertises "Audio upscale" / "Cleaner audio", because a
+wizard must not paint a filmmaker-facing capability that cannot execute. The
+`docs/cost-basis.md` audio-upscale row is marked retired rather than deleted,
+following the cp#517 MuseTalk precedent: those are MEASURED July 2026 dollars and
+the production total was computed with them.
+
+`infinitetalk` is untouched. It is the capability that replaced this one.
+
+### fix(pool): refuse a SHARED_RUNPOD_ENDPOINTS key that matches no plan key (cp#529)
+
+`parseSharedPool` built its endpoint list by iterating `endpointBackedPlan()` and looking each plan
+key up in the pool, so a pool key in NEITHER plan was never read, never probed and never reported.
+The file already refused an OWN-IRON key, with a comment stating the reasoning ("Silently dropping
+a key an operator deliberately wrote is the quiet-degrade shape this whole file exists to refuse").
+A key retired TO something was refused; a key retired to NOTHING was dropped in silence.
+
+Measured, not hypothetical: `SHARED_RUNPOD_ENDPOINTS` carried `lipsync` pointing at endpoint
+`zw6pt4lymf69pk` after cp#517 deleted it, and the `Shared pool invoke-key scope` deploy gate passed
+every run. The same dead id in that test's negative-CONTROL position failed loud and held a release
+for four tags, because a control id is probed directly. The discriminator was never reachability,
+only whether `PROVISION_PLAN` still named the key.
+
+An unknown key is now refused, before the loop, naming every offender. Secondary effect worth
+having: retiring a plan key breaks the deploy of any plane whose pool still names it, which is the
+moment to clean the variable rather than six weeks later.
+
+Three tests, the failing one written first and watched RED against unfixed code: the retired-key
+refusal, a control proving a correct pool still resolves (so the refusal is not blanket), and a
+control proving the own-iron refusal is still distinguishable (so the new one did not swallow it).
+
+### fix(onboarding): hosted signup is name-your-studio, not a bill of materials
+
+The wizard listed image repos, GPU SKUs, worker pins and a priced
+render. Hosted signup is "you name it, we build it." Those fields stay
+on the plan object; the page no longer paints them.
+
+### fix(hosted): do not provision MuseTalk on hosted tenants
+
+Hosted talking is native AV. Not a capability paywall.
+
+(Superseded in part by cp#517: MuseTalk is now ruled out as a lip-sync provider
+everywhere, so finish-lipsync is retired rather than kept for homelab. This entry
+records what shipped; the forward-looking half of it no longer holds.)
+
+Live shared-pool scope gate uses public infinitetalk as the
+out-of-scope control. The old video-upscale RunPod id is gone.
+
+Deploy interpolates hosted STUDIO_RELEASE v1.32.9. New tenants get
+that studio. Existing tenants stay on the studio they were provisioned
+with.
 
 ## v1.29.4 -- 2026-08-17
 
