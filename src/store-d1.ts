@@ -1723,12 +1723,18 @@ export class LlmSpendD1 implements LlmSpendStore, LlmSpendReadStore {
     // The period census. LIMIT + 1 so a truncation is DETECTED rather than assumed absent: a
     // negative conclusion drawn from a list that was silently cut off is a floor wearing a total's
     // label, and every completeness judgement below is drawn from this list.
+    //
+    // ORDER BY window_end, id -- a TOTAL order, and it is load-bearing rather than tidy. Two periods
+    // can share a window_end, and the sum below re-selects this same slice with the same ORDER BY and
+    // LIMIT. With a partial order, a tie at the LIMIT boundary could put a different row in each
+    // query's slice, so the period COUNT and the summed TOTAL would describe different sets with
+    // nothing anywhere saying so.
     const censused = await this.db
       .prepare(
         `SELECT id, window_start, window_end, status, control_passed, gap_detected, finished_at
            FROM llm_rollup_periods
           WHERE window_end >= ?1 AND window_end < ?2
-          ORDER BY window_end
+          ORDER BY window_end, id
           LIMIT ?3`,
       )
       .bind(args.windowStart, args.windowEnd, this.maxPeriodsPerWindow + 1)
@@ -1753,16 +1759,44 @@ export class LlmSpendD1 implements LlmSpendStore, LlmSpendReadStore {
     // period that INGESTED it, so that a late arrival cannot retroactively change a settled
     // statement. Summing by occurred_at here would break that contract from the read side no matter
     // how carefully the write side behaves.
-    const placeholders = periods.map((_, i) => "?" + (i + 2)).join(",");
+    //
+    // THE PERIOD SET IS A SUBQUERY, NOT AN IN LIST OF BOUND IDS, and that is a correctness fix rather
+    // than a tidy-up. This statement used to bind ONE PARAMETER PER PERIOD (capped at
+    // MAX_PERIODS_PER_WINDOW = 20,000). **D1 refuses any statement over 100 bound parameters**
+    // (https://developers.cloudflare.com/d1/platform/limits/), and the five-minute cron produces about
+    // 8,900 periods a month, so:
+    //   - POST /api/admin/meter-settle threw for EVERY tenant. runLlmSettlement caught the throw and
+    //     recorded them all `unbillable`, so no LLM overage was ever billed.
+    //   - GET /api/admin/llm-spend answered 500 for any window longer than about eight hours.
+    // Every local test passed throughout, because node:sqlite allows roughly 32,000 variables. The
+    // harness now enforces D1's ceiling (tests/sqlite-d1.ts) so that reading cannot be had again.
+    //
+    // FOUR BOUND PARAMETERS, CONSTANT IN THE PERIOD COUNT. Chunking the IN list would also have fit
+    // under the ceiling, at about 90 sequential D1 round trips per tenant per settlement; this is one
+    // statement.
+    //
+    // THE SUBQUERY REPRODUCES THE REPORTED SET, NOT THE CENSUS QUERY VERBATIM, and the difference is
+    // the whole reason the limits are not the same number. The census binds `maxPeriodsPerWindow + 1`
+    // in order to DETECT truncation; the reported set is the post-slice `maxPeriodsPerWindow`, which is
+    // what this binds. Same window, same total order, limit of the SLICE rather than of the probe. So
+    // the sum covers precisely the periods reported above it, including when the census truncates,
+    // where the cap is what defines the billed set. Copying the census's `+ 1` here would silently
+    // bill one period more than the answer reports.
     const sums = await this.db
       .prepare(
         `SELECT COALESCE(SUM(cost_micro_usd), 0) AS cost,
                 COUNT(*) AS requests,
                 SUM(CASE WHEN cost_micro_usd IS NULL THEN 1 ELSE 0 END) AS unpriced
            FROM llm_spend_events
-          WHERE tenant_id = ?1 AND period_id IN (${placeholders})`,
+          WHERE tenant_id = ?1
+            AND period_id IN (
+                  SELECT id FROM llm_rollup_periods
+                   WHERE window_end >= ?2 AND window_end < ?3
+                   ORDER BY window_end, id
+                   LIMIT ?4
+                )`,
       )
-      .bind(args.tenantId, ...periods.map((p) => p.id))
+      .bind(args.tenantId, args.windowStart, args.windowEnd, this.maxPeriodsPerWindow)
       .first<{ cost: number | null; requests: number | null; unpriced: number | null }>();
     if (!sums) throw new Error("readTenantLlmSpend: aggregate returned no row");
 
