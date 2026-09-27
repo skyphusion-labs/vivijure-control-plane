@@ -144,6 +144,41 @@ export function parseSharedPool(raw: string | undefined | null): PoolConfigResul
     };
   }
 
+  // A KEY THE PLAN DOES NOT KNOW AT ALL IS REFUSED TOO, and this is the case the refusal above did
+  // not cover (cp#527). The own-iron check catches a key retired TO something; this catches a key
+  // retired to NOTHING, and until now the two were treated oppositely for no reason anyone chose.
+  //
+  // It was not hypothetical. SHARED_RUNPOD_ENDPOINTS carried `lipsync` pointing at endpoint
+  // zw6pt4lymf69pk for weeks after cp#517 deleted that endpoint and retired the plan key, and the
+  // deploy gate passed every time -- not because the probe forgave an unreachable endpoint, but
+  // because the loop below iterates the PLAN and looks each plan key up in the pool, so a key the
+  // plan no longer names is never read, never probed and never reported. The same dead id in the
+  // negative-control position failed LOUD and held a release for four tags. Same condition,
+  // opposite verdict, and the discriminator was never reachability -- it was whether the plan
+  // still named the key.
+  //
+  // Refusing is the conservative direction for the same reason the own-iron branch gives: an
+  // operator who wrote the key believes the pool covers that capability, and the plane silently
+  // disagreeing leaves the belief intact. It also makes RETIREMENT loud: retiring a plan key now
+  // breaks the deploy of any plane whose pool still names it, which is the moment to clean the
+  // variable rather than six weeks later.
+  const known = new Set<string>([...endpointBackedPlan().map((c) => c.key), ...vpcBackedPlan().map((c) => c.key)]);
+  const unknown = Object.keys(byKey).filter((k) => !known.has(k));
+  if (unknown.length) {
+    return {
+      ok: false,
+      detail:
+        "SHARED_RUNPOD_ENDPOINTS names " +
+        unknown.length +
+        " key(s) that are in no provision plan: " +
+        unknown.join(", ") +
+        ". These are capabilities this plane does not have, most likely retired ones whose pool " +
+        "entry outlived them. A pool entry the plane never reads is an operator believing the " +
+        "pool covers something it does not, so it is refused rather than dropped. Remove the " +
+        "key(s); the endpoint behind one may also be orphaned debris worth reclaiming",
+    };
+  }
+
   const endpoints: TenantEndpoint[] = [];
   const missing: string[] = [];
   for (const spec of endpointBackedPlan()) {
