@@ -67,7 +67,9 @@ const WORKER = [
   'export default { async fetch() { return new Response("ok"); } };',
 ].join("\n");
 
-const state: { ns?: string; scripts: string[] } = { scripts: [] };
+const state: { ns?: string; scripts: string[]; createdWorkflow?: boolean; createdControlWorkflow?: string } = {
+  scripts: [],
+};
 
 async function cfFetch(path: string, init: RequestInit = {}): Promise<{ status: number; body: string }> {
   const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}${path}`, {
@@ -94,6 +96,12 @@ afterAll(async () => {
   if (wf.status < 400) {
     await drop(`workflow ${WORKFLOW}`, async () => {
       const r = await cfFetch(`/workflows/${WORKFLOW}`, { method: "DELETE" });
+      if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
+    });
+  }
+  if (state.createdControlWorkflow) {
+    await drop(`control workflow ${state.createdControlWorkflow}`, async () => {
+      const r = await cfFetch(`/workflows/${state.createdControlWorkflow}`, { method: "DELETE" });
       if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
     });
   }
@@ -192,5 +200,34 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
     const after = await cfFetch(`/workflows/${WORKFLOW}`);
     console.log("workflow resource after collision:", after.status, after.body);
     expect(after.status).toBe(404);
+  });
+
+  // MEASUREMENT, unpinned until the first run reads it. The emitter has to CREATE the Workflow,
+  // because the upload measured above does not -- and the open question is whether the Workflows
+  // API will accept a `script_name` that lives in a DISPATCH NAMESPACE rather than on the account
+  // directly. Nothing in the docs says either way, and every tenant module script is in a namespace,
+  // so an emitter built on the assumption would fail at the one place it cannot be tested from.
+  it("MEASURES whether a Workflow can be created against a DISPATCH-NAMESPACE script", async () => {
+    const r = await cfFetch(`/workflows/${WORKFLOW}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ class_name: CLASS, script_name: SCRIPT_BOUND }),
+    });
+    console.log("MEASURED workflow create (namespace script):", r.status, r.body);
+    const back = await cfFetch(`/workflows/${WORKFLOW}`);
+    console.log("MEASURED workflow readback:", back.status, back.body);
+    if (back.status < 400) state.createdWorkflow = true;
+
+    // A second shape to distinguish "namespace scripts are not addressable" from "this script name
+    // is wrong": the same call against a script name that exists NOWHERE. If both answer the same
+    // way, the first reading says nothing about dispatch namespaces.
+    const controlName = `${WORKFLOW}-control`;
+    const ctl = await cfFetch(`/workflows/${controlName}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ class_name: CLASS, script_name: "no-such-script-cp526" }),
+    });
+    console.log("CONTROL workflow create (nonexistent script):", ctl.status, ctl.body);
+    if (ctl.status < 400) state.createdControlWorkflow = controlName;
   });
 });
