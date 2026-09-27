@@ -194,10 +194,22 @@ describe.skipIf(!LIVE)("does a workflow binding need its Workflow to exist?", ()
     expect(answer.created, JSON.stringify(answer)).toBe(true);
   });
 
-  it("MEASURES env.X.create() when the Workflow resource does NOT exist", async () => {
-    // THE QUESTION. If this succeeds, the resource is not required at runtime and cp#537's
-    // addressing limit stops blocking the hosted door. If it fails, the resource IS required and
-    // cp#537 is a hard block that needs Cloudflare's answer or a module redesign.
+  it("the resource IS required: the binding resolves, and create() refuses without it", async () => {
+    // THE ANSWER, and it is the unwelcome one. Measured 2026-09-27 on live-release-gate dispatch
+    // 36348823668, against a positive control that created an instance on the same worker:
+    //
+    //   control (Workflow created):  {"bound":true,"created":true,"id":"d76954b3-..."}
+    //   absent  (Workflow missing):  {"bound":true,"created":false,
+    //                                 "error":"Error: (workflow.not_found) Workflow does not exist"}
+    //
+    // So a binding to a Workflow that does not exist is NOT a no-op and NOT lazily provisioned: it
+    // resolves as an object and throws on first use. Combined with cp#537 -- the Workflows API
+    // cannot address a dispatch-namespace script to create one -- the hosted dialogue and cf-* doors
+    // are blocked on the platform, not on code we have not written.
+    //
+    // THE LIMIT, STATED WITH THE RESULT: this runs on an ACCOUNT-LEVEL script, so it isolates the
+    // runtime question from the addressing one. Account-level and namespace scripts may resolve
+    // bindings differently, so this is strong evidence and NOT proof for the namespace case.
     const name = `${stamp}-abs`;
     const absent = `${stamp}-absent-wf`;
     await deployProbe(name, absent);
@@ -209,10 +221,17 @@ describe.skipIf(!LIVE)("does a workflow binding need its Workflow to exist?", ()
 
     const answer = await callProbe(name, subdomain);
     console.log("MEASURED (workflow absent):", JSON.stringify(answer));
+    // BOUND but UNUSABLE, and both halves matter. `bound: true` says the binding itself is fine, so
+    // the failure below cannot be read as "the binding did not attach" -- which is exactly what the
+    // four cf-* doors suffer from today for a different reason.
     expect(answer.bound, JSON.stringify(answer)).toBe(true);
+    expect(answer.created, JSON.stringify(answer)).toBe(false);
+    expect(String(answer.error)).toMatch(/workflow\.not_found|Workflow does not exist/);
 
-    // Unpinned on this run by design: the answer is the finding. Pinned in the same PR once read.
+    // AND IT IS NOT LAZILY PROVISIONED EITHER. A create() attempt against a missing Workflow leaves
+    // the account exactly as it was, so "invoke it once and it will appear" is not a route.
     const after = await cfFetch(`/workflows/${absent}`);
-    console.log("MEASURED (was it created as a side effect?):", after.status);
+    console.log("workflow after the failed create:", after.status);
+    expect(after.status).toBe(404);
   });
 });
