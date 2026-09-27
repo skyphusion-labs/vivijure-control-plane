@@ -1,0 +1,196 @@
+// LIVE proof that a Workers for Platforms user Worker CAN carry a `workflow` binding (cp#526, and
+// the unlock for the hosted `dialogue` door, cp#524).
+//
+//   CF_PROVISIONER_TOKEN=<token> CF_ACCOUNT_ID=<id> npx vitest run tests/wfp-workflow-binding.live.test.ts
+//
+// This repo is PUBLIC, so the env contract is named here and the place the credential is kept is
+// not. Operators know where their own credentials live; a public file naming the path tells
+// everyone else.
+//
+// WHY IT EXISTS, and it is the whole point of the change it verifies. Adding a variant to the
+// `WorkerBinding` union makes it TYPECHECK, which is the writing client's opinion of its own
+// request. The `ai` and `vpc_service` variants in cf-api.ts are documented as live-proven for
+// exactly this reason: an upload response echoes no bindings, so `success: true` proves only that
+// the request was accepted, never that the binding is attached. The READBACK is the proof.
+//
+// FIRST GREEN RUN: dispatch 36343598466, 2026-09-27T19:14Z, branch feat/526-workflow-binding-variant.
+// Three readings that nothing in this estate had ever taken are PINNED below as assertions rather
+// than left as prose, because each one is a vendor behaviour an emitter will be built on, and the
+// day Cloudflare changes any of them is a day this has to go red:
+//
+//   1. A script exporting a WorkflowEntrypoint uploads fine with NO workflow binding. That settles
+//      cp#526's open A-vs-B as A: the four catalogued `cf-*` doors provision, look installed, pass
+//      /ready, and throw at the first invoke -- after the keyframe pass is already spent. There is
+//      no refusal at modules_upload to catch it.
+//   2. The upload does NOT create the account-scoped Workflow. The binding attaches to a resource
+//      that does not exist and the API says nothing.
+//   3. A SECOND script may claim the SAME workflow_name, with a different class, and the API
+//      accepts that too. So nothing outside this plane will ever warn about a cross-tenant name
+//      collision; tenant-prefixing is on us, exactly as it is for the script name.
+//
+// SAFETY: this hits the PROD account (the only one with WfP enabled). Every resource is prefixed
+// `strummer-verify-` and torn down in afterAll; it creates nothing outside that prefix and touches
+// nothing pre-existing. Zero GPU spend, no tenant touched, no existing script read or written.
+
+import { describe, it, expect, afterAll } from "vitest";
+import { CfApi } from "../src/cf-api";
+
+declare const process: { env: Record<string, string | undefined> };
+
+const TOKEN = process.env.CF_PROVISIONER_TOKEN;
+const ACCOUNT = process.env.CF_ACCOUNT_ID;
+const LIVE = Boolean(TOKEN && ACCOUNT);
+
+const stamp = `strummer-verify-${Date.now().toString(36)}`;
+const cf = LIVE ? new CfApi(ACCOUNT!, TOKEN!) : (null as unknown as CfApi);
+
+/** The binding variable the module code would read as `env.PROBE_WORKFLOW`. */
+const BINDING = "PROBE_WORKFLOW";
+/** The ACCOUNT-scoped Workflow resource name. Stamped, so it cannot collide with a real one. */
+const WORKFLOW = `${stamp}-wf`;
+const CLASS = "ProbeWorkflow";
+/** Cloudflare's code for "no such Workflow" (read off the live 404, not off a docs page). */
+const CF_WORKFLOW_NOT_FOUND = 10200;
+
+const SCRIPT_UNBOUND = "tenant-verify-wf-unbound";
+const SCRIPT_BOUND = "tenant-verify-wf-bound";
+const SCRIPT_COLLIDE = "tenant-verify-wf-collide";
+
+// A real module worker: it EXPORTS a WorkflowEntrypoint class, exactly as every cf-* door and both
+// dialogue providers do. A worker without that export would make the unbound measurement below
+// meaningless, because the question is specifically about a script whose code declares a Workflow.
+const WORKER = [
+  'import { WorkflowEntrypoint } from "cloudflare:workers";',
+  `export class ${CLASS} extends WorkflowEntrypoint {`,
+  "  async run(_event, step) { return await step.do(\"noop\", async () => \"ok\"); }",
+  "}",
+  'export default { async fetch() { return new Response("ok"); } };',
+].join("\n");
+
+const state: { ns?: string; scripts: string[] } = { scripts: [] };
+
+async function cfFetch(path: string, init: RequestInit = {}): Promise<{ status: number; body: string }> {
+  const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}${path}`, {
+    ...init,
+    headers: { authorization: `Bearer ${TOKEN}`, ...(init.headers as Record<string, string>) },
+  });
+  return { status: res.status, body: (await res.text()).slice(0, 400) };
+}
+
+afterAll(async () => {
+  if (!LIVE) return;
+  const drop = async (what: string, fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (e) {
+      console.warn(`LEFTOVER ${what}: ${String(e).slice(0, 160)}`);
+    }
+  };
+  for (const s of state.scripts) await drop(`script ${s}`, () => cf.deleteUserWorker(state.ns!, s));
+  // A Workflow is an ACCOUNT resource, so it would outlive both the script and the namespace.
+  // MEASURED not to be created by the upload (see below), so this only fires if that ever changes
+  // -- which is exactly when a leftover would otherwise start accumulating unnoticed.
+  const wf = await cfFetch(`/workflows/${WORKFLOW}`);
+  if (wf.status < 400) {
+    await drop(`workflow ${WORKFLOW}`, async () => {
+      const r = await cfFetch(`/workflows/${WORKFLOW}`, { method: "DELETE" });
+      if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
+    });
+  }
+  if (state.ns) {
+    await drop("namespace", async () => {
+      const r = await cfFetch(`/workers/dispatch/namespaces/${state.ns}`, { method: "DELETE" });
+      if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
+    });
+  }
+});
+
+describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
+  it("creates the throwaway dispatch namespace", async () => {
+    await cf.createDispatchNamespace(stamp);
+    state.ns = stamp;
+    expect(await cf.listDispatchNamespaces()).toContain(stamp);
+  });
+
+  it("A, not B: a script exporting a WorkflowEntrypoint uploads with NO workflow binding", async () => {
+    // cp#526's open question, settled against the running API. `resolves` is the assertion: if
+    // Cloudflare ever starts REFUSING this, the four cf-* rows stop being a silent door and become
+    // a dead provision, and that is a change this repo must hear about on the day it happens.
+    await expect(
+      cf.uploadUserWorker({
+        namespace: state.ns!,
+        scriptName: SCRIPT_UNBOUND,
+        mainModule: "index.js",
+        moduleText: WORKER,
+        compatibilityDate: "2026-06-01",
+        // The plain_text is the readback CONTROL for the negative assertion below: without a
+        // binding that IS present, "no PROBE_WORKFLOW" cannot be told apart from "readback broken".
+        bindings: [{ type: "plain_text", name: "PROBE_CONTROL", text: "present" }],
+      }),
+    ).resolves.toBeUndefined();
+    state.scripts.push(SCRIPT_UNBOUND);
+  });
+
+  it("accepts a workflow binding, and the API READS IT BACK", async () => {
+    await cf.uploadUserWorker({
+      namespace: state.ns!,
+      scriptName: SCRIPT_BOUND,
+      mainModule: "index.js",
+      moduleText: WORKER,
+      compatibilityDate: "2026-06-01",
+      bindings: [
+        { type: "plain_text", name: "PROBE_CONTROL", text: "present" },
+        { type: "workflow", name: BINDING, workflow_name: WORKFLOW, class_name: CLASS },
+      ],
+    });
+    state.scripts.push(SCRIPT_BOUND);
+
+    const back = await cf.getScriptBindings(state.ns!, SCRIPT_BOUND);
+    const wf = back.find((b) => b.name === BINDING);
+    // The NAME alone would pass on a binding CF silently downgraded to something else, so the TYPE
+    // is asserted too. That is the reading that says the variant is the one the runtime will honour.
+    expect(wf, JSON.stringify(back)).toBeDefined();
+    expect(wf!.type).toBe("workflow");
+    expect(back.find((b) => b.name === "PROBE_CONTROL")).toBeDefined();
+  });
+
+  it("NEGATIVE CONTROL: the unbound script reads back WITHOUT it, so the readback can say no", async () => {
+    // Without this, the assertion above passes against a readback that returns every binding name
+    // anyone ever asked about. The control binding must be present on the SAME response, or a
+    // readback that simply failed would look identical to an absent workflow binding.
+    const back = await cf.getScriptBindings(state.ns!, SCRIPT_UNBOUND);
+    expect(back.find((b) => b.name === "PROBE_CONTROL"), JSON.stringify(back)).toBeDefined();
+    expect(back.find((b) => b.name === BINDING)).toBeUndefined();
+  });
+
+  it("the upload does NOT create the account-scoped Workflow: the binding points at nothing", async () => {
+    // THE FINDING AN EMITTER IS BUILT ON. The binding attaches, is read back, and names a Workflow
+    // that does not exist -- Cloudflare says nothing about the gap at upload time. So emitting the
+    // binding is NOT the whole job: the Workflow has to be provisioned, or `env.X.create()` meets
+    // a resource that was never there.
+    const r = await cfFetch(`/workflows/${WORKFLOW}`);
+    console.log("workflow resource after upload:", r.status, r.body);
+    expect(r.status).toBe(404);
+    expect(JSON.parse(r.body).errors[0].code).toBe(CF_WORKFLOW_NOT_FOUND);
+  });
+
+  it("a SECOND script may claim the SAME workflow_name, and the API does not object", async () => {
+    // THE MULTI-TENANT HAZARD, pinned. Every tenant's copy of a module lands in ONE shared dispatch
+    // namespace on ONE account, so an emitter using the module's own wrangler name would have two
+    // tenants naming one Workflow. Nothing outside this plane will warn: the upload is accepted.
+    await expect(
+      cf.uploadUserWorker({
+        namespace: state.ns!,
+        scriptName: SCRIPT_COLLIDE,
+        mainModule: "index.js",
+        moduleText: WORKER.replace(CLASS, "OtherProbeWorkflow"),
+        compatibilityDate: "2026-06-01",
+        bindings: [{ type: "workflow", name: BINDING, workflow_name: WORKFLOW, class_name: "OtherProbeWorkflow" }],
+      }),
+    ).resolves.toBeUndefined();
+    state.scripts.push(SCRIPT_COLLIDE);
+    const after = await cfFetch(`/workflows/${WORKFLOW}`);
+    console.log("workflow resource after collision:", after.status, after.body);
+    expect(after.status).toBe(404);
+  });
+});
