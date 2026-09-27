@@ -211,6 +211,11 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
     // THE MULTI-TENANT HAZARD, pinned. Every tenant's copy of a module lands in ONE shared dispatch
     // namespace on ONE account, so an emitter using the module's own wrangler name would have two
     // tenants naming one Workflow. Nothing outside this plane will warn: the upload is accepted.
+    //
+    // AND IT IS NOT A CROSS-TENANT HAZARD ONLY. The account already holds a Workflow literally named
+    // `dialogue-gen`, pointing at the OPERATOR's `vivijure-module-dialogue-gen` -- so an emitter
+    // that used the module's own declared name verbatim would have the first tenant collide with
+    // production, not with another tenant. The prefix is not hygiene.
     await expect(
       cf.uploadUserWorker({
         namespace: state.ns!,
@@ -239,10 +244,10 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
       body: JSON.stringify({ class_name: CLASS, script_name: SCRIPT_BOUND }),
     });
     console.log("MEASURED workflow create (namespace script):", r.status, r.body);
-    // Pinned with its own caveat attached, because this credential is measured NOT to see the
-    // account's 13 existing Workflows (below): a 500 here may be scope rather than platform, and
-    // settling that needs a credential with a full view. What is NOT in doubt is that the plane
-    // cannot do it today, because the plane runs as exactly this credential.
+    // PINNED WITHOUT A CAVEAT, because the scope explanation was measured and killed: this same
+    // credential lists all 13 of the account's Workflows and creates one against an account-level
+    // script (both below). So a dispatch-namespace script simply is not addressable by this API.
+    // A red here means that changed, which is the news the hosted door is waiting for.
     expect(r.status).toBe(500);
     const back = await cfFetch(`/workflows/${WORKFLOW}`);
     console.log("MEASURED workflow readback:", back.status, back.body);
@@ -274,15 +279,22 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
       names = ((JSON.parse(list.body).result ?? []) as { name?: string }[]).map((w) => w.name ?? "?");
     } catch { /* not JSON; the status is the signal */ }
     console.log("MEASURED workflows list:", list.status, "count:", names.length, "names:", names.join(","));
-    // ASSERTED AS A CREDENTIAL FACT, not an account fact, and the difference is the finding. This
-    // call returns 200 with ZERO rows on THIS credential, while the account genuinely holds 13
-    // Workflows -- read 2026-09-27 through three other tokens, which all see all 13
-    // (cf-seedance-i2v, dialogue-gen, chatterbox and the rest, each pointing at its operator
-    // module worker). An empty list from a credential that may not see the family is
-    // indistinguishable from an empty account, and only a second instrument can tell them apart.
-    // If this ever returns rows, the credential's scope changed and the 500 below must be re-read.
+    // THE POSITIVE CONTROL FOR EVERYTHING BELOW, and it had to be rescued from my own instrument.
+    // With the old 400-character body cap this call printed ZERO rows -- JSON.parse threw on the
+    // truncated body and the catch left the array empty -- and zero rows was briefly written up as
+    // a credential that cannot see the family. It was never that. Uncapped, this credential sees
+    // all 13 Workflows the account holds, so the 500s above are NOT a scope artifact: the same
+    // token lists Workflows AND creates one against an account-level script.
+    //
+    // A truncating reader that reports an empty result rather than an error is the same defect
+    // class this whole file exists to catch, one layer up, in the instrument.
     expect(list.status).toBe(200);
-    expect(names.length, "this credential's VIEW of the account's Workflows, not the account's").toBe(0);
+    expect(names.length, "the account's Workflows, seen by the credential the plane runs as").toBeGreaterThan(0);
+    // BY NAME, not by count: a count would drift the next time anyone deploys a module, and the
+    // claim being made is that THIS credential can see operator-owned Workflows, not that there are
+    // exactly N of them. `dialogue-gen` is also the collision subject named below.
+    expect(names, JSON.stringify(names)).toContain("cf-seedance-i2v");
+    expect(names).toContain("dialogue-gen");
 
     // 2. IS THE 500 ABOUT OUR BODY? A PUT with class_name missing entirely should be a 4xx from any
     //    API that validates input. If this 500s too, the endpoint 500s on everything and the
