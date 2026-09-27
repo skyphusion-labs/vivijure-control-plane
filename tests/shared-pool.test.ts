@@ -141,11 +141,16 @@ describe("parseSharedPool", () => {
   });
 
   it("CONTROL: an own-iron key is STILL refused, and the two refusals stay distinguishable", () => {
-    // The pre-existing refusal must not be swallowed by the new one. Skipped rather than faked if
-    // the plan has no door-backed capability, because a control built on an empty population is
-    // the thing it exists to prevent.
-    const door = vpcBackedPlan()[0];
-    if (!door) return;
+    // The pre-existing refusal must not be swallowed by the new one.
+    //
+    // THE POPULATION IS ASSERTED, NOT GUARDED. This read `if (!door) return`, which is a PASSING
+    // test that measured nothing: the day PROVISION_PLAN loses its last door-backed capability
+    // this control would go green having checked no refusal at all. That is precisely the shape
+    // the refusal under test exists to close, so shipping it inside this file would be the joke
+    // writing itself. An empty population is a broken control, and a broken control must be RED.
+    const doors = vpcBackedPlan();
+    expect(doors.length, "no door-backed capability in PROVISION_PLAN: this control has no subject and cannot discriminate").toBeGreaterThan(0);
+    const door = doors[0];
     const withOwnIron = JSON.parse(POOL_JSON) as Record<string, unknown>;
     withOwnIron[door.key] = { id: "x", name: "y" };
     const res = parseSharedPool(JSON.stringify(withOwnIron));
