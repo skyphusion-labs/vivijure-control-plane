@@ -75,6 +75,14 @@ export default {
 
 const state: { scripts: string[]; workflows: string[] } = { scripts: [], workflows: [] };
 
+/**
+ * Per-case budget. MUST exceed callProbe's own 30s propagation window plus an upload and a create,
+ * or the case fails on the clock instead of on its subject -- which is exactly what happened on the
+ * first pinned run (dispatch 36348932743: "Test timed out in 5000ms" on a case that had passed at
+ * 3085ms the run before, because vitest's default is 5s and the work is a live round trip).
+ */
+const PROBE_TIMEOUT_MS = 90_000;
+
 async function cfFetch(
   path: string,
   init: RequestInit = {},
@@ -171,7 +179,7 @@ describe.skipIf(!LIVE)("does a workflow binding need its Workflow to exist?", ()
     expect(r.status).toBe(200);
     subdomain = (JSON.parse(r.body).result as { subdomain: string }).subdomain;
     expect(subdomain.length).toBeGreaterThan(0);
-  });
+  }, PROBE_TIMEOUT_MS);
 
   it("POSITIVE CONTROL: with the Workflow CREATED, env.X.create() succeeds", async () => {
     // Without this, a failure in the next case is indistinguishable from a broken probe worker, a
@@ -192,7 +200,7 @@ describe.skipIf(!LIVE)("does a workflow binding need its Workflow to exist?", ()
     console.log("CONTROL (workflow exists):", JSON.stringify(answer));
     expect(answer.bound).toBe(true);
     expect(answer.created, JSON.stringify(answer)).toBe(true);
-  });
+  }, PROBE_TIMEOUT_MS);
 
   it("the resource IS required: the binding resolves, and create() refuses without it", async () => {
     // THE ANSWER, and it is the unwelcome one. Measured 2026-09-27 on live-release-gate dispatch
@@ -233,5 +241,5 @@ describe.skipIf(!LIVE)("does a workflow binding need its Workflow to exist?", ()
     const after = await cfFetch(`/workflows/${absent}`);
     console.log("workflow after the failed create:", after.status);
     expect(after.status).toBe(404);
-  });
+  }, PROBE_TIMEOUT_MS);
 });
