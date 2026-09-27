@@ -1,5 +1,13 @@
 // PayPal payment rail (cp#193).
 //
+// THE ORDERS API IS TWO STEPS AND BOTH ARE OURS. `intent: CAPTURE` means the buyer's approval
+// AUTHORISES the charge; it does not collect it. Until the merchant calls
+// POST /v2/checkout/orders/{id}/capture, no money has moved, PAYMENT.CAPTURE.COMPLETED never fires,
+// and the order expires. This file shipped with only the create leg, so every approved top-up
+// expired uncollected while the balance never moved and the button stayed on the surface. The
+// capture is driven off the CHECKOUT.ORDER.APPROVED webhook rather than off the buyer's redirect,
+// because a buyer who closes the tab still deserves the credit they paid for.
+//
 // Implements PaymentRail against PayPal Orders API v2 (intent CAPTURE) and the webhook verify
 // endpoint. Stripe is not the rail. No credential is hardcoded; missing client id+secret is
 // `not_configured`. Token cache is isolate-local so a Worker does not re-auth on every checkout.
@@ -9,7 +17,10 @@ import { MICRO_PER_USD } from "./credits";
 import {
   MIN_TENANT_TOPUP_MICRO_USD,
   PaymentRailError,
+  type ApprovedOrder,
+  type CaptureOutcome,
   type PaymentRail,
+  type RailWebhookEvent,
   type SettlementEvent,
   type TopUpIntent,
 } from "./payment-rail";
@@ -21,6 +32,10 @@ const LIVE_API = "https://api-m.paypal.com";
 const MICRO_PER_CENT = 10_000;
 
 const CAPTURE_COMPLETED = "PAYMENT.CAPTURE.COMPLETED";
+/** The buyer authorised. NOT a settlement: it is the trigger for the capture that collects. */
+const ORDER_APPROVED = "CHECKOUT.ORDER.APPROVED";
+/** PayPal's own name for "you already collected this order". A success for us, not a failure. */
+const ALREADY_CAPTURED = "ORDER_ALREADY_CAPTURED";
 
 export type PayPalRailConfig = {
   clientId: string;
@@ -28,6 +43,14 @@ export type PayPalRailConfig = {
   webhookId: string;
   /** `live` -> api-m.paypal.com; anything else, including unset, is sandbox. */
   paypalEnv?: string;
+  /**
+   * Where PayPal sends the buyer after they approve. Optional, and its absence is not a defect:
+   * collection is driven by the APPROVED webhook, so a top-up lands whether or not the browser ever
+   * comes back. This only decides where the buyer is standing when it does.
+   */
+  returnUrl?: string;
+  /** Where PayPal sends a buyer who backs out. Paired with returnUrl; PayPal wants both or neither. */
+  cancelUrl?: string;
   fetchImpl?: typeof fetch;
 };
 
@@ -89,6 +112,8 @@ export class PayPalRail implements PaymentRail {
   private readonly clientSecret: string;
   private readonly webhookId: string;
   private readonly base: string;
+  private readonly returnUrl: string;
+  private readonly cancelUrl: string;
   private readonly fetchImpl: typeof fetch;
 
   constructor(cfg: PayPalRailConfig) {
@@ -96,6 +121,8 @@ export class PayPalRail implements PaymentRail {
     this.clientSecret = cfg.clientSecret.trim();
     this.webhookId = cfg.webhookId.trim();
     this.base = paypalApiBase(cfg.paypalEnv);
+    this.returnUrl = cfg.returnUrl?.trim() ?? "";
+    this.cancelUrl = cfg.cancelUrl?.trim() ?? "";
     this.fetchImpl = cfg.fetchImpl ?? fetch;
   }
 
@@ -126,6 +153,22 @@ export class PayPalRail implements PaymentRail {
             custom_id: args.tenantId,
           },
         ],
+        // OMITTED ENTIRELY when no return URL is configured, rather than sent with empty strings:
+        // PayPal rejects an empty return_url, and a half-filled context would turn a missing
+        // deployment hostname into a failed checkout instead of a checkout with no redirect.
+        ...(this.returnUrl && this.cancelUrl
+          ? {
+              application_context: {
+                return_url: this.returnUrl,
+                cancel_url: this.cancelUrl,
+                // The buyer's last click says "Pay Now" rather than "Continue". Nothing about our
+                // side changes, but a button that implies another confirmation step is a step
+                // nobody takes, and an unapproved order is an order that never funds a render.
+                user_action: "PAY_NOW",
+                shipping_preference: "NO_SHIPPING",
+              },
+            }
+          : {}),
       }),
     });
     if (!res.ok) {
@@ -143,7 +186,7 @@ export class PayPalRail implements PaymentRail {
     return { checkout_url: approve.href, external_ref: orderId };
   }
 
-  async parseSettlement(request: Request): Promise<SettlementEvent | null> {
+  async parseSettlement(request: Request): Promise<RailWebhookEvent | null> {
     if (!this.clientId || !this.clientSecret || !this.webhookId) {
       throw new PaymentRailError("not_configured", "PayPal webhook verification is not configured");
     }
@@ -189,7 +232,79 @@ export class PayPalRail implements PaymentRail {
       throw new PaymentRailError("unverified", "paypal webhook signature was not SUCCESS");
     }
 
-    return settlementFromVerifiedEvent(webhookEvent);
+    return railEventFromVerifiedEvent(webhookEvent);
+  }
+
+  /**
+   * POST /v2/checkout/orders/{id}/capture: the leg that actually collects the money.
+   *
+   * THE SETTLEMENT IS BUILT FROM THE CAPTURE, never from the order: the amount and the id that go in
+   * the ledger are the ones PayPal says it took, so a partial or adjusted capture cannot be credited
+   * as the amount we asked for. The capture id is also what PAYMENT.CAPTURE.COMPLETED will carry, so
+   * crediting here and crediting from that later webhook resolve to ONE ledger row through
+   * applySettlement's unique index rather than to two purchases.
+   */
+  async captureApprovedOrder(order: ApprovedOrder): Promise<CaptureOutcome> {
+    if (!this.clientId || !this.clientSecret) {
+      throw new PaymentRailError("not_configured", "PayPal client id and secret are not set");
+    }
+    const token = await this.accessToken();
+    const res = await this.fetchImpl(
+      `${this.base}/v2/checkout/orders/${encodeURIComponent(order.order_ref)}/capture`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          // DERIVED FROM THE ORDER, not random, and this is the one place in this file where that
+          // matters: PayPal keys capture idempotency on this header, so a fresh uuid per attempt
+          // would ask PayPal to treat a retry as a second collection.
+          "paypal-request-id": `capture-${order.order_ref}`,
+        },
+        body: "{}",
+      },
+    );
+    if (!res.ok) {
+      const detail = await res.text();
+      // 422 ORDER_ALREADY_CAPTURED: somebody (a racing retry, or the buyer's own redirect) already
+      // collected this. The money is in and the CAPTURE.COMPLETED leg carries it, so this is done.
+      if (res.status === 422 && detail.includes(ALREADY_CAPTURED)) return { kind: "already_captured" };
+      throw new Error(`paypal_order_capture_failed:${res.status}`);
+    }
+    const body = (await res.json()) as unknown;
+    const cap = completedCaptureFrom(body);
+    if (!cap) throw new Error("paypal_capture_missing_capture");
+
+    // TENANT COMES FROM THE ORDER WE SIGNED FOR, and a disagreement is refused rather than resolved.
+    // Crediting the wrong tenant is worse than crediting nobody: it moves money between accounts and
+    // no later reconciliation can tell it from a real purchase.
+    const capTenant = typeof cap.custom_id === "string" ? cap.custom_id.trim() : "";
+    if (capTenant && capTenant !== order.tenant_ref) {
+      throw new Error(
+        `paypal_capture_tenant_mismatch:order=${order.tenant_ref}:capture=${capTenant}`,
+      );
+    }
+
+    const amountObj =
+      cap.amount && typeof cap.amount === "object" ? (cap.amount as Record<string, unknown>) : null;
+    if (!amountObj || amountObj.currency_code !== "USD" || typeof amountObj.value !== "string") {
+      throw new Error("paypal_capture_bad_amount");
+    }
+    const amount = paypalValueToMicroUsd(amountObj.value);
+    if (amount === null || amount <= 0) throw new Error("paypal_capture_bad_amount");
+
+    const captureId = typeof cap.id === "string" ? cap.id.trim() : "";
+    if (!captureId) throw new Error("paypal_capture_missing_capture");
+
+    return {
+      kind: "settled",
+      settlement: {
+        tenant_id: order.tenant_ref,
+        amount_micro_usd: amount,
+        external_ref: captureId,
+        note: `paypal capture of order ${order.order_ref}`,
+      },
+    };
   }
 
   private async accessToken(): Promise<string> {
@@ -230,6 +345,63 @@ export class PayPalRail implements PaymentRail {
 
 function requestId(): string {
   return crypto.randomUUID();
+}
+
+/**
+ * The COMPLETED capture inside a capture response, or null.
+ *
+ * Status is checked rather than assumed: PayPal can answer 200 with a capture in `PENDING` (a review
+ * hold), and crediting a pending capture would hand out balance for money that may never clear.
+ */
+function completedCaptureFrom(body: unknown): Record<string, unknown> | null {
+  if (!body || typeof body !== "object") return null;
+  const units = (body as Record<string, unknown>).purchase_units;
+  if (!Array.isArray(units)) return null;
+  for (const u of units) {
+    if (!u || typeof u !== "object") continue;
+    const payments = (u as Record<string, unknown>).payments;
+    if (!payments || typeof payments !== "object") continue;
+    const captures = (payments as Record<string, unknown>).captures;
+    if (!Array.isArray(captures)) continue;
+    for (const c of captures) {
+      if (!c || typeof c !== "object") continue;
+      if ((c as Record<string, unknown>).status === "COMPLETED") return c as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+function railEventFromVerifiedEvent(event: unknown): RailWebhookEvent | null {
+  if (!event || typeof event !== "object") return null;
+  const rec = event as Record<string, unknown>;
+  if (rec.event_type === ORDER_APPROVED) {
+    const approved = approvedFromOrderResource(rec.resource);
+    return approved ? { kind: "approved", ...approved } : null;
+  }
+  const settlement = settlementFromVerifiedEvent(event);
+  return settlement ? { kind: "settlement", settlement } : null;
+}
+
+/**
+ * The order id and the tenant reference off a CHECKOUT.ORDER.APPROVED resource.
+ *
+ * Null when either is missing: an order with no `custom_id` is an order whose proceeds could not be
+ * attributed to anybody, and capturing money we cannot credit is worse than leaving it uncollected.
+ */
+function approvedFromOrderResource(resource: unknown): ApprovedOrder | null {
+  if (!resource || typeof resource !== "object") return null;
+  const order = resource as Record<string, unknown>;
+  const orderRef = typeof order.id === "string" ? order.id.trim() : "";
+  if (!orderRef) return null;
+  const units = order.purchase_units;
+  if (!Array.isArray(units)) return null;
+  for (const u of units) {
+    if (!u || typeof u !== "object") continue;
+    const custom = (u as Record<string, unknown>).custom_id;
+    const tenantRef = typeof custom === "string" ? custom.trim() : "";
+    if (tenantRef) return { order_ref: orderRef, tenant_ref: tenantRef };
+  }
+  return null;
 }
 
 function settlementFromVerifiedEvent(event: unknown): SettlementEvent | null {

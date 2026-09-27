@@ -21,6 +21,23 @@ export interface TopUpIntent {
   external_ref: string;
 }
 
+/**
+ * An order the buyer has AUTHORISED and nobody has collected yet.
+ *
+ * THE STATE THIS SEAM ORIGINALLY DID NOT MODEL, and the whole reason top-ups never landed. A
+ * two-step rail (PayPal `intent: CAPTURE`, Stripe `requires_capture`) charges nothing on approval:
+ * the merchant must come back and collect, and an order left uncollected simply expires. A rail
+ * interface with only "send them to pay" and "money arrived" has no place to put that step, so the
+ * step was never written and the money never moved.
+ *
+ * `tenant_ref` is the reference WE set on the order (PayPal `custom_id`), read back off the event
+ * PayPal signed. It is the authoritative tenant for the capture that follows.
+ */
+export interface ApprovedOrder {
+  order_ref: string;
+  tenant_ref: string;
+}
+
 /** Money that has actually arrived, as reported by a VERIFIED rail event. */
 export interface SettlementEvent {
   tenant_id: string;
@@ -30,6 +47,30 @@ export interface SettlementEvent {
   /** Free-text provenance for the audit trail. Never a credential. */
   note: string | null;
 }
+
+/**
+ * What a VERIFIED rail webhook turned out to be.
+ *
+ * DISCRIMINATED rather than "a settlement or null", because those two answers cannot express the
+ * third state that actually matters: an authorised order awaiting collection. Folded into null, the
+ * one event that says "collect the money now" is indistinguishable from an event we do not care
+ * about, which is exactly how PayPal top-ups sat uncaptured until they expired.
+ */
+export type RailWebhookEvent =
+  | { kind: "settlement"; settlement: SettlementEvent }
+  | ({ kind: "approved" } & ApprovedOrder);
+
+/**
+ * The result of collecting an authorised order.
+ *
+ * `already_captured` is a SUCCESS, not an error, and it is a separate case rather than an exception
+ * because the two failure directions are opposite: a transient failure must be retried, and a
+ * collected order must never be retried. A rail that reported both as a throw would make the caller
+ * choose one wrong behaviour for the other case.
+ */
+export type CaptureOutcome =
+  | { kind: "settled"; settlement: SettlementEvent }
+  | { kind: "already_captured" };
 
 export type RailRefusal = "unsupported" | "not_configured" | "invalid_amount" | "unverified";
 
@@ -43,22 +84,35 @@ export class PaymentRailError extends Error {
 /**
  * A payment rail.
  *
- * Two methods, because a rail does exactly two things: send a tenant somewhere to pay, and tell us
- * when money arrived. Everything else (pricing, balance, refusal) belongs to the ledger and stays
- * there. The rail never sees the ledger's internals and the ledger never imports a rail, so swapping
- * PayPal for anything else is a new class rather than a migration.
+ * THREE methods, because a rail does exactly three things: send a tenant somewhere to pay, collect
+ * an order the tenant authorised, and tell us when money arrived. Everything else (pricing, balance,
+ * refusal) belongs to the ledger and stays there. The rail never sees the ledger's internals and the
+ * ledger never imports a rail, so swapping PayPal for anything else is a new class rather than a
+ * migration.
+ *
+ * The third method is not decoration: it was missing, and its absence is why authorised top-ups
+ * expired uncollected while the surface kept offering the button.
  */
 export interface PaymentRail {
   readonly id: string;
   createTopUp(args: { tenantId: string; amountMicroUsd: MicroUsd }): Promise<TopUpIntent>;
   /**
-   * Turn a webhook request into a settlement, or null when the request is not a settlement event.
+   * Turn a webhook request into a verified rail event, or null when it is neither a settlement nor
+   * an authorised order.
    *
    * MUST THROW `unverified` rather than return a value when the signature does not check out. An
    * unverified webhook body is an attacker-controlled request to mint money and is treated as one;
    * returning null for it would make "not a settlement" and "a forged settlement" the same outcome.
    */
-  parseSettlement(request: Request): Promise<SettlementEvent | null>;
+  parseSettlement(request: Request): Promise<RailWebhookEvent | null>;
+  /**
+   * Collect an authorised order. THE STEP THAT MAKES MONEY ARRIVE on a two-step rail.
+   *
+   * MUST THROW on a transient failure so the caller can answer the processor in a way that earns a
+   * retry, and MUST return `already_captured` when the order has already been collected, so a
+   * retry that can never succeed is not retried forever.
+   */
+  captureApprovedOrder(order: ApprovedOrder): Promise<CaptureOutcome>;
 }
 
 // --------------------------------------------------------------------------- amounts
@@ -112,8 +166,8 @@ export function validateCreditAmount(
  * capture, balance, refusal -- with zero payment integration, and what lets counting mode graduate to
  * enforcing before a processor exists.
  *
- * It has NO checkout surface and NO webhook, so both interface methods refuse rather than pretending:
- * a rail that returned a fake checkout URL would advertise a door that goes nowhere.
+ * It has NO checkout surface and NO webhook, so all three interface methods refuse rather than
+ * pretending: a rail that returned a fake checkout URL would advertise a door that goes nowhere.
  */
 export class ManualRail implements PaymentRail {
   readonly id = "manual";
@@ -125,8 +179,15 @@ export class ManualRail implements PaymentRail {
     );
   }
 
-  async parseSettlement(): Promise<SettlementEvent | null> {
+  async parseSettlement(): Promise<RailWebhookEvent | null> {
     throw new PaymentRailError("unsupported", "the manual rail has no webhook; there is nothing to verify");
+  }
+
+  async captureApprovedOrder(): Promise<CaptureOutcome> {
+    throw new PaymentRailError(
+      "unsupported",
+      "the manual rail has no order to collect; an operator credit is settled the moment it is written",
+    );
   }
 }
 

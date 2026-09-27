@@ -6,6 +6,51 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(credits): PayPal top-ups are now CAPTURED, so approved money actually arrives
+
+`createTopUp` opened an order with `intent: "CAPTURE"` and nothing ever called
+`POST /v2/checkout/orders/{id}/capture`. On the Orders API that intent means
+the buyer's approval AUTHORISES the charge; it does not collect it. So every
+approved top-up sat uncaptured until PayPal expired it: no money moved,
+`PAYMENT.CAPTURE.COMPLETED` (the only event the webhook credited on) never
+fired, the balance never changed, and the top-up button kept being offered.
+
+The capture leg now exists and runs off `CHECKOUT.ORDER.APPROVED`, not off the
+buyer's browser redirect, because a buyer who approves and then closes the tab
+has still paid. `docs/payment-rail.md` step 6 now requires BOTH webhook event
+subscriptions and says which one collects and which one credits; subscribing to
+`PAYMENT.CAPTURE.COMPLETED` alone is exactly the configuration that took no
+money.
+
+Shape of the change:
+
+- `PaymentRail` gains `captureApprovedOrder` and `parseSettlement` now answers a
+  DISCRIMINATED event rather than "a settlement or null". The old pair of
+  answers had no place for the state that mattered -- an authorised order
+  awaiting collection -- so that state was folded into `null` and the step was
+  never written. `ManualRail` refuses the new method for the same reason it
+  refuses the other two.
+- The settlement is built from the CAPTURE's own amount and id, never from the
+  order, so a partial or adjusted capture cannot be credited as the amount we
+  asked for.
+- Crediting from the capture response and from the later
+  `PAYMENT.CAPTURE.COMPLETED` webhook resolve to ONE ledger row: both carry
+  PayPal's capture id and `applySettlement` is idempotent on it.
+- The capture's `PayPal-Request-Id` is derived from the order id, not random, so
+  a retry is the same request to PayPal rather than a second collection.
+- A capture whose `custom_id` disagrees with the order's is REFUSED, not
+  resolved. Crediting the wrong tenant moves money between accounts and no later
+  reconciliation can tell it from a real purchase.
+- A transient capture failure answers `503` so PayPal retries the approval;
+  `ORDER_ALREADY_CAPTURED` answers `200 applied:false` so PayPal stops retrying
+  an approval that can never succeed again.
+- `return_url` / `cancel_url` are derived from `CONTROL_PLANE_HOST` (no new
+  binding) and are omitted entirely when unset rather than sent empty.
+
+RED before the fix: 11 of 31 in `tests/paypal-rail.test.ts`, the headline being
+"captures the approved order and credits the tenant" -- the route answered
+`200 applied:false`, no capture was attempted, and the balance stayed at zero.
+
 ### fix(settings): a settings-backed switch requires an explicit affirmative
 
 `signups_enabled` was read as `getSetting(...) !== "false"` at all five call
