@@ -734,11 +734,17 @@ const MANUAL_RAIL = new ManualRail();
 
 function paypalRailFromEnv(env: ControlPlaneEnv, fetchImpl: typeof fetch): PayPalRail | null {
   if (!paypalCredentialsPresent(env)) return null;
+  // DERIVED from CONTROL_PLANE_HOST, never configured alongside it, for the reason that var's own
+  // comment gives. The buyer's redirect is a convenience: collection runs off the APPROVED webhook,
+  // so a top-up still lands for a buyer who closes the tab on PayPal's page.
+  const origin = publicOrigin(env);
   return new PayPalRail({
     clientId: env.PAYPAL_CLIENT_ID ?? "",
     clientSecret: env.PAYPAL_CLIENT_SECRET ?? "",
     webhookId: env.PAYPAL_WEBHOOK_ID ?? "",
     paypalEnv: env.PAYPAL_ENV,
+    returnUrl: `${origin}/?topup=done`,
+    cancelUrl: `${origin}/?topup=cancelled`,
     fetchImpl,
   });
 }
@@ -764,10 +770,37 @@ async function paypalWebhook(
   if (!event) return json({ applied: false });
 
   const now = new Date(deps.now()).toISOString();
+
+  // THE MISSING LEG (fixed here). CHECKOUT.ORDER.APPROVED means the buyer authorised and NOTHING has
+  // been collected: an order left uncaptured expires and the balance never moves. Capturing from the
+  // webhook rather than from the buyer's redirect is deliberate -- a buyer who closes the tab has
+  // still paid, and a rail that only collects when a browser comes back loses that money silently.
+  let settlement;
+  if (event.kind === "settlement") {
+    settlement = event.settlement;
+  } else {
+    let outcome;
+    try {
+      outcome = await rail.captureApprovedOrder(event);
+    } catch (e) {
+      // 503, so PayPal RETRIES the approval and the capture is attempted again. Answering 200 here
+      // would tell PayPal we handled an order we in fact never collected.
+      console.error(
+        "paypal.capture_failed",
+        JSON.stringify({ order: event.order_ref, error: String(e) }),
+      );
+      return err("capture_failed", 503);
+    }
+    // Already collected: the CAPTURE.COMPLETED leg owns that money. 200 so PayPal stops retrying an
+    // approval that can never succeed again.
+    if (outcome.kind === "already_captured") return json({ applied: false });
+    settlement = outcome.settlement;
+  }
+
   try {
     const { applied } = await applySettlement(deps.credits, {
       railId: rail.id,
-      event,
+      event: settlement,
       rowId: newId("led"),
       now,
     });

@@ -17,6 +17,7 @@ account owner can do, written to be executed without reading any code.
 | `PayPalRail` | `src/paypal-rail.ts` | built; live only after Part 2 credentials exist |
 | `POST /api/tenant/:id/credits/topup` | `src/index.ts` | built, owner session |
 | `POST /api/webhooks/paypal` | `src/index.ts` | built; 400 if unverified, 200 on replay |
+| Order capture (`captureApprovedOrder`) | `src/paypal-rail.ts` | built |
 
 `ManualRail` is a real rail, not a placeholder. Comping an account, correcting an incident, and
 honouring a refund are permanent operator needs that outlive any processor. It is also what lets the
@@ -132,12 +133,37 @@ URL, once this plane is deployed:
 https://<CONTROL_PLANE_HOST>/api/webhooks/paypal
 ```
 
-Register that URL on the same REST app. Subscribe it to **`PAYMENT.CAPTURE.COMPLETED`** (money has
-arrived; do not settle on `CHECKOUT.ORDER.APPROVED`). Copy the webhook **id** into
-`PAYPAL_WEBHOOK_ID`.
+Register that URL on the same REST app. Subscribe it to **BOTH** of these events, and both are
+required:
 
-*Verify:* PayPal's dashboard shows a successful delivery, and the tenant's balance moves by the
-expected amount exactly once. A replay of the same capture is `200` with `applied: false`.
+| Event | What the plane does with it |
+| --- | --- |
+| `CHECKOUT.ORDER.APPROVED` | Calls `POST /v2/checkout/orders/{id}/capture`. **This is the step that collects the money.** It credits nothing by itself. |
+| `PAYMENT.CAPTURE.COMPLETED` | Credits the ledger, idempotent on PayPal's capture id. |
+
+Copy the webhook **id** into `PAYPAL_WEBHOOK_ID`.
+
+**Why both, stated plainly, because subscribing to only the second one is what this plane shipped
+with and it took no money at all.** `intent: CAPTURE` means the buyer's approval AUTHORISES the
+charge; it does not collect it. Until the merchant captures, no money moves,
+`PAYMENT.CAPTURE.COMPLETED` never fires, and the order expires. So `CHECKOUT.ORDER.APPROVED` is not
+an event to settle on -- that part of the old instruction was right and still holds -- it is the
+event that tells us to go and collect.
+
+The capture is driven off this webhook rather than off the buyer's browser redirect on purpose: a
+buyer who approves and then closes the tab has still paid, and a rail that only collects when a
+browser comes back loses that money silently. The `return_url` exists for the buyer's benefit only
+and is derived from `CONTROL_PLANE_HOST`, so there is nothing to configure for it.
+
+Crediting from the capture RESPONSE and crediting from the later `PAYMENT.CAPTURE.COMPLETED` webhook
+resolve to ONE ledger row, because both carry PayPal's own capture id and `applySettlement` is
+idempotent on it. The tenant is credited once whichever arrives first, and once if only one arrives.
+
+*Verify:* PayPal's dashboard shows a successful delivery for BOTH event types, and the tenant's
+balance moves by the expected amount exactly once. A replay of the same capture is `200` with
+`applied: false`. A capture that fails transiently answers `503`, which is what earns a PayPal
+retry; an order PayPal reports as already captured answers `200 applied:false` rather than retrying
+forever.
 
 ### 7. A decision only you can make: refunds, expiry, and account closure
 
@@ -161,8 +187,10 @@ item 7 are the same conversation.
 
 ## Part 3: what remains after the rail exists
 
-The `PayPalRail` is built. Settlements go through the existing `applySettlement`, idempotent on
-PayPal's capture id, namespaced `paypal:`. `ManualRail` is unchanged.
+The `PayPalRail` is built, including the capture leg. Settlements go through the existing
+`applySettlement`, idempotent on PayPal's capture id, namespaced `paypal:`. `ManualRail` is
+unchanged, and it refuses `captureApprovedOrder` for the same reason it refuses the other two: an
+operator credit is settled the moment it is written, so there is no order to collect.
 
 **Do not flip `CREDITS_ENFORCING` in the same act as wiring credentials.** A purchase door in front
 of a counting ledger sells credits that refuse nothing; flipping enforcement is a named acceptance
