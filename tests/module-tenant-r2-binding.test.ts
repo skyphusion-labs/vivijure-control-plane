@@ -71,7 +71,7 @@ describe("CONTROL: the binding finder can return both answers", () => {
   it("finds a binding that is there and misses one that is not", async () => {
     const { d, uploads } = deps();
     await uploadTenantModules(d, "v1.0.0", TENANT, "acme", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared");
-    const u = forModule(uploads, "kling");
+    const u = forModule(uploads, "seedance");
     expect(named(u, "R2_RENDERS")).toBeDefined();
     expect(named(u, "DEFINITELY_NOT_A_BINDING")).toBeUndefined();
   });
@@ -121,7 +121,7 @@ describe("the cost door reaches RunPod, so it takes the proxy pair (cp#288)", ()
     // credential on our account, which CLAUDE.md forbids outright.
     const { d, uploads } = deps();
     await uploadTenantModules(d, "v1.0.0", TENANT, "acme", ENDPOINTS, TENANT_D1, TENANT_BUCKET, "shared");
-    const u = forModule(uploads, "kling");
+    const u = forModule(uploads, "seedance");
     expect(named(u, "RUNPOD_ENDPOINT_ID")).toBeUndefined(); // no endpoint of ours, by design
     expect(named(u, "RUNPOD_PROXY_BASE")).toBeDefined();
     expect(named(u, "RUNPOD_PROXY_TOKEN")).toBeDefined();

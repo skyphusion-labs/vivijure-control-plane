@@ -161,7 +161,7 @@ but not through.
 The provisioner closes it the SAME way self-host does (Phase-3 dynamic dispatch), per tenant:
 
 1. **Module scripts.** Tenant-configured copies of every module in `TENANT_MODULE_CATALOG`
-   (`src/tenant-modules.ts`, currently seventeen) upload into ONE shared dispatch namespace
+   (`src/tenant-modules.ts`, currently sixteen) upload into ONE shared dispatch namespace
    (`TENANT_MODULE_NAMESPACE`, e.g. `vivijure-tenant-modules`), script names prefixed with the
    TENANT ID (stable across renames; teardown is a prefix sweep). The catalog is DATA; extending
    the tier is a row there (plus a matching endpoint in `runpod.ts` only when the module is
@@ -1069,7 +1069,7 @@ is not settled, which is worth seeing whether or not that module records anythin
 module is a reason to re-ask, never a reason to re-provision.
 
 The answer covers the modules this plane PROVISIONS: every catalog entry that `reachesRunpod`
-(fourteen today, including the eight cost-door modules and `finish-rife`). `plan-enhance` is
+(eleven today, including the seven surviving cost-door modules and `finish-rife`). `plan-enhance` is
 excluded from readiness probes for the same reason it is excluded from the proxy pair.
 
 ### `GET /api/platform/version`

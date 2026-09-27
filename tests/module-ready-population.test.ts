@@ -132,8 +132,8 @@ describe("a RunPod-reaching module that is genuinely misconfigured STILL fails h
   it("a reacher answering the GATEWAY shape is still misconfigured -- the exclusion is by PREDICATE, not by body", async () => {
     // The exclusion must not become "any module whose body lacks the fields is fine", which would
     // re-open the hole for a real RunPod module that regressed its /ready.
-    const { deps } = fleet((m) => (m === "kling" ? { status: 200, text: gatewayReadyBody(m) } : realWorld(m)));
-    await expect(awaitTenantModulesReady(deps, TENANT)).rejects.toThrow(/kling/);
+    const { deps } = fleet((m) => (m === "seedance" ? { status: 200, text: gatewayReadyBody(m) } : realWorld(m)));
+    await expect(awaitTenantModulesReady(deps, TENANT)).rejects.toThrow(/seedance/);
   });
 });
 

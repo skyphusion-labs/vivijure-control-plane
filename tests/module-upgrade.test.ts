@@ -235,7 +235,7 @@ describe("preflight refuses before anything is written", () => {
     expect(pre.context.bundles).toBeInstanceOf(Map);
     // It carries the release the OPERATOR asked for, never the plane-wide deps.release.
     expect(pre.context.release).toBe(NEW_RELEASE);
-    expect(pre.context.bundles.size).toBe(17);   // hosted catalog; no finish-lipsync, no speech-upscale
+    expect(pre.context.bundles.size).toBe(16);  // hosted catalog; no finish-lipsync, no speech-upscale, no kling (cp#538)
   });
 
   it("fetches every bundle at the REQUESTED release, not the plane-wide pin", async () => {
@@ -250,7 +250,7 @@ describe("preflight refuses before anything is written", () => {
 
     await preflightModuleUpgrade(d, tenant, NEW_RELEASE);
 
-    expect(fetchSpy).toHaveBeenCalledTimes(17);   // hosted catalog; no finish-lipsync, no speech-upscale
+    expect(fetchSpy).toHaveBeenCalledTimes(16);  // hosted catalog; no finish-lipsync, no speech-upscale, no kling (cp#538)
     // deps.release is OLD_RELEASE; if the explicit release were being dropped this would be it.
     for (const call of fetchSpy.mock.calls as unknown as [string, string][]) {
       expect(call[0]).toBe(NEW_RELEASE);
@@ -274,10 +274,10 @@ describe("upgradeTenantModules", () => {
 
     expect(out.ok).toBe(true);
     // EVERY catalog module, uploaded and installed again. 17 since cp#519 removed speech-upscale.
-    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(17);
+    expect(cf.uploadUserWorker).toHaveBeenCalledTimes(16);
     const installs = (d.callTenantStudio as unknown as { mock: { calls: [string, { path: string }][] } }).mock.calls
       .filter((c) => c[1].path === "/api/modules/install");
-    expect(installs).toHaveLength(17);
+    expect(installs).toHaveLength(16);
   });
 
   it("uses the PRE-FETCHED bundles; it does not re-fetch during upload", async () => {
@@ -316,7 +316,7 @@ describe("upgradeTenantModules", () => {
         // this assertion inverted. It exists to FAIL when the catalog moves.
         "keyframe", "own-gpu", "finish-upscale",
         "finish-rife", "plan-enhance",
-        "alibaba-wan", "alibaba-wan-lora", "google-veo", "kling",
+        "alibaba-wan", "alibaba-wan-lora", "google-veo",
         "minimax-hailuo", "narration-gen", "seedance", "vidu-q3",
         "cf-grok-video", "cf-seedance", "cf-flux-3-video", "cf-hh1-r2v",
       ],
