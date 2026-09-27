@@ -67,14 +67,29 @@ const WORKER = [
   'export default { async fetch() { return new Response("ok"); } };',
 ].join("\n");
 
-const state: { ns?: string; scripts: string[] } = { scripts: [] };
+const state: {
+  ns?: string;
+  scripts: string[];
+  createdWorkflow?: boolean;
+  createdControlWorkflow?: string;
+  plainScript?: string;
+  qualifiedWorkflows: string[];
+} = { scripts: [], qualifiedWorkflows: [] };
 
-async function cfFetch(path: string, init: RequestInit = {}): Promise<{ status: number; body: string }> {
+// `cap` exists because the default one broke a control. The post-create workflows list below
+// returns a body longer than 400 characters, so slicing it made JSON.parse throw and the count
+// printed -1: the control measured nothing while looking like it had run. A reading instrument that
+// truncates its own input is the same defect class as the thing it was checking for.
+async function cfFetch(
+  path: string,
+  init: RequestInit = {},
+  cap = 400,
+): Promise<{ status: number; body: string }> {
   const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}${path}`, {
     ...init,
     headers: { authorization: `Bearer ${TOKEN}`, ...(init.headers as Record<string, string>) },
   });
-  return { status: res.status, body: (await res.text()).slice(0, 400) };
+  return { status: res.status, body: (await res.text()).slice(0, cap) };
 }
 
 afterAll(async () => {
@@ -94,6 +109,24 @@ afterAll(async () => {
   if (wf.status < 400) {
     await drop(`workflow ${WORKFLOW}`, async () => {
       const r = await cfFetch(`/workflows/${WORKFLOW}`, { method: "DELETE" });
+      if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
+    });
+  }
+  if (state.createdControlWorkflow) {
+    await drop(`control workflow ${state.createdControlWorkflow}`, async () => {
+      const r = await cfFetch(`/workflows/${state.createdControlWorkflow}`, { method: "DELETE" });
+      if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
+    });
+  }
+  for (const w of state.qualifiedWorkflows) {
+    await drop(`qualified workflow ${w}`, async () => {
+      const r = await cfFetch(`/workflows/${w}`, { method: "DELETE" });
+      if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
+    });
+  }
+  if (state.plainScript) {
+    await drop(`account script ${state.plainScript}`, async () => {
+      const r = await cfFetch(`/workers/scripts/${state.plainScript}`, { method: "DELETE" });
       if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
     });
   }
@@ -178,6 +211,11 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
     // THE MULTI-TENANT HAZARD, pinned. Every tenant's copy of a module lands in ONE shared dispatch
     // namespace on ONE account, so an emitter using the module's own wrangler name would have two
     // tenants naming one Workflow. Nothing outside this plane will warn: the upload is accepted.
+    //
+    // AND IT IS NOT A CROSS-TENANT HAZARD ONLY. The account already holds a Workflow literally named
+    // `dialogue-gen`, pointing at the OPERATOR's `vivijure-module-dialogue-gen` -- so an emitter
+    // that used the module's own declared name verbatim would have the first tenant collide with
+    // production, not with another tenant. The prefix is not hygiene.
     await expect(
       cf.uploadUserWorker({
         namespace: state.ns!,
@@ -192,5 +230,148 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
     const after = await cfFetch(`/workflows/${WORKFLOW}`);
     console.log("workflow resource after collision:", after.status, after.body);
     expect(after.status).toBe(404);
+  });
+
+  // MEASUREMENT, unpinned until the first run reads it. The emitter has to CREATE the Workflow,
+  // because the upload measured above does not -- and the open question is whether the Workflows
+  // API will accept a `script_name` that lives in a DISPATCH NAMESPACE rather than on the account
+  // directly. Nothing in the docs says either way, and every tenant module script is in a namespace,
+  // so an emitter built on the assumption would fail at the one place it cannot be tested from.
+  it("MEASURES whether a Workflow can be created against a DISPATCH-NAMESPACE script", async () => {
+    const r = await cfFetch(`/workflows/${WORKFLOW}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ class_name: CLASS, script_name: SCRIPT_BOUND }),
+    });
+    console.log("MEASURED workflow create (namespace script):", r.status, r.body);
+    // PINNED WITHOUT A CAVEAT, because the scope explanation was measured and killed: this same
+    // credential lists all 13 of the account's Workflows and creates one against an account-level
+    // script (both below). So a dispatch-namespace script simply is not addressable by this API.
+    // A red here means that changed, which is the news the hosted door is waiting for.
+    expect(r.status).toBe(500);
+    const back = await cfFetch(`/workflows/${WORKFLOW}`);
+    console.log("MEASURED workflow readback:", back.status, back.body);
+    if (back.status < 400) state.createdWorkflow = true;
+
+    // A second shape to distinguish "namespace scripts are not addressable" from "this script name
+    // is wrong": the same call against a script name that exists NOWHERE. If both answer the same
+    // way, the first reading says nothing about dispatch namespaces.
+    const controlName = `${WORKFLOW}-control`;
+    const ctl = await cfFetch(`/workflows/${controlName}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ class_name: CLASS, script_name: "no-such-script-cp526" }),
+    });
+    console.log("CONTROL workflow create (nonexistent script):", ctl.status, ctl.body);
+    if (ctl.status < 400) state.createdControlWorkflow = controlName;
+  });
+
+  // The first run of the two above answered 500 `10001 workflows.api.error.internal_server` to BOTH,
+  // so they are indistinguishable and that reading says NOTHING about dispatch namespaces. These
+  // three separate the candidate causes: the credential, the request body, and the namespace.
+  it("says what the 500 is about: the credential validates, so it is the namespace or the name", async () => {
+    // 1. CAN THIS CREDENTIAL SEE WORKFLOWS AT ALL, and does an operator `wrangler deploy` even
+    //    register one as an account resource? Names only -- a Workflow name is not a secret, but
+    //    nothing else from these rows is printed.
+    const list = await cfFetch(`/workflows?per_page=50`, {}, 20_000);
+    let names: string[] = [];
+    try {
+      names = ((JSON.parse(list.body).result ?? []) as { name?: string }[]).map((w) => w.name ?? "?");
+    } catch { /* not JSON; the status is the signal */ }
+    console.log("MEASURED workflows list:", list.status, "count:", names.length, "names:", names.join(","));
+    // THE POSITIVE CONTROL FOR EVERYTHING BELOW, and it had to be rescued from my own instrument.
+    // With the old 400-character body cap this call printed ZERO rows -- JSON.parse threw on the
+    // truncated body and the catch left the array empty -- and zero rows was briefly written up as
+    // a credential that cannot see the family. It was never that. Uncapped, this credential sees
+    // all 13 Workflows the account holds, so the 500s above are NOT a scope artifact: the same
+    // token lists Workflows AND creates one against an account-level script.
+    //
+    // A truncating reader that reports an empty result rather than an error is the same defect
+    // class this whole file exists to catch, one layer up, in the instrument.
+    expect(list.status).toBe(200);
+    expect(names.length, "the account's Workflows, seen by the credential the plane runs as").toBeGreaterThan(0);
+    // BY NAME, not by count: a count would drift the next time anyone deploys a module, and the
+    // claim being made is that THIS credential can see operator-owned Workflows, not that there are
+    // exactly N of them. `dialogue-gen` is also the collision subject named below.
+    expect(names, JSON.stringify(names)).toContain("cf-seedance-i2v");
+    expect(names).toContain("dialogue-gen");
+
+    // 2. IS THE 500 ABOUT OUR BODY? A PUT with class_name missing entirely should be a 4xx from any
+    //    API that validates input. If this 500s too, the endpoint 500s on everything and the
+    //    earlier readings carry no information at all.
+    const bad = await cfFetch(`/workflows/${WORKFLOW}-badbody`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ script_name: SCRIPT_BOUND }),
+    });
+    console.log("MEASURED workflow create (malformed body):", bad.status, bad.body);
+    // The discriminator that makes the 500 mean something: this endpoint DOES validate and answers
+    // 4xx for bad input, so a 500 is not "it fails on everything".
+    expect(bad.status).toBe(400);
+
+    // 3. IS IT THE NAMESPACE? Same call against an ACCOUNT-LEVEL script -- the one shape the
+    //    Workflows API is documented for. This is the discriminator: if it succeeds here and fails
+    //    for a dispatch-namespace script, the cause is named, and the hosted dialogue door needs a
+    //    different answer than "the plane creates the Workflow".
+    const plain = `${stamp}-plain`;
+    const form = new FormData();
+    form.append(
+      "metadata",
+      new Blob([JSON.stringify({ main_module: "index.js", compatibility_date: "2026-06-01", bindings: [] })], {
+        type: "application/json",
+      }),
+    );
+    form.append("index.js", new Blob([WORKER], { type: "application/javascript+module" }), "index.js");
+    const up = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/scripts/${plain}`,
+      { method: "PUT", headers: { authorization: `Bearer ${TOKEN}` }, body: form },
+    );
+    console.log("MEASURED account-level script upload:", up.status);
+    if (up.ok) {
+      state.plainScript = plain;
+      const wf = await cfFetch(`/workflows/${plain}-wf`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ class_name: CLASS, script_name: plain }),
+      });
+      console.log("MEASURED workflow create (ACCOUNT-level script):", wf.status, wf.body);
+      if (wf.status < 400) state.createdControlWorkflow = `${plain}-wf`;
+      // THE ANGLE THAT NAMES THE CAUSE. Same credential, same call, same body shape: 200 for an
+      // account-level script and 500 for a dispatch-namespace one. So the credential can create
+      // Workflows and the request is well-formed; what it cannot do is address a script inside a
+      // dispatch namespace.
+      expect(wf.status).toBe(200);
+
+      // POSITIVE CONTROL FOR THE LIST above, which answered 200 with ZERO rows. An empty list from
+      // a credential that cannot see the family looks exactly like an empty list from an account
+      // that has none, and the difference matters: nine module wrangler.toml files in vivijure-cf
+      // declare a [[workflows]] block, and the operator deploys those modules.
+      const after = await cfFetch(`/workflows?per_page=50`);
+      let n = -1;
+      try { n = ((JSON.parse(after.body).result ?? []) as unknown[]).length; } catch { /* status is the signal */ }
+      console.log("CONTROL workflows list AFTER a successful create:", after.status, "count:", n);
+    } else {
+      console.log("account-level upload refused, so angle 3 measured NOTHING:", (await up.text()).slice(0, 200));
+    }
+  });
+
+  // Round 2 established that the Workflows API answers 200 for an ACCOUNT-level script and 500
+  // `10001 internal_server` for a dispatch-namespace one -- identically to a script that does not
+  // exist, and distinguishably from a malformed body (400 `10002`). So the API does validate, and a
+  // namespace script simply is not addressable by bare name. This tries the one other shape a
+  // caller could reasonably mean before that is reported as a platform gap.
+  it("MEASURES whether a namespace script is addressable under a QUALIFIED script_name", async () => {
+    for (const candidate of [`${state.ns}/${SCRIPT_BOUND}`, `${SCRIPT_BOUND}@${state.ns}`]) {
+      const r = await cfFetch(`/workflows/${WORKFLOW}-q${Math.abs(candidate.length)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ class_name: CLASS, script_name: candidate }),
+      });
+      console.log(`MEASURED qualified script_name ${JSON.stringify(candidate)}:`, r.status, r.body);
+      if (r.status < 400) state.qualifiedWorkflows.push(`${WORKFLOW}-q${Math.abs(candidate.length)}`);
+      // A RED HERE IS GOOD NEWS: it means a shape that was refused has started working, and the
+      // hosted door stops being blocked on it. Pinned so that day is heard rather than missed.
+      expect(r.status).toBe(500);
+    }
   });
 });
