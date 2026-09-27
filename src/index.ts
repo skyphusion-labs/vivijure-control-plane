@@ -14,7 +14,14 @@
 // steps) lands in #53/#54. A tenant created today therefore parks at status "pending" with a
 // "queued" job until that runner ships. Nothing here claims otherwise to the caller.
 
-import { balanceFromSums, parseEnforcing, parseMicroUsd, type Balance, type HoldRow, type LedgerRow } from "./credits";
+import {
+  balanceFromSums,
+  creditsEnforcementState,
+  parseMicroUsd,
+  type Balance,
+  type HoldRow,
+  type LedgerRow,
+} from "./credits";
 import { settingEnabled } from "./settings";
 import {
   buildAdminCreditView,
@@ -985,7 +992,7 @@ async function tenantRoutes(
           balance: read.balance,
           ledger: read.ledger,
           holds: read.holds,
-          enforcing: parseEnforcing(env.CREDITS_ENFORCING),
+          enforcement: creditsEnforcementState(env.CREDITS_ENFORCING),
           truncated: read.truncated,
           creditsApply: creditsApplyToTenant(tenant),
           topUpAvailable: topUpAvailable(env),
@@ -2895,7 +2902,7 @@ async function adminRoutes(
         balance: read.balance,
         ledger: read.ledger,
         holds: read.holds,
-        enforcing: parseEnforcing(env.CREDITS_ENFORCING),
+        enforcement: creditsEnforcementState(env.CREDITS_ENFORCING),
         truncated: read.truncated,
         creditsApply: creditsApplyToTenant(tenant),
         topUpAvailable: topUpAvailable(env),

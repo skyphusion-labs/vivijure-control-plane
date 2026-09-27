@@ -50,6 +50,51 @@ Shape of the change:
 RED before the fix: 11 of 31 in `tests/paypal-rail.test.ts`, the headline being
 "captures the approved order and credits the tenant" -- the route answered
 `200 applied:false`, no capture was attempted, and the balance stayed at zero.
+### fix(credits): the credit views report enforcement that is APPLIED, not enforcement that is merely CONFIGURED
+
+`CREDITS_ENFORCING` was echoed straight back by the tenant and admin credit
+views as `enforcing`. Nothing applies it: `decideSubmit` has no production
+caller, and `takeHold` / `captureHold` / `releaseHold` / `expireHolds` are never
+called outside tests. So with the knob on, a tenant at zero balance still
+submitted renders, no hold was taken, no debit was written, and the API told the
+operator that enforcement was active.
+
+That is worse than a knob that is plainly off, because the surface an operator
+would check to find the gap is the surface that reassured them.
+
+The knob now resolves through `creditsEnforcementState` in `src/credits.ts`, and
+the views carry three fields instead of one:
+
+- `enforcing` -- whether refusals are in force IN FACT (false today).
+- `enforcement_configured` -- what the operator set.
+- `enforcement_reason` -- non-null exactly when those two disagree, naming why.
+
+`public/index.html` already carried the "recorded but not enforced" notice and
+`public/front-door.js` already showed it on `enforcing === false`, so the tenant
+surface becomes correct with no frontend change. The surface was right; the plane
+was lying to it.
+
+**Why the gate was not wired instead.** `handleProxySubmit` cannot compute
+`required_micro_usd`. The standing ruling bills on the final delivered video
+length, per FILM, on the last writer of the `film.finish` chain, which the
+per-JOB proxy never sees (`src/runpod-proxy-routes.ts` says so in its own
+header). Wiring a gate there means inventing a per-job price, and what a render
+costs a tenant is a pricing decision rather than an infra one. Tracked
+separately; this change makes the plane stop claiming the control in the
+meantime.
+
+`SUBMIT_GATE_WIRED` is a measurement, not a promise:
+`tests/credits-enforcement-wiring.test.ts` censuses `src/` for real call sites
+(comments stripped, store methods matched only with a receiver, so a mention and
+a definition are not callers) and asserts the constant against them. Shown RED in
+both directions before landing: flipping the constant with nothing wired, and
+adding one real caller with the constant still false. It carries a positive and a
+negative control, because a census that matches nothing is indistinguishable from
+a population of zero.
+
+RED before the fix: 2 of 20 in `tests/credits-routes.test.ts`. The assertion that
+went away said `enforcing === true` with the knob on, and it was green the whole
+time nothing was enforced.
 
 ### fix(settings): a settings-backed switch requires an explicit affirmative
 

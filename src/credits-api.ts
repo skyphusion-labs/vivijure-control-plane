@@ -15,7 +15,7 @@
 //      render sitting at no charge learns the policy without reading a pricing page, which is worth
 //      more than any sentence we could write on one.
 
-import type { Balance, HoldRow, LedgerRow, MicroUsd } from "./credits";
+import type { Balance, EnforcementState, HoldRow, LedgerRow, MicroUsd } from "./credits";
 
 /** How an activity line came to be. An enum so the UI writes copy per case, never parses prose. */
 export type ActivityKind =
@@ -70,11 +70,27 @@ export interface TenantCreditView {
   /** False when any aggregate came from an incomplete read. A total that might be partial says so. */
   complete: boolean;
   /**
-   * Whether refusals are actually in force. Reported because a ledger that is recording and NOT
-   * enforcing looks exactly like one that is, and that ambiguity is how an operator learns the truth
-   * from a bill instead of from a surface.
+   * Whether refusals are actually in force. APPLIED, never merely configured.
+   *
+   * Reported because a ledger that is recording and NOT enforcing looks exactly like one that is,
+   * and that ambiguity is how an operator learns the truth from a bill instead of from a surface.
+   * This field used to be the raw `CREDITS_ENFORCING` knob, which made it report `true` on a plane
+   * with no submit-time gate at all: the exact ambiguity the field exists to remove, wearing the
+   * field's own name.
    */
   enforcing: boolean;
+  /**
+   * What the operator SET, as opposed to what runs. Separate from `enforcing` on purpose: one field
+   * cannot carry both, and collapsing them is what let a knob stand in for a control.
+   */
+  enforcement_configured: boolean;
+  /**
+   * Why `enforcement_configured` and `enforcing` disagree, or null when they agree.
+   *
+   * A boolean pair that differs with no stated reason sends the reader to the source to find out
+   * whether it is a bug or a state. The reason IS the signal.
+   */
+  enforcement_reason: string | null;
   activity: ActivityLine[];
   /**
    * True when the activity feed hit its limit and older lines exist.
@@ -154,7 +170,11 @@ export function buildTenantCreditView(args: {
   balance: Balance;
   ledger: LedgerRow[];
   holds: HoldRow[];
-  enforcing: boolean;
+  /**
+   * ONE argument carrying configured, applied and why, rather than a bare boolean. A caller cannot
+   * pass half of it, and it cannot be handed the raw knob by mistake, which is what went wrong.
+   */
+  enforcement: EnforcementState;
   /** True when either underlying list was read at its limit. */
   truncated: boolean;
   creditsApply: boolean;
@@ -220,7 +240,9 @@ export function buildTenantCreditView(args: {
     held_micro_usd: args.balance.held_micro_usd,
     available_micro_usd: args.balance.available_micro_usd,
     complete: args.balance.complete,
-    enforcing: args.enforcing,
+    enforcing: args.enforcement.applied,
+    enforcement_configured: args.enforcement.configured,
+    enforcement_reason: args.enforcement.reason,
     activity,
     activity_truncated: args.truncated,
   };
@@ -231,7 +253,7 @@ export function buildAdminCreditView(args: {
   balance: Balance;
   ledger: LedgerRow[];
   holds: HoldRow[];
-  enforcing: boolean;
+  enforcement: EnforcementState;
   truncated: boolean;
   creditsApply: boolean;
   topUpAvailable: boolean;
