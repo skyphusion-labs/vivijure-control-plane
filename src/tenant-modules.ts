@@ -99,8 +99,8 @@ export interface TenantModuleSpec {
    * The RunPod PUBLIC model slug this module submits to, for a module that reaches RunPod WITHOUT
    * one of our own endpoints (cp#284 / cf#394 wave 1).
    *
-   * WHY THIS EXISTS RATHER THAN A BOOLEAN. The eight cost-door modules submit to vendor-hosted
-   * public slugs (`kling-v2-1-i2v-pro`, `wan-2-6-i2v`, ...) instead of a tenant endpoint, so they
+   * WHY THIS EXISTS RATHER THAN A BOOLEAN. The cost-door modules submit to vendor-hosted
+   * public slugs (`wan-2-6-i2v`, `seedance-v1-5-pro-i2v`, ...) instead of a tenant endpoint, so they
    * reach RunPod with `endpointKey` absent. Carrying the SLUG rather than a flag lets a test assert
    * this catalog against `PUBLIC_ENDPOINT_ALLOWLIST` in runpod-proxy.ts, which is the list the plane
    * proxy will actually admit -- a bare boolean would be two facts that agree only by memory.
@@ -115,11 +115,12 @@ export interface TenantModuleSpec {
    * `r2_bucket` binding named R2_RENDERS (cp#284 / cf#394 wave 1).
    *
    * MEASURED FROM THE MODULE SOURCES, not assumed: the split is exact and has no overlap with
-   * `endpointKey`. The flag is set on twelve of the seventeen rows, the cost-door and AI-Gateway
+   * `endpointKey`. The flag is set on eleven of the sixteen rows, the cost-door and AI-Gateway
    * video modules, which declare `R2_RENDERS` in their Env and do one `env.R2_RENDERS.put` in the
    * Worker; the other five declare it nowhere, because their far end writes and the studio imports
    * the result. (The counts read "fifteen / eight / seven" until cp#519 and had been stale since
-   * the cf-* rows landed; they are re-derived from the catalog flags above.)
+   * the cf-* rows landed; cp#538 took them from twelve of seventeen when the `kling` row went.
+   * They are re-derived from the catalog flags above, never carried forward.)
    *
    * WITHOUT THIS BINDING THE ROW IS WORSE THAN ABSENT. A tenant module uploaded with no R2_RENDERS
    * does not fail: the self-host wrangler.toml names the OPERATOR bucket, so the tenant's renders
@@ -138,7 +139,7 @@ export interface TenantModuleSpec {
  * more, which is what this paragraph used to claim: cp#284 / cf#394 wave 1 added the eight
  * GPUless cost-door modules, which reach RunPod through PUBLIC vendor slugs and declare no
  * endpoint of ours at all. Derive the populations from the catalog, never from this prose --
- * `reachesRunpod` is the RunPod-reaching set (12 of 17 today; `plan-enhance` and the four cf-*
+ * `reachesRunpod` is the RunPod-reaching set (11 of 16 today; `plan-enhance` and the four cf-*
  * AI-Gateway video modules are the exclusions),
  * `spec.endpointKey` the endpoint-backed subset, `spec.writesTenantRenders` the tenant-R2 writers.
  * The binding set below branches on each of those separately. Extending the hosted tier is a row
@@ -204,7 +205,26 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   { module: "alibaba-wan", publicEndpoint: "wan-2-6-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
   { module: "alibaba-wan-lora", publicEndpoint: "wan-2-2-t2v-720-lora", recordsRunpodJobs: true, writesTenantRenders: true },
   { module: "google-veo", publicEndpoint: "google-veo3-1-fast-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
-  { module: "kling", publicEndpoint: "kling-v2-1-i2v-pro", recordsRunpodJobs: true, writesTenantRenders: true },
+  // NO kling ROW, and this one is not latent (cf#921, cp#538). Its slug `kling-v2-1-i2v-pro`
+  // returns 404 endpoint-not-found from RunPod today -- it answered 401 exists on 2026-08-05, so it
+  // was retired upstream between those dates. A catalogued door whose slug is gone fails at submit
+  // 100% of the time, and unlike the four cf-* rows it is not waiting on anything we could build:
+  // there is nothing behind it.
+  //
+  // RETIREMENT IS NOT A PRODUCT CALL HERE. All 41 live RunPod public endpoints were enumerated
+  // across three pages with no truncation, and neither surviving Kling endpoint does plain i2v: one
+  // needs a reference motion VIDEO, which the `motion.backend` hook has no field for, and the other
+  // is multi-reference r2v, already shipped as the separate `kling-o1-r2v` door. So there is no
+  // repoint available, only a removal.
+  //
+  // THE REPO HAD ALREADY HALF-DECIDED THIS AND THE HALVES DISAGREED: vivijure-cf's
+  // wrangler.toml.example:387 says "Kling 2.1 stays in modules/kling but is NOT bound on hosted",
+  // while this catalog shipped it to hosted tenants anyway.
+  //
+  // `kling-v2-1-i2v-pro` STAYS in PUBLIC_ENDPOINT_ALLOWLIST on purpose. That list is pinned to a
+  // census of the module sources that hard-code a public slug (runpod-proxy-census.test.ts), and
+  // the module still hard-codes it. Whether modules/kling itself is retired is cf#921, in the repo
+  // that owns the module; this row is only about what a tenant gets provisioned.
   { module: "minimax-hailuo", publicEndpoint: "minimax-hailuo-2-3-fast", recordsRunpodJobs: true, writesTenantRenders: true },
   { module: "narration-gen", publicEndpoint: "minimax-speech-02-hd", recordsRunpodJobs: true, writesTenantRenders: true },
   { module: "seedance", publicEndpoint: "seedance-v1-5-pro-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
@@ -321,7 +341,7 @@ export const reachesRunpod = (spec: TenantModuleSpec): boolean =>
  *
  * PER TENANT, NOT PER MODULE. The mint is a pure HMAC over the tenant id, so every module in the
  * catalog computes the identical answer. Hoisting it out of the upload loop makes that a stated
- * property rather than something that happens to hold seventeen times.
+ * property rather than something that happens to hold sixteen times.
  */
 export async function tenantModuleProxyBinding(
   runpodMode: RunPodMode,

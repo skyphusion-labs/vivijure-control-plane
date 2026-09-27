@@ -1141,7 +1141,6 @@ describe("cf#99 tenant module bridge", () => {
         `${t.id}-finish-upscale`,
         `${t.id}-google-veo`,
         `${t.id}-keyframe`,
-        `${t.id}-kling`,
         `${t.id}-minimax-hailuo`,
         `${t.id}-narration-gen`,
         `${t.id}-own-gpu`,
@@ -1237,7 +1236,7 @@ describe("cf#99 tenant module bridge", () => {
       (c) => c[1] as { method: string; path: string; body?: string },
     );
     const installs = studioCalls.filter((c) => c.path === "/api/modules/install");
-    expect(installs).toHaveLength(17);  // hosted catalog; no finish-lipsync, no speech-upscale
+    expect(installs).toHaveLength(16);  // hosted catalog; no finish-lipsync, no speech-upscale, no kling (cp#538)
     // Each install carries the tenant-prefixed script name (not the bare module name).
     const scriptNames = installs.map((c) => JSON.parse(c.body!).script_name).sort();
     expect(scriptNames).toEqual(
@@ -1247,7 +1246,7 @@ describe("cf#99 tenant module bridge", () => {
         // this assertion inverted. It exists to FAIL when the catalog moves.
         "keyframe", "own-gpu", "finish-upscale",
         "finish-rife", "plan-enhance",
-        "alibaba-wan", "alibaba-wan-lora", "google-veo", "kling",
+        "alibaba-wan", "alibaba-wan-lora", "google-veo",
         "minimax-hailuo", "narration-gen", "seedance", "vidu-q3",
         "cf-grok-video", "cf-seedance", "cf-flux-3-video", "cf-hh1-r2v",
       ]

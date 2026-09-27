@@ -84,7 +84,7 @@ const RECORDING = TENANT_MODULE_CATALOG.filter((s) => s.recordsRunpodJobs).map((
 const NOT_RECORDING = TENANT_MODULE_CATALOG.filter((s) => !s.recordsRunpodJobs).map((s) => s.module);
 
 describe("the catalog says WHICH modules record", () => {
-  it("twelve modules record, and five do not", () => {
+  it("eleven modules record, and five do not", () => {
     // A LIST, deliberately, and still hand-maintained: if a seventh becomes recording, this fails
     // and somebody re-reads the upstream module set instead of assuming the catalog kept up. It is
     // not derived from the catalog on purpose -- a derived expectation agrees with whatever the
@@ -98,10 +98,12 @@ describe("the catalog says WHICH modules record", () => {
     // against two controls (keyframe records, plan-enhance does not), never from the row.
     // cp#519 moved it to TWELVE by removing speech-upscale, whose endpoint is gone. The removal is
     // one NAME off this list and nothing else: no other module's recording status changed.
+    // cp#538 moved it to ELEVEN by removing kling, whose RunPod slug now 404s -- same shape again,
+    // one name off, nothing else about any module's recording status changed.
     expect(RECORDING.sort()).toEqual(
       [
         "alibaba-wan", "alibaba-wan-lora", "finish-rife", "finish-upscale",
-        "google-veo", "keyframe", "kling", "minimax-hailuo", "narration-gen", "own-gpu",
+        "google-veo", "keyframe", "minimax-hailuo", "narration-gen", "own-gpu",
         "seedance", "vidu-q3",
       ],
     );
