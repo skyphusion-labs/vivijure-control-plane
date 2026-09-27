@@ -9,13 +9,20 @@
 // observe is worse than no check: it occupies the slot where the real one would go.
 //
 // THE POPULATION THE ALLOW-LIST MIRRORS IS THIS REPO'S CATALOG, NOT vivijure-cf's MODULE SET, and
-// that is measured rather than preferred. At vivijure-cf@7b927b9, NINE modules declare
-// `const ENDPOINT_ID = "<slug>"`: the seven this plane catalogues, plus `infinitetalk` and
-// `kling-o1-r2v`, which are deliberately uncatalogued. And `narration-gen` IS catalogued and
-// allow-listed while declaring no such constant at all -- it builds its URL by concatenation. So a
-// gate asserting the allow-list equals cf's module-declared slugs would be red on a correct estate,
-// in both directions at once. The right authority is the thing the proxy actually admits FOR: the
-// tenant catalog.
+// that is measured rather than preferred. At vivijure-cf@7b927b9,
+// `grep -rnE 'const ENDPOINT_ID\s*=' modules/*/src/*.ts` returns TEN declarations, of which NINE
+// are a literal slug: the seven this plane catalogues, plus `infinitetalk` and `kling-o1-r2v`,
+// which are deliberately uncatalogued. The tenth is `narration-gen/src/index.ts:66`,
+// `const ENDPOINT_ID = MODEL;` -- it IS catalogued and allow-listed, and it declares the constant
+// NON-LITERALLY, so a literal-slug matcher returns nine and silently misses it.
+//
+// (An earlier version of this paragraph said narration-gen "declares no such constant at all".
+// That was false and invited a future reader to delete the reasoning while correcting it. The
+// argument is unchanged: a literal-slug grep cannot see this module, which is the point.)
+//
+// So a gate asserting the allow-list equals cf's module-declared slugs would be red on a correct
+// estate, in BOTH directions at once. The right authority is the thing the proxy actually admits
+// FOR: the tenant catalog.
 //
 // WHY THAT IS PARITY AND NOT THE TAUTOLOGY THIS REPLACES. `TENANT_MODULE_CATALOG` and
 // `PUBLIC_ENDPOINT_ALLOWLIST` are two independent artifacts, in two files, edited by different

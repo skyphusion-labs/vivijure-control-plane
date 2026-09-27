@@ -11,10 +11,20 @@
 // THE MODULE CENSUS THAT USED TO STAND HERE IS RETIRED, NOT RENUMBERED (cp#541). It claimed "14 of
 // 26 modules with a src/index.ts reference the host -- of which 8 hard-code a public slug and 6
 // read RUNPOD_ENDPOINT_ID", measured at vivijure-cf@d26db49 and b295309. Re-measured at
-// vivijure-cf@7b927b9: the denominator is 34, and exactly ONE module's index.ts still references
-// the host. The swap this very paragraph describes is what removed them -- the call sites now sit
-// behind `modules/_shared/runpod-route.ts`, a pure re-export of
-// `@skyphusion-labs/vivijure-core/runpod-route` (cp#321). The old figure was pinned by
+// vivijure-cf@7b927b9: the denominator is 34, and `grep -rn "api.runpod.ai" modules/*/src/*.ts`
+// returns TWO -- `infinitetalk/src/index.ts:2` and `narration-gen/src/narration-gen.ts:11` -- and
+// BOTH ARE COMMENTS, so the direct call sites in module source are ZERO.
+//
+// (An `index.ts`-only predicate returns ONE and misses narration-gen, which keeps its logic in a
+// sibling file. That is how this comment first got written: a predicate narrowed to one filename
+// excluded part of its own population, and the stricter-looking measurement produced the WEAKER
+// claim. Zero is the number the conclusion deserves -- the direct call site is gone from module
+// source entirely, not merely thinned out.)
+//
+// The swap this very paragraph describes is what removed them: the base now lives once, as
+// `RUNPOD_DIRECT_BASE` in `@skyphusion-labs/vivijure-core@1.25.0` (`dist/runpod-route.js:71`),
+// reached through `modules/_shared/runpod-route.ts`, a pure re-export (cp#321). The old figure was
+// pinned by
 // tests/runpod-proxy-census.test.ts, which could not observe the population it named and stayed
 // green as it changed; what replaced it asserts a relation this repo can actually check
 // (tests/public-endpoint-allowlist-parity.test.ts).
