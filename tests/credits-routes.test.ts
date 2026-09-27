@@ -205,13 +205,33 @@ describe("credit read routes", () => {
     expect(body.activity.filter((a) => a.job_ref === "film_good")).toHaveLength(0);
   });
 
-  it("reports the enforcement mode, so counting mode is never a guess", async () => {
-    const counting = (await (await getTenant()).json()) as { enforcing: boolean };
-    expect(counting.enforcing).toBe(false);
-    const enforcing = (await (await getTenant(TEN, deps, env({ CREDITS_ENFORCING: "true" }))).json()) as {
-      enforcing: boolean;
-    };
-    expect(enforcing.enforcing).toBe(true);
+  it("reports enforcement as APPLIED, never as merely CONFIGURED", async () => {
+    // THE DEFECT THIS REPLACES. The old assertion here was `enforcing === true` with the knob on,
+    // and it was green while NOTHING refused anything: decideSubmit has no production caller and
+    // neither do the four hold functions. A tenant at zero balance still submitted renders, and the
+    // API told the operator enforcement was active. A flag that reports a control it does not apply
+    // is worse than one that is plainly off, because it is the surface an operator checks INSTEAD of
+    // checking the bill.
+    const off = (await (await getTenant()).json()) as Record<string, unknown>;
+    expect(off).toMatchObject({ enforcing: false, enforcement_configured: false, enforcement_reason: null });
+
+    const knobOn = (await (await getTenant(TEN, deps, env({ CREDITS_ENFORCING: "true" }))).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(knobOn.enforcement_configured).toBe(true);
+    expect(knobOn.enforcing).toBe(false);
+    expect(String(knobOn.enforcement_reason)).toMatch(/no submit-time gate/i);
+  });
+
+  it("the admin view carries the same enforcement pair, so the operator surface cannot disagree", async () => {
+    const body = (await (await getAdmin(TEN, deps, env({ CREDITS_ENFORCING: "1" }))).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(body.enforcement_configured).toBe(true);
+    expect(body.enforcing).toBe(false);
+    expect(body.enforcement_reason).not.toBeNull();
   });
 
   // ---- what the operator sees ----------------------------------------------------------------

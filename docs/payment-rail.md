@@ -192,9 +192,19 @@ The `PayPalRail` is built, including the capture leg. Settlements go through the
 unchanged, and it refuses `captureApprovedOrder` for the same reason it refuses the other two: an
 operator credit is settled the moment it is written, so there is no order to collect.
 
+**`CREDITS_ENFORCING` currently applies nothing, and the API now says so.** There is no submit-time
+gate on this plane: nothing calls `decideSubmit` and no hold is ever taken, so setting the knob
+refuses nothing and debits nothing. The credit views report `enforcing: false` with
+`enforcement_configured: true` and a stated `enforcement_reason` whenever the knob is on, rather than
+echoing the knob back as though it were a control. `src/credits.ts` carries the one place that
+answer lives (`SUBMIT_GATE_WIRED`), and `tests/credits-enforcement-wiring.test.ts` measures it
+against the source in both directions.
+
 **Do not flip `CREDITS_ENFORCING` in the same act as wiring credentials.** A purchase door in front
 of a counting ledger sells credits that refuse nothing; flipping enforcement is a named acceptance
-criterion of `cp#193` and happens when you decide the door is proven, not when the class lands.
+criterion of `cp#193` and happens when you decide the door is proven, not when the class lands. Note
+that flipping it today does not even do that much: the gate has to be built first, and what a render
+costs a tenant is a pricing decision that does not exist yet.
 
 `credits_apply` stays false for every tenant until `compute_mode` exists. Configuring PayPal does
 not invent a billing relationship for a studio we do not bill.

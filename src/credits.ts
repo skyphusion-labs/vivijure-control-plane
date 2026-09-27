@@ -214,6 +214,64 @@ export function parseEnforcing(raw: string | undefined): boolean {
 }
 
 /**
+ * IS there a submit-time gate at all?
+ *
+ * MEASURED, NOT ASSUMED, and this constant is the single place the answer lives. As of this change
+ * the answer is NO: `decideSubmit` above has no production caller, and `takeHold`, `captureHold`,
+ * `releaseHold` and `expireHolds` are never called outside tests. Nothing in the render path consults
+ * a balance, so no tenant is ever refused and no hold is ever taken.
+ *
+ * WHY A CONSTANT RATHER THAN A COMMENT. `CREDITS_ENFORCING` used to be echoed straight back by the
+ * credit views, which reported `enforcing: true` on a plane that refused nothing. That is worse than
+ * a knob that is plainly off: it is the surface an operator checks INSTEAD of checking the bill, so
+ * the one reading that would reveal the gap is the reading that reassures them. Routing the knob
+ * through here makes "configured" and "applied" two different facts that cannot be conflated by
+ * accident.
+ *
+ * `tests/credits-enforcement-wiring.test.ts` asserts this constant against the source: it goes RED
+ * the day somebody wires the gate and forgets to flip it, and RED today if it were set to true. It
+ * is not a promise, it is a measurement with a gate behind it.
+ *
+ * WHY THE GATE IS NOT WIRED IN THIS CHANGE. The submit path (`handleProxySubmit`) cannot compute
+ * `required_micro_usd`: the standing ruling bills on the final delivered video length, per FILM, on
+ * the last writer of the `film.finish` chain, which the per-JOB proxy never sees
+ * (`src/runpod-proxy-routes.ts` states this in its own header). Wiring a gate here would mean
+ * inventing a per-job price, and what a render costs a tenant is a pricing decision, not an infra
+ * one. Until that decision exists the honest move is to say so on the surface rather than to claim
+ * a control nobody applies.
+ */
+export const SUBMIT_GATE_WIRED = false;
+
+/**
+ * What enforcement is CONFIGURED to do, and what it ACTUALLY does. Two facts, deliberately not one.
+ */
+export interface EnforcementState {
+  /** What the operator set `CREDITS_ENFORCING` to. */
+  configured: boolean;
+  /** Whether refusals are in force IN FACT. False whenever no submit-time gate exists to apply them. */
+  applied: boolean;
+  /** Non-null exactly when configured and applied disagree, naming why. Never a bare boolean gap. */
+  reason: string | null;
+}
+
+/** Resolve the knob into what is configured, what is applied, and why they differ. */
+export function creditsEnforcementState(raw: string | undefined): EnforcementState {
+  const configured = parseEnforcing(raw);
+  if (!configured) return { configured: false, applied: false, reason: null };
+  if (!SUBMIT_GATE_WIRED) {
+    return {
+      configured: true,
+      applied: false,
+      reason:
+        "CREDITS_ENFORCING is set, but no submit-time gate consults the balance on this plane: " +
+        "nothing calls decideSubmit and no hold is ever taken, so nothing is refused and nothing is " +
+        "debited. The ledger is RECORDING ONLY. Do not read this knob as a spend control.",
+    };
+  }
+  return { configured: true, applied: true, reason: null };
+}
+
+/**
  * Parse a micro-USD operator value. Rejects anything that is not a non-negative whole number of
  * micro-USD, because a mis-parsed money knob is an order-of-magnitude error on somebody's bill --
  * the same reason core's storage quota refuses to parse "10GB".
