@@ -76,12 +76,20 @@ const state: {
   qualifiedWorkflows: string[];
 } = { scripts: [], qualifiedWorkflows: [] };
 
-async function cfFetch(path: string, init: RequestInit = {}): Promise<{ status: number; body: string }> {
+// `cap` exists because the default one broke a control. The post-create workflows list below
+// returns a body longer than 400 characters, so slicing it made JSON.parse throw and the count
+// printed -1: the control measured nothing while looking like it had run. A reading instrument that
+// truncates its own input is the same defect class as the thing it was checking for.
+async function cfFetch(
+  path: string,
+  init: RequestInit = {},
+  cap = 400,
+): Promise<{ status: number; body: string }> {
   const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}${path}`, {
     ...init,
     headers: { authorization: `Bearer ${TOKEN}`, ...(init.headers as Record<string, string>) },
   });
-  return { status: res.status, body: (await res.text()).slice(0, 400) };
+  return { status: res.status, body: (await res.text()).slice(0, cap) };
 }
 
 afterAll(async () => {
@@ -231,6 +239,11 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
       body: JSON.stringify({ class_name: CLASS, script_name: SCRIPT_BOUND }),
     });
     console.log("MEASURED workflow create (namespace script):", r.status, r.body);
+    // Pinned with its own caveat attached, because this credential is measured NOT to see the
+    // account's 13 existing Workflows (below): a 500 here may be scope rather than platform, and
+    // settling that needs a credential with a full view. What is NOT in doubt is that the plane
+    // cannot do it today, because the plane runs as exactly this credential.
+    expect(r.status).toBe(500);
     const back = await cfFetch(`/workflows/${WORKFLOW}`);
     console.log("MEASURED workflow readback:", back.status, back.body);
     if (back.status < 400) state.createdWorkflow = true;
@@ -251,16 +264,25 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
   // The first run of the two above answered 500 `10001 workflows.api.error.internal_server` to BOTH,
   // so they are indistinguishable and that reading says NOTHING about dispatch namespaces. These
   // three separate the candidate causes: the credential, the request body, and the namespace.
-  it("MEASURES the Workflows API from three other angles, to say what the 500 is about", async () => {
+  it("says what the 500 is about: the credential validates, so it is the namespace or the name", async () => {
     // 1. CAN THIS CREDENTIAL SEE WORKFLOWS AT ALL, and does an operator `wrangler deploy` even
     //    register one as an account resource? Names only -- a Workflow name is not a secret, but
     //    nothing else from these rows is printed.
-    const list = await cfFetch(`/workflows?per_page=50`);
+    const list = await cfFetch(`/workflows?per_page=50`, {}, 20_000);
     let names: string[] = [];
     try {
       names = ((JSON.parse(list.body).result ?? []) as { name?: string }[]).map((w) => w.name ?? "?");
-    } catch { /* body truncated or not JSON; the status is the signal */ }
+    } catch { /* not JSON; the status is the signal */ }
     console.log("MEASURED workflows list:", list.status, "count:", names.length, "names:", names.join(","));
+    // ASSERTED AS A CREDENTIAL FACT, not an account fact, and the difference is the finding. This
+    // call returns 200 with ZERO rows on THIS credential, while the account genuinely holds 13
+    // Workflows -- read 2026-09-27 through three other tokens, which all see all 13
+    // (cf-seedance-i2v, dialogue-gen, chatterbox and the rest, each pointing at its operator
+    // module worker). An empty list from a credential that may not see the family is
+    // indistinguishable from an empty account, and only a second instrument can tell them apart.
+    // If this ever returns rows, the credential's scope changed and the 500 below must be re-read.
+    expect(list.status).toBe(200);
+    expect(names.length, "this credential's VIEW of the account's Workflows, not the account's").toBe(0);
 
     // 2. IS THE 500 ABOUT OUR BODY? A PUT with class_name missing entirely should be a 4xx from any
     //    API that validates input. If this 500s too, the endpoint 500s on everything and the
@@ -271,6 +293,9 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
       body: JSON.stringify({ script_name: SCRIPT_BOUND }),
     });
     console.log("MEASURED workflow create (malformed body):", bad.status, bad.body);
+    // The discriminator that makes the 500 mean something: this endpoint DOES validate and answers
+    // 4xx for bad input, so a 500 is not "it fails on everything".
+    expect(bad.status).toBe(400);
 
     // 3. IS IT THE NAMESPACE? Same call against an ACCOUNT-LEVEL script -- the one shape the
     //    Workflows API is documented for. This is the discriminator: if it succeeds here and fails
@@ -299,6 +324,11 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
       });
       console.log("MEASURED workflow create (ACCOUNT-level script):", wf.status, wf.body);
       if (wf.status < 400) state.createdControlWorkflow = `${plain}-wf`;
+      // THE ANGLE THAT NAMES THE CAUSE. Same credential, same call, same body shape: 200 for an
+      // account-level script and 500 for a dispatch-namespace one. So the credential can create
+      // Workflows and the request is well-formed; what it cannot do is address a script inside a
+      // dispatch namespace.
+      expect(wf.status).toBe(200);
 
       // POSITIVE CONTROL FOR THE LIST above, which answered 200 with ZERO rows. An empty list from
       // a credential that cannot see the family looks exactly like an empty list from an account
@@ -327,6 +357,9 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
       });
       console.log(`MEASURED qualified script_name ${JSON.stringify(candidate)}:`, r.status, r.body);
       if (r.status < 400) state.qualifiedWorkflows.push(`${WORKFLOW}-q${Math.abs(candidate.length)}`);
+      // A RED HERE IS GOOD NEWS: it means a shape that was refused has started working, and the
+      // hosted door stops being blocked on it. Pinned so that day is heard rather than missed.
+      expect(r.status).toBe(500);
     }
   });
 });
