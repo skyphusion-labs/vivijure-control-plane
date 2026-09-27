@@ -6,12 +6,20 @@
 // ------------------------------------------------------------------------------------------------
 // THE SHAPE IS RUNPOD'S OWN, ON PURPOSE. Every module in the estate builds its RunPod URL as
 // `https://api.runpod.ai/v2/<endpoint>` plus `/run`, `/status/<id>`, `/cancel/<id>` or `/health`
-// (measured at vivijure-cf@d26db49 and again at b295309, statement-level: **14 of 26** modules with
-// a src/index.ts reference the host -- of which 8 hard-code a public slug and 6 read
-// RUNPOD_ENDPOINT_ID -- and those four suffixes are the complete verb set -- no `runsync`, no
-// `purge-queue`. The count is pinned by tests/runpod-proxy-census.test.ts so an unreproduced
-// figure cannot re-land as "measured" evidence; cp#298). Mounting the proxy at the same suffixes
-// makes the module-side change a single base-string swap:
+// (those four suffixes are the complete verb set -- no `runsync`, no `purge-queue`).
+//
+// THE MODULE CENSUS THAT USED TO STAND HERE IS RETIRED, NOT RENUMBERED (cp#541). It claimed "14 of
+// 26 modules with a src/index.ts reference the host -- of which 8 hard-code a public slug and 6
+// read RUNPOD_ENDPOINT_ID", measured at vivijure-cf@d26db49 and b295309. Re-measured at
+// vivijure-cf@7b927b9: the denominator is 34, and exactly ONE module's index.ts still references
+// the host. The swap this very paragraph describes is what removed them -- the call sites now sit
+// behind `modules/_shared/runpod-route.ts`, a pure re-export of
+// `@skyphusion-labs/vivijure-core/runpod-route` (cp#321). The old figure was pinned by
+// tests/runpod-proxy-census.test.ts, which could not observe the population it named and stayed
+// green as it changed; what replaced it asserts a relation this repo can actually check
+// (tests/public-endpoint-allowlist-parity.test.ts).
+//
+// Mounting the proxy at the same suffixes makes the module-side change a single base-string swap:
 //
 //     const base = env.RUNPOD_PROXY_BASE ?? "https://api.runpod.ai/v2";
 //
