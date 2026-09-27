@@ -73,7 +73,8 @@ const state: {
   createdWorkflow?: boolean;
   createdControlWorkflow?: string;
   plainScript?: string;
-} = { scripts: [] };
+  qualifiedWorkflows: string[];
+} = { scripts: [], qualifiedWorkflows: [] };
 
 async function cfFetch(path: string, init: RequestInit = {}): Promise<{ status: number; body: string }> {
   const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}${path}`, {
@@ -106,6 +107,12 @@ afterAll(async () => {
   if (state.createdControlWorkflow) {
     await drop(`control workflow ${state.createdControlWorkflow}`, async () => {
       const r = await cfFetch(`/workflows/${state.createdControlWorkflow}`, { method: "DELETE" });
+      if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
+    });
+  }
+  for (const w of state.qualifiedWorkflows) {
+    await drop(`qualified workflow ${w}`, async () => {
+      const r = await cfFetch(`/workflows/${w}`, { method: "DELETE" });
       if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
     });
   }
@@ -292,8 +299,34 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
       });
       console.log("MEASURED workflow create (ACCOUNT-level script):", wf.status, wf.body);
       if (wf.status < 400) state.createdControlWorkflow = `${plain}-wf`;
+
+      // POSITIVE CONTROL FOR THE LIST above, which answered 200 with ZERO rows. An empty list from
+      // a credential that cannot see the family looks exactly like an empty list from an account
+      // that has none, and the difference matters: nine module wrangler.toml files in vivijure-cf
+      // declare a [[workflows]] block, and the operator deploys those modules.
+      const after = await cfFetch(`/workflows?per_page=50`);
+      let n = -1;
+      try { n = ((JSON.parse(after.body).result ?? []) as unknown[]).length; } catch { /* status is the signal */ }
+      console.log("CONTROL workflows list AFTER a successful create:", after.status, "count:", n);
     } else {
       console.log("account-level upload refused, so angle 3 measured NOTHING:", (await up.text()).slice(0, 200));
+    }
+  });
+
+  // Round 2 established that the Workflows API answers 200 for an ACCOUNT-level script and 500
+  // `10001 internal_server` for a dispatch-namespace one -- identically to a script that does not
+  // exist, and distinguishably from a malformed body (400 `10002`). So the API does validate, and a
+  // namespace script simply is not addressable by bare name. This tries the one other shape a
+  // caller could reasonably mean before that is reported as a platform gap.
+  it("MEASURES whether a namespace script is addressable under a QUALIFIED script_name", async () => {
+    for (const candidate of [`${state.ns}/${SCRIPT_BOUND}`, `${SCRIPT_BOUND}@${state.ns}`]) {
+      const r = await cfFetch(`/workflows/${WORKFLOW}-q${Math.abs(candidate.length)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ class_name: CLASS, script_name: candidate }),
+      });
+      console.log(`MEASURED qualified script_name ${JSON.stringify(candidate)}:`, r.status, r.body);
+      if (r.status < 400) state.qualifiedWorkflows.push(`${WORKFLOW}-q${Math.abs(candidate.length)}`);
     }
   });
 });
