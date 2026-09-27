@@ -17,16 +17,27 @@ which this plane already emits.
 accepted AND the binding is read back off the API as `type: workflow`, with a negative control on a
 sibling script proving the readback can say no. Typecheck cannot produce that reading, and an
 upload response echoes no bindings, so `success: true` is only the writing client's opinion of its
-own work. It additionally MEASURES two things nothing in this estate had ever run: whether a script
-exporting a `WorkflowEntrypoint` uploads with no workflow binding at all (cp#526's open A-vs-B, and
-the state the four `cf-*` rows are in today), and what the API does when a second script claims the
-same account-scoped `workflow_name`.
+own work. First green run: dispatch `36343598466`, 2026-09-27T19:14Z.
+
+That run also settled three things nothing in this estate had ever asked the API, now PINNED as
+assertions so the day any of them changes is a day this goes red:
+
+1. **cp#526's open A-vs-B is A.** A script exporting a `WorkflowEntrypoint` uploads fine with NO
+   workflow binding. The four catalogued `cf-*` doors therefore provision, look installed, pass
+   `/ready` and throw at the first invoke, after the keyframe pass is already spent. Nothing refuses
+   them at `modules_upload`.
+2. **The upload does not create the Workflow.** `GET /accounts/{id}/workflows/{name}` answers 404
+   `10200 workflows.api.error.workflow.not_found` after a successful bound upload. Emitting the
+   binding is not the whole job; the Workflow is a separate provisioning step.
+3. **A second script may claim the same `workflow_name`**, with a different class, and the API
+   accepts it. Nothing outside this plane will warn about a cross-tenant collision, so
+   tenant-prefixing the Workflow name is on us exactly as it is for the script name.
 
 The hedge comment at the `cf-*` catalog rows ("Workflows are still a FLAG if WfP cannot bind them")
 is corrected rather than left standing: WfP can bind them, the missing piece is our emitter, and a
 hedge like that is what makes a fixable gap read as a platform wait.
 
 NOTHING EMITS THE VARIANT YET, deliberately. A catalogued door whose binding the plane emits wrong
-fails EVERY provision at `modules_upload` and typecheck cannot see it, so the emitter waits on what
-the live run reads: whether the upload provisions the account-scoped Workflow, and whether
-`workflow_name` must be tenant-prefixed the way the script name already is.
+fails EVERY provision at `modules_upload` and typecheck cannot see it, and the live run above says
+an emitter owes three things rather than one: the binding, a provisioned Workflow, and a
+tenant-prefixed name.

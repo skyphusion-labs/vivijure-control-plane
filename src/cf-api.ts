@@ -246,6 +246,28 @@ export interface AiBinding {
  * SAME Workflow. Any emitter must tenant-prefix it exactly as tenantModuleScriptName prefixes the
  * script name; see the collision measurement in tests/wfp-workflow-binding.live.test.ts.
  *
+ * LIVE-PROVEN, in the shape the `ai` and `vpc_service` variants above were held to rather than
+ * assumed from the schema: a user worker exporting a WorkflowEntrypoint was uploaded into a
+ * throwaway dispatch namespace with `{type:"workflow", name, workflow_name, class_name}` plus a
+ * plain_text sibling, the upload returned success, and the binding was READ BACK off
+ * GET .../bindings as `PROBE_WORKFLOW [workflow]` before teardown, with a sibling script uploaded
+ * WITHOUT it reading back without it. The readback and its negative control are the point: an
+ * upload response echoes no bindings. tests/wfp-workflow-binding.live.test.ts, first green run
+ * 2026-09-27T19:14Z (live-release-gate dispatch 36343598466).
+ *
+ * THREE THINGS THAT RUN ALSO ESTABLISHED, and an emitter has to answer all three:
+ *
+ *   1. THE UPLOAD DOES NOT CREATE THE WORKFLOW. GET /accounts/{id}/workflows/{name} answers 404
+ *      `10200 workflows.api.error.workflow.not_found` after a successful bound upload. The binding
+ *      attaches to a resource that does not exist and Cloudflare says nothing, so provisioning the
+ *      Workflow is a SEPARATE step, not a side effect of binding it.
+ *   2. A SECOND SCRIPT MAY CLAIM THE SAME `workflow_name`, with a different class, and the API
+ *      accepts that too. Nothing outside this plane will ever warn about a cross-tenant collision.
+ *   3. A SCRIPT EXPORTING A WorkflowEntrypoint UPLOADS FINE WITH NO WORKFLOW BINDING AT ALL. That
+ *      settles cp#526's open question as branch A: the four catalogued `cf-*` doors provision, look
+ *      installed, pass /ready and throw at the first invoke, after the keyframe pass is spent.
+ *      There is no refusal at modules_upload to catch them.
+ *
  * NOTHING EMITS THIS YET, DELIBERATELY. The type plus the live proof is one change; deciding where
  * the per-module triple comes from (the module declares it in its own wrangler.toml, and the
  * release manifest build-module-release.ts writes carries no bindings at all) is the next one. A

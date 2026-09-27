@@ -223,6 +223,12 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   // manifest build-module-release.ts writes carries no bindings to derive one from, so all four
   // upload with I2V_WORKFLOW ABSENT while every call site in those four modules is an unguarded
   // env.I2V_WORKFLOW.create(). Do not read these rows as working doors.
+  //
+  // AND THE UPLOAD DOES NOT REFUSE THEM, measured 2026-09-27 against the live API rather than left
+  // open (tests/wfp-workflow-binding.live.test.ts): a script exporting a WorkflowEntrypoint with no
+  // matching binding uploads successfully. So these four take the EXPENSIVE failure -- provisioned,
+  // installed, green on /ready, and dead at the first invoke with the keyframe pass already spent
+  // -- rather than dying loud at modules_upload. That is cp#526's branch A, confirmed.
   { module: "cf-grok-video", needsAiGateway: true, writesTenantRenders: true },
   { module: "cf-seedance", needsAiGateway: true, writesTenantRenders: true },
   { module: "cf-flux-3-video", needsAiGateway: true, writesTenantRenders: true },
