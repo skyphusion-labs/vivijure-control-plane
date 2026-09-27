@@ -67,9 +67,13 @@ const WORKER = [
   'export default { async fetch() { return new Response("ok"); } };',
 ].join("\n");
 
-const state: { ns?: string; scripts: string[]; createdWorkflow?: boolean; createdControlWorkflow?: string } = {
-  scripts: [],
-};
+const state: {
+  ns?: string;
+  scripts: string[];
+  createdWorkflow?: boolean;
+  createdControlWorkflow?: string;
+  plainScript?: string;
+} = { scripts: [] };
 
 async function cfFetch(path: string, init: RequestInit = {}): Promise<{ status: number; body: string }> {
   const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}${path}`, {
@@ -102,6 +106,12 @@ afterAll(async () => {
   if (state.createdControlWorkflow) {
     await drop(`control workflow ${state.createdControlWorkflow}`, async () => {
       const r = await cfFetch(`/workflows/${state.createdControlWorkflow}`, { method: "DELETE" });
+      if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
+    });
+  }
+  if (state.plainScript) {
+    await drop(`account script ${state.plainScript}`, async () => {
+      const r = await cfFetch(`/workers/scripts/${state.plainScript}`, { method: "DELETE" });
       if (r.status >= 400) throw new Error(`HTTP ${r.status} ${r.body}`);
     });
   }
@@ -229,5 +239,61 @@ describe.skipIf(!LIVE)("a WfP user Worker and the `workflow` binding", () => {
     });
     console.log("CONTROL workflow create (nonexistent script):", ctl.status, ctl.body);
     if (ctl.status < 400) state.createdControlWorkflow = controlName;
+  });
+
+  // The first run of the two above answered 500 `10001 workflows.api.error.internal_server` to BOTH,
+  // so they are indistinguishable and that reading says NOTHING about dispatch namespaces. These
+  // three separate the candidate causes: the credential, the request body, and the namespace.
+  it("MEASURES the Workflows API from three other angles, to say what the 500 is about", async () => {
+    // 1. CAN THIS CREDENTIAL SEE WORKFLOWS AT ALL, and does an operator `wrangler deploy` even
+    //    register one as an account resource? Names only -- a Workflow name is not a secret, but
+    //    nothing else from these rows is printed.
+    const list = await cfFetch(`/workflows?per_page=50`);
+    let names: string[] = [];
+    try {
+      names = ((JSON.parse(list.body).result ?? []) as { name?: string }[]).map((w) => w.name ?? "?");
+    } catch { /* body truncated or not JSON; the status is the signal */ }
+    console.log("MEASURED workflows list:", list.status, "count:", names.length, "names:", names.join(","));
+
+    // 2. IS THE 500 ABOUT OUR BODY? A PUT with class_name missing entirely should be a 4xx from any
+    //    API that validates input. If this 500s too, the endpoint 500s on everything and the
+    //    earlier readings carry no information at all.
+    const bad = await cfFetch(`/workflows/${WORKFLOW}-badbody`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ script_name: SCRIPT_BOUND }),
+    });
+    console.log("MEASURED workflow create (malformed body):", bad.status, bad.body);
+
+    // 3. IS IT THE NAMESPACE? Same call against an ACCOUNT-LEVEL script -- the one shape the
+    //    Workflows API is documented for. This is the discriminator: if it succeeds here and fails
+    //    for a dispatch-namespace script, the cause is named, and the hosted dialogue door needs a
+    //    different answer than "the plane creates the Workflow".
+    const plain = `${stamp}-plain`;
+    const form = new FormData();
+    form.append(
+      "metadata",
+      new Blob([JSON.stringify({ main_module: "index.js", compatibility_date: "2026-06-01", bindings: [] })], {
+        type: "application/json",
+      }),
+    );
+    form.append("index.js", new Blob([WORKER], { type: "application/javascript+module" }), "index.js");
+    const up = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/scripts/${plain}`,
+      { method: "PUT", headers: { authorization: `Bearer ${TOKEN}` }, body: form },
+    );
+    console.log("MEASURED account-level script upload:", up.status);
+    if (up.ok) {
+      state.plainScript = plain;
+      const wf = await cfFetch(`/workflows/${plain}-wf`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ class_name: CLASS, script_name: plain }),
+      });
+      console.log("MEASURED workflow create (ACCOUNT-level script):", wf.status, wf.body);
+      if (wf.status < 400) state.createdControlWorkflow = `${plain}-wf`;
+    } else {
+      console.log("account-level upload refused, so angle 3 measured NOTHING:", (await up.text()).slice(0, 200));
+    }
   });
 });
