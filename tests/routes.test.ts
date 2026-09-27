@@ -4023,11 +4023,68 @@ describe("LLM overage settlement route", () => {
     expect(body.report.periodKey).toMatch(/^\d{4}-\d{2}$/);
   });
 
-  it("accepts an explicit period and settles THAT one", async () => {
-    const r = await post("?period=2026-07");
+  // 2025-05, not 2026-07. THE SUITE'S OWN CLOCK IS 1_750_000_000_000 (2025-06-15), so the period this
+  // case used to name had not merely failed to close, it had not STARTED. The old assertion therefore
+  // required the route to settle a future month, and the route obliged: it wrote a debit for a window
+  // holding no data under a key that the real month-end run would later find already settled. Fixing
+  // the closed-period gate turned this case red, which is the correct direction.
+  it("accepts an explicit CLOSED period and settles THAT one", async () => {
+    const r = await post("?period=2025-05");
     const body = (await r.json()) as { report: { periodKey: string; windowStart: string } };
-    expect(body.report.periodKey).toBe("2026-07");
-    expect(body.report.windowStart).toBe("2026-07-01T00:00:00.000Z");
+    expect(body.report.periodKey).toBe("2025-05");
+    expect(body.report.windowStart).toBe("2025-05-01T00:00:00.000Z");
+  });
+
+  // ---- the period must have CLOSED (fleet-chezmoi#2249 item 6) --------------------------------
+  //
+  // Settling a month still accumulating writes a debit computed from a partial window, and the write
+  // is idempotent on `overage:llm:<YYYY-MM>`. So the real month-end run answers `already_settled` and
+  // the rest of the month is never billed by anything, ever, with nothing recording that a partial
+  // settlement is the reason. There is no correction path from inside the route, which is why the
+  // request has to be refused rather than accepted and repaired.
+  it("REFUSES the month still IN PROGRESS", async () => {
+    // The harness clock sits on 2025-06-15, so 2025-06 is the month in progress.
+    const r = await post("?period=2025-06");
+    expect(r.status).toBe(400);
+    const body = (await r.json()) as { error: string; detail: string };
+    expect(body.error).toBe("period_not_closed");
+    expect(body.detail).toMatch(/has not closed yet/);
+  });
+
+  it("REFUSES a period that has not even STARTED", async () => {
+    const r = await post("?period=2026-07");
+    expect(r.status).toBe(400);
+    expect((await r.json()) as { error: string }).toMatchObject({ error: "period_not_closed" });
+  });
+
+  it("WRITES NOTHING when it refuses an unclosed period", async () => {
+    // A refusal that still wrote the debit, or still audited a settlement that did not happen, would
+    // be the same under-bill with a 400 on top. Checked, not assumed.
+    const d = settleDeps();
+    const ledger = d.credits as unknown as { written: Map<string, unknown> };
+    const before = store.audit.length;
+    expect((await post("?period=2025-06", env(), d)).status).toBe(400);
+    expect(ledger.written.size).toBe(0);
+    expect(store.audit.length).toBe(before);
+  });
+
+  it("BOUNDARY: a period is closed the instant its successor opens, not a millisecond later", async () => {
+    // windowEnd is EXCLUSIVE, so windowEnd === now must be CLOSED. An off-by-one in the other
+    // direction would refuse the month-end run on the one tick it is most likely to fire.
+    const may = Date.parse("2025-06-01T00:00:00.000Z");
+    const atOpen = settleDeps({ now: () => may });
+    expect((await post("?period=2025-05", env(), atOpen)).status).toBe(200);
+
+    const oneMsBefore = settleDeps({ now: () => may - 1 });
+    const r = await post("?period=2025-05", env(), oneMsBefore);
+    expect(r.status).toBe(400);
+    expect((await r.json()) as { error: string }).toMatchObject({ error: "period_not_closed" });
+  });
+
+  it("CONTROL: the DEFAULT period is never refused by the closed-period gate", async () => {
+    // The gate is unconditional, so a derived default that drifted into the current month would show
+    // up here as a 400 rather than as a quiet partial bill.
+    expect((await post()).status).toBe(200);
   });
 
   // The key BECOMES the ledger's idempotency reference, so a key whose window disagrees with it
@@ -4071,7 +4128,7 @@ describe("LLM overage settlement route", () => {
 
   // This route MOVES MONEY, unlike the read-only admin surfaces, so the run is audited.
   it("AUDITS the run: who, which period, and what it did", async () => {
-    await post("?period=2026-07", env({ TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD: "520000" }));
+    await post("?period=2025-05", env({ TENANT_LLM_SPEND_ALLOWANCE_MICRO_USD: "520000" }));
     // EXACT action, never a substring: `toContain("meter.settle_llm")` also matches
     // "meter.settle_llm_noop" or any other name that merely starts the same way, so a renamed or
     // hollowed-out audit call would slip straight through. Found by the mutation pass, which is
@@ -4079,7 +4136,7 @@ describe("LLM overage settlement route", () => {
     const actions = store.audit.map((a: { action: string }) => a.action);
     expect(actions).toContain("meter.settle_llm");
     const audit = JSON.stringify(store.audit);
-    expect(audit).toContain("2026-07");
+    expect(audit).toContain("2025-05");
     expect(audit).toContain("allowance_configured");
   });
 });

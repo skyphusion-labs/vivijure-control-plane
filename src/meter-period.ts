@@ -66,6 +66,23 @@ export function lastClosedBillingPeriod(now: Date): BillingPeriod {
   return billingPeriodContaining(new Date(Date.parse(current.windowStart) - 1));
 }
 
+/**
+ * Has this period fully ELAPSED as of `now`? Pure.
+ *
+ * THE GUARD THE SETTLEMENT ROUTE WAS MISSING. `parseBillingPeriodKey` happily accepts the month
+ * currently in progress, and `lastClosedBillingPeriod`'s own comment states the consequence: settling
+ * a partial window writes a debit for part of the month, and because the write is idempotent on the
+ * period key the later, larger, correct figure can NEVER replace it. The real month-end run answers
+ * `already_settled` and the rest of the month is never billed, with nothing anywhere recording that
+ * it happened. Settling `2026-09` on the 26th silently forgives four days.
+ *
+ * windowEnd is EXCLUSIVE, so `windowEnd <= now` is the closed test: a period is closed the instant
+ * its successor opens, and never one millisecond before.
+ */
+export function billingPeriodIsClosed(period: BillingPeriod, now: Date): boolean {
+  return Date.parse(period.windowEnd) <= now.getTime();
+}
+
 /** Parse an operator-supplied "YYYY-MM", or null. Refuses anything it cannot round-trip. */
 export function parseBillingPeriodKey(key: string): BillingPeriod | null {
   const m = /^(\d{4})-(\d{2})$/.exec(key?.trim() ?? "");

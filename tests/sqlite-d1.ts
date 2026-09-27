@@ -13,18 +13,53 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 
 /**
+ * D1 refuses a statement carrying more than this many bound parameters.
+ *
+ * Documented at https://developers.cloudflare.com/d1/platform/limits/ ("Maximum bound parameters per
+ * query"), read live 2026-09-26: 100. Hardcoded HERE rather than imported from `src/`, deliberately:
+ * a harness that took its fidelity number from the code under test would agree with that code about
+ * a vendor limit neither of them sets.
+ *
+ * WHY THIS BELONGS IN THE SHIM AND NOT IN A COMMENT. node:sqlite allows roughly 32k variables, so a
+ * store method that binds one parameter per row passes every test here and throws in production for
+ * every tenant. That exact defect shipped: `readTenantLlmSpend` bound one parameter per roll-up
+ * period (about 8,900 a month at the five-minute cron), so LLM overage settlement threw for every tenant and
+ * recorded them all `unbillable` while 1,989 local tests were green. The engine being real is not
+ * the same property as the engine being D1, and this is the difference.
+ */
+export const D1_MAX_BOUND_PARAMS = 100;
+
+/**
  * The narrowest possible D1Database shim over node:sqlite: prepare/bind/first/run, which is the
  * entire surface store-d1.ts uses. Deliberately thin -- its job is to be a transparent pipe to a
  * real SQL engine, not to emulate D1 semantics. Anything it papered over would be a hole in the
  * seam, so it papers over nothing.
+ *
+ * ONE D1 SEMANTIC IS ENFORCED, and it is not a paper-over, it is the opposite: the bound-parameter
+ * ceiling above. Passing a 8,900-parameter statement to node:sqlite and calling the green result
+ * evidence about D1 is precisely the hole this harness exists not to have.
+ *
+ * `onBind` is an optional observer for tests that need to assert HOW MANY parameters a store method
+ * binds rather than only that it stayed under the ceiling. It sees every bind, reads nothing back,
+ * and changes no behaviour.
  */
-export function d1Over(db: DatabaseSync): any {
+export function d1Over(db: DatabaseSync, onBind?: (sql: string, args: unknown[]) => void): any {
   return {
     prepare(sql: string) {
       const stmt = db.prepare(sql);
       const bound: unknown[] = [];
       const api = {
         bind(...args: unknown[]) {
+          if (args.length > D1_MAX_BOUND_PARAMS) {
+            // The shape of D1's own refusal: the statement never runs. Thrown from bind() rather than
+            // from the execute, because that is where the count becomes knowable and a test that
+            // asserts "this never reaches the engine" needs it to never reach the engine.
+            throw new Error(
+              `D1_ERROR: too many bound parameters: ${args.length} exceeds D1's limit of ` +
+                `${D1_MAX_BOUND_PARAMS}. node:sqlite would have allowed this; D1 will not.`,
+            );
+          }
+          onBind?.(sql, args);
           bound.length = 0;
           // D1 binds null as null; node:sqlite wants null, not undefined.
           for (const a of args) bound.push(a === undefined ? null : a);

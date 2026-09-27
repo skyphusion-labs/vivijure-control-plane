@@ -95,6 +95,76 @@ a population of zero.
 RED before the fix: 2 of 20 in `tests/credits-routes.test.ts`. The assertion that
 went away said `enforcing === true` with the knob on, and it was green the whole
 time nothing was enforced.
+### fix(meter): no LLM overage was ever billed, and a settlement could be asked for a month still running
+
+**Read this as revenue, not as a SQL limit.** `POST /api/admin/meter-settle` threw
+for every tenant on every run. `runLlmSettlement` caught the throw and recorded
+each tenant `unbillable`, so **no LLM overage has ever been billed to anybody.**
+It did not look like a failure: it looked like an orderly report in which nobody
+happened to owe anything. `GET /api/admin/llm-spend` answering 500 for any window
+over about eight hours is the same defect wearing a visible symptom.
+
+If you operate this plane, the consequence is that every month of LLM overage to
+date is uncollected, and the settlement report said so in a vocabulary that reads
+as normal.
+
+Two defects on one money path. They ship together because the first one MASKED
+the second: settlement threw before it could reach the code that under-bills, so
+fixing the throw is what arms the under-bill.
+
+**1. The cause: every LLM overage settlement threw, for every tenant.**
+`readTenantLlmSpend` built an `IN (?2, ?3, ...)` list with one bound parameter
+per roll-up period, capped at `MAX_PERIODS_PER_WINDOW = 20_000`. D1 refuses any
+statement carrying more than 100 bound parameters, and the five-minute cron
+produces about 8,900 periods a month. So `POST /api/admin/meter-settle` threw per
+tenant, `runLlmSettlement` caught it and recorded every tenant `unbillable`, no
+overage was ever billed, and `GET /api/admin/llm-spend` answered 500 for any
+window longer than about eight hours.
+
+The period set is now chosen by a SUBQUERY over the same window, so the statement
+binds FOUR parameters no matter how many periods the window holds. Chunking the
+IN list would also have fit under the ceiling, at roughly 90 sequential D1 round
+trips per tenant per settlement; this is one statement. Both the census and the
+subquery now order by `window_end, id` rather than `window_end` alone, so a tie
+at the LIMIT boundary cannot put a different row in each query's slice and leave
+the reported period count describing a different set from the reported total.
+
+**Why 1,989 green tests said nothing about this, and what changed so they can.**
+The suite drives the real store against `node:sqlite`, which allows roughly
+32,000 variables. A real engine is not the same property as THE real engine.
+`tests/sqlite-d1.ts` now enforces D1's documented 100-parameter ceiling
+(read live 2026-09-26 from the D1 limits page) and throws the way D1 does, with
+the number hardcoded in the harness rather than imported from `src/` so the
+harness cannot agree with the code under test about a vendor limit neither sets.
+Turning the ceiling on broke exactly one call site, the one above, which is also
+the evidence that nothing else in the reachable store over-binds.
+
+`tests/llm-spend-d1-bound-params.test.ts` asserts the invariant that matters (the
+parameter count does not GROW with the period count, checked at two sizes), keeps
+the truncation signal honest, and carries three controls: the harness refuses 101,
+accepts exactly 100, and `node:sqlite` itself accepts 200, which is the reading
+the old suite was getting.
+
+**2. `?period=` accepted the month still in progress.** Settling `2026-09` on the
+26th wrote a debit covering 26 days under `overage:llm:2026-09`. That write is
+idempotent on the period key, so the real month-end run answers
+`already_settled` and the remaining days are never billed by anything, ever, with
+nothing recording that a partial settlement is why. `billingPeriodIsClosed` in
+`src/meter-period.ts` now gates the route, unconditionally rather than only on
+the operator's path, so a derived default that ever drifted into the current
+month would surface as a refusal instead of a quiet partial bill. `windowEnd` is
+exclusive, so a period is closed the instant its successor opens and not a
+millisecond earlier; there is a boundary test on both sides.
+
+**Two existing route cases had to change, and they are worth naming.** The suite
+clock is `1_750_000_000_000` (2025-06-15), and two cases settled `?period=2026-07`
+-- a month that had not merely failed to close, it had not STARTED. Both asserted
+a 200. The gate turned them red, which is the correct direction, and they now name
+a closed period.
+
+RED before the fix: `D1_ERROR: too many bound parameters: 251 exceeds D1's limit
+of 100` from `readTenantLlmSpend`, and 4 failures in the settlement route with the
+guard disabled ("expected 200 to be 400").
 
 ### fix(settings): a settings-backed switch requires an explicit affirmative
 

@@ -84,7 +84,7 @@ import type { ControlPlaneEnv } from "./env";
 import { publicOrigin, studioKekRing, tenantDomainSuffix } from "./env";
 import { kekCensus, sweepReencrypt } from "./kek-rotation";
 import { ingestLlmSpend } from "./llm-spend-ingest";
-import { lastClosedBillingPeriod, parseBillingPeriodKey } from "./meter-period";
+import { billingPeriodIsClosed, lastClosedBillingPeriod, parseBillingPeriodKey } from "./meter-period";
 import { runLlmSettlement } from "./meter-settle-run";
 import { authorizeUrl, configuredProviders, exchangeCode, isSsoProvider } from "./oauth";
 import { parseInventoryBody, reconcileRunPod, TENANT_PAGE_LIMIT } from "./reconcile-runpod";
@@ -2663,6 +2663,26 @@ async function adminRoutes(
     // idempotency reference, so a key whose window disagrees with it would make that reference a lie
     // and could settle one month under another month's identity.
     if (!period) return err("invalid_period", 400, { detail: 'period must be "YYYY-MM"' });
+
+    // REFUSED IF THE PERIOD IS STILL RUNNING. The default above is always a closed period; an
+    // operator-supplied `?period=` was not checked at all, so `?period=2026-09` on the 26th wrote a
+    // debit covering 26 days under `overage:llm:2026-09`. The write is idempotent on that key, so the
+    // real month-end run then answers `already_settled` and the remaining days are never billed by
+    // anything, ever, with no record that a partial settlement is why. There is no way to correct it
+    // from inside this route, which is exactly why it must not be possible to ask for.
+    //
+    // Checked UNCONDITIONALLY rather than only on the operator's path: the derived default is
+    // supposed to be closed, and a guard that trusts that is a guard that would not notice if it
+    // stopped being true.
+    if (!billingPeriodIsClosed(period, new Date(deps.now()))) {
+      return err("period_not_closed", 400, {
+        detail:
+          `billing period ${period.key} has not closed yet (it ends ${period.windowEnd}). Settling a ` +
+          "period still accumulating writes a partial debit that the month-end run cannot replace, " +
+          "because the ledger reference is idempotent on the period key; the rest of the month would " +
+          "never be billed. Omit ?period= to settle the last CLOSED period.",
+      });
+    }
 
     // Parsed ONCE here rather than inside the sweep, so a knob problem is one honest fact about the
     // run instead of an identical refusal repeated per tenant.
