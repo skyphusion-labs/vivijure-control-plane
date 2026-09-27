@@ -1,9 +1,9 @@
 name: Live release gate (scratch)
 
 # Scratch-account live tests for control-plane provisioning legs (vivijure-cf#90).
-# Drives real Cloudflare + RunPod APIs so workerd/API-shape defects cannot ship on
-# green stub CI alone. ZERO GPU invoke spend: RunPod suite creates template+endpoint
-# only; cf-api suite uses prefixed rollins-verify-* resources with afterAll teardown.
+# Drives the real Cloudflare API so workerd/API-shape defects cannot ship on green stub
+# CI alone. ZERO GPU spend: every suite here creates prefixed scratch resources and tears
+# them down in afterAll. The RunPod leg is gone with its test (cp#536).
 #
 # SPEND is gated: workflow_dispatch ONLY; live job runs ONLY when `live` input is true.
 # Secrets (scratch RunPod key, CF provisioner token) must be repo/org Actions secrets
@@ -52,8 +52,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      RUNPOD_LIVE: "1"
-      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
       CF_PROVISIONER_TOKEN: ${{ secrets.CF_PROVISIONER_TOKEN }}
       CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
     steps:
@@ -71,13 +69,19 @@ jobs:
       - name: Preflight -- required secrets present (presence-check only)
         run: |
           set -eu
-          test -n "${RUNPOD_API_KEY:+SET}" || { echo "RUNPOD_API_KEY secret missing"; exit 1; }
+          # No RUNPOD_API_KEY check: no step in this job reaches RunPod any more (cp#536), and a
+          # preflight demanding a credential nothing uses can only fail the gate for a reason that
+          # is not about the gate.
           test -n "${CF_PROVISIONER_TOKEN:+SET}" || { echo "CF_PROVISIONER_TOKEN secret missing"; exit 1; }
           test -n "${CF_ACCOUNT_ID:+SET}" || { echo "CF_ACCOUNT_ID secret missing"; exit 1; }
           echo "all required live-gate secrets present"
 
-      - name: RunPod scratch live (template+endpoint; no invoke)
-        run: npx vitest run tests/runpod.live.test.ts
+      # cp#536: the `RunPod scratch live` step that used to stand here named
+      # tests/runpod.live.test.ts, which fe756cf deleted on 2026-08-15 with the BYOK / dedicated
+      # RunPod path (#430). Every step here runs under `shell: bash -e`, so the job died on that
+      # missing file and NOTHING after it ran -- six weeks in which this gate could not have
+      # reported. Retired rather than repointed: its subject (a per-tenant RunPod template and
+      # endpoint) went with the purge. Which of the other live suites belong here is cp#536.
 
       - name: CF provisioner live (prefixed rollins-verify-* resources)
         run: npx vitest run tests/cf-api.live.test.ts

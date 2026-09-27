@@ -17,7 +17,7 @@
     "guards:config": "bash tests/render-wrangler.test.sh",
     "guards:aup": "bash tests/aup-pin-gate.test.sh",
     "test": "vitest run",
-    "test:live:scratch": "vitest run tests/runpod.live.test.ts tests/cf-api.live.test.ts",
+    "test:live:scratch": "vitest run tests/cf-api.live.test.ts tests/wfp-workflow-binding.live.test.ts",
     "smoke:predeploy": "vitest run tests/pre-deploy-smoke.live.test.ts",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage"
