@@ -25,11 +25,18 @@ describe("allow-list", () => {
   });
 
   // The count is asserted so that dropping an entry fails LOUDLY rather than shipping a cost door
-  // with a missing door. The published ruling first listed six; the measured population is eight,
+  // with a missing door. The published ruling first listed six; the measured population was eight,
   // and the two that were lost (alibaba-wan, alibaba-wan-lora) fail as a refused submit, which is
   // quiet. This test is the thing that makes it not quiet.
-  it("carries exactly the eight measured public endpoints", () => {
-    expect(PUBLIC_ENDPOINT_ALLOWLIST).toHaveLength(8);
+  //
+  // SEVEN since cp#538 removed the `kling` row and cp#541 removed the slug it left behind. A count
+  // here is NOT the parity check -- it cannot tell you WHICH entry moved, and a count that agrees
+  // with itself is what cp#541 was about. The relation lives in
+  // tests/public-endpoint-allowlist-parity.test.ts, which compares this list against
+  // TENANT_MODULE_CATALOG in both directions and names the offender. This stays as the loud,
+  // cheap tripwire for an accidental deletion.
+  it("carries exactly the seven catalogued public endpoints", () => {
+    expect(PUBLIC_ENDPOINT_ALLOWLIST).toHaveLength(7);
     expect(PUBLIC_ENDPOINT_ALLOWLIST).toContain("wan-2-6-i2v");
     expect(PUBLIC_ENDPOINT_ALLOWLIST).toContain("wan-2-2-t2v-720-lora");
     // narration-gen's slug: reachable only by a statement-level matcher upstream, since the module

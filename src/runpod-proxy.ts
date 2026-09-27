@@ -46,17 +46,32 @@ export const RUNPOD_HOST = "https://api.runpod.ai";
  *    SCOPE for the hosted tier on 2026-08-02 ("I want the cloud-i2v modules on the hosted door, it's
  *    literally one of the selling points").
  *
- * Measured at vivijure-cf@b295309, statement-level, against a denominator of 26 modules carrying a
- * src/index.ts: 14 reference api.runpod.ai/v2/, of which 8 hard-code a public slug and 6 read
- * RUNPOD_ENDPOINT_ID from env. Note `narration-gen` builds its URL by CONCATENATION
- * (`"https://api.runpod.ai/v2/" + MODEL`), so a line-level matcher for the literal returns 7 and
- * misses it -- match statements, not lines, and print the denominator.
+ * THE POPULATION THIS LIST MIRRORS IS THE CATALOG, AND IT IS ASSERTED (cp#541). Every entry here
+ * must be the `publicEndpoint` of a `TENANT_MODULE_CATALOG` row, and every such row must be here;
+ * tests/public-endpoint-allowlist-parity.test.ts fails on either direction and names the offender.
+ * An entry with no row is a slug the meter would price for a door no tenant can have, which is what
+ * `kling-v2-1-i2v-pro` became the moment cp#538 dropped its row.
+ *
+ * IT IS DELIBERATELY NOT vivijure-cf's MODULE SET, measured rather than preferred (at
+ * vivijure-cf@7b927b9): NINE modules there declare `const ENDPOINT_ID = "<slug>"` -- the seven this
+ * plane catalogues plus `infinitetalk` and `kling-o1-r2v`, both deliberately uncatalogued -- while
+ * `narration-gen` is catalogued and allow-listed and declares no such constant, building its URL by
+ * CONCATENATION (`"https://api.runpod.ai/v2/" + MODEL`). A gate equating this list with cf's modules
+ * would be red on a correct estate, in both directions at once.
+ *
+ * THE OLD CENSUS HERE IS RETIRED RATHER THAN RENUMBERED (cp#541). It read: "against a denominator of
+ * 26 modules carrying a src/index.ts: 14 reference api.runpod.ai/v2/, of which 8 hard-code a public
+ * slug and 6 read RUNPOD_ENDPOINT_ID". Re-measured at vivijure-cf@7b927b9 the denominator is 34, and
+ * the 14 is now ONE: modules no longer reference the host at all. The call sites moved behind
+ * `modules/_shared/runpod-route.ts`, which is a pure re-export of
+ * `@skyphusion-labs/vivijure-core/runpod-route` (cp#321) -- the single base-string swap the
+ * route-match header describes, carried out. Renumbering 26 to 34 would have re-pinned a sentence
+ * whose subject had dissolved.
  */
 export const PUBLIC_ENDPOINT_ALLOWLIST: readonly string[] = [
   "wan-2-6-i2v", // alibaba-wan
   "wan-2-2-t2v-720-lora", // alibaba-wan-lora
   "google-veo3-1-fast-i2v", // google-veo
-  "kling-v2-1-i2v-pro", // kling
   "minimax-hailuo-2-3-fast", // minimax-hailuo
   "minimax-speech-02-hd", // narration-gen
   "seedance-v1-5-pro-i2v", // seedance
