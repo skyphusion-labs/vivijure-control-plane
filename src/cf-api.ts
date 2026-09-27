@@ -221,6 +221,47 @@ export interface AiBinding {
   type: "ai";
   name: string;
 }
+/**
+ * A Workflows binding (cp#526, and the unlock for the hosted `dialogue` door in cp#524).
+ *
+ * A module worker that exports a `WorkflowEntrypoint` class reaches its own Workflow as
+ * `env.<name>.create(...)`. Four catalogued motion doors (`cf-seedance`, `cf-grok-video`,
+ * `cf-flux-3-video`, `cf-hh1-r2v`) declare `I2V_WORKFLOW`, and both `dialogue` providers declare
+ * one, so a plane that cannot emit this variant cannot give a tenant a talking film.
+ *
+ * SHAPE READ OFF THE SCHEMA OF THE ENDPOINT THIS CLIENT ACTUALLY PUTs TO, not inferred from a
+ * sibling variant. The Workers for Platforms dispatch-namespace script-update reference documents
+ * the `workflow` variant as `name`, `type` and `workflow_name` required, `class_name` optional
+ * ("should only be provided if the Workflow belongs to this script") and `script_name` optional
+ * ("if not provided, defaults to this script name").
+ *
+ * THE GENERAL MULTIPART-UPLOAD-METADATA PAGE DOES NOT LIST THIS VARIANT, and that silence is not
+ * evidence: the same page also omits `dispatch_namespace`, `ratelimit`, `vpc_service` and
+ * `inherit`, all four of which this plane already emits and three of which were live-proven here
+ * against the running API. Read the endpoint schema, not the tutorial.
+ *
+ * `workflow_name` IS AN ACCOUNT-SCOPED RESOURCE NAME, and that is the part that bites a hosted
+ * plane. Every tenant's copy of a module lives in ONE shared dispatch namespace on ONE account, so
+ * two tenants uploading the same module under the module's own wrangler name would be naming the
+ * SAME Workflow. Any emitter must tenant-prefix it exactly as tenantModuleScriptName prefixes the
+ * script name; see the collision measurement in tests/wfp-workflow-binding.live.test.ts.
+ *
+ * NOTHING EMITS THIS YET, DELIBERATELY. The type plus the live proof is one change; deciding where
+ * the per-module triple comes from (the module declares it in its own wrangler.toml, and the
+ * release manifest build-module-release.ts writes carries no bindings at all) is the next one. A
+ * catalogued door whose binding the plane emits WRONG fails every provision at modules_upload, and
+ * typecheck cannot see it -- so the emitter lands on measured ground or not at all.
+ */
+export interface WorkflowBinding {
+  type: "workflow";
+  name: string;
+  /** The ACCOUNT-scoped Workflow name. Tenant-prefix it; see above. */
+  workflow_name: string;
+  /** Only when the Workflow class is exported by THIS script. */
+  class_name?: string;
+  /** Defaults to this script name when omitted. */
+  script_name?: string;
+}
 export interface InheritBinding {
   type: "inherit";
   name: string;
@@ -235,6 +276,7 @@ export type WorkerBinding =
   | RatelimitBinding
   | DispatchNamespaceBinding
   | VpcServiceBinding
+  | WorkflowBinding
   | InheritBinding;
 
 /** An asset in the upload manifest: the path plus a 32-hex hash and byte size. */

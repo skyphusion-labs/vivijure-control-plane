@@ -211,8 +211,18 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   { module: "vidu-q3", publicEndpoint: "vidu-q3-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
   // Cloudflare AI Gateway i2v. Same selling point as the eight RunPod slugs: hosted tenants
   // get the cloud motion backends. needsAiGateway for the trio; writesTenantRenders for R2.
-  // Workflows (I2V_WORKFLOW) are still a FLAG if WfP cannot bind them -- invoke will fail
-  // loud rather than silently omit the module from the catalog.
+  //
+  // THE WORKFLOW GAP IS OURS, NOT CLOUDFLARE'S (cp#526). This used to read "Workflows
+  // (I2V_WORKFLOW) are still a FLAG if WfP cannot bind them", and a hedge like that is what makes
+  // a fixable gap read as a platform wait. Workers for Platforms DOES bind Workflows onto a user
+  // Worker: the dispatch-namespace script-update endpoint this plane already PUTs to documents the
+  // `workflow` binding variant, and cf-api.ts now carries it (WorkflowBinding).
+  //
+  // WHAT IS STILL MISSING IS THE EMITTER, and until it lands these four rows are exactly as latent
+  // as they were. Nothing in the upload loop below pushes a workflow binding, and the release
+  // manifest build-module-release.ts writes carries no bindings to derive one from, so all four
+  // upload with I2V_WORKFLOW ABSENT while every call site in those four modules is an unguarded
+  // env.I2V_WORKFLOW.create(). Do not read these rows as working doors.
   { module: "cf-grok-video", needsAiGateway: true, writesTenantRenders: true },
   { module: "cf-seedance", needsAiGateway: true, writesTenantRenders: true },
   { module: "cf-flux-3-video", needsAiGateway: true, writesTenantRenders: true },

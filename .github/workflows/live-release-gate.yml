@@ -81,3 +81,9 @@ jobs:
 
       - name: CF provisioner live (prefixed rollins-verify-* resources)
         run: npx vitest run tests/cf-api.live.test.ts
+
+      # cp#526 / cp#524: the `workflow` binding variant. A binding variant is not proven by
+      # typechecking; it is proven by the API accepting it and a readback showing it attached.
+      # Prefixed strummer-verify-* resources, torn down in afterAll, zero GPU spend.
+      - name: WfP workflow-binding live (prefixed strummer-verify-* resources)
+        run: npx vitest run tests/wfp-workflow-binding.live.test.ts
