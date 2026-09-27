@@ -112,6 +112,50 @@ describe("parseSharedPool", () => {
     );
   });
 
+  it("REFUSES a pool key that matches NO plan key, which is what a RETIRED capability leaves behind", () => {
+    // cp#527. This is the branch that had no refusal, and it was not hypothetical: the live
+    // SHARED_RUNPOD_ENDPOINTS carried lipsync -> zw6pt4lymf69pk for weeks after cp#517 deleted that
+    // endpoint, and the deploy gate passed the whole time. Not because the probe forgave an
+    // unreachable endpoint -- because parseSharedPool iterates the PLAN and looks each plan key up
+    // in the pool, so a key the plan no longer names is never read, never probed, never reported.
+    //
+    // The file already refuses the OWN-IRON case, and its comment there states the reasoning this
+    // test extends: "Silently dropping a key an operator deliberately wrote is the quiet-degrade
+    // shape this whole file exists to refuse, and it would leave them believing the pool covers
+    // something it does not." A key retired to own iron was refused; a key retired to nothing was
+    // dropped in silence. Same belief, same consequence, one of them unguarded.
+    const withRetired = JSON.parse(POOL_JSON) as Record<string, { id: string; name: string }>;
+    withRetired.lipsync = { id: "zw6pt4lymf69pk", name: "vivijure-musetalk" };
+    const res = parseSharedPool(JSON.stringify(withRetired));
+    expect(res.ok, "a pool naming a retired capability was accepted").toBe(false);
+    if (!res.ok) {
+      expect(res.detail, "the refusal does not name the offending key").toContain("lipsync");
+    }
+  });
+
+  it("CONTROL: the same pool WITHOUT the retired key still resolves, so the refusal above is not blanket", () => {
+    // Without this, the assertion above passes just as well if parseSharedPool started refusing
+    // everything. This is the reading that says the new refusal discriminates.
+    const res = parseSharedPool(POOL_JSON);
+    expect(res.ok, "the refusal is over-broad: a correct pool no longer parses").toBe(true);
+  });
+
+  it("CONTROL: an own-iron key is STILL refused, and the two refusals stay distinguishable", () => {
+    // The pre-existing refusal must not be swallowed by the new one. Skipped rather than faked if
+    // the plan has no door-backed capability, because a control built on an empty population is
+    // the thing it exists to prevent.
+    const door = vpcBackedPlan()[0];
+    if (!door) return;
+    const withOwnIron = JSON.parse(POOL_JSON) as Record<string, unknown>;
+    withOwnIron[door.key] = { id: "x", name: "y" };
+    const res = parseSharedPool(JSON.stringify(withOwnIron));
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.detail).toContain(door.key);
+      expect(res.detail, "an own-iron key was reported as a retired one").toContain("own-iron");
+    }
+  });
+
   it("derives the required keys from the PLAN, so a new satellite makes every pool refuse", () => {
     // Deliberate coupling. Adding a capability to PROVISION_PLAN must break existing pool config
     // loudly rather than produce a shared tier that silently lacks the new capability.
