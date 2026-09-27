@@ -91,3 +91,10 @@ jobs:
       # Prefixed strummer-verify-* resources, torn down in afterAll, zero GPU spend.
       - name: WfP workflow-binding live (prefixed strummer-verify-* resources)
         run: npx vitest run tests/wfp-workflow-binding.live.test.ts
+
+      # cp#537: does a workflow binding need its Workflow to EXIST? Account-level scripts, so the
+      # runtime question is isolated from the dispatch-namespace addressing question. Publishes two
+      # bearer-guarded workers on workers.dev for the seconds it runs and deletes both, which takes
+      # their routes with them.
+      - name: Workflow runtime-binding live (prefixed strummer-verify-* resources)
+        run: npx vitest run tests/workflow-runtime-binding.live.test.ts
