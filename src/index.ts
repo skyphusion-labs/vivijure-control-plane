@@ -471,7 +471,9 @@ export async function handle(
         build: {
           id: meta?.id ?? null,
           timestamp: meta?.timestamp ?? null,
-          tag: meta?.tag ?? null,
+          // An empty string is "bound, and never tagged", which is not a value.
+          // `||` turns that into the same null an unbound binding already uses.
+          tag: meta?.tag || null,
         },
       });
     }
