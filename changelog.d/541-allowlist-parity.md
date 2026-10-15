@@ -17,23 +17,26 @@ re-adding the orphan fails with `['kling-v2-1-i2v-pro']`, and deleting a needed 
 `['alibaba-wan -> wan-2-6-i2v']`.
 
 **The authority is this repo's catalog, and that is measured rather than preferred.** At
-vivijure-cf@7b927b9 TEN modules declare `const ENDPOINT_ID`, NINE of them a literal slug -- the
-seven catalogued here plus `infinitetalk` and `kling-o1-r2v`, both deliberately uncatalogued. The
-tenth is `narration-gen/src/index.ts:66`, `const ENDPOINT_ID = MODEL;`: catalogued and allow-listed,
-declaring the constant NON-literally, so a literal-slug matcher returns nine and misses it. A gate
-equating the allow-list with cf's module set would be red on a correct estate in both directions.
+vivijure-cf@e3d998d NINE modules declare `const ENDPOINT_ID`, EIGHT of them a literal slug. Six of
+the seven catalogued here are in that eight: alibaba-wan, alibaba-wan-lora, google-veo,
+minimax-hailuo, seedance, vidu-q3. The other two literals are `infinitetalk` and `kling-o1-r2v`,
+both deliberately uncatalogued. The ninth is `narration-gen/src/index.ts:66`,
+`const ENDPOINT_ID = MODEL;`: catalogued and allow-listed, declaring the constant NON-literally, so
+a literal-slug matcher returns eight and misses it. A gate equating the allow-list with cf's module
+set would be red on a correct estate in both directions.
 
-**Both census comments are retired rather than renumbered.** `MODULE_DENOMINATOR = 26` was stale
-(34 today), but the number was not the defect: re-measured, TWO references to `api.runpod.ai` remain
-across all module sources and BOTH ARE COMMENTS, so the direct call sites are ZERO where the comment
-claims 14. The base now lives once, as `RUNPOD_DIRECT_BASE` in
-`@skyphusion-labs/vivijure-core@1.25.0`, reached through `modules/_shared/runpod-route.ts`, a pure
-re-export (cp#321) -- the base-string swap the route-match header itself describes. Renumbering
-would have re-pinned a sentence whose subject had dissolved.
+**Both census comments are retired rather than renumbered.** `MODULE_DENOMINATOR = 26` was stale.
+`find modules -path 'modules/*/src/index.ts' | wc -l` is 33 at e3d998d, and was 34 at 7b927b9. The
+number was not the defect: re-measured, TWO references to `api.runpod.ai` remain across all module
+sources and BOTH ARE COMMENTS, so the direct call sites are ZERO where the comment claims 14. The
+base now lives once, as `RUNPOD_DIRECT_BASE` in `@skyphusion-labs/vivijure-core@1.25.0`, reached
+through `modules/_shared/runpod-route.ts`, a pure re-export (cp#321). That is the base-string swap
+the route-match header itself describes. Renumbering would have re-pinned a sentence whose subject
+had dissolved.
 
-(Both figures in this paragraph were corrected in cp#543 before release: as first written they said
-narration-gen declared no such constant, and counted ONE host reference from an `index.ts`-only
-predicate that excluded a module keeping its logic in a sibling file.)
+(cp#544 corrected the first draft of this paragraph against vivijure-cf@7b927b9: TEN declarations,
+NINE literal, denominator 34, and both host hits are comments. Re-measured at e3d998d those three
+numbers are NINE, EIGHT, and 33. The two `api.runpod.ai` hits are still comments.)
 
 Two smaller things worth recording. The orphan slug's removal reverses a call made on cp#539 to keep
 it, which rested on the blind check this fixes. And the new suite's comparator control was first
