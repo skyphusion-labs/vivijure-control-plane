@@ -11,8 +11,9 @@
 // THE MODULE CENSUS THAT USED TO STAND HERE IS RETIRED, NOT RENUMBERED (cp#541). It claimed "14 of
 // 26 modules with a src/index.ts reference the host -- of which 8 hard-code a public slug and 6
 // read RUNPOD_ENDPOINT_ID", measured at vivijure-cf@d26db49 and b295309. Re-measured at
-// vivijure-cf@7b927b9: the denominator is 34, and `grep -rn "api.runpod.ai" modules/*/src/*.ts`
-// returns TWO -- `infinitetalk/src/index.ts:2` and `narration-gen/src/narration-gen.ts:11` -- and
+// vivijure-cf@e3d998d: `find modules -path 'modules/*/src/index.ts' | wc -l` is 33 (34 at
+// 7b927b9), and `grep -rn "api.runpod.ai" modules/*/src/*.ts`
+// returns TWO: `infinitetalk/src/index.ts:2` and `narration-gen/src/narration-gen.ts:11`.
 // BOTH ARE COMMENTS, so the direct call sites in module source are ZERO.
 //
 // (An `index.ts`-only predicate returns ONE and misses narration-gen, which keeps its logic in a
