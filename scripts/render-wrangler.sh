@@ -16,6 +16,19 @@ tpl="$here/wrangler.toml.example"
 
 [ -f "$tpl" ] || { echo "::error::template not found: $tpl" >&2; exit 1; }
 
+# tomllib is stdlib from 3.11. Apple python3 is often 3.9 and has none. Selecting
+# here, before any render, is what stops guards:config from reporting a pile of
+# false failures when `python3` is that interpreter. Search order and the loud
+# refusal live in scripts/select-python.sh: python3.12, then python3.11, then
+# python3. A missing tomllib is an error, not a skip. No new dependency.
+if ! PY="$(bash "$here/scripts/select-python.sh")"; then
+  exit 1
+fi
+if [ -z "$PY" ]; then
+  echo "::error::python selector returned no interpreter; need Python >= 3.11" >&2
+  exit 1
+fi
+
 # --------------------------------------------------------------------------------------------
 # The injected values, split into REQUIRED and ALLOWED-EMPTY.
 #
@@ -174,15 +187,12 @@ shopt -u nocasematch
 # miss a defect, it RELOCATES every failure of that class into whichever unrelated step first
 # touches the artifact, where it arrives wearing that step name and full confidence.
 #
-# tomllib is Python STDLIB from 3.11. Probed as a MODULE rather than inferred from the interpreter
-# existing, because `command -v python3` proves nothing about its libraries. No new dependency.
-# wrangler parses this same document later with a different implementation; this does not replace
-# that, it makes the failure arrive HERE, named, at the point of production.
-if ! python3 -c "import tomllib" 2>/dev/null; then
-  echo "::error::python3 has no tomllib (needs 3.11+); cannot verify the rendered TOML parses" >&2
-  exit 1
-fi
-if ! parse_err="$(python3 -c 'import sys, tomllib
+# tomllib is Python stdlib from 3.11. $PY was selected at startup (scripts/select-python.sh)
+# and that selector already refused a build with no tomllib, by version, rather than
+# letting this parse be skipped. wrangler parses this same document later with a different
+# implementation; this does not replace that, it makes the failure arrive HERE, named, at
+# the point of production.
+if ! parse_err="$("$PY" -c 'import sys, tomllib
 try:
     tomllib.load(open(sys.argv[1], "rb"))
 except Exception as e:

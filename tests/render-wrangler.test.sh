@@ -11,6 +11,23 @@ set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 render="$here/scripts/render-wrangler.sh"
+
+# tomllib is stdlib from 3.11. Apple python3 is 3.9 and has none, and this suite
+# then reports failures on an unmodified tree: every parse prints FAIL because
+# that interpreter has no parser. Select python3.12, then python3.11, then
+# python3, and refuse anything older by name BEFORE a check runs. A missing
+# tomllib is an error from the selector, never a skipped parse.
+if ! PY="$(bash "$here/scripts/select-python.sh")"; then
+  exit 1
+fi
+if [ -z "$PY" ]; then
+  echo "::error::python selector returned no interpreter; need Python >= 3.11" >&2
+  exit 1
+fi
+if ! bash "$here/tests/select-python.test.sh"; then
+  exit 1
+fi
+
 tmp="$(mktemp -d)"
 trap "rm -rf $tmp" EXIT
 
@@ -178,7 +195,7 @@ check "an empty pool value still renders (no shared tier is a valid config)" pas
 assert_toml() {
   local name="$1" expr="$2" want="$3" file="${4:-$tmp/out.toml}"
   local got
-  got="$(python3 -c "
+  got="$("$PY" -c "
 import sys, tomllib
 d = tomllib.load(open('$file','rb'))
 print($expr)
@@ -224,7 +241,7 @@ set_full_env
 # every key happened to exist for unrelated reasons. Re-run them against a config deliberately
 # regressed to the 2026-07-19 shape (assets moved below [observability]) and require them to FAIL.
 # A guard only observed passing is an assumption with a green checkmark.
-python3 - "$tmp/out.toml" "$tmp/regressed.toml" <<'PY'
+"$PY" - "$tmp/out.toml" "$tmp/regressed.toml" <<'PY'
 import re, sys
 src = open(sys.argv[1]).read()
 line = re.search(r"^assets = \{.*\}$", src, re.M)
@@ -253,7 +270,7 @@ fi
 # this is the pipeline catching it. Detail: scripts/var-census.py.
 echo ""
 echo "var census:"
-if python3 "$here/scripts/var-census.py" "$here"; then
+if "$PY" "$here/scripts/var-census.py" "$here"; then
   echo "  ok   every placeholder is allowlisted and supplied by BOTH deploy render blocks"
   pass=$((pass + 1))
 else
@@ -274,7 +291,7 @@ cp "$here/scripts/render-wrangler.sh" "$census_tmp/scripts/"
 cp "$here/.github/workflows/deploy.yml" "$census_tmp/.github/workflows/"
 cp "$here/src/env.ts" "$census_tmp/src/"
 { cat "$here/wrangler.toml.example"; echo "CENSUS_CONTROL_VAR = \"\${CENSUS_CONTROL_VAR}\""; } > "$census_tmp/wrangler.toml.example"
-if python3 "$here/scripts/var-census.py" "$census_tmp" >/dev/null 2>&1; then
+if "$PY" "$here/scripts/var-census.py" "$census_tmp" >/dev/null 2>&1; then
   echo "  FAILED CONTROL: the census accepted an unlisted placeholder -- it proves nothing"
   fail=$((fail + 1))
 else
@@ -298,7 +315,7 @@ cp "$here/wrangler.toml.example" "$census_tmp/"
 sed "s|^export interface ControlPlaneEnv extends SmokeRenderBoundEnv {|&\n  CENSUS_CONTROL_PLANTED_VAR?: string;|" \
   "$here/src/env.ts" > "$census_tmp/src/env.ts"
 if grep -q "CENSUS_CONTROL_PLANTED_VAR" "$census_tmp/src/env.ts"; then
-  census_out="$(python3 "$here/scripts/var-census.py" "$census_tmp" 2>&1)" && census_rc=0 || census_rc=1
+  census_out="$("$PY" "$here/scripts/var-census.py" "$census_tmp" 2>&1)" && census_rc=0 || census_rc=1
   if [ "$census_rc" -ne 0 ] && printf "%s" "$census_out" | grep -q "CENSUS_CONTROL_PLANTED_VAR is typed in src/env.ts and declared in NO list"; then
     echo "  ok   CONTROL: the census refuses a var typed in env.ts and declared nowhere"
     pass=$((pass + 1))
@@ -322,7 +339,7 @@ cp "$here/wrangler.toml.example" "$census_tmp/"
 cp "$here/src/env.ts" "$census_tmp/src/"
 sed "s|^ALLOW_EMPTY=\"|ALLOW_EMPTY=\"CF_PROVISIONER_TOKEN |" \
   "$here/scripts/render-wrangler.sh" > "$census_tmp/scripts/render-wrangler.sh"
-census_out="$(python3 "$here/scripts/var-census.py" "$census_tmp" 2>&1)" && census_rc=0 || census_rc=1
+census_out="$("$PY" "$here/scripts/var-census.py" "$census_tmp" 2>&1)" && census_rc=0 || census_rc=1
 if [ "$census_rc" -ne 0 ] && printf "%s" "$census_out" | grep -q "CF_PROVISIONER_TOKEN is declared a SECRET"; then
   echo "  ok   CONTROL: the census refuses a declared secret named in a tracked deploy list"
   pass=$((pass + 1))
@@ -338,7 +355,7 @@ rm -rf "$census_tmp"
 # `## Unreleased`, and the next three merges had nowhere else to go.
 echo ""
 echo "changelog immutability:"
-if python3 "$here/scripts/changelog-released-immutable.py" "$here" >/dev/null 2>&1; then
+if "$PY" "$here/scripts/changelog-released-immutable.py" "$here" >/dev/null 2>&1; then
   echo "  ok   every released section still says what it said at its tag"
   pass=$((pass + 1))
 else
@@ -358,7 +375,7 @@ mk_cl_copy() {
 
 # Plant an extra entry inside the section of $2 in the changelog at $1.
 plant_entry() {
-  python3 - "$1" "$2" <<"PY"
+  "$PY" - "$1" "$2" <<"PY"
 import sys
 path, tag = sys.argv[1], sys.argv[2]
 lines = open(path).read().split("\n")
@@ -391,7 +408,7 @@ mk_synthetic_hatch_fixture() {
 # the tag above was already cut, and left UNCOMMITTED -- the same shape as a real post-tag
 # correction: the git object at the tag does not carry it, the working tree does.
 declare_marker() {
-  python3 - "$1" "$2" <<"PY"
+  "$PY" - "$1" "$2" <<"PY"
 import sys
 path, tag = sys.argv[1], sys.argv[2]
 lines = open(path).read().split("\n")
@@ -413,7 +430,7 @@ cl_tmp="$(mktemp -d)"
 git -C "$here" worktree list >/dev/null 2>&1
 mk_cl_copy "$cl_tmp"
 plant_entry "$cl_tmp/CHANGELOG.md" "$latest_tag"
-cl_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$cl_tmp" 2>&1)" && cl_rc=0 || cl_rc=1
+cl_out="$("$PY" "$here/scripts/changelog-released-immutable.py" "$cl_tmp" 2>&1)" && cl_rc=0 || cl_rc=1
 if [ "$cl_rc" -ne 0 ] && printf "%s" "$cl_out" | grep -q "the ${latest_tag} section has CHANGED"; then
   echo "  ok   CONTROL: an entry planted under a released heading is refused, by name"
   pass=$((pass + 1))
@@ -429,7 +446,7 @@ rm -rf "$cl_tmp"
 # itself. The guard found the planted drift and then permitted it, silently, for six days.
 mention_tmp="$(mktemp -d)"
 mk_cl_copy "$mention_tmp"
-python3 - "$mention_tmp/CHANGELOG.md" "$latest_tag" <<"PY"
+"$PY" - "$mention_tmp/CHANGELOG.md" "$latest_tag" <<"PY"
 import sys
 path, tag = sys.argv[1], sys.argv[2]
 lines = open(path).read().split("\n")
@@ -439,7 +456,7 @@ lines.insert(i + 2, "  `**CORRECTED AFTER PUBLICATION`. Declared, never inferred
 open(path, "w").write("\n".join(lines))
 PY
 plant_entry "$mention_tmp/CHANGELOG.md" "$latest_tag"
-men_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$mention_tmp" 2>&1)" && men_rc=0 || men_rc=1
+men_out="$("$PY" "$here/scripts/changelog-released-immutable.py" "$mention_tmp" 2>&1)" && men_rc=0 || men_rc=1
 if [ "$men_rc" -ne 0 ] && printf "%s" "$men_out" | grep -q "the ${latest_tag} section has CHANGED"; then
   echo "  ok   CONTROL: a section that MENTIONS the marker in prose is still checked"
   pass=$((pass + 1))
@@ -455,7 +472,7 @@ rm -rf "$mention_tmp"
 # away from the same class of defect.
 undeclared_tmp="$(mktemp -d)"
 mk_cl_copy "$undeclared_tmp"
-python3 - "$undeclared_tmp/CHANGELOG.md" "$latest_tag" <<"PY"
+"$PY" - "$undeclared_tmp/CHANGELOG.md" "$latest_tag" <<"PY"
 import sys
 path, tag = sys.argv[1], sys.argv[2]
 lines = open(path).read().split("\n")
@@ -463,7 +480,7 @@ i = next(n for n, l in enumerate(lines) if l.startswith("## " + tag))
 lines.insert(i + 2, "**CORRECTED AFTER PUBLICATION (planted).** A declaration with no allowlist row.\n")
 open(path, "w").write("\n".join(lines))
 PY
-und_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$undeclared_tmp" 2>&1)" && und_rc=0 || und_rc=1
+und_out="$("$PY" "$here/scripts/changelog-released-immutable.py" "$undeclared_tmp" 2>&1)" && und_rc=0 || und_rc=1
 if [ "$und_rc" -ne 0 ] && printf "%s" "$und_out" | grep -q "does not list it"; then
   echo "  ok   CONTROL: a declaration alone does not waive; the allowlist is required"
   pass=$((pass + 1))
@@ -484,7 +501,7 @@ hatch_tmp="$(mktemp -d)"
 mk_synthetic_hatch_fixture "$hatch_tmp" "$allowed_tag"
 declare_marker "$hatch_tmp/CHANGELOG.md" "$allowed_tag"
 plant_entry "$hatch_tmp/CHANGELOG.md" "$allowed_tag"
-hatch_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$hatch_tmp" 2>&1)" && hatch_rc=0 || hatch_rc=1
+hatch_out="$("$PY" "$here/scripts/changelog-released-immutable.py" "$hatch_tmp" 2>&1)" && hatch_rc=0 || hatch_rc=1
 if [ "$hatch_rc" -eq 0 ] && printf "%s" "$hatch_out" | grep -q "${allowed_tag} is an allowlisted post-publication correction"; then
   echo "  ok   POSITIVE CONTROL: an allowlisted, declared correction is still permitted"
   pass=$((pass + 1))
@@ -505,7 +522,7 @@ if diff -q "$here/scripts/changelog-released-immutable.py" "$mutant_py" >/dev/nu
   echo "  FAILED CONTROL: the mutation did not change the script, so this control tested nothing"
   fail=$((fail + 1))
 else
-  mutant_out="$(python3 "$mutant_py" "$hatch_tmp" 2>&1)" && mutant_rc=0 || mutant_rc=1
+  mutant_out="$("$PY" "$mutant_py" "$hatch_tmp" 2>&1)" && mutant_rc=0 || mutant_rc=1
   if [ "$mutant_rc" -ne 0 ] && printf "%s" "$mutant_out" | grep -q "the ${allowed_tag} section has CHANGED"; then
     echo "  ok   MUTATION CONTROL: disabling the allowlist mechanism turns the hatch control RED"
     pass=$((pass + 1))
@@ -517,7 +534,7 @@ fi
 
 # Restore: rerun the REAL script, unmutated, against the SAME fixture right after. This proves the
 # red above came from the mutation and not from a fixture the mutant pass left corrupted.
-restore_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$hatch_tmp" 2>&1)" && restore_rc=0 || restore_rc=1
+restore_out="$("$PY" "$here/scripts/changelog-released-immutable.py" "$hatch_tmp" 2>&1)" && restore_rc=0 || restore_rc=1
 if [ "$restore_rc" -eq 0 ] && printf "%s" "$restore_out" | grep -q "${allowed_tag} is an allowlisted post-publication correction"; then
   echo "  ok   MUTATION CONTROL: the real script is green again on the same fixture right after the mutant reddened it"
   pass=$((pass + 1))
@@ -539,7 +556,7 @@ poison_tmp="$(mktemp -d)"
 mk_cl_copy "$poison_tmp"
 plant_entry "$poison_tmp/CHANGELOG.md" "$latest_tag"
 plant_entry "$poison_tmp/CHANGELOG.md" "$allowed_tag"
-poison_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$poison_tmp" 2>&1)" && poison_rc=0 || poison_rc=1
+poison_out="$("$PY" "$here/scripts/changelog-released-immutable.py" "$poison_tmp" 2>&1)" && poison_rc=0 || poison_rc=1
 if [ "$poison_rc" -ne 0 ] \
   && printf "%s" "$poison_out" | grep -q "the ${latest_tag} section has CHANGED" \
   && printf "%s" "$poison_out" | grep -q "${allowed_tag} is an allowlisted post-publication correction"; then
@@ -568,14 +585,14 @@ fi
 # correction nobody is told about is the record lying by omission.
 silent_tmp="$(mktemp -d)"
 mk_cl_copy "$silent_tmp"
-python3 - "$silent_tmp/CHANGELOG.md" <<"PY"
+"$PY" - "$silent_tmp/CHANGELOG.md" <<"PY"
 import sys
 path = sys.argv[1]
 lines = open(path).read().split("\n")
 open(path, "w").write("\n".join(l for l in lines if not l.startswith("**CORRECTED AFTER PUBLICATION")))
 PY
 plant_entry "$silent_tmp/CHANGELOG.md" "$allowed_tag"
-sil_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$silent_tmp" 2>&1)" && sil_rc=0 || sil_rc=1
+sil_out="$("$PY" "$here/scripts/changelog-released-immutable.py" "$silent_tmp" 2>&1)" && sil_rc=0 || sil_rc=1
 if [ "$sil_rc" -ne 0 ] && printf "%s" "$sil_out" | grep -q "carries no line BEGINNING"; then
   echo "  ok   CONTROL: an allowlisted section that does not SAY it was corrected is refused"
   pass=$((pass + 1))
@@ -593,7 +610,7 @@ rm -rf "$silent_tmp"
 vac_tmp="$(mktemp -d)"
 if git clone -q --depth 1 --no-tags "file://$here/.git" "$vac_tmp/r" 2>/dev/null; then
   cp "$here/scripts/changelog-released-immutable.py" "$here/CHANGELOG.md" "$vac_tmp/r/"
-  vac_out="$(cd "$vac_tmp/r" && python3 changelog-released-immutable.py . 2>&1)" && vac_rc=0 || vac_rc=1
+  vac_out="$(cd "$vac_tmp/r" && "$PY" changelog-released-immutable.py . 2>&1)" && vac_rc=0 || vac_rc=1
   if [ "$vac_rc" -ne 0 ] && printf "%s" "$vac_out" | grep -q "compared ZERO released sections"; then
     echo "  ok   CONTROL: a tagless checkout is REFUSED, not reported as a pass"
     pass=$((pass + 1))
@@ -613,14 +630,14 @@ rm -rf "$vac_tmp"
 # reported ok because the section it happened to look at matched its tag.
 dup_tmp="$(mktemp -d)"
 cp -r "$here/.git" "$dup_tmp/.git"
-python3 - "$here/CHANGELOG.md" "$dup_tmp/CHANGELOG.md" <<"PY"
+"$PY" - "$here/CHANGELOG.md" "$dup_tmp/CHANGELOG.md" <<"PY"
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 s = open(src).read()
 i = s.index("## v1.18.0")
 open(dst, "w").write(s[:i] + "## v1.18.0 -- 2026-07-28\n\n### a stray section from a bad merge\n\n" + s[i:])
 PY
-dup_out="$(python3 "$here/scripts/changelog-released-immutable.py" "$dup_tmp" 2>&1)" && dup_rc=0 || dup_rc=1
+dup_out="$("$PY" "$here/scripts/changelog-released-immutable.py" "$dup_tmp" 2>&1)" && dup_rc=0 || dup_rc=1
 if [ "$dup_rc" -ne 0 ] && printf "%s" "$dup_out" | grep -q "MORE THAN ONCE"; then
   echo "  ok   CONTROL: a duplicated released heading is refused, not half-checked"
   pass=$((pass + 1))
