@@ -53,23 +53,27 @@ export const RUNPOD_HOST = "https://api.runpod.ai";
  * `kling-v2-1-i2v-pro` became the moment cp#538 dropped its row.
  *
  * IT IS DELIBERATELY NOT vivijure-cf's MODULE SET, measured rather than preferred. At
- * vivijure-cf@7b927b9, `grep -rnE 'const ENDPOINT_ID\s*=' modules/<m>/src/*.ts` returns TEN
- * declarations, NINE of them a literal slug: the seven this plane catalogues plus `infinitetalk`
- * and `kling-o1-r2v`, both deliberately uncatalogued. The tenth is `narration-gen/src/index.ts:66`,
- * `const ENDPOINT_ID = MODEL;` -- catalogued and allow-listed, declaring the constant NON-LITERALLY,
- * so a literal-slug matcher returns nine and misses it. (This paragraph previously said narration-gen
- * "declares no such constant"; it declares one, just not a literal. The conclusion is unchanged.)
- * A gate equating this list with cf's modules would be red on a correct estate, in both directions.
+ * vivijure-cf@e3d998d, `grep -rnE 'const ENDPOINT_ID\s*=' modules/<m>/src/*.ts` returns NINE
+ * declarations, EIGHT of them a literal slug. Six of the seven this plane catalogues are in that
+ * eight: alibaba-wan, alibaba-wan-lora, google-veo, minimax-hailuo, seedance, vidu-q3. The other
+ * two literals are `infinitetalk` and `kling-o1-r2v`, both deliberately uncatalogued. The ninth
+ * declaration is `narration-gen/src/index.ts:66`, `const ENDPOINT_ID = MODEL;`. It is catalogued
+ * and allow-listed, and it is not a literal, so a literal-slug matcher returns eight and misses it.
+ * At vivijure-cf@7b927b9 this paragraph counted TEN declarations and NINE literals. That count
+ * moved. narration-gen still declares one constant. It is still not a literal. The conclusion
+ * is unchanged. A gate equating this list with cf's modules would be red on a correct estate,
+ * in both directions.
  *
  * THE OLD CENSUS HERE IS RETIRED RATHER THAN RENUMBERED (cp#541). It read: "against a denominator of
  * 26 modules carrying a src/index.ts: 14 reference api.runpod.ai/v2/, of which 8 hard-code a public
- * slug and 6 read RUNPOD_ENDPOINT_ID". Re-measured at vivijure-cf@7b927b9 the denominator is 34, and
- * `grep -rn "api.runpod.ai" modules/<m>/src/*.ts` returns TWO -- `infinitetalk/src/index.ts:2` and
- * `narration-gen/src/narration-gen.ts:11` -- and BOTH ARE COMMENTS, so the direct call sites in
+ * slug and 6 read RUNPOD_ENDPOINT_ID". Re-measured at vivijure-cf@e3d998d,
+ * `find modules -path 'modules/<m>/src/index.ts' | wc -l` is 33. It was 34 at 7b927b9.
+ * `grep -rn "api.runpod.ai" modules/<m>/src/*.ts` returns TWO: `infinitetalk/src/index.ts:2` and
+ * `narration-gen/src/narration-gen.ts:11`. BOTH ARE COMMENTS, so the direct call sites in
  * module source are ZERO. The base now lives once, in core: `RUNPOD_DIRECT_BASE` at
  * `@skyphusion-labs/vivijure-core@1.25.0` `dist/runpod-route.js:71`, reached through
- * `modules/_shared/runpod-route.ts`, a pure re-export (cp#321) -- the single base-string swap the
- * route-match header describes, carried out. Renumbering 26 to 34 would have re-pinned a sentence
+ * `modules/_shared/runpod-route.ts`, a pure re-export (cp#321). That is the single base-string
+ * swap the route-match header describes. Renumbering 26 to 33 would have re-pinned a sentence
  * whose subject had dissolved.
  */
 export const PUBLIC_ENDPOINT_ALLOWLIST: readonly string[] = [
