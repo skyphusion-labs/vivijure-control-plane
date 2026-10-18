@@ -154,4 +154,26 @@ describe("GET /api/platform/version", () => {
       build: { id: meta.id, timestamp: meta.timestamp, tag: meta.tag },
     });
   });
+
+  it("an empty Workers tag reads as unset (cp#534)", async () => {
+    const { default: worker } = await import("../src/index.js");
+    const res = await worker.fetch(
+      new Request("https://studio.vivijure.com/api/platform/version"),
+      { ...baseEnv, CF_VERSION_METADATA: { id: "ver_empty", timestamp: "2026-08-01T01:35:00.000Z", tag: "" } } as never,
+      { waitUntil: () => {}, passThroughOnException: () => {} } as never,
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { build: { tag: string | null } }).build.tag).toBe(null);
+  });
+});
+
+describe("deploy.yml sets the Workers version tag (cp#534)", () => {
+  const yml = readFileSync(join(repoRoot, ".github/workflows/deploy.yml"), "utf8");
+
+  it("passes --tag from the git ref, and dispatch-<sha> when there is no tag", () => {
+    expect(yml).toContain('TAG="${GITHUB_REF_NAME}"');
+    expect(yml).toContain('TAG="dispatch-${GITHUB_SHA}"');
+    expect(yml).toContain('npx wrangler deploy --tag "$TAG"');
+    expect(yml).not.toMatch(/^\s*run: npx wrangler deploy\s*$/m);
+  });
 });
