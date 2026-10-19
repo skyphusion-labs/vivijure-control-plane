@@ -167,8 +167,10 @@ The two bundles handle pretty URLs **differently and deliberately**:
 
 - **vivijure-cf pins `html_handling = "none"`** (exact paths only, to avoid a redirect loop) and maps
   pretty URLs itself in `STUDIO_PAGE_ASSETS`: **ten URLs onto four files.** Note `/` and
-  `/index.html` both serve `modules.html`. (Until the public demo was removed on 2026-10-19 a demo
-  deploy remapped `/` to `planner.html`; that remap is gone, so one URL now serves one page.)
+  `/index.html` both serve `modules.html`. (A demo deploy used to remap `/` to `planner.html`. The
+  demo went in two steps: the `demo.vivijure.com` custom domain was removed **2026-10-08**, and the
+  DEPLOYMENT was deleted **2026-10-19**, which is when the remap went with it. One URL now serves
+  one page.)
 - **the control plane leaves `html_handling` at the default** on purpose, so it gets platform
   pretty-URL behaviour on top of its file set.
 
