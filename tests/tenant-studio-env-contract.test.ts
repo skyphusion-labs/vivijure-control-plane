@@ -269,46 +269,60 @@ describe("the tenant studio platform-env contract (#116)", () => {
 // reads is one we write.
 //
 // WHAT THIS SNAPSHOT IS, stated honestly rather than implied: the required_vars of the pinned
-// artifact, read out of R2 on 2026-07-27 (studio-releases/v1.12.0/manifest.json). It is a RECORDED
-// SAMPLE. It catches a regression -- someone deleting a disposition, or a var this plane already
-// knows about going missing -- and it CANNOT catch the next var a future vivijure-cf release adds.
-// That gap is structural to a snapshot, and the only real closure is a deploy-time check against
-// the manifest the plane is actually pinned to; filed separately rather than pretended away here.
-const PINNED_RELEASE_REQUIRED_VARS_V1_12_0 = [
+// artifact, read out of the published v1.37.1 release manifest on 2026-10-19
+// (studio-releases/v1.37.1/manifest.json, 19 entries). It is a RECORDED SAMPLE. It catches a
+// regression -- someone deleting a disposition, or a var this plane already knows about going
+// missing -- and it CANNOT catch the next var a future vivijure-cf release adds. That gap is
+// structural to a snapshot, and the only real closure is a deploy-time check against the manifest
+// the plane is actually pinned to; filed separately rather than pretended away here.
+//
+// RE-SAMPLED FROM v1.12.0 TO v1.37.1 on 2026-10-19 (cp#556, cp#561). The previous sample was taken
+// on 2026-07-27, when the plane was pinned to v1.12.0. The deployed plane now carries
+// STUDIO_RELEASE=v1.37.1 as a binding, verified by reading the live Worker rather than the Actions
+// variable, which is a different surface: bindings are fixed at deploy time, so the variable is a
+// proposal and the binding is the pin.
+//
+// TWO CONSEQUENCES, and the second is the one worth stating. It DROPS the eight DEMO_* vars, which
+// is what makes deleting their dispositions safe: the pinned release no longer declares them, so
+// assertDispositionCoversContract can no longer be handed one. And it ADDS seven vars this
+// snapshot never checked -- AUDIO_BEAT_SYNC_URL, AUDIO_MASTER_URL, AUDIO_MIX_URL,
+// FINISH_BLENDER_DOORS, FINISH_UPSCALE_DOORS, IMAGE_PREP_URL and VIDEO_FINISH_URL -- so this is a
+// WIDER assertion than the one it replaces, not merely a newer one. A snapshot that only ever
+// shrinks is a gate quietly relaxing.
+const PINNED_RELEASE_REQUIRED_VARS_V1_37_1 = [
   "ABUSE_REPORT_URL",
   "ACCESS_AUD",
   "ACCESS_TEAM_DOMAIN",
   "ALLOW_UNAUTHENTICATED",
+  "AUDIO_BEAT_SYNC_URL",
+  "AUDIO_MASTER_URL",
+  "AUDIO_MIX_URL",
   "AUTH_MODE",
-  "DEMO_ARTIFACT_ORIGIN",
-  "DEMO_ASSISTANT_MODEL",
-  "DEMO_CHAT_GLOBAL_DAILY",
-  "DEMO_CHAT_PER_IP_DAILY",
-  "DEMO_RENDER_ENABLED",
-  "DEMO_RENDER_GLOBAL_DAILY",
-  "DEMO_RENDER_PER_IP_DAILY",
-  "DEMO_RENDER_QUEUE_DEPTH",
   "FILM_CLIP_DURATION_FLOOR",
+  "FINISH_BLENDER_DOORS",
+  "FINISH_UPSCALE_DOORS",
+  "IMAGE_PREP_URL",
   "PLANNER_AI_MOCK",
   "R2_S3_BUCKET",
   "R2_S3_ENDPOINT",
   "R2_STORAGE_QUOTA_BYTES",
   "SPEND_DAILY_CEILING",
   "SPEND_LIMIT_FAIL_CLOSED",
+  "VIDEO_FINISH_URL",
 ];
 
 describe("the pinned release contract, not just our own table (cp#183)", () => {
   it("has a disposition for every var the PINNED release declares", () => {
     // This is the assertion that was red on main: R2_STORAGE_QUOTA_BYTES had no entry, so this
     // threw exactly as the provision path did.
-    expect(() => assertDispositionCoversContract(PINNED_RELEASE_REQUIRED_VARS_V1_12_0)).not.toThrow();
+    expect(() => assertDispositionCoversContract(PINNED_RELEASE_REQUIRED_VARS_V1_37_1)).not.toThrow();
   });
 
   it("CONTROL: a var with no disposition still REFUSES, naming it", () => {
     // Without this the check above could pass because the assertion accepts everything, which is
     // the vacuous-negative shape that let the real defect through in the first place.
     expect(() =>
-      assertDispositionCoversContract([...PINNED_RELEASE_REQUIRED_VARS_V1_12_0, "SOME_FUTURE_VAR"]),
+      assertDispositionCoversContract([...PINNED_RELEASE_REQUIRED_VARS_V1_37_1, "SOME_FUTURE_VAR"]),
     ).toThrow(/SOME_FUTURE_VAR/);
   });
 

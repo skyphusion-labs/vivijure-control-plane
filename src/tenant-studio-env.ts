@@ -136,23 +136,6 @@ export const TENANT_STUDIO_VAR_DISPOSITION: Record<string, { disposition: VarDis
   },
   ACCESS_AUD: { disposition: "not-hosted", why: "Cloudflare Access auth, same as ACCESS_TEAM_DOMAIN" },
   PLANNER_AI_MOCK: { disposition: "not-hosted", why: "test-only planner mock; absent = the real planner" },
-  // THE EIGHT DEMO_* ENTRIES BELOW DESCRIBE A DOOR THAT NO LONGER EXISTS, AND THEY MUST STAY
-  // UNTIL THE STUDIO PIN MOVES PAST ITS REMOVAL. Conrad ruled the public demo removed entirely on
-  // 2026-10-19 and the Cloudflare resources (Worker, D1, R2 bucket, AI Gateway, hostname) are
-  // deleted; vivijure-cf drops the vars in the same wave. But `assertDispositionCoversContract`
-  // runs on EVERY provision and EVERY upgrade against the vars the PINNED studio release declares,
-  // so deleting an entry here while the pin still declares the var throws on every provision and
-  // every upgrade (the failure this file's header records). Delete them only AFTER the plane is
-  // pinned to a studio release that no longer declares them, and verify against that release's
-  // manifest, not against this comment.
-  DEMO_RENDER_ENABLED: { disposition: "not-hosted", why: "retired public demo studio only; absent = off" },
-  DEMO_ARTIFACT_ORIGIN: { disposition: "not-hosted", why: "retired public demo studio only" },
-  DEMO_ASSISTANT_MODEL: { disposition: "not-hosted", why: "retired public demo studio only" },
-  DEMO_RENDER_PER_IP_DAILY: { disposition: "not-hosted", why: "retired public demo studio only" },
-  DEMO_RENDER_GLOBAL_DAILY: { disposition: "not-hosted", why: "retired public demo studio only" },
-  DEMO_RENDER_QUEUE_DEPTH: { disposition: "not-hosted", why: "retired public demo studio only" },
-  DEMO_CHAT_PER_IP_DAILY: { disposition: "not-hosted", why: "retired public demo studio only" },
-  DEMO_CHAT_GLOBAL_DAILY: { disposition: "not-hosted", why: "retired public demo studio only" },
   VIDEO_FINISH_URL: {
     disposition: "conditional",
     why: "Traefik SUBMIT origin. Bound when the plane var is set. Unset = assemble off.",
