@@ -1,6 +1,6 @@
 # Standing post-enforce WAF watch: OWASP 949110 (cp#14)
 
-**Domain:** `vivijure.com` (and studio / demo / mcp hostnames on the same zone).
+**Domain:** `vivijure.com` (and studio / mcp hostnames on the same zone).
 **Mode:** enforce since 2026-07-18 (tuning window had zero legitimate blocks).
 
 ## Why this exists
@@ -18,7 +18,7 @@ JSON POST**.
 ## Standing check
 
 **Signal:** `949110` fired count stays **0** on legitimate surfaces (or every fire is attributable
-to scanners, not studio/demo/mcp API clients).
+to scanners, not studio/mcp API clients).
 
 **GraphQL** (`firewallEventsAdaptiveGroups`), filter `ruleId = "6179ae15870a4bb7b2d480d4843b323c"`.
 Any non-zero count on a non-scanner path is the signal. Re-query on a schedule (weekly is enough
@@ -105,7 +105,6 @@ covers that.** Re-read all three from the live zone when either control fires.
 - `studio.vivijure.com/` and `/api/*`
 - `studio-mcp.vivijure.com/mcp`
 - `search-internal.skyphusion.org` / internal MCP (if on same zone policy)
-- `demo.vivijure.com/`
 - apex + `www` + static assets
 
 ### Score-contributing rules seen on legitimate traffic (2026-07-18 window)

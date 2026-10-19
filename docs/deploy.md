@@ -319,8 +319,9 @@ gateways for other products; the full census (every gateway that exists, whether
 uses it) is tracked internally, and this plane never widens past the two rows above without that
 census being updated first.
 
-**Dev traffic is AUTHENTICATED, deliberately.** The cheap option was to reuse `vivijure-demo`
-(`authentication: false`) and skip the token. The standing rationale from cp#185 rules that out: an
+**Dev traffic is AUTHENTICATED, deliberately.** The cheap option was to reuse the unauthenticated
+`vivijure-demo` gateway (`authentication: false`) and skip the token. That gateway has since been
+deleted with the public demo (2026-10-19), but the rule it illustrates is the point. The standing rationale from cp#185 rules that out: an
 unauthenticated gateway has a public, guessable URL, and keyless Unified Billing works THROUGH it,
 so an unauthenticated gateway is an open proxy to our credit balance. That argument does not weaken
 because the caller is a dev box; the exposed surface is the gateway, not the caller. A dev gateway
