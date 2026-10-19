@@ -19,8 +19,23 @@ construction*, without anyone having to police anything:
 | Surface | Why the bright line holds today |
 |---|---|
 | `vivijure.skyphusion.org` (Conrad's private instance) | Not open to strangers. Conrad and the crew, token-gated. The people generating are known. |
-| `demo.vivijure.com` (public demo) | **It renders nothing.** Every state-changing request is refused and the AI/GPU integrations are not connected. The catalog is curator-vetted and seeded. The code says so in as many words: the bright line is "satisfied BY CONSTRUCTION" ([`vivijure-cf src/demo-render.ts`](https://github.com/skyphusion-labs/vivijure-cf/blob/main/src/demo-render.ts)). |
 | Self-hosted instances | Not ours. The operator is responsible, and we architecturally cannot see them. |
+
+**The public demo, retired (corrected 2026-10-19).** Until this correction the table above carried a
+third row for `demo.vivijure.com` and reasoned about what it renders. That surface no longer exists.
+Skyphusion Labs served the public demo from July 2026 (the earliest `vivijure-cf` commit naming
+`demo.vivijure.com` is dated 2026-07-16) until 2026-10-08, when its custom domain was removed on
+purpose. On 2026-10-19 the deployment itself was deleted under Conrad's ruling that the demo is removed
+entirely: both Worker scripts (`vivijure-demo`, `vivijure-demo-local-gpu`), its D1 database, its R2
+bucket and its AI Gateway. No route, custom domain or DNS record remains, and no configuration change
+brings it back. While it ran, the bright line held by construction: the only inputs were seeded,
+curator-vetted catalog entries, with no free text and no uploads, and the only accepted mutation was a
+capped click-to-render of one seeded shot on hardware we owned; every other state-changing request was
+refused ([`vivijure-cf src/demo-render.ts` at its last revision](https://github.com/skyphusion-labs/vivijure-cf/blob/f2395329c05a2bb8198ecdc843b02d845258cc65/src/demo-render.ts)).
+The removed row said the demo "renders nothing"; that was true of its first phase and stale after the
+click-to-render phase shipped, and it is corrected here rather than carried forward. The posture in this
+document was never in force for the demo, and this document records nothing about what did or did not
+pass through it; it states only that the surface is gone.
 
 **The hosted studio is the first surface Skyphusion Labs operates where strangers can generate.**
 The structural guarantee is gone, and nothing replaces it automatically. That is not an argument
