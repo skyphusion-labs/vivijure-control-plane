@@ -29,7 +29,6 @@ Security > Events (zone dashboard) or the GraphQL firewallEventsAdaptive dataset
   OWASP body-inspection rules are the classic false-positive source here).
 - Tenant studio APIs on `*.studio.vivijure.com` (Bearer-token JSON clients, film submit payloads
   with long prompt text -- prompt prose can trip SQLi/XSS heuristics).
-- demo.vivijure.com fetch flows (same-origin JSON).
 - The OWASP anomaly score: on Pro, tune by raising the score threshold or lowering paranoia level
   BEFORE per-rule exceptions; record any exception as a rule override in `apply-waf.sh`, never a
   dashboard click.

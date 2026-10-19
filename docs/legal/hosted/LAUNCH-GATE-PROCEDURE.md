@@ -167,15 +167,14 @@ The two bundles handle pretty URLs **differently and deliberately**:
 
 - **vivijure-cf pins `html_handling = "none"`** (exact paths only, to avoid a redirect loop) and maps
   pretty URLs itself in `STUDIO_PAGE_ASSETS`: **ten URLs onto four files.** Note `/` and
-  `/index.html` both serve `modules.html`, and **in DEMO mode `/` remaps to `planner.html`**, so the
-  same URL serves a different page by config.
+  `/index.html` both serve `modules.html`. (Until the public demo was removed on 2026-10-19 a demo
+  deploy remapped `/` to `planner.html`; that remap is gone, so one URL now serves one page.)
 - **the control plane leaves `html_handling` at the default** on purpose, so it gets platform
   pretty-URL behaviour on top of its file set.
 
 **Census by FILE, which is what step 1 says, is the right unit and none of this affects it.** But a
-step that verifies a URL must resolve it through `STUDIO_PAGE_ASSETS` (and the demo remap), because
-checking `/planner` proves nothing about `/planner/` and checking `/` proves nothing about what `/`
-serves in the other mode.
+step that verifies a URL must resolve it through `STUDIO_PAGE_ASSETS`, because checking `/planner`
+proves nothing about `/planner/`.
 
 #### Two things we serve that are NOT files in either bundle
 

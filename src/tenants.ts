@@ -14,7 +14,9 @@ const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])$/;
 /**
  * Reserved labels. Two reasons, both load-bearing: a tenant must not be able to mint a hostname
  * that impersonates a platform surface (admin., api., www.), and must not collide with a sibling
- * service on the zone that already exists (demo., studio-mcp.).
+ * service on the zone (studio-mcp.). `demo` stays reserved although the demo was removed on
+ * 2026-10-19: un-reserving a retired platform label hands a tenant a hostname our own history
+ * points at, and the reservation costs nothing.
  */
 const RESERVED = new Set([
   "www", "api", "admin", "administrator", "root", "demo", "studio", "mcp", "studio-mcp",
