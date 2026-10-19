@@ -6,6 +6,192 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+## v1.31.0 -- 2026-10-19
+
+### feat(cf-api): a `workflow` binding variant, and the live probe that proves it (cp#526, cp#524)
+
+`WorkerBinding` carried ten variants and no workflow variant, so the plane could not emit the one
+binding four catalogued motion doors (`cf-seedance`, `cf-grok-video`, `cf-flux-3-video`,
+`cf-hh1-r2v`) and both `dialogue` providers declare. That is the single thing standing between a
+hosted signup and a talking film: `chatterbox` and `dialogue-gen` are unpublished AND
+unprovisionable, and the second half is this.
+
+The shape is read off the schema of the endpoint this client actually PUTs to (the Workers for
+Platforms dispatch-namespace script update), not inferred from a sibling variant: `name`, `type`
+and `workflow_name` required, `class_name` and `script_name` optional. The general
+multipart-upload-metadata page does NOT list this variant, and that silence is not evidence -- the
+same page also omits `dispatch_namespace`, `ratelimit`, `vpc_service` and `inherit`, all four of
+which this plane already emits.
+
+`tests/wfp-workflow-binding.live.test.ts` is the proof, on the live-release-gate: the upload is
+accepted AND the binding is read back off the API as `type: workflow`, with a negative control on a
+sibling script proving the readback can say no. Typecheck cannot produce that reading, and an
+upload response echoes no bindings, so `success: true` is only the writing client's opinion of its
+own work. First green run: dispatch `36343598466`, 2026-09-27T19:14Z.
+
+That run also settled three things nothing in this estate had ever asked the API, now PINNED as
+assertions so the day any of them changes is a day this goes red:
+
+1. **cp#526's open A-vs-B is A.** A script exporting a `WorkflowEntrypoint` uploads fine with NO
+   workflow binding. The four catalogued `cf-*` doors therefore provision, look installed, pass
+   `/ready` and throw at the first invoke, after the keyframe pass is already spent. Nothing refuses
+   them at `modules_upload`.
+2. **The upload does not create the Workflow.** `GET /accounts/{id}/workflows/{name}` answers 404
+   `10200 workflows.api.error.workflow.not_found` after a successful bound upload. Emitting the
+   binding is not the whole job; the Workflow is a separate provisioning step.
+3. **A second script may claim the same `workflow_name`**, with a different class, and the API
+   accepts it. Nothing outside this plane will warn about a cross-tenant collision, so
+   tenant-prefixing the Workflow name is on us exactly as it is for the script name.
+
+The hedge comment at the `cf-*` catalog rows ("Workflows are still a FLAG if WfP cannot bind them")
+is corrected rather than left standing: WfP can bind them, the missing piece is our emitter, and a
+hedge like that is what makes a fixable gap read as a platform wait.
+
+NOTHING EMITS THE VARIANT YET, deliberately. A catalogued door whose binding the plane emits wrong
+fails EVERY provision at `modules_upload` and typecheck cannot see it, and the live run above says
+an emitter owes three things rather than one: the binding, a provisioned Workflow, and a
+tenant-prefixed name.
+
+### fix(version): set the Workers build tag on deploy (cp#534)
+
+`GET /api/platform/version` reported `build.tag` as null because deploy ran `wrangler deploy` with no tag. A release deploy now passes the git ref. A dispatch deploy passes `dispatch-<sha>`. An empty tag reads as unset.
+
+### fix(ci): the live release gate could not reach any of its own steps (cp#536)
+
+`live-release-gate.yml` opened its live job with `npx vitest run tests/runpod.live.test.ts`. That
+file was deleted on 2026-08-15 by `fe756cf` with the BYOK / dedicated RunPod path (#430). Steps run
+under `shell: bash -e`, so the job died on the missing file and every step after it -- the entire
+real-Cloudflare leg this gate exists for -- never ran.
+
+Nothing reported it, because the last dispatch before today was 2026-07-25, three weeks before the
+deletion. A dispatch-only workflow with a dead reference is indistinguishable from a healthy one
+until somebody dispatches it, which is the shape of a gate that cannot go red.
+
+Measured on dispatch `36343359720`: `No test files found, exiting with code 1 / filter:
+tests/runpod.live.test.ts`, at the first step.
+
+The step is RETIRED rather than repointed, because its subject went with the purge that deleted it:
+it created a per-tenant RunPod template and endpoint for the dedicated path #430 removed. The job's
+`RUNPOD_API_KEY` env and its preflight line go with it -- a preflight demanding a credential no
+remaining step uses can only fail the gate for a reason that is not about the gate.
+`package.json`'s `test:live:scratch` named the same dead file and is corrected the same way.
+
+Not fixed here, and tracked on cp#536: eight of the ten live suites in this repo are run by no
+workflow at all.
+
+### test(workflow): the live evidence that the hosted Workflow door is blocked on the platform (cp#537)
+
+Two live suites on the release gate, and between them they close the question the emitter was
+waiting on. No `src/` change: the emitter is deliberately NOT written, because what these measured
+is that it cannot be finished yet.
+
+**`wfp-workflow-binding.live.test.ts`** -- the Workflows API cannot address a script inside a
+dispatch namespace. Same credential, same body shape: **200** for an account-level script, **400**
+`10002` for a malformed body, **500** `10001 internal_server` for a dispatch-namespace script, for a
+script that does not exist, and for both qualified `script_name` shapes. The 400 is the
+discriminator that makes the 500 mean something. Not a scope problem: the same credential lists all
+13 Workflows on the account and creates one.
+
+**`workflow-runtime-binding.live.test.ts`** -- and the resource is REQUIRED. Against a positive
+control that created a real instance on the same worker seconds earlier, a binding naming a Workflow
+that does not exist resolves as an object (`bound: true`) and throws on first use
+(`workflow.not_found`), leaving the account unchanged, so it is not lazily provisioned either.
+
+So the plane can attach the binding and cannot create what it points at, and pointing at nothing is
+not survivable. The `dialogue` and four `cf-*` doors are blocked on Cloudflare, not on code.
+
+Both runs state their own limit: the runtime case is account-level, which isolates the runtime
+question from the addressing one, so it is strong evidence and not proof for the namespace case.
+
+Two instrument defects were found by these runs rather than by review, and both are fixed here. A
+400-character body cap made a 13-row list parse as zero and briefly produced a false finding about
+credential scope -- the correction is committed with the mechanism, because a reader that turns a
+parse failure into an empty collection reports absence as confidently as a real zero. And the
+probe cases carried vitest's 5s default while performing a bounded 30s wait, so one failed on the
+clock directly beneath a finding; they have a named 90s budget now.
+
+### fix(catalog): drop the `kling` row -- its RunPod slug is gone, so the door fails at every submit (cp#538)
+
+`TENANT_MODULE_CATALOG` carried `{ module: "kling", publicEndpoint: "kling-v2-1-i2v-pro" }`, and
+that slug returns 404 endpoint-not-found from RunPod today (it answered 401-exists on 2026-08-05, so
+it was retired upstream between those dates; vivijure-cf#921, cf#941). A hosted tenant provisioned
+from this catalog got a door that installs, passes `/ready`, and then fails **100% of submits**.
+
+Different class from the four `cf-*` rows in cp#526: those are latent and have never executed. This
+one would have been hit by the first tenant to pick that door.
+
+Retirement is strictly dominant, measured rather than assumed: all 41 live RunPod public endpoints
+were enumerated across three pages with no truncation, and neither surviving Kling endpoint does
+plain i2v (one needs a reference motion video the `motion.backend` hook has no field for; the other
+is multi-reference r2v, already shipped as the separate `kling-o1-r2v` door). There is no repoint,
+only a removal. And `vivijure-cf/wrangler.toml.example:387` already said "Kling 2.1 stays in
+modules/kling but is NOT bound on hosted" while this catalog shipped it to hosted tenants anyway --
+the repo had half-decided it and the halves disagreed.
+
+Every count typed beside the catalog moves with the row, which is the part that usually rots:
+`writesTenantRenders` twelve-of-seventeen to eleven-of-sixteen, `reachesRunpod` 12-of-17 to 11-of-16,
+"seventeen times" to sixteen, `docs/control-plane.md`'s catalog size and recorder count, and the
+telemetry suite's "twelve modules record" to eleven. Two hand-maintained lists that say in their own
+comments that they exist to FAIL when the catalog moves did exactly that and were followed, not
+re-derived; two fixtures that only needed *a* public-slug module now use `seedance`.
+
+`kling-v2-1-i2v-pro` STAYS in `PUBLIC_ENDPOINT_ALLOWLIST`: that list is pinned to a census of module
+sources that hard-code a public slug, and `modules/kling` still does. Retiring the module itself is
+vivijure-cf#921, in the repo that owns it.
+
+### fix(proxy): make the allow-list check able to fail, and drop the slug it was hiding (cp#541)
+
+`tests/runpod-proxy-census.test.ts` was named for a census and could not observe one. Its own
+docstring said *"This suite does not re-scan vivijure-cf"*, and it then asserted
+`expect(PUBLIC_ENDPOINT_ALLOWLIST).toHaveLength(PUBLIC_SLUGS)` against `const PUBLIC_SLUGS = 8`, and
+`PUBLIC_SLUGS + ENV_ENDPOINT_READERS === HOST_REFS`, which is `8 + 6 === 14`. A constant against a
+constant, and a comment against itself.
+
+**The consequence was a blind check, not a red one.** cp#538 dropped the `kling` catalog row because
+its RunPod slug 404s, and `kling-v2-1-i2v-pro` stayed in `PUBLIC_ENDPOINT_ALLOWLIST` -- a slug the
+meter would price for a door no tenant can be provisioned -- with this suite green throughout.
+
+`tests/public-endpoint-allowlist-parity.test.ts` replaces it and asserts the relation that can
+actually fail: the allow-list equals the set of `TENANT_MODULE_CATALOG` `publicEndpoint` values, in
+both directions, **naming the offender instead of counting**. Watched RED both ways before landing:
+re-adding the orphan fails with `['kling-v2-1-i2v-pro']`, and deleting a needed entry fails with
+`['alibaba-wan -> wan-2-6-i2v']`.
+
+**The authority is this repo's catalog, and that is measured rather than preferred.** At
+vivijure-cf@e3d998d NINE modules declare `const ENDPOINT_ID`, EIGHT of them a literal slug. Six of
+the seven catalogued here are in that eight: alibaba-wan, alibaba-wan-lora, google-veo,
+minimax-hailuo, seedance, vidu-q3. The other two literals are `infinitetalk` and `kling-o1-r2v`,
+both deliberately uncatalogued. The ninth is `narration-gen/src/index.ts:66`,
+`const ENDPOINT_ID = MODEL;`: catalogued and allow-listed, declaring the constant NON-literally, so
+a literal-slug matcher returns eight and misses it. A gate equating the allow-list with cf's module
+set would be red on a correct estate in both directions.
+
+**Both census comments are retired rather than renumbered.** `MODULE_DENOMINATOR = 26` was stale.
+`find modules -path 'modules/*/src/index.ts' | wc -l` is 33 at e3d998d, and was 34 at 7b927b9. The
+number was not the defect: re-measured, TWO references to `api.runpod.ai` remain across all module
+sources and BOTH ARE COMMENTS, so the direct call sites are ZERO where the comment claims 14. The
+base now lives once, as `RUNPOD_DIRECT_BASE` in `@skyphusion-labs/vivijure-core@1.25.0`, reached
+through `modules/_shared/runpod-route.ts`, a pure re-export (cp#321). That is the base-string swap
+the route-match header itself describes. Renumbering would have re-pinned a sentence whose subject
+had dissolved.
+
+(cp#544 corrected the first draft of this paragraph against vivijure-cf@7b927b9: TEN declarations,
+NINE literal, denominator 34, and both host hits are comments. Re-measured at e3d998d those three
+numbers are NINE, EIGHT, and 33. The two `api.runpod.ai` hits are still comments.)
+
+Two smaller things worth recording. The orphan slug's removal reverses a call made on cp#539 to keep
+it, which rested on the blind check this fixes. And the new suite's comparator control was first
+written over the live lists, so a genuine orphan made the control fail for the same reason as its
+subject -- one defect reported as two, discriminating nothing; it is self-contained now.
+
+### docs(demo): the passages that described the deleted demo as live are corrected
+
+The public vivijure demo is gone, not deprecated. Its Cloudflare resources were deleted on 2026-10-19, so the plane's references to `demo.vivijure.com` described a surface that no longer answers: a WAF watch item that can never fire again, a zone-security false-positive source to watch before an enforce flip, a gateway cited as a live cheap option, and a launch-gate census step told to resolve a URL through a studio page remap that no longer exists.
+
+The eight `DEMO_*` var dispositions stay. The disposition table is checked on every provision and every upgrade against the vars the pinned studio release declares, and a declared var with no disposition refuses both. They may be deleted only after the studio pin moves to a release that no longer declares them, verified against that release's manifest. Their stated reason now says the door is retired and names that condition.
+
+`demo` stays a reserved tenant slug. Un-reserving a retired platform label would hand a tenant a hostname our own published history points at, and the reservation costs nothing.
+
 ## v1.30.0 -- 2026-09-27
 
 ### fix(credits): PayPal top-ups are now CAPTURED, so approved money actually arrives
