@@ -329,7 +329,7 @@ Specified here so the launch-gate flip is mechanical rather than a rewrite under
 |---|---|---|
 | BLUF | "there is no Vivijure service that we operate to hold your content" | Rewrite. Now there is one. Keep the self-host promise intact and clearly separated. |
 | BLUF | "Skyphusion Labs does not run a hosted, multi-tenant, sign-up service." | **Delete.** This becomes the opposite of true. |
-| BLUF | "Skyphusion Labs runs exactly two Vivijure instances, and only two." | Rewrite: the private instance, the demo, **and the hosted platform**. |
+| BLUF | "Skyphusion Labs runs one Vivijure instance." (Corrected 2026-10-19. This row used to quote "exactly two Vivijure instances, and only two" and asked for a rewrite naming the demo as a third. The public demo's custom domain was removed on 2026-10-08 and its deployment was deleted on 2026-10-19; the in-force text now counts one instance, and the demo is counted nowhere.) | Rewrite: the private instance **and the hosted platform**. Two, not three: the retired demo is not an instance we run and must not be listed as one. |
 | Section 1 | "Vivijure runs in exactly one shape: somebody self-hosts it." | Rewrite: two shapes, self-host and hosted. Add a hosted row to the mode table. |
 | Section 2 | "single-operator by design ... no multi-tenant model" | Keep, but explain the hosted architecture honestly: still single-operator **per tenant studio**; multi-tenancy is instance-per-tenant, not per-user rows. This is a strength and reads as one. |
 | Section 4 | token-mode gate framing | Add the control-plane account layer (SSO + magic-link) sitting in front of the per-tenant studio token. |
