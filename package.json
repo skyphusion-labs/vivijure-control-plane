@@ -23,11 +23,11 @@
     "coverage": "vitest run --coverage"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261014.1",
+    "@cloudflare/workers-types": "^5.20261021.1",
     "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.4",
     "typescript": "^7.0.2",
     "vitest": "^5.0.1",
-    "wrangler": "^4.151.0"
+    "wrangler": "^4.151.3"
   }
 }
