@@ -35,8 +35,8 @@ describe("allow-list", () => {
   // tests/public-endpoint-allowlist-parity.test.ts, which compares this list against
   // TENANT_MODULE_CATALOG in both directions and names the offender. This stays as the loud,
   // cheap tripwire for an accidental deletion.
-  it("carries exactly the seven catalogued public endpoints", () => {
-    expect(PUBLIC_ENDPOINT_ALLOWLIST).toHaveLength(7);
+  it("carries exactly the four catalogued public endpoints", () => {
+    expect(PUBLIC_ENDPOINT_ALLOWLIST).toHaveLength(4);
     expect(PUBLIC_ENDPOINT_ALLOWLIST).toContain("wan-2-6-i2v");
     expect(PUBLIC_ENDPOINT_ALLOWLIST).toContain("wan-2-2-t2v-720-lora");
     // narration-gen's slug: reachable only by a statement-level matcher upstream, since the module
