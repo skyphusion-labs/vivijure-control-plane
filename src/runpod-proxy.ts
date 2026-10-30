@@ -53,13 +53,14 @@ export const RUNPOD_HOST = "https://api.runpod.ai";
  * `kling-v2-1-i2v-pro` became the moment cp#538 dropped its row.
  *
  * IT IS DELIBERATELY NOT vivijure-cf's MODULE SET, measured rather than preferred. At
- * vivijure-cf@e3d998d, `grep -rnE 'const ENDPOINT_ID\s*=' modules/<m>/src/*.ts` returns NINE
- * declarations, EIGHT of them a literal slug. Six of the seven this plane catalogues are in that
- * eight: alibaba-wan, alibaba-wan-lora, google-veo, minimax-hailuo, seedance, vidu-q3. The other
- * two literals are `infinitetalk` and `kling-o1-r2v`, both deliberately uncatalogued. The ninth
- * declaration is `narration-gen/src/index.ts:66`, `const ENDPOINT_ID = MODEL;`. It is catalogued
- * and allow-listed, and it is not a literal, so a literal-slug matcher returns eight and misses it.
- * At vivijure-cf@7b927b9 this paragraph counted TEN declarations and NINE literals. That count
+ * vivijure-cf@375bc86, `grep -rnE 'const ENDPOINT_ID\s*=' modules/<m>/src/*.ts` returns FIVE
+ * declarations, FOUR of them a literal slug. Three of the four this plane catalogues are in that
+ * four: alibaba-wan, alibaba-wan-lora, minimax-hailuo. The other literal is `infinitetalk`,
+ * deliberately uncatalogued. The fifth declaration is `narration-gen/src/index.ts:66`,
+ * `const ENDPOINT_ID = MODEL;`. It is catalogued and allow-listed, and it is not a literal, so a
+ * literal-slug matcher returns four and misses it.
+ * At vivijure-cf@e3d998d this paragraph counted NINE declarations and EIGHT literals, and at
+ * vivijure-cf@7b927b9 TEN and NINE. That count
  * moved. narration-gen still declares one constant. It is still not a literal. The conclusion
  * is unchanged. A gate equating this list with cf's modules would be red on a correct estate,
  * in both directions.
@@ -79,11 +80,8 @@ export const RUNPOD_HOST = "https://api.runpod.ai";
 export const PUBLIC_ENDPOINT_ALLOWLIST: readonly string[] = [
   "wan-2-6-i2v", // alibaba-wan
   "wan-2-2-t2v-720-lora", // alibaba-wan-lora
-  "google-veo3-1-fast-i2v", // google-veo
   "minimax-hailuo-2-3-fast", // minimax-hailuo
   "minimax-speech-02-hd", // narration-gen
-  "seedance-v1-5-pro-i2v", // seedance
-  "vidu-q3-i2v", // vidu-q3
 ];
 
 /**

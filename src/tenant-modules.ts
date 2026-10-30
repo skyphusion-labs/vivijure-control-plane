@@ -115,11 +115,12 @@ export interface TenantModuleSpec {
    * `r2_bucket` binding named R2_RENDERS (cp#284 / cf#394 wave 1).
    *
    * MEASURED FROM THE MODULE SOURCES, not assumed: the split is exact and has no overlap with
-   * `endpointKey`. The flag is set on eleven of the sixteen rows, the cost-door and AI-Gateway
+   * `endpointKey`. The flag is set on eight of the thirteen rows, the cost-door and AI-Gateway
    * video modules, which declare `R2_RENDERS` in their Env and do one `env.R2_RENDERS.put` in the
    * Worker; the other five declare it nowhere, because their far end writes and the studio imports
    * the result. (The counts read "fifteen / eight / seven" until cp#519 and had been stale since
-   * the cf-* rows landed; cp#538 took them from twelve of seventeen when the `kling` row went.
+   * the cf-* rows landed; cp#538 took them from twelve of seventeen when the `kling` row went, and
+   * cp#569 from eleven of sixteen when `google-veo`, `seedance` and `vidu-q3` went.
    * They are re-derived from the catalog flags above, never carried forward.)
    *
    * WITHOUT THIS BINDING THE ROW IS WORSE THAN ABSENT. A tenant module uploaded with no R2_RENDERS
@@ -193,18 +194,19 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   // Conrad ruled these IN SCOPE for the hosted tier on 2026-08-02 ("I want the cloud-i2v modules on
   // the hosted door, it's literally one of the selling points"). A hosted tenant had no cost door at
   // all: these eight were published by every release the plane pins and uploaded by nothing.
+  // Four remain. `kling` went in cp#538, and `google-veo`, `seedance` and `vidu-q3` in cp#569
+  // (vivijure-cf#1087), which replaced them with Cloudflare doors.
   //
-  // NO endpointKey, BY MEASUREMENT rather than by omission: none of the eight declares
+  // NO endpointKey, BY MEASUREMENT rather than by omission: none of these declares
   // RUNPOD_ENDPOINT_ID in its Env. They submit to the vendor-hosted public slug carried below.
   //
-  // recordsRunpodJobs on all eight, established BY EFFECT against two controls: each imports
+  // recordsRunpodJobs on all of them, established BY EFFECT against two controls: each imports
   // runpod-job-log and reads TELEMETRY_DB exactly as `keyframe` (a known recorder) does, while
   // `plan-enhance` (a known non-recorder) does neither. Migration 0020 is the reason it matters --
-  // it added `endpoint_id` specifically because these eight submit to eight DISTINCT slugs at
+  // it added `endpoint_id` specifically because these submit to DISTINCT slugs at
   // different prices, so the endpoint is the only thing that says what a job COST.
   { module: "alibaba-wan", publicEndpoint: "wan-2-6-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
   { module: "alibaba-wan-lora", publicEndpoint: "wan-2-2-t2v-720-lora", recordsRunpodJobs: true, writesTenantRenders: true },
-  { module: "google-veo", publicEndpoint: "google-veo3-1-fast-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
   // NO kling ROW, and this one is not latent (cf#921, cp#538). Its slug `kling-v2-1-i2v-pro`
   // returns 404 endpoint-not-found from RunPod today -- it answered 401 exists on 2026-08-05, so it
   // was retired upstream between those dates. A catalogued door whose slug is gone fails at submit
@@ -214,7 +216,7 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   // RETIREMENT IS NOT A PRODUCT CALL HERE. All 41 live RunPod public endpoints were enumerated
   // across three pages with no truncation, and neither surviving Kling endpoint does plain i2v: one
   // needs a reference motion VIDEO, which the `motion.backend` hook has no field for, and the other
-  // is multi-reference r2v, already shipped as the separate `kling-o1-r2v` door. So there is no
+  // is multi-reference r2v, which needs the same reference video (`kling-o1-r2v`, retired in vivijure-cf#1061). So there is no
   // repoint available, only a removal.
   //
   // THE REPO HAD ALREADY HALF-DECIDED THIS AND THE HALVES DISAGREED: vivijure-cf's
@@ -227,9 +229,7 @@ export const TENANT_MODULE_CATALOG: readonly TenantModuleSpec[] = [
   // that owns the module; this row is only about what a tenant gets provisioned.
   { module: "minimax-hailuo", publicEndpoint: "minimax-hailuo-2-3-fast", recordsRunpodJobs: true, writesTenantRenders: true },
   { module: "narration-gen", publicEndpoint: "minimax-speech-02-hd", recordsRunpodJobs: true, writesTenantRenders: true },
-  { module: "seedance", publicEndpoint: "seedance-v1-5-pro-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
-  { module: "vidu-q3", publicEndpoint: "vidu-q3-i2v", recordsRunpodJobs: true, writesTenantRenders: true },
-  // Cloudflare AI Gateway i2v. Same selling point as the eight RunPod slugs: hosted tenants
+  // Cloudflare AI Gateway i2v. Same selling point as the RunPod slugs: hosted tenants
   // get the cloud motion backends. needsAiGateway for the trio; writesTenantRenders for R2.
   //
   // THE WORKFLOW GAP IS OURS, NOT CLOUDFLARE'S (cp#526). This used to read "Workflows

@@ -9,14 +9,15 @@
 // observe is worse than no check: it occupies the slot where the real one would go.
 //
 // THE POPULATION THE ALLOW-LIST MIRRORS IS THIS REPO'S CATALOG, NOT vivijure-cf's MODULE SET, and
-// that is measured rather than preferred. At vivijure-cf@e3d998d,
-// `grep -rnE 'const ENDPOINT_ID\s*=' modules/*/src/*.ts` returns NINE declarations, of which EIGHT
-// are a literal slug: six of the seven this plane catalogues, plus `infinitetalk` and
-// `kling-o1-r2v`, which are deliberately uncatalogued. The ninth is `narration-gen/src/index.ts:66`,
+// that is measured rather than preferred. At vivijure-cf@375bc86,
+// `grep -rnE 'const ENDPOINT_ID\s*=' modules/*/src/*.ts` returns FIVE declarations, of which FOUR
+// are a literal slug: three of the four this plane catalogues, plus `infinitetalk`, which is
+// deliberately uncatalogued. The fifth is `narration-gen/src/index.ts:66`,
 // `const ENDPOINT_ID = MODEL;`. It IS catalogued and allow-listed, and it declares the constant
-// NON-LITERALLY, so a literal-slug matcher returns eight and silently misses it.
+// NON-LITERALLY, so a literal-slug matcher returns four and silently misses it.
 //
-// At vivijure-cf@7b927b9 this paragraph counted TEN declarations and NINE literals. That count
+// At vivijure-cf@e3d998d this paragraph counted NINE declarations and EIGHT literals, and at
+// vivijure-cf@7b927b9 TEN and NINE. That count
 // moved. An earlier version said narration-gen "declares no such constant at all". That was false.
 // The argument is unchanged: a literal-slug grep cannot see this module, which is the point.
 //
