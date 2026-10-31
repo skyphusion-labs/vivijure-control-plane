@@ -7,7 +7,7 @@
 // against real D1 proves that, and that gate is called out in the PR rather than implied here.
 
 import { describe, it, expect, vi } from "vitest";
-import { applyStudioMigrations, type StudioMigration } from "../src/migrate";
+import { applyStudioMigrations, stripSqlComments, type StudioMigration } from "../src/migrate";
 import type { CfApi } from "../src/cf-api";
 // The studio migration set now rides the release artifact, so there is no module to import (cf#85).
 // This is a LOCAL fixture: applyStudioMigrations is what is under test here, and it cares about the
@@ -142,5 +142,90 @@ describe("applyStudioMigrations", () => {
     await expect(
       applyStudioMigrations(d1.cf, "db", [{ name: "0001_o'brien.sql", sql: "SELECT 1;" }]),
     ).rejects.toThrow(/must not contain a quote/);
+  });
+});
+
+describe("stripSqlComments", () => {
+  it("removes line and block comments", () => {
+    expect(stripSqlComments("ALTER TABLE t ADD COLUMN b TEXT; -- c")).toBe("ALTER TABLE t ADD COLUMN b TEXT;");
+    expect(stripSqlComments("ALTER TABLE t ADD COLUMN b TEXT;\n-- c\n")).toBe("ALTER TABLE t ADD COLUMN b TEXT;");
+    expect(stripSqlComments("ALTER TABLE t ADD COLUMN b TEXT; /* c */")).toBe("ALTER TABLE t ADD COLUMN b TEXT;");
+    expect(stripSqlComments("-- lead\nSELECT 1;")).toBe("SELECT 1;");
+  });
+
+  it("does not stop a line comment at a semicolon inside it", () => {
+    expect(stripSqlComments("SELECT 1; -- a; b")).toBe("SELECT 1;");
+  });
+
+  it("keeps comment markers inside quoted text", () => {
+    for (const sql of [
+      "INSERT INTO t VALUES ('a -- b');",
+      "INSERT INTO t VALUES ('it''s -- b');",
+      "INSERT INTO t VALUES ('a /* b */ c');",
+      'SELECT "a--b" FROM t;',
+      "SELECT `a--b` FROM t;",
+      "SELECT [a--b] FROM t;",
+    ]) {
+      expect(stripSqlComments(sql)).toBe(sql);
+    }
+  });
+
+  it("keeps a statement that follows a line comment on its own line", () => {
+    expect(stripSqlComments("SELECT 1; -- c\nSELECT 2;")).toBe("SELECT 1; \nSELECT 2;");
+  });
+
+  it("returns malformed input unchanged so D1 reports it", () => {
+    expect(stripSqlComments("SELECT 'open -- x")).toBe("SELECT 'open -- x");
+    expect(stripSqlComments("SELECT 1; /* open")).toBe("SELECT 1; /* open");
+  });
+
+  it("returns empty for a comment-only file", () => {
+    expect(stripSqlComments("-- a\n/* b */\n")).toBe("");
+  });
+});
+
+describe("applyStudioMigrations and the D1 trailing-comment refusal", () => {
+  /**
+   * Models the measured refusal: one statement followed by a comment gets 7500 and applies nothing.
+   * This encodes a measurement, so the live run recorded on the PR is the evidence for D1 itself.
+   */
+  function refusingD1() {
+    const applied: string[] = [];
+    const recorded: string[] = [];
+    const queryD1 = vi.fn(async (_db: string, sql: string): Promise<unknown> => {
+      if (/^SELECT /i.test(sql) || /^CREATE TABLE IF NOT EXISTS schema_migrations/i.test(sql)) {
+        return [{ results: [] }];
+      }
+      const insert = /^INSERT OR IGNORE INTO schema_migrations \(name\) VALUES \('([^']+)'\);$/.exec(sql);
+      if (insert) {
+        recorded.push(insert[1] as string);
+        return [{ results: [] }];
+      }
+      const lastSemi = sql.lastIndexOf(";");
+      const statementCount = sql.slice(0, lastSemi).split("\n").filter((l) => /^(ALTER|CREATE)/.test(l)).length;
+      if (statementCount === 1 && sql.slice(lastSemi + 1).trim() !== "") {
+        throw new Error("d1.query: 7500 SQL code did not contain a statement.");
+      }
+      applied.push(sql);
+      return [{ results: [] }];
+    });
+    return { cf: { queryD1 } as unknown as Pick<CfApi, "queryD1">, applied, recorded };
+  }
+
+  it("applies the real shape of 0003: one statement, a trailing comment, a semicolon in that comment", async () => {
+    const d1 = refusingD1();
+    const sql = "-- header\n\nALTER TABLE cast_members ADD COLUMN voice_id TEXT;   -- aura-1 speaker; NULL => unassigned\n";
+    const out = await applyStudioMigrations(d1.cf, "db", [{ name: "0003_cast_voice.sql", sql }]);
+    expect(out.applied).toEqual(["0003_cast_voice.sql"]);
+    expect(d1.applied).toEqual(["ALTER TABLE cast_members ADD COLUMN voice_id TEXT;"]);
+    expect(d1.recorded).toEqual(["0003_cast_voice.sql"]);
+  });
+
+  it("records a comment-only migration without sending D1 an empty query", async () => {
+    const d1 = refusingD1();
+    const out = await applyStudioMigrations(d1.cf, "db", [{ name: "0099_note.sql", sql: "-- nothing to do\n" }]);
+    expect(out.applied).toEqual(["0099_note.sql"]);
+    expect(d1.applied).toEqual([]);
+    expect(d1.recorded).toEqual(["0099_note.sql"]);
   });
 });
