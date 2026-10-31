@@ -61,6 +61,53 @@ function sqlString(value: string): string {
 }
 
 /**
+ * Remove SQL comments from a migration before it goes to the D1 query endpoint.
+ *
+ * WHY: the endpoint refuses one statement followed by any comment, with 400 and code 7500, "SQL code
+ * did not contain a statement", and applies nothing. Measured on a real database, 2026-10-31:
+ *   refused  `ALTER ...; -- c`, the same with a newline, with the comment on the next line, `/* c *\/`
+ *   accepted `ALTER ...;`, `-- c` then `ALTER ...;`, and two or more statements with the same comments
+ * So a file can apply or fail depending only on how many statements it has. 0003_cast_voice.sql has
+ * one statement and a trailing comment, and it stopped every fresh tenant at d1_migrate.
+ *
+ * THE FIX IS HERE AND NOT IN THE FILE. Shipped migrations are immutable, and a future file can have
+ * the same shape. The file's hash and its recorded name do not change; only the text sent does.
+ *
+ * Quoted text is copied unchanged, so a `--` inside a string or an identifier stays. A line comment
+ * keeps its newline. An UNTERMINATED string or block comment returns the input UNCHANGED, so D1
+ * reports the malformed file rather than this function guessing what it meant.
+ */
+export function stripSqlComments(sql: string): string {
+  const closers: Record<string, string> = { "'": "'", '"': '"', "`": "`", "[": "]" };
+  let out = "";
+  let i = 0;
+  while (i < sql.length) {
+    const ch = sql[i] as string;
+    const closer = closers[ch];
+    if (closer !== undefined) {
+      const end = sql.indexOf(closer, i + 1);
+      if (end === -1) return sql;
+      // A doubled quote reads as two adjacent quoted runs, which copies the same characters.
+      out += sql.slice(i, end + 1);
+      i = end + 1;
+    } else if (sql.startsWith("--", i)) {
+      const end = sql.indexOf("\n", i);
+      if (end === -1) break;
+      i = end;
+    } else if (sql.startsWith("/*", i)) {
+      const end = sql.indexOf("*/", i + 2);
+      if (end === -1) return sql;
+      out += " ";
+      i = end + 2;
+    } else {
+      out += ch;
+      i += 1;
+    }
+  }
+  return out.trim();
+}
+
+/**
  * Apply only the migrations this database has not already had, recording each one.
  *
  * Returns what actually happened so the provisioner can log it: `applied` are migrations run now,
@@ -102,7 +149,9 @@ export async function applyStudioMigrations(
   const applied: string[] = [];
   for (const migration of migrations) {
     if (already.has(migration.name)) continue;
-    await cf.queryD1(databaseId, migration.sql);
+    // A comment-only file has nothing to run, and D1 refuses an empty query. It is still recorded.
+    const statements = stripSqlComments(migration.sql);
+    if (statements) await cf.queryD1(databaseId, statements);
     await cf.queryD1(
       databaseId,
       `INSERT OR IGNORE INTO schema_migrations (name) VALUES (${sqlString(migration.name)});`,
