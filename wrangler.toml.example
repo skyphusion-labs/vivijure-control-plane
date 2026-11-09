@@ -67,14 +67,6 @@ workers_dev = false
 # Worker wants the default `/` -> index.html behavior.
 assets = { directory = "./public", binding = "ASSETS", run_worker_first = true }
 
-# >>> SELFHOST-SKIP: tail-consumer -- OUR-fleet Loki path via vivijure-tail
-# TOP-LEVEL bare key (same class as assets): must sit ABOVE the first table header or TOML nests it.
-# Stripped by scripts/render-wrangler.sh unless KEEP_FLEET_ONLY=1 (cp#48).
-# Self-hosters: leave stripped; a dangling tail_consumers name fails `wrangler deploy` outright.
-# Skyphusion fleet deploy sets KEEP_FLEET_ONLY=1 so this block survives into the rendered toml.
-tail_consumers = [ { service = "vivijure-tail" } ]
-# <<< SELFHOST-SKIP: tail-consumer
-
 # --- Observability (Workers Logs) ---
 #
 # Turns on Workers Logs for this Worker: invocation summaries, status, timings, and console output,
@@ -88,7 +80,10 @@ tail_consumers = [ { service = "vivijure-tail" } ]
 # (see docs/observability.md in vivijure-cf), so full-rate capture here costs nothing and sampling
 # would buy nothing.
 #
-# Dashboard logs only. Loki is the SELFHOST-SKIP tail_consumers block above (cp#48).
+# Dashboard logs only, and that is the whole log surface. The control plane used to also feed a
+# vivijure-tail tail consumer that shipped to a self-hosted Loki (cp#48); that Loki died with the
+# Hetzner fleet on 2026-09-25, so the consumer delivered nothing and was removed (cp#581). This
+# Worker declares no tail_consumers, and tests/render-wrangler.test.sh fails if one comes back.
 [observability]
 enabled = true
 head_sampling_rate = 1
