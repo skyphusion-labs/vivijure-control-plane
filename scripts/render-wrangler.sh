@@ -110,23 +110,10 @@ for v in $REQUIRED_VARS $ALLOW_EMPTY; do
 done
 envsubst "$subst_list" < "$tpl" > "$out"
 
-# --------------------------------------------------------------------------------------------
-# SELFHOST-SKIP blocks (cp#48). Same markers as vivijure-cf deploy.sh.
-#
-# OUR-fleet-only lines (e.g. tail_consumers -> vivijure-tail) must not land in a self-hoster's
-# rendered toml: wrangler deploy FAILS on a missing tail consumer. Default: STRIP those blocks.
-# Skyphusion fleet deploy sets KEEP_FLEET_ONLY=1 so the blocks stay and Loki gets the stream.
-# --------------------------------------------------------------------------------------------
-if [ "${KEEP_FLEET_ONLY:-}" != "1" ]; then
-  stripped="$out.selfhost-stripped"
-  awk '
-    /^# >>> SELFHOST-SKIP:/ { skip=1; next }
-    /^# <<< SELFHOST-SKIP:/ { skip=0; next }
-    skip { next }
-    { print }
-  ' "$out" > "$stripped"
-  mv "$stripped" "$out"
-fi
+# No SELFHOST-SKIP strip here any more (cp#581). It existed for one block, the fleet-only
+# tail_consumers -> vivijure-tail line (cp#48), and that consumer is gone with the Loki it fed. The
+# template now renders the same for the fleet and for a self-hoster, so there is nothing to strip.
+# If a fleet-only block is ever needed again, reintroduce the strip WITH a test that renders it.
 
 # Post-render: an unsubstituted placeholder means a name in the template that this script does not
 # know about -- a template edit that never reached REQUIRED_VARS/ALLOW_EMPTY.

@@ -215,15 +215,15 @@ assert_toml "the ASSETS binding is named" "d.get('assets',{}).get('binding')" "A
 assert_toml "run_worker_first survives the render" "d.get('assets',{}).get('run_worker_first')" "True"
 assert_toml "no stray assets key under [observability]" "'assets' in d.get('observability',{})" "False"
 
-# cp#48 SELFHOST-SKIP: default strip (self-host safe); KEEP_FLEET_ONLY=1 keeps tail_consumers.
-set_full_env
-unset KEEP_FLEET_ONLY
-"$render" "$tmp/out.toml" >"$tmp/log" 2>&1 || { echo "  FAIL selfhost-skip default render failed"; fail=$((fail + 1)); }
-assert_toml "default render STRIPS fleet tail_consumers (self-host safe)" "'tail_consumers' in d" "False"
+# cp#581: no render declares a tail consumer. The only one this Worker ever had pointed at
+# vivijure-tail, whose Loki is gone; a tail_consumers name that does not resolve fails
+# `wrangler deploy`, and deleting vivijure-tail is ordered AFTER this lands. A stale
+# KEEP_FLEET_ONLY in the caller env must not resurrect it either, so render with it set.
 set_full_env
 export KEEP_FLEET_ONLY=1
-"$render" "$tmp/out-fleet.toml" >"$tmp/log" 2>&1 || { echo "  FAIL fleet-only render failed"; fail=$((fail + 1)); }
-assert_toml "KEEP_FLEET_ONLY keeps tail_consumers" "bool(d.get('tail_consumers'))" "True" "$tmp/out-fleet.toml"
+"$render" "$tmp/out.toml" >"$tmp/log" 2>&1 || { echo "  FAIL no-tail-consumer render failed"; fail=$((fail + 1)); }
+unset KEEP_FLEET_ONLY
+assert_toml "no tail_consumers in the rendered toml (cp#581)" "'tail_consumers' in d" "False"
 
 # cp#285: rendering is not enough, the pool JSON has to SURVIVE the round trip. A quoting choice
 # that silently mangled it would render green and hand the Worker a string parseSharedPool refuses

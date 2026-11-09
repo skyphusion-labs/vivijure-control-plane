@@ -6,6 +6,27 @@ is a separate product on a separate cadence).
 
 ## Unreleased
 
+### fix(config): drop the dark vivijure-tail tail consumer (cp#581)
+
+The fleet render bound `tail_consumers = [ { service = "vivijure-tail" } ]` (cp#48), and
+`vivijure-tail` pushed to a self-hosted Loki over the Workers VPC service `loki`. The tunnel behind
+that service was deleted with the Hetzner fleet on 2026-09-25, so every control-plane invocation fed
+a consumer that delivered nothing. vivijure-cf#838 removed the same shape from the studio.
+
+The block comes off `wrangler.toml.example`, and Workers Logs (`[observability]`) is the whole log
+surface. `KEEP_FLEET_ONLY` and the SELFHOST-SKIP strip in `scripts/render-wrangler.sh` had exactly
+this one subject, so they are retired with it rather than left as a control with nothing to act on.
+`tests/render-wrangler.test.sh` now fails if any render, including one with a stale
+`KEEP_FLEET_ONLY=1` in the environment, declares a tail consumer. `docs/tenant-telemetry.md` is
+marked: its Loki and Grafana references name a sink that no longer exists.
+
+**Deploy order is load-bearing.** A `tail_consumers` name that does not resolve fails
+`wrangler deploy`. This must ship in a control-plane `v*` tag and deploy BEFORE the `vivijure-tail`
+worker is deleted, and only then can the `loki` VPC service go.
+
+Files: `wrangler.toml.example`, `scripts/render-wrangler.sh`, `.github/workflows/deploy.yml`,
+`tests/render-wrangler.test.sh`, `docs/tenant-telemetry.md`, `CHANGELOG.md`.
+
 ## v1.31.0 -- 2026-10-19
 
 ### feat(cf-api): a `workflow` binding variant, and the live probe that proves it (cp#526, cp#524)

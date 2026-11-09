@@ -4,6 +4,13 @@ Status: PROPOSAL. Nothing described here is wired. This document is the audit an
 per-field disposition Conrad's 2026-07-19 ruling requires BEFORE any tenant collection
 exists, and it is the direct input to the PRIVACY.md and SLA wording (Ernst's lane).
 
+> **STATUS 2026-11-09 (cp#581). Every Loki and Grafana reference below names a sink that no
+> longer exists.** The self-hosted Loki and Grafana, the tunnel the `loki` Workers VPC service
+> resolved through, and the `vivijure-tail` path into them were deleted with the Hetzner fleet
+> on 2026-09-25. The control plane logs to Cloudflare Workers Logs only. The field audit and the
+> Logpush design stand on their own merits; the "Grafana alert on Loki" rows and the
+> `LOKI_VPC` shim placement in Q1 need a live destination chosen before any of it is wired.
+
 ## The ruling this is written against
 
 1. Operational telemetry ONLY, strictly filtered. "We are not monitoring what they are
@@ -148,7 +155,8 @@ which we have not obtained.
 
 ### A note on why Logpush, not a Tail Worker, for the tenant leg
 
-Our own workers ship logs to Loki via the `vivijure-tail` Tail Worker. **That mechanism is
+Our own workers shipped logs to Loki via the `vivijure-tail` Tail Worker until that Loki died
+with the Hetzner fleet on 2026-09-25 (consumer removed in cp#581). **That mechanism is
 the wrong choice for tenants**, on privacy grounds rather than technical ones: a Tail
 Worker receives the **complete** tail event, `Logs` and `Exceptions` included, and then
 our code decides what to forward. The customer content would enter code we wrote and would
