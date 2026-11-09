@@ -90,8 +90,7 @@ our own synthetic request, not the tenant's traffic**, so it observes the studio
 while touching zero customer content. It sees exactly what telemetry cannot: a real status
 code from a real request we made ourselves.
 
-The fleet already runs Gatus on biafra and watt with ntfy plus email alerting wired
-(`system/stacks/biafra/monitoring/gatus/config.yaml`), and the existing vivijure CPU
+The old fleet Gatus stack is retired. Alerting was ntfy plus email. The existing vivijure CPU
 helper checks are the template. The standing fleet rule ("a check lives with, and moves
 with, the same IaC as the service it watches") applies: tenant checks are generated from
 the tenant roster, in the same change that provisions a tenant.
