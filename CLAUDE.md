@@ -63,8 +63,10 @@ npm run smoke:predeploy # live pre-deploy smoke (needs secrets)
 
 ## Release / tagging
 
-**TAG-GATED deploy.** `.github/workflows/deploy.yml` runs on a pushed `v*` tag only. Merge to `main`
-is CI only; it does **not** redeploy the live plane.
+**TAG-GATED deploy.** `.github/workflows/deploy.yml` deploys on a pushed `v*` tag. It also runs on
+`workflow_dispatch`; `dry_run` defaults to true and that path stops before migrate and deploy.
+`dry_run` false deploys too, and the release job refuses a commit that is not on `main`.
+Merge to `main` is CI only; it does **not** redeploy the live plane.
 
 1. Release PR: bump `package.json` **and** `src/version.ts` `CONTROL_PLANE_VERSION` (gated equal),
    promote `CHANGELOG.md` (`## Unreleased` -> `## vX.Y.Z`, leave a fresh empty Unreleased).
