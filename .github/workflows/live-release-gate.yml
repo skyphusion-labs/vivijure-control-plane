@@ -138,6 +138,7 @@ jobs:
       # Scratch: a prefixed bucket filled, emptied, deleted.
       - name: R2 empty-then-delete live (scratch, self-cleaning)
         id: r2_empty
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.preflight.outcome == 'success' }}
         env:
           R2_EMPTY_LIVE: "1"
         run: bash scripts/run-live-suite.sh tests/r2-empty.live.test.ts
