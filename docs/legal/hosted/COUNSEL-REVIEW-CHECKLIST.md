@@ -176,6 +176,13 @@ it is a question for a lawyer plus possibly an accountant, before signups, not a
 whether insurance (tech E&O / media liability) is warranted once strangers generate on our surface.
 
 ### T1-11. Age verification, given we permit adult content on a hosted surface
+**Update 2026-11-11: the premise changed.** Conrad ruled that the hosted studio does not permit
+adult sexual content (`aup/1.4.0.md` section 2.5, unserved; ruling recorded on cp#514). The
+question below was written when every AUP version permitted it. What is left for counsel is
+narrower: does a hosted studio that prohibits such content, and has no filter of its own on the
+GPU path, still meet any statutory threshold, and is the bare "you are 18 or older" statement
+enough? Parts (b) and (c) of the usable answer fall away while the prohibition stands.
+
 **Question:** Does the hosted studio trigger state age-verification laws, and does permitting adult
 content (AUP Section 2.5) survive contact with them?
 
@@ -346,6 +353,10 @@ questions came out of that read that only a licensed lawyer can answer.
    and they bind us on the shared tier and the tenant on the dedicated tier. Most model providers
    forbid sexually explicit output. 3.2 now says the provider's rule wins. Is there any hosted path
    left on which Section 2.5 permits anything, and if not, should 2.5 be withdrawn (see T1-11)?
+   **Ruled 2026-11-11 (Conrad, recorded on cp#514): withdrawn.** `aup/1.4.0.md` section 2.5
+   prohibits sexually explicit content on every hosted module and tier. Still for counsel: is
+   "pornography, depictions of sex acts, and graphic nudity" the right definition, neither wider
+   nor narrower than what the providers' terms require of us?
 4. **The training condition and the studio's own cast training.** 3.2 forbids feeding an output of
    a third-party model into training, cast training included, and leaves images made only by the
    open GPU models outside it. Is that line drawn correctly, and is a cast LoRA a "fine-tune" in
@@ -404,6 +415,9 @@ consumer-protection rules for prepaid balances, and what happens to unspent cred
 "Prepaid credits" is a specific regulatory shape, not just a Stripe integration.
 
 ### T2-5. Adult content meets payment processors
+**Update 2026-11-11:** the hosted AUP no longer permits adult content (`aup/1.4.0.md` section 2.5,
+unserved). The question below stands only if that prohibition is ever lifted.
+
 **Question:** Does permitting adult content (AUP 2.5) survive tier 2? Card networks and processors
 impose their own rules on adult content, and they enforce them commercially, without caring about
 our reasoning. This is a business-viability question wearing a legal costume, and it is better
