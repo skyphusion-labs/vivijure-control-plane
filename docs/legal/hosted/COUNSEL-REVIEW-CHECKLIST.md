@@ -326,6 +326,45 @@ them (vivijure-cf#763).
 **Still open for counsel:** whether the rest of the flow-down (3.2 as landed) belongs in the
 hosted AUP or in the hosted service terms (T1-6).
 
+
+### T1-16. The provider flow-down in hosted AUP 1.3.0: does it carry what we owe, and no more?
+**Status: OPEN.** `aup/1.3.0.md` section 3.2 flows the model-provider and model-licence conduct
+rules down to tenants for every hosted module (Conrad's rulings of 2026-11-11 on cp#514). Terms
+were read on 2026-11-11; the URLs and dates are on the pull request that added 1.3.0. Seven
+questions came out of that read that only a licensed lawyer can answer.
+
+1. **Which document is a provider's "standard terms"?** Cloudflare's Developer Platform
+   Service-Specific Terms say that by using a catalog model we agree to comply with "the standard
+   terms of the model or search service provider". Several providers publish website terms, API or
+   developer terms, and a usage policy, and they differ. 3.2 was written against the strictest
+   reading that the documents share. Is that the right set?
+2. **Models hosted by our GPU provider.** Four modules call third-party models that RunPod hosts
+   for its customers. RunPod's terms and documentation do not say whose licence or terms govern
+   those models or their outputs. Do the model makers' own terms reach us there?
+3. **Section 2.5 against the providers' content rules.** Section 2.5 permits adult sexual content.
+   RunPod's Terms of Service list "pornography or graphic adult content" as unauthorized content,
+   and they bind us on the shared tier and the tenant on the dedicated tier. Most model providers
+   forbid sexually explicit output. 3.2 now says the provider's rule wins. Is there any hosted path
+   left on which Section 2.5 permits anything, and if not, should 2.5 be withdrawn (see T1-11)?
+4. **The training condition and the studio's own cast training.** 3.2 forbids feeding an output of
+   a third-party model into training, cast training included, and leaves images made only by the
+   open GPU models outside it. Is that line drawn correctly, and is a cast LoRA a "fine-tune" in
+   the providers' sense?
+5. **Resale.** Cloudflare's Self-Serve Subscription Agreement bars selling access to the Services
+   to a third party, one model provider's terms bar re-integrating its API into AI content creation
+   tools, and RunPod bars reselling credits without written consent. Does a hosted studio that
+   charges tenants for renders need written consent from any of them? (Same family as the RunPod
+   research on cp#287.)
+6. **Terms 3.2 deliberately does not carry.** One provider's developer terms bar uploading images
+   of anyone under 18, which would forbid an ordinary family film. It is not in 3.2 because it is
+   not clear those developer terms are the ones that reach us (question 1). Should it be?
+7. **AUP or service terms?** T1-15 left open whether the flow-down belongs in the AUP or in the
+   hosted service terms (T1-6). 1.3.0 makes the flow-down longer, so the question matters more.
+
+**Not asked again here:** vivijure-cf#751 (T1-15) is ruled and is not reopened. That ruling is about
+whether the project's own use of the Cloudflare path is compliant. 1.3.0 is about what tenants may
+do with outputs.
+
 ---
 
 ## Band T2: before our-GPUs and payments
