@@ -31,7 +31,6 @@ const SIGNING_KEY = "cp285-signing-key-not-the-default";
 // pool rather than on the proxy, which is the fixture testing itself instead of the gate.
 const POOL = JSON.stringify({
   backend: { id: "ep-cp285-backend", name: "pool-backend" },
-  "wan-train": { id: "ep-cp285-wan-train", name: "pool-wan-train" },
 });
 
 const env = (over: Partial<ControlPlaneEnv> = {}): ControlPlaneEnv =>

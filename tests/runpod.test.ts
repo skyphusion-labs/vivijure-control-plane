@@ -55,7 +55,7 @@ function fakeRunPod(opts: { endpoints?: unknown[]; templates?: unknown[]; quotaE
 }
 
 describe("the provisioning plan", () => {
-  it("holds 3 capabilities: 2 endpoint-backed, 1 on our own iron", () => {
+  it("holds 2 capabilities: 1 endpoint-backed, 1 on our own iron", () => {
     // cp#517 dropped the lipsync entry (musetalk ruled out, endpoint gone); cp#519 dropped
     // audio-upscale with the speech-upscale module. ALL THREE numbers are asserted because a total
     // alone cannot distinguish a capability that was DROPPED from one that MOVED transport.
@@ -63,12 +63,16 @@ describe("the provisioning plan", () => {
     // THE WORKER SUM IS UNCHANGED AT 4, and that is the honest reading: audio-upscale was
     // door-backed, so it spent NO account-wide worker quota and its removal hands none back. Saying
     // otherwise would be inventing a saving. What cp#517 handed back was 1, from an ENDPOINT.
-    expect(PROVISION_PLAN).toHaveLength(3);
-    expect(endpointBackedPlan()).toHaveLength(2);
+    //
+    // cp#589 dropped wan-train (Wan training not used; endpoint zqb7tougbqfkqa gone). It WAS
+    // endpoint-backed with maxWorkers 2, so the worker sum falls from 4 to 2: that is quota really
+    // handed back, unlike audio-upscale above.
+    expect(PROVISION_PLAN).toHaveLength(2);
+    expect(endpointBackedPlan()).toHaveLength(1);
     expect(vpcBackedPlan()).toHaveLength(1);
-    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "wan-train"]);
+    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend"]);
     expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["upscale"]);
-    expect(endpointBackedPlan().reduce((n, e) => n + e.maxWorkers, 0)).toBe(4);
+    expect(endpointBackedPlan().reduce((n, e) => n + e.maxWorkers, 0)).toBe(2);
     // A retired key is not reachable from the plan by any route, which is what stops it being
     // provisioned, pinned or demanded of a pool. It survives ONLY for reconcile attribution, and
     // BOTH halves are asserted per key: absent from the plan, present in the retired list. Assert
@@ -77,6 +81,8 @@ describe("the provisioning plan", () => {
     expect(RETIRED_ENDPOINT_KEYS).toContain("lipsync");
     expect(PROVISION_PLAN.map((c) => c.key)).not.toContain("audio-upscale");
     expect(RETIRED_ENDPOINT_KEYS).toContain("audio-upscale");
+    expect(PROVISION_PLAN.map((c) => c.key)).not.toContain("wan-train");
+    expect(RETIRED_ENDPOINT_KEYS).toContain("wan-train");
   });
 
   it("pins max_workers EXPLICITLY on every ENDPOINT (RunPod default of 3 would overrun the quota)", () => {

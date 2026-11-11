@@ -212,7 +212,8 @@ APPLE_SERVICES_ID = "${APPLE_SERVICES_ID}"
 TENANT_AI_GATEWAY_ID = "${TENANT_AI_GATEWAY_ID}"
 
 # cp#270: the SHARED RunPod endpoint pool, as JSON keyed by ENDPOINT-BACKED PROVISION_PLAN key:
-#   {"backend":{"id":"...","name":"..."},"wan-train":{"id":"...","name":"..."}}
+#   {"backend":{"id":"...","name":"..."}}
+#   (cp#589: wan-train retired; backend is the only endpoint-backed key.)
 #
 # cp#517 corrected this example. It named upscale, lipsync and audio-upscale, and all three were
 # wrong: upscale is own-iron and parseSharedPool REFUSES a config naming it (cp#396); lipsync

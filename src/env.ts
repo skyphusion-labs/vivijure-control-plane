@@ -200,7 +200,7 @@ export interface ControlPlaneEnv extends SmokeRenderBoundEnv {
    * The SHARED RunPod endpoint pool for the hosted shared tier (cp#270), as JSON keyed by
    * PROVISION_PLAN key:
    *
-   *   {"backend":{"id":"...","name":"..."},"wan-train":{...}}
+   *   {"backend":{"id":"...","name":"..."}}
    *
    * ENDPOINT-BACKED keys only. This example named upscale, lipsync and audio-upscale until cp#517;
    * all three were wrong. upscale is own-iron and parseSharedPool REFUSES a config naming it
