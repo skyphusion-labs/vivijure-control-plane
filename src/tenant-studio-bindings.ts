@@ -57,6 +57,9 @@ import type { ProvisionDeps } from "./provisioner";
 import type { Tenant } from "./store";
 import { tenantModuleScriptPrefix, TENANT_MODULE_PREFIX_BINDING } from "./tenant-modules";
 
+/** cp#573: the studio's Cloudflare Images binding (vivijure-cf#1211, GET /api/thumb). */
+export const STUDIO_IMAGES_BINDING = "IMAGES";
+
 /** The studio binding name the video-finish tier is reached through (cf#118). */
 export const VIDEO_FINISH_BINDING = "VIDEO_FINISH_VPC";
 
@@ -182,7 +185,9 @@ export async function refreshTenantStudioBindings(
   const doorNames = new Set(Object.keys(deps.mediaDoorUrls));
   const desired: WorkerBinding[] = [
     ...before
-      .filter((b) => b.name !== VIDEO_FINISH_BINDING && !doorNames.has(b.name) && b.name !== TENANT_MODULE_PREFIX_BINDING)
+      .filter((b) =>
+        b.name !== VIDEO_FINISH_BINDING && !doorNames.has(b.name) && b.name !== TENANT_MODULE_PREFIX_BINDING &&
+        b.name !== STUDIO_IMAGES_BINDING)
       .map((b) => ({ type: "inherit" as const, name: b.name })),
     ...Object.entries(deps.mediaDoorUrls).map(([name, text]) => ({
       type: "plain_text" as const,
@@ -191,6 +196,9 @@ export async function refreshTenantStudioBindings(
     })),
     // Set, not inherited, so a studio provisioned before the var existed gets it on its next refresh.
     { type: "plain_text" as const, name: TENANT_MODULE_PREFIX_BINDING, text: tenantModuleScriptPrefix(tenant.id) },
+    // cp#573: the studio thumbnail route's Images binding. Set, not inherited, so a studio provisioned
+    // before the provisioner bound it gets it on its next refresh. It carries no value.
+    { type: "images" as const, name: STUDIO_IMAGES_BINDING },
   ];
 
   try {
