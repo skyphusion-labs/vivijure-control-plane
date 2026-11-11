@@ -494,11 +494,10 @@ export async function handle(
     }
 
     if (request.method === "GET" && path === "/auth/email/callback") {
-      const token = url.searchParams.get("token") ?? "";
-      if (!token) return redirectTo(env, "/?error=link_invalid");
       // GET does not consume. Prefetch, mail scanners, and preview fetches land here and change
-      // nothing; the POST below is the spend (cp#437).
-      return magicLinkConfirmResponse(token);
+      // nothing; the POST below is the spend (cp#437). The token is in the link's fragment, which
+      // the server never sees, so this page is static and the query string is never read.
+      return magicLinkConfirmResponse();
     }
 
     if (request.method === "POST" && path === "/auth/email/callback") {

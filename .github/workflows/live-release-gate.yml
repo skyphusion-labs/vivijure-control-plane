@@ -57,7 +57,6 @@ jobs:
       # cp#536: read-only legs. The gateway read token (AI Gateway Read + Metadata Read) is the
       # VIVIJURE_AIGW_READ_TOKEN repo secret, which arrived with the gateway reader (cp#185).
       AI_GATEWAY_READ_TOKEN: ${{ secrets.VIVIJURE_AIGW_READ_TOKEN }}
-      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -68,20 +67,19 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
+        id: install
         run: npm ci --no-audit --no-fund
 
       - name: Preflight -- required secrets present (presence-check only)
+        id: preflight
         run: |
           set -eu
-          # No RUNPOD_API_KEY check: no step in this job reaches RunPod any more (cp#536), and a
-          # preflight demanding a credential nothing uses can only fail the gate for a reason that
-          # is not about the gate.
+          # No RUNPOD_API_KEY check: reconcile-runpod is held while #574 holds (see the left-off
+          # note at the end), so no step in this job reaches RunPod, and a preflight demanding a
+          # credential nothing uses can only fail the gate for a reason that is not about the gate.
           test -n "${CF_PROVISIONER_TOKEN:+SET}" || { echo "CF_PROVISIONER_TOKEN secret missing"; exit 1; }
           test -n "${CF_ACCOUNT_ID:+SET}" || { echo "CF_ACCOUNT_ID secret missing"; exit 1; }
-          # cp#536 brought RunPod back for ONE read-only leg (reconcile-runpod: two GETs, no
-          # writes, no GPU), so the key is required again, for a step that uses it.
           test -n "${AI_GATEWAY_READ_TOKEN:+SET}" || { echo "VIVIJURE_AIGW_READ_TOKEN secret missing"; exit 1; }
-          test -n "${RUNPOD_API_KEY:+SET}" || { echo "RUNPOD_API_KEY secret missing"; exit 1; }
           echo "all required live-gate secrets present"
 
       # cp#536: every live suite gates itself with describe.skipIf, so a missing secret or opt-in
@@ -89,20 +87,28 @@ jobs:
       # which exits 1 unless the suite ran, skipped nothing and failed nothing. A skip is could
       # not measure, never a pass.
       #
+      # EVERY SUITE RUNS, whatever the one before it did (first live run, 42998956207: one red
+      # suite stopped the job and three suites never reported). Each suite step runs once install
+      # and preflight passed, even after an earlier suite failed. A failed step still fails the
+      # job; the `aggregate` step at the end names every suite's outcome and fails on any that is
+      # not success, including one that was skipped.
+      #
       # cp#536: the `RunPod scratch live` step that used to stand here named
       # tests/runpod.live.test.ts, which fe756cf deleted on 2026-08-15 with the BYOK / dedicated
-      # RunPod path (#430). Every step here runs under `shell: bash -e`, so the job died on that
-      # missing file and NOTHING after it ran -- six weeks in which this gate could not have
-      # reported. Retired rather than repointed: its subject (a per-tenant RunPod template and
-      # endpoint) went with the purge. Which of the other live suites belong here is cp#536.
+      # RunPod path (#430). Retired rather than repointed: its subject (a per-tenant RunPod
+      # template and endpoint) went with the purge.
 
       - name: CF provisioner live (prefixed rollins-verify-* resources)
+        id: cf_api
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.preflight.outcome == 'success' }}
         run: bash scripts/run-live-suite.sh tests/cf-api.live.test.ts
 
       # cp#526 / cp#524: the `workflow` binding variant. A binding variant is not proven by
       # typechecking; it is proven by the API accepting it and a readback showing it attached.
       # Prefixed strummer-verify-* resources, torn down in afterAll, zero GPU spend.
       - name: WfP workflow-binding live (prefixed strummer-verify-* resources)
+        id: wfp_workflow_binding
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.preflight.outcome == 'success' }}
         run: bash scripts/run-live-suite.sh tests/wfp-workflow-binding.live.test.ts
 
       # cp#537: does a workflow binding need its Workflow to EXIST? Account-level scripts, so the
@@ -110,30 +116,29 @@ jobs:
       # bearer-guarded workers on workers.dev for the seconds it runs and deletes both, which takes
       # their routes with them.
       - name: Workflow runtime-binding live (prefixed strummer-verify-* resources)
+        id: workflow_runtime_binding
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.preflight.outcome == 'success' }}
         run: bash scripts/run-live-suite.sh tests/workflow-runtime-binding.live.test.ts
-
-      # ---- cp#536: the rest of the live suites. Read-only legs first, then scratch legs. ----
 
       # Read-only: lists rows of the hosted AI Gateway and checks shape, ordering and filters.
       - name: AI Gateway logs live (read-only)
+        id: ai_gateway_logs
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.preflight.outcome == 'success' }}
         run: bash scripts/run-live-suite.sh tests/ai-gateway-logs.live.test.ts
-
-      # Read-only: two RunPod GETs and one SELECT on the tenants table. It writes nothing and
-      # spends no GPU. The log carries counts only (no RECONCILE_PRINT_FULL here: public repo).
-      - name: RunPod reconcile live (read-only)
-        env:
-          RECONCILE_LIVE: "1"
-        run: bash scripts/run-live-suite.sh tests/reconcile-runpod.live.test.ts
 
       # Scratch: a bucket-scoped R2 credential minted, proved with a real S3 call, revoked. Needs
       # the token-management-capable provisioner token; the reduced one cannot mint.
       - name: R2 credential lifecycle live (scratch, self-cleaning)
+        id: r2_credential
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.preflight.outcome == 'success' }}
         env:
           CF_PROVISIONER_FULL: "1"
         run: bash scripts/run-live-suite.sh tests/r2-credential.live.test.ts
 
       # Scratch: a prefixed bucket filled, emptied, deleted.
       - name: R2 empty-then-delete live (scratch, self-cleaning)
+        id: r2_empty
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.preflight.outcome == 'success' }}
         env:
           R2_EMPTY_LIVE: "1"
         run: bash scripts/run-live-suite.sh tests/r2-empty.live.test.ts
@@ -141,6 +146,8 @@ jobs:
       # Scratch: the reclaim teardown rehearsal. Every name carries a rollins-rehearsal- prefix and
       # a per-run suffix; the suite reports by name anything its sweep could not remove.
       - name: Reclaim teardown rehearsal live (scratch, self-cleaning)
+        id: reclaim_teardown
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.preflight.outcome == 'success' }}
         env:
           RECLAIM_REHEARSAL: "1"
         run: bash scripts/run-live-suite.sh tests/reclaim-teardown.live.test.ts
@@ -149,6 +156,8 @@ jobs:
       # vivijure-cf release tarball, checked against its separately published manifest.json
       # before it is used, so the leg proves the artifact a tenant would get, not a local build.
       - name: Fetch the published studio release (wfp-upload input)
+        id: fetch_release
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.preflight.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -166,12 +175,45 @@ jobs:
 
       # Scratch: the real studio bundle uploaded into a prefixed namespace, then torn down.
       - name: WfP upload of the published studio bundle live (scratch, self-cleaning)
+        id: wfp_upload
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.preflight.outcome == 'success' && steps.fetch_release.outcome == 'success' }}
         run: bash scripts/run-live-suite.sh tests/wfp-upload.live.test.ts
+
+      # One verdict over every suite. A step that was skipped (install or preflight failed, or
+      # the release fetch for wfp-upload) is NOT a pass: it is a suite that never measured.
+      - name: aggregate -- every suite ran and passed
+        if: ${{ always() }}
+        env:
+          OUT_CF_API: ${{ steps.cf_api.outcome }}
+          OUT_WFP_WORKFLOW_BINDING: ${{ steps.wfp_workflow_binding.outcome }}
+          OUT_WORKFLOW_RUNTIME_BINDING: ${{ steps.workflow_runtime_binding.outcome }}
+          OUT_AI_GATEWAY_LOGS: ${{ steps.ai_gateway_logs.outcome }}
+          OUT_R2_CREDENTIAL: ${{ steps.r2_credential.outcome }}
+          OUT_R2_EMPTY: ${{ steps.r2_empty.outcome }}
+          OUT_RECLAIM_TEARDOWN: ${{ steps.reclaim_teardown.outcome }}
+          OUT_FETCH_RELEASE: ${{ steps.fetch_release.outcome }}
+          OUT_WFP_UPLOAD: ${{ steps.wfp_upload.outcome }}
+        run: |
+          set -u
+          bad=0
+          for v in $(env | grep -oE '^OUT_[A-Z0-9_]+' | sort); do
+            o="${!v}"
+            echo "@suite ${v#OUT_} ${o:-none}"
+            [ "$o" = success ] || bad=$((bad + 1))
+          done
+          if [ "$bad" -ne 0 ]; then
+            echo "::error::$bad of the live-gate steps did not pass (failure, skipped or never ran). Each is named above."
+            exit 1
+          fi
+          echo "all live-gate suites ran and passed"
 
       # Left OFF on purpose (cp#536), named here so the omission is a decision, not a gap:
       #   provision-e2e.live.test.ts and pre-deploy-smoke.live.test.ts drive the full provisioning
       #   chain against the plane, which is out of service on our deployment (cp#574). They come
       #   back with the plane. Making this gate required on tag deploy is deferred to that point.
+      #   reconcile-runpod.live.test.ts is held for the same reason: it asserts a non-deleted
+      #   testbed tenant, and while #574 holds there is none (first live run, 42998956207, 2 of 3
+      #   red on exactly that). It returns with the plane, with RUNPOD_API_KEY back in preflight.
       #   shared-pool-key-scope.live.test.ts already runs on the deploy path (deploy.yml), where it
       #   fails loudly when armed; it is not repeated here.
       # tests/workflow-guards.test.py fails if a live suite is neither run above nor named here.

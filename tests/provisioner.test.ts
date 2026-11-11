@@ -6,6 +6,7 @@ import { TEST_VPC_DOORS } from "./door-fixture";
 // and that gate is called out separately in the PR rather than implied by a green suite.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { tenantModuleScriptName, tenantModuleScriptPrefix } from "../src/tenant-modules";
 import {
   PROVISION_STEPS,
   continueProvisionJob,
@@ -472,6 +473,24 @@ describe("runProvisionJob", () => {
       name: "ABUSE_REPORT_URL",
       text: "https://studio.example.com/report-abuse",
     });
+  });
+
+  it("binds the studio's OWN module-script prefix, derived from its tenant id", async () => {
+    // The studio's module install accepts only a script under this prefix. The value must be THIS
+    // tenant's: the namespace holds every tenant's modules.
+    const t = await tenant();
+    const d = deps();
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
+    expect((await runProvisionJob(d, job.id, t)).ok).toBe(true);
+
+    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      bindings: { type: string; name: string; text?: string }[];
+    };
+    expect(upload.bindings.filter((b) => b.name === "TENANT_MODULE_PREFIX")).toEqual([
+      { type: "plain_text", name: "TENANT_MODULE_PREFIX", text: tenantModuleScriptPrefix(t.id) },
+    ]);
+    // CONTROL: the value is the same prefix the plane installs this tenant's modules under.
+    expect(tenantModuleScriptName(t.id, "keyframe").startsWith(tenantModuleScriptPrefix(t.id))).toBe(true);
   });
 
   it("binds the per-tenant STORAGE CEILING onto a NEW tenant studio (cp#183)", async () => {
