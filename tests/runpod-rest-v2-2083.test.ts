@@ -63,7 +63,7 @@ describe("RunPodClient on REST v2", () => {
     const { c, calls } = client(() => ({ id: "e1" }));
     await c.createEndpoint({ name: "vivijure-x-backend", templateId: "t1", gpuTypeIds: ["NVIDIA H200", "NVIDIA B200"], workersMax: 2 });
     expect(calls[0]).toEqual({ url: "https://api.runpod.io/v2/serverless", method: "POST", body: {
-      name: "vivijure-x-backend", templateId: "t1",
+      name: "vivijure-x-backend", type: "QUEUE", templateId: "t1",
       gpu: { pools: ["HOPPER_141", "BLACKWELL_180"], count: 1 },
       workers: { min: 0, max: 2, idleTimeout: 5 },
       scaling: { type: "QUEUE_DELAY", queueDelay: 4 },
