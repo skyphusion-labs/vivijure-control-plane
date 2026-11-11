@@ -259,6 +259,28 @@ check("the drift workflow REFUSES on an absent credential instead of skipping",
       DRIFT_CRED_REFUSAL in drift_text,
       "an unperformed check must not look like a check that ran and found nothing")
 
+# cp#536: the live release gate. Every live suite skips itself (describe.skipIf) when its env is
+# missing, and vitest then exits 0, so a bare `npx vitest run` step reads green having measured
+# nothing. Every live-suite step must go through scripts/run-live-suite.sh, which refuses a skip.
+# And every tests/*.live.test.ts must be either run by the gate or named in its left-off comment,
+# so a new suite cannot quietly be missing from the gate.
+gate_path = root / ".github/workflows/live-release-gate.yml"
+gate_text = gate_path.read_text()
+gate = yaml.safe_load(gate_text)
+gate_runs = [str(st.get("run", "")) for st in gate.get("jobs", {}).get("live-gate", {}).get("steps", [])]
+bare = [r.strip() for r in gate_runs if ".live.test.ts" in r and "scripts/run-live-suite.sh" not in r]
+check("every live-gate suite step runs through run-live-suite.sh (cp#536)", not bare,
+      "bare vitest step(s): " + "; ".join(bare))
+for suite in sorted(p.name for p in (root / "tests").glob("*.live.test.ts")):
+    ran = any(("tests/" + suite) in r for r in gate_runs)
+    named_off = any(line.lstrip().startswith("#") and suite in line for line in gate_text.splitlines())
+    check("live suite " + suite + " is run by the live gate or named as left off (cp#536)",
+          ran or named_off, "add a step, or name it in the left-off comment with the reason")
+check("run-live-suite.sh refuses a skipped suite (cp#536)",
+      "skipped" in (root / "scripts/run-live-suite.sh").read_text()
+      and "sys.exit(1)" in (root / "scripts/run-live-suite.sh").read_text(),
+      "the wrapper must exit 1 when any test is skipped")
+
 print("")
 print("  " + str(checks - len(failures)) + " passed, " + str(len(failures)) + " failed")
 sys.exit(1 if failures else 0)
