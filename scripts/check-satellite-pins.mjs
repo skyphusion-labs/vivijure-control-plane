@@ -104,7 +104,10 @@ async function checkRegistry(org, pins) {
 
 async function prodImages(key, wantedIds) {
   const auth = { Authorization: `Bearer ${key}` };
-  const eps = await withTimeout(`${RUNPOD_API}/endpoints`, { headers: auth });
+  // includeTemplate=true (default false): without it the list carries no image at all, and the
+  // only route to the image was the template read below (measured 2026-11-11 on the hosted upscale
+  // endpoint: rc=2, "template mazn6lcp0y read failed: HTTP 404").
+  const eps = await withTimeout(`${RUNPOD_API}/endpoints?includeTemplate=true`, { headers: auth });
   if (!eps.ok) fail(2, `RunPod endpoint list failed: HTTP ${eps.status}`);
   const list = await eps.json();
   if (!Array.isArray(list)) fail(2, "RunPod endpoint list was not an array -- API shape changed");
@@ -119,7 +122,9 @@ async function prodImages(key, wantedIds) {
     const inline = [ep.imageName, ep.image, ep.template?.imageName].find((v) => typeof v === "string" && v);
     if (inline) { byId.set(ep.id, { name: ep.name, image: inline }); continue; }
     if (!ep.templateId) fail(2, `RunPod endpoint ${ep.id} carries neither an image nor a templateId -- cannot measure`);
-    const t = await withTimeout(`${RUNPOD_API}/templates/${ep.templateId}`, { headers: auth });
+    // includeEndpointBoundTemplates=true (default false): an endpoint's own template is
+    // endpoint-bound, and without the flag RunPod answers 404 for it, which is the 404 measured.
+    const t = await withTimeout(`${RUNPOD_API}/templates/${ep.templateId}?includeEndpointBoundTemplates=true`, { headers: auth });
     if (!t.ok) fail(2, `RunPod template ${ep.templateId} (endpoint ${ep.id}) read failed: HTTP ${t.status}`);
     const tpl = await t.json();
     byId.set(ep.id, { name: ep.name, image: tpl.imageName || "" });
