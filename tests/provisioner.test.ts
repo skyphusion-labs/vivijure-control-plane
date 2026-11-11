@@ -51,6 +51,8 @@ function fakeCf(over: Partial<Record<string, unknown>> = {}) {
     createD1: vi.fn(async (name: string) => (calls.push(`createD1:${name}`), { uuid: "db-1" })),
     queryD1: vi.fn(async () => (calls.push("queryD1"), {})),
     deleteD1: vi.fn(async () => void calls.push("deleteD1")),
+    // Present unless a test says otherwise, so the harvest interlock holds by default.
+    d1Present: vi.fn(async () => true),
     exportD1: vi.fn(async () => ({ signed_url: "https://x" })),
     createR2Bucket: vi.fn(async (n: string) => void calls.push(`createR2:${n}`)),
     deleteR2Bucket: vi.fn(async () => void calls.push("deleteR2Bucket")),
@@ -395,6 +397,41 @@ describe("teardown harvests the job index before reaping the D1 (cp#270)", () =>
     expect(calls).not.toContain("deleteD1");
     // The row must still claim the database, or a re-run has nothing to retry against.
     expect(store.tenants.get(t.id)?.d1_database_id).toBe("db-1");
+  });
+
+  it("a harvest that fails because the D1 is ALREADY GONE lets the d1 leg run and report it", async () => {
+    // The live reclaim suite's case: the database was removed out of band. Holding the d1 leg back
+    // would say "harvest failed, D1 kept" about a database that does not exist.
+    const t = await tenant();
+    const cf = jobLogCf(() => {
+      throw new Error("d1.query -> 404");
+    });
+    (cf as unknown as { d1Present: unknown }).d1Present = vi.fn(async () => (calls.push("d1Present"), false));
+    (cf as unknown as { deleteD1: unknown }).deleteD1 = vi.fn(async () => {
+      calls.push("deleteD1");
+      throw new Error("d1.delete -> 404");
+    });
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+
+    expect(res.ok).toBe(false);
+    expect(res.failures.map((f) => f.resource)).toEqual(expect.arrayContaining(["job_index_harvest", "d1"]));
+    expect(calls).toContain("d1Present");
+    expect(calls).toContain("deleteD1");
+  });
+
+  it("a presence probe that cannot tell keeps the interlock shut", async () => {
+    const t = await tenant();
+    const cf = jobLogCf(() => {
+      throw new Error("D1_ERROR: database is locked");
+    });
+    (cf as unknown as { d1Present: unknown }).d1Present = vi.fn(async () => {
+      throw new Error("d1.get -> 500");
+    });
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+    expect(res.failures.map((f) => f.resource)).toContain("job_index_harvest");
+    expect(calls).not.toContain("deleteD1");
   });
 
   it("CONTROL: a tenant with NO job-log table tears down CLEAN and the delete proceeds", async () => {

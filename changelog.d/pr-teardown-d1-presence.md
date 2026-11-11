@@ -1,0 +1,3 @@
+### fix(teardown): a D1 that is already gone is reported, not hidden behind the harvest gate
+
+Teardown harvests a tenant D1's job log before deleting it, and skips the delete when the harvest fails. A database removed out of band also fails the harvest, so teardown reported "harvest failed, D1 kept" about a database that no longer existed, and never reached the d1 leg. When the harvest fails, teardown now asks whether the database exists (`CfApi.d1Present`: `true` on 200, `false` only on 404, anything else throws). Only a proven absence lets the d1 leg run and report what it meets. A present database, or a probe that cannot tell, keeps the interlock shut as before.

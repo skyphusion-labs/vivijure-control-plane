@@ -410,6 +410,21 @@ export class CfApi {
     );
   }
 
+  /**
+   * Does this D1 database exist? true on 200, false ONLY on HTTP 404, and every other answer THROWS:
+   * "could not tell" must never read as "gone". The live reclaim suite's own positive control reads
+   * the same GET (tests/reclaim-teardown.live.test.ts d1Exists).
+   */
+  async d1Present(databaseId: string): Promise<boolean> {
+    try {
+      await this.call<unknown>("d1.get", `/accounts/${this.accountId}/d1/database/${databaseId}`);
+      return true;
+    } catch (e) {
+      if (e instanceof CfApiError && e.status === 404) return false;
+      throw e;
+    }
+  }
+
   async deleteD1(databaseId: string): Promise<void> {
     await this.call<unknown>("d1.delete", `/accounts/${this.accountId}/d1/database/${databaseId}`, {
       method: "DELETE",

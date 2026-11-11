@@ -2390,7 +2390,21 @@ export async function teardownTenant(
     // harvest failure also stops the delete, instead of a new failure mode quietly bypassing the
     // one interlock that protects the mapping.
     const harvestFailed = failures.some((f) => f.resource === "job_index_harvest");
-    if (tenant.d1_database_id && !d1Guarded && !harvestFailed) {
+    // A harvest also fails when the database is ALREADY GONE (removed out of band): there is then no
+    // log left to protect, and holding the d1 leg back would report "harvest failed, D1 kept" about a
+    // database that does not exist. So when the harvest failed, ask whether the database exists. Only
+    // a proven absence (404) lets the d1 leg run and report what it meets; a present database, or a
+    // probe that cannot tell, keeps the interlock shut.
+    let d1ProvenGone = false;
+    if (tenant.d1_database_id && !d1Guarded && harvestFailed) {
+      try {
+        d1ProvenGone = !(await deps.cf.d1Present(tenant.d1_database_id));
+      } catch (e) {
+        deps.log("teardown.d1_presence_unknown", { tenant: tenant.id, error: String(e) });
+      }
+      if (d1ProvenGone) deps.log("teardown.d1_gone_before_harvest", { tenant: tenant.id });
+    }
+    if (tenant.d1_database_id && !d1Guarded && (!harvestFailed || d1ProvenGone)) {
       await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!), "d1");
     }
     // EMPTY-THEN-DELETE (cf#72), wired here by this issue caller work.
