@@ -174,9 +174,16 @@ each. Kept here because the reasoning belongs with the posture:
 
 ## 4. Sexual content generally (and why the bright line is unaffected)
 
-The hosted AUP permits adult sexual content between consenting adults (AUP Section 2.5), matching
-the operator's discretion the canonical AUP already grants. Sections 1 (CSAM), 2.1 (NCII), and 2.2
-(non-consensual deepfakes) stay absolute regardless, and none of this document softens them.
+**Corrected 2026-11-11.** This section used to say the hosted AUP permits adult sexual content
+between consenting adults. Conrad ruled on 2026-11-11 that it does not (recorded on cp#514). Hosted
+AUP 1.4.0 section 2.5, not yet served, prohibits sexually explicit content on every hosted module
+and on either tier, because the providers whose models and GPU capacity the hosted studio runs on do
+not allow it. The canonical AUP still leaves lawful adult content to a self-hosting operator; the
+hosted studio is stricter. Sections 1 (CSAM), 2.1 (NCII), and 2.2 (non-consensual deepfakes) stay
+absolute regardless, and none of this document softens them.
+
+The paragraph below is kept as the record of why the question was raised. It describes the
+position before the ruling.
 
 **Flagged for counsel and for Conrad, honestly:** permitting adult content on a **hosted** surface
 that we operate is a materially different risk posture than permitting it on Conrad's private
