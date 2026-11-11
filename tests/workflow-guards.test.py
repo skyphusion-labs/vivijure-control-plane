@@ -276,6 +276,22 @@ for suite in sorted(p.name for p in (root / "tests").glob("*.live.test.ts")):
     named_off = any(line.lstrip().startswith("#") and suite in line for line in gate_text.splitlines())
     check("live suite " + suite + " is run by the live gate or named as left off (cp#536)",
           ran or named_off, "add a step, or name it in the left-off comment with the reason")
+# cp#536: one red suite must not hide the rest. Every suite step after preflight runs whatever an
+# earlier suite did (`!cancelled()` plus install/preflight success), carries an id, and the final
+# `aggregate` step (if: always()) reads every one of those ids, so the job still fails on any.
+gate_steps = gate.get("jobs", {}).get("live-gate", {}).get("steps", [])
+suite_steps = [st for st in gate_steps if "run-live-suite.sh" in str(st.get("run", ""))]
+check("every live-gate suite step runs after an earlier red (cp#536)",
+      bool(suite_steps) and all("!cancelled()" in str(st.get("if", "")) and st.get("id") for st in suite_steps),
+      "steps without !cancelled() or an id: " + "; ".join(str(st.get("name")) for st in suite_steps
+          if not ("!cancelled()" in str(st.get("if", "")) and st.get("id"))))
+agg = [st for st in gate_steps if str(st.get("name", "")).startswith("aggregate")]
+agg_env = str(agg[-1].get("env", {})) if agg else ""
+check("the aggregate step is last, always runs, and reads every suite outcome (cp#536)",
+      bool(agg) and gate_steps and gate_steps[-1] is agg[-1] and "always()" in str(agg[-1].get("if", ""))
+      and all(("steps." + str(st.get("id")) + ".outcome") in agg_env for st in suite_steps),
+      "aggregate missing, not last, not always(), or missing a suite id")
+
 check("run-live-suite.sh refuses a skipped suite (cp#536)",
       "skipped" in (root / "scripts/run-live-suite.sh").read_text()
       and "sys.exit(1)" in (root / "scripts/run-live-suite.sh").read_text(),
