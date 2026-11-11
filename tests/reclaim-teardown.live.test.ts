@@ -379,8 +379,14 @@ describe.skipIf(!LIVE)("reclaim teardown, live against real Cloudflare", () => {
     // The whole reason the reclaim path refuses to complete on a partial teardown: it must SAY SO,
     // because the row is the only remaining record of what still needs reaping.
     expect(result.ok).toBe(false);
-    expect(result.failures.map((f) => f.resource)).toContain("d1");
-    expect(String(result.failures.find((f) => f.resource === "d1")?.error)).not.toBe("");
+    // The job-log harvest (#280) reads the D1 BEFORE the delete, and the delete runs only when the
+    // harvest succeeded. A D1 that is already gone therefore fails at the harvest, which is where it
+    // is reported, and the d1 delete is never attempted. Asserting on "d1" here predates that
+    // interlock and could never pass once it shipped.
+    const resources = result.failures.map((f) => f.resource);
+    expect(resources).toContain("job_index_harvest");
+    expect(resources).not.toContain("d1");
+    expect(String(result.failures.find((f) => f.resource === "job_index_harvest")?.error)).not.toBe("");
     // And it kept going: teardown COLLECTS failures rather than stopping at the first one, so the
     // worker and the bucket are still reaped.
     expect(await scriptExists(NAMESPACE, SCRIPT)).toBe(false);
