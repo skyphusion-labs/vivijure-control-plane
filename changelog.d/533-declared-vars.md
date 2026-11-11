@@ -1,0 +1,3 @@
+### ci(deploy): declare SHARED_RUNPOD_ENDPOINTS in the repo and refuse a deploy that disagrees (#533)
+
+`config/declared-vars.json` declares the value of `SHARED_RUNPOD_ENDPOINTS`, and `scripts/check-declared-vars.mjs` runs in both `deploy.yml` jobs, after the AUP pin gate. It refuses the deploy when the live variable is unset, is not valid JSON, or differs from the declared value (compared as JSON, key order ignored). So a change to the variable is now a PR with a diff, and drift is loud. The value is declared AS IT IS LIVE, which is known stale (it names two retired endpoints); cp#589 replaces it. The checker reads more variables when they are added to the file.

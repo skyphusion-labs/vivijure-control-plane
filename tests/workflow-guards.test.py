@@ -239,6 +239,12 @@ for name, text in (("deploy.yml", str(wf)), ("studio-pin-drift.yml", drift_text)
           "CHECK_STUDIO_PIN_TIMEOUT_MS" not in text,
           "an abbreviated timeout is not a measurement of the live estate")
 
+# cp#533: BOTH deploy.yml jobs (the dry run and the deploy) run the declared-variable gate, each fed
+# the live variable, so a declared value can never be skipped on the path that ships.
+check("both deploy.yml jobs run the declared-variable gate (cp#533)",
+      str(wf).count("node scripts/check-declared-vars.mjs") == 2,
+      "a deploy job without the gate ships a variable no file describes")
+
 # Anchored on the EMITTED string, for the reason recorded above the mirror-notice assertion: a
 # vocabulary match is supplied by unrelated text. A skip here would be an absence reading as OK,
 # and this job never runs from a fork, so an absent credential is a defect and not a fork condition.
