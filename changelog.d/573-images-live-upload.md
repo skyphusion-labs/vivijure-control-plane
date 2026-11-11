@@ -1,0 +1,3 @@
+### test(live): the live studio upload binds IMAGES with the provisioner token (#573)
+
+`tests/wfp-upload.live.test.ts` uploads the published studio release with `CF_PROVISIONER_TOKEN`, the provisioner's own token. It now adds the `images` binding `IMAGES` that `src/provisioner.ts` asks for (#603), and it asserts the uploaded script carries `IMAGES` with the type `images`. A green live gate run therefore proves the deploy token can set an images binding on a tenant script, which is the token half of #573. The other half, `GET /api/thumb` answering on a provisioned studio, waits for the plane to return (#574).
