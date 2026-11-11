@@ -87,6 +87,11 @@ afterAll(async () => {
   if (state.tokenId) await drop("token", () => cf.revokeToken(state.tokenId!));
   await drop("own bucket", () => cf.deleteR2Bucket(OWN_BUCKET));
   await drop("other bucket", () => cf.deleteR2Bucket(OTHER_BUCKET));
+  // The cleanup's own witness, on a structured line: a leak used to show only as LEFTOVER prose.
+  for (const b of [OWN_BUCKET, OTHER_BUCKET]) {
+    const left = await cf.r2BucketExists(b).catch(() => null);
+    console.log(`@cleanup bucket=${b} exists=${left}`);
+  }
   // A fresh credential needs time to propagate before the empty can start, so the vitest default
   // hook budget (10 s) is too short for this hook.
 }, 180_000);
