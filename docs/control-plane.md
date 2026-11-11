@@ -637,8 +637,10 @@ newest tag).
 
 ## Tenant satellite image pins (cp#126)
 
-Every tenant endpoint is created from a pinned container image, and all four pins live in exactly one
-place: `src/satellite-pins.ts`. `src/runpod.ts` decides layout, labels, GPU class and worker counts,
+Every tenant endpoint is created from a pinned container image, and the pins (backend and upscale
+since cp#589) live in exactly one place: `src/satellite-pins.ts`. Each pin is a tag AND its manifest
+digest (cp#601), and tenant templates are created as `<repo>:<tag>@<digest>`, the form production
+templates carry, so a tenant image is immutable even if the tag is re-pushed. `src/runpod.ts` decides layout, labels, GPU class and worker counts,
 and never decides a version; a test asserts no image literal can come back into it.
 
 **There is no lipsync pin (cp#517).** There was one, `vivijure-musetalk:1.0.5` mirroring endpoint
@@ -658,9 +660,11 @@ audio-upscale 0.1.0 for six weeks while production moved on. Nobody was careless
 place where a wrong pin could be SEEN. Two checks now make it visible:
 
 ```bash
-npm run check:pins        # creds-free. Every pin must resolve at GHCR by image name. Runs in CI on
-                          # every PR, so a pin at a tag nobody pushed cannot merge.
-RUNPOD_API_KEY=... npm run check:pins:prod   # compares every pin to the LIVE production endpoint
+npm run check:pins        # creds-free. Every pin must resolve at GHCR, and its tag must still resolve
+                          # to the PINNED digest (cp#601). Runs in CI on every PR, so a pin at a tag
+                          # nobody pushed, or a re-pushed tag, cannot merge.
+RUNPOD_API_KEY=... npm run check:pins:prod   # compares every pin (tag@digest) to the LIVE production
+                                             # endpoint image, read inline or from its template
 ```
 
 Exit 1 is a real mismatch. **Exit 2 means the check could not be performed** (no key, network, API
@@ -672,7 +676,8 @@ A satellite release now has a third leg. Pinning both panels is not enough, beca
 tenants too:
 
 1. release the satellite, 2. pin the production endpoint, 3. **run `check:pins:prod`; when it goes
-red, move `src/satellite-pins.ts` to what production now runs and re-read the `mirrors` dates.**
+red, move `src/satellite-pins.ts` to what production now runs (tag AND digest) and re-read the
+`mirrors` dates.**
 
 ### What a pin change does and does not reach
 

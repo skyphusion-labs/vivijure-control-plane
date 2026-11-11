@@ -47,6 +47,24 @@ describe("satellite pins (cp#126)", () => {
     }
   });
 
+  it("pins a digest beside every tag, so a tenant template is immutable (cp#601)", () => {
+    for (const key of keys) {
+      expect(SATELLITE_PINS[key].digest, key).toMatch(/^sha256:[0-9a-f]{64}$/);
+    }
+    // Distinct images carry distinct digests; a copy-pasted digest is a pin that verifies nothing.
+    const ds = keys.map((k) => SATELLITE_PINS[k].digest);
+    expect(new Set(ds).size).toBe(ds.length);
+  });
+
+  it("feeds the production tell of the provisioning e2e, so it cannot go stale again (cp#601)", () => {
+    // The e2e refuses to provision when its RunPod key can see a production endpoint. A literal id
+    // there went stale with the endpoint and turned the guard into a pass for any key.
+    const e2e = readFileSync(join(HERE, "provision-e2e.live.test.ts"), "utf8");
+    expect(e2e).toContain("Object.values(SATELLITE_PINS).map((p) => p.mirrors.endpointId)");
+    expect(e2e).toContain("PROD_TELLS.includes(e.id)");
+    expect(e2e).not.toMatch(/PROD_TELL\s*=\s*"/);
+  });
+
   it("carries live provenance for every pin", () => {
     for (const key of keys) {
       const { mirrors } = SATELLITE_PINS[key];
@@ -60,8 +78,13 @@ describe("satellite pins (cp#126)", () => {
   });
 
   it("builds the image reference the templates are created with", () => {
+    // tag@digest, the exact form production templates carry (cp#601), and what check:pins:prod
+    // compares by string.
     expect(imageRef("backend")).toBe(
-      `ghcr.io/${GHCR_ORG}/${SATELLITE_PINS.backend.repo}:${SATELLITE_PINS.backend.tag}`,
+      `ghcr.io/${GHCR_ORG}/${SATELLITE_PINS.backend.repo}:${SATELLITE_PINS.backend.tag}@${SATELLITE_PINS.backend.digest}`,
+    );
+    expect(imageRef("backend")).toBe(
+      "ghcr.io/skyphusion-labs/vivijure-backend:1.1.18@sha256:3ec3849279aa18e6c58ba0716bd768366162a70d8a6d61e9bdde2254ee4e049a",
     );
   });
 });
