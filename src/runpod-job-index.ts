@@ -12,6 +12,7 @@
 // cannot be proven complete FAILS the teardown. That converts a race into a guarantee.
 
 import type { CfApi } from "./cf-api";
+import { jobIdFromHandle } from "./runpod-proxy-auth";
 
 /**
  * The table this reads, created by vivijure-cf migration 0014 in the TENANT studio database.
@@ -124,7 +125,9 @@ export async function harvestTenantJobLog(
     // upstream) which is exactly why it is worth being explicit instead of trusting the shape.
     if (!jobId) continue;
     rows.push({
-      job_id: jobId,
+      // A proxied module logs the job handle submit returned (cp#575); the index keys on the RunPod
+      // id inside it, the id RunPod's own records carry. A bare id (direct or older) passes as is.
+      job_id: jobIdFromHandle(jobId) ?? jobId,
       module: str(r.module),
       outcome: str(r.outcome),
       submitted_at: int(r.submitted_at),

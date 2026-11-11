@@ -119,3 +119,66 @@ export async function verifyTenantProxyToken(
   // Constant time, so the MAC cannot be recovered a nibble at a time from response timing.
   return timingSafeEqual(mac, expected) ? tenantId : null;
 }
+
+// ------------------------------------------------------------------------------------------------
+// THE JOB HANDLE (cp#575). Status and cancel name a job; the handle says WHOSE job it is.
+//
+// Submit returns the job's id as a handle: `vjh1_<runpod job id>_<mac>`, the MAC a keyed HMAC over
+// (tenant, endpoint, job) with the same signing key the tenant token uses. Status and cancel accept
+// only a handle that verifies for the CALLING tenant and the endpoint in the path, so a job is
+// reachable by the tenant that submitted it and by no other. Like the token, it verifies with no
+// lookup, so the poll half keeps holding no store.
+//
+// The module stores the handle where it used to store the RunPod id and sends it back verbatim, so
+// no module changes: every module treats the id as an opaque string. Characters are [A-Za-z0-9_-]
+// only, the set the route matcher admits for a path segment.
+// ------------------------------------------------------------------------------------------------
+
+export const JOB_HANDLE_PREFIX = "vjh1";
+/** 128 bits of the HMAC: ample for an unguessable per-job binding, and it keeps the path short. */
+const JOB_HANDLE_MAC_HEX = 32;
+
+function jobMacInput(tenantId: string, endpointId: string, jobId: string): string {
+  // Distinct prefix from the tenant token's `vjp1.<tenant>`: a token MAC can never pass as a handle.
+  return `${JOB_HANDLE_PREFIX}.${tenantId}.${endpointId}.${jobId}`;
+}
+
+/** The handle for one submitted job, or null with no signing key (fail closed, as the token). */
+export async function mintJobHandle(
+  signingKey: string | undefined,
+  tenantId: string,
+  endpointId: string,
+  jobId: string,
+): Promise<string | null> {
+  if (!signingKey || !tenantId || !endpointId || !jobId) return null;
+  const mac = (await hmacHex(signingKey, jobMacInput(tenantId, endpointId, jobId))).slice(0, JOB_HANDLE_MAC_HEX);
+  return `${JOB_HANDLE_PREFIX}_${jobId}_${mac}`;
+}
+
+/** The RunPod job id inside a handle, WITHOUT verifying it, or null for anything that is not one.
+ *  For reading ids back out of a tenant's own job log (the harvest), never for authorizing. */
+export function jobIdFromHandle(handle: string): string | null {
+  if (!handle.startsWith(`${JOB_HANDLE_PREFIX}_`)) return null;
+  const last = handle.lastIndexOf("_");
+  const jobId = handle.slice(JOB_HANDLE_PREFIX.length + 1, last);
+  const mac = handle.slice(last + 1);
+  return jobId && mac.length === JOB_HANDLE_MAC_HEX && /^[0-9a-f]+$/.test(mac) ? jobId : null;
+}
+
+/**
+ * The RunPod job id a handle names, when the handle verifies for THIS tenant and endpoint; else
+ * null. Null is the only failure value: no key, not a handle, another tenant's, another endpoint's
+ * and a forged MAC all look the same to the caller, which answers all of them alike.
+ */
+export async function verifyJobHandle(
+  signingKey: string | undefined,
+  tenantId: string,
+  endpointId: string,
+  handle: string | null | undefined,
+): Promise<string | null> {
+  if (!signingKey || !handle) return null;
+  const jobId = jobIdFromHandle(handle);
+  if (!jobId) return null;
+  const expected = (await hmacHex(signingKey, jobMacInput(tenantId, endpointId, jobId))).slice(0, JOB_HANDLE_MAC_HEX);
+  return timingSafeEqual(handle.slice(handle.lastIndexOf("_") + 1), expected) ? jobId : null;
+}

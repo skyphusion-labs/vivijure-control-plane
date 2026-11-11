@@ -195,12 +195,20 @@ like a non-refusal to modules (forever-pend; cf#398 / cp#288). Closing that dire
 cf/core-side pin against the plane's value, or a shared package. Do not "fix" it by declaring a
 `const` in `modules/_shared/runpod-route.ts`; that re-creates the duplicate cp#321 removed.
 
+**It also signs job handles (cp#575).** A proxied submit answers with `id` set to a job handle,
+`vjh1_<runpod job id>_<mac>`, the MAC over (tenant, endpoint, job). Status and cancel accept only a
+handle that verifies for the calling tenant and that endpoint; anything else is `404` with
+`x-vivijure-plane-refusal: unknown_job`. Modules store and send back the id they were given, so they
+need no change. The job index reads the RunPod id out of a logged handle.
+
 **Rotating it invalidates every tenant's token at once**, deliberately: a stateless token cannot be
 revoked row by row. Per-tenant refusal lives on the SUBMIT path instead, which reads the tenant row
 and refuses anything not live, unsuspended and `runpod_mode = 'shared'` -- and submit is the only
 path that spends. A refused tenant retains poll and cancel on jobs already in flight, which is
 correct: cancel is the spend-leak guard, and removing it would leave a suspended tenant's running
-jobs billing us.
+jobs billing us. Rotation also invalidates every job HANDLE in flight: those jobs can no longer be polled or
+cancelled through the proxy (they still end on their own, and the sweep closes their rows). Rotate
+between renders.
 
 **ALL-OR-NOTHING on the endpoints.** A value missing any plan key is refused rather than partially
 resolved. A tenant wired for three of four capabilities provisions green, passes verify, and dies at

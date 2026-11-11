@@ -83,3 +83,35 @@ describe("verify", () => {
     expect(await verifyTenantProxyToken(KEY, undefined)).toBeNull();
   });
 });
+
+import { jobIdFromHandle as jobIdOf, mintJobHandle as mintHandle, verifyJobHandle as verifyHandle } from "../src/runpod-proxy-auth";
+
+describe("cp#575 job handles", () => {
+  const K = "k-under-test";
+  it("round-trips for its own tenant and endpoint, and for nothing else", async () => {
+    const h = (await mintHandle(K, "ten_a", "ep1", "abc-123-u1"))!;
+    expect(h).toMatch(/^vjh1_abc-123-u1_[0-9a-f]{32}$/);
+    expect(await verifyHandle(K, "ten_a", "ep1", h)).toBe("abc-123-u1");
+    expect(await verifyHandle(K, "ten_b", "ep1", h)).toBeNull();
+    expect(await verifyHandle(K, "ten_a", "ep2", h)).toBeNull();
+    expect(await verifyHandle("other-key", "ten_a", "ep1", h)).toBeNull();
+    expect(await verifyHandle(undefined, "ten_a", "ep1", h)).toBeNull();
+    expect(await verifyHandle(K, "ten_a", "ep1", "abc-123-u1")).toBeNull();
+    expect(await verifyHandle(K, "ten_a", "ep1", h.slice(0, -1) + (h.endsWith("0") ? "1" : "0"))).toBeNull();
+  });
+  it("a job id with underscores or dashes survives; the parser takes the LAST separator", async () => {
+    const h = (await mintHandle(K, "ten_a", "ep1", "a_b-c_d"))!;
+    expect(jobIdOf(h)).toBe("a_b-c_d");
+    expect(await verifyHandle(K, "ten_a", "ep1", h)).toBe("a_b-c_d");
+  });
+  it("jobIdFromHandle reads ids out without verifying, and refuses what is not a handle", () => {
+    expect(jobIdOf("job-1")).toBeNull();
+    expect(jobIdOf("vjh1_job-1_short")).toBeNull();
+    expect(jobIdOf(`vjh1_job-1_${"f".repeat(32)}`)).toBe("job-1");
+  });
+  it("mints nothing without a key, and a token MAC never passes as a handle", async () => {
+    expect(await mintHandle(undefined, "ten_a", "ep1", "j")).toBeNull();
+    const token = (await mintTenantProxyToken(K, "ten_a"))!;
+    expect(await verifyHandle(K, "ten_a", "ep1", token)).toBeNull();
+  });
+});
