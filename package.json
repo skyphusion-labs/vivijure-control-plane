@@ -14,6 +14,7 @@
     "check:pins:prod": "node scripts/check-satellite-pins.mjs --prod",
     "check:studio-pin": "node scripts/check-studio-pin.mjs",
     "check:studio-pin:deployed": "node scripts/check-studio-pin.mjs --deployed",
+    "check:flagship-version": "node scripts/check-flagship-version.mjs",
     "guards:config": "bash tests/render-wrangler.test.sh",
     "guards:aup": "bash tests/aup-pin-gate.test.sh",
     "test": "vitest run",
