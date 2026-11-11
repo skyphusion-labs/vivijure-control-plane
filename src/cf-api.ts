@@ -221,6 +221,12 @@ export interface AiBinding {
   type: "ai";
   name: string;
 }
+/** cp#573: a Cloudflare Images binding (the studio's still thumbnails, vivijure-cf#1211). The script
+ *  upload accepts `images` like `ai`: a name, no resource id, under the same Workers Scripts Write. */
+export interface ImagesBinding {
+  type: "images";
+  name: string;
+}
 /**
  * A Workflows binding (cp#526, and the unlock for the hosted `dialogue` door in cp#524).
  *
@@ -290,6 +296,7 @@ export interface InheritBinding {
 }
 export type WorkerBinding =
   | AiBinding
+  | ImagesBinding
   | D1Binding
   | R2Binding
   | PlainTextBinding
