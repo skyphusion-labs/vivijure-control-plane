@@ -6,6 +6,7 @@ import { TEST_VPC_DOORS } from "./door-fixture";
 // and that gate is called out separately in the PR rather than implied by a green suite.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { tenantModuleScriptName, tenantModuleScriptPrefix } from "../src/tenant-modules";
 import {
   PROVISION_STEPS,
   continueProvisionJob,
@@ -50,6 +51,8 @@ function fakeCf(over: Partial<Record<string, unknown>> = {}) {
     createD1: vi.fn(async (name: string) => (calls.push(`createD1:${name}`), { uuid: "db-1" })),
     queryD1: vi.fn(async () => (calls.push("queryD1"), {})),
     deleteD1: vi.fn(async () => void calls.push("deleteD1")),
+    // Present unless a test says otherwise, so the harvest interlock holds by default.
+    d1Present: vi.fn(async () => true),
     exportD1: vi.fn(async () => ({ signed_url: "https://x" })),
     createR2Bucket: vi.fn(async (n: string) => void calls.push(`createR2:${n}`)),
     deleteR2Bucket: vi.fn(async () => void calls.push("deleteR2Bucket")),
@@ -396,6 +399,78 @@ describe("teardown harvests the job index before reaping the D1 (cp#270)", () =>
     expect(store.tenants.get(t.id)?.d1_database_id).toBe("db-1");
   });
 
+  it("cp#605: a D1 that is ALREADY GONE converges: harvest and d1 absent, column blanked, ok", async () => {
+    // The live reclaim case: the database was removed out of band, so its log is lost already and no
+    // retry could ever harvest it. A failure here would pin the row forever.
+    const t = await tenant();
+    const cf = jobLogCf(() => {
+      throw new Error("d1.query -> 404");
+    });
+    (cf as unknown as { d1Present: unknown }).d1Present = vi.fn(async () => (calls.push("d1Present"), false));
+    const logs: string[] = [];
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf, log: (ev: string) => void logs.push(ev) }), store.tenants.get(t.id)!, { deleteData: true });
+
+    expect(res.ok, JSON.stringify(res.failures)).toBe(true);
+    expect(res.failures).toEqual([]);
+    expect(res.absent.map((a) => a.resource)).toEqual(expect.arrayContaining(["job_index_harvest", "d1"]));
+    expect(logs).toContain("teardown.job_index_lost");
+    expect(calls).toContain("d1Present");
+    expect(calls).not.toContain("deleteD1"); // the GET already proved it gone
+    expect(store.tenants.get(t.id)?.d1_database_id ?? null).toBeNull();
+
+    // A second pass has nothing left to do with the D1.
+    calls.length = 0;
+    const again = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+    expect(again.failures).toEqual([]);
+    expect(calls).not.toContain("queryD1");
+    expect(calls).not.toContain("d1Present");
+  });
+
+  it("a D1 that vanishes between harvest and delete is absent, not failed", async () => {
+    const t = await tenant();
+    const cf = fakeCf({
+      queryD1: vi.fn(async () => (calls.push("queryD1"), [{ results: [] }])),
+      deleteD1: vi.fn(async () => {
+        calls.push("deleteD1");
+        throw new CfApiError("d1.delete", 404, [{ code: 7404, message: "not found" }]);
+      }),
+    });
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+    expect(res.failures).toEqual([]);
+    expect(res.absent.map((a) => a.resource)).toContain("d1");
+    expect(store.tenants.get(t.id)?.d1_database_id ?? null).toBeNull();
+  });
+
+  it("CONTROL: a d1 delete that fails with anything but 404 is still a failure", async () => {
+    const t = await tenant();
+    const cf = fakeCf({
+      queryD1: vi.fn(async () => (calls.push("queryD1"), [{ results: [] }])),
+      deleteD1: vi.fn(async () => {
+        throw new CfApiError("d1.delete", 500, [{ code: 1, message: "boom" }]);
+      }),
+    });
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+    expect(res.failures.map((f) => f.resource)).toContain("d1");
+    expect(store.tenants.get(t.id)?.d1_database_id).toBe("db-1");
+  });
+
+  it("a presence probe that cannot tell keeps the interlock shut", async () => {
+    const t = await tenant();
+    const cf = jobLogCf(() => {
+      throw new Error("D1_ERROR: database is locked");
+    });
+    (cf as unknown as { d1Present: unknown }).d1Present = vi.fn(async () => {
+      throw new Error("d1.get -> 500");
+    });
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+    expect(res.failures.map((f) => f.resource)).toContain("job_index_harvest");
+    expect(calls).not.toContain("deleteD1");
+  });
+
   it("CONTROL: a tenant with NO job-log table tears down CLEAN and the delete proceeds", async () => {
     // Without this control the test above passes for an implementation that blocks every teardown.
     // This is also the real population rollbackFailedProvision reaps: a provision that died before
@@ -472,6 +547,24 @@ describe("runProvisionJob", () => {
       name: "ABUSE_REPORT_URL",
       text: "https://studio.example.com/report-abuse",
     });
+  });
+
+  it("binds the studio's OWN module-script prefix, derived from its tenant id", async () => {
+    // The studio's module install accepts only a script under this prefix. The value must be THIS
+    // tenant's: the namespace holds every tenant's modules.
+    const t = await tenant();
+    const d = deps();
+    const job = await store.createProvisionJob("job_1", t.id, "provision", TEST_PROVISION_FACTS);
+    expect((await runProvisionJob(d, job.id, t)).ok).toBe(true);
+
+    const upload = (d.cf.uploadUserWorker as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      bindings: { type: string; name: string; text?: string }[];
+    };
+    expect(upload.bindings.filter((b) => b.name === "TENANT_MODULE_PREFIX")).toEqual([
+      { type: "plain_text", name: "TENANT_MODULE_PREFIX", text: tenantModuleScriptPrefix(t.id) },
+    ]);
+    // CONTROL: the value is the same prefix the plane installs this tenant's modules under.
+    expect(tenantModuleScriptName(t.id, "keyframe").startsWith(tenantModuleScriptPrefix(t.id))).toBe(true);
   });
 
   it("binds the per-tenant STORAGE CEILING onto a NEW tenant studio (cp#183)", async () => {

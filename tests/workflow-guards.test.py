@@ -250,6 +250,24 @@ for name, text in (("deploy.yml", str(wf)), ("studio-pin-drift.yml", drift_text)
           and "CHECK_FLAGSHIP_TIMEOUT_MS" not in text,
           "a redirected or abbreviated run is not a measurement of the live estate")
 
+# cp#533: BOTH deploy.yml jobs (the dry run and the deploy) run the declared-variable gate, each fed
+# the live variable, so a declared value can never be skipped on the path that ships.
+check("both deploy.yml jobs run the declared-variable gate (cp#533)",
+      str(wf).count("node scripts/check-declared-vars.mjs") == 2,
+      "a deploy job without the gate ships a variable no file describes")
+
+# cp#574: the out-of-service refusal is the FIRST preflight step (before checkout, install and
+# render), it reads the repo variable, and the release job still depends on preflight, so a refusal
+# there stops the deploy. A later edit that moves or drops it makes "do not tag" a reminder again.
+pre_steps = wf.get("jobs", {}).get("preflight", {}).get("steps", [])
+check("the out-of-service refusal is the first preflight step (cp#574)",
+      bool(pre_steps) and "out of service" in str(pre_steps[0].get("name", ""))
+      and "vars.CP_OUT_OF_SERVICE" in str(pre_steps[0].get("env", {})),
+      "first preflight step: " + str(pre_steps[0].get("name") if pre_steps else None))
+check("the release job still needs preflight, so the refusal stops the deploy (cp#574)",
+      "preflight" in str(wf.get("jobs", {}).get("release", {}).get("needs", "")),
+      "release needs: " + str(wf.get("jobs", {}).get("release", {}).get("needs")))
+
 # Anchored on the EMITTED string, for the reason recorded above the mirror-notice assertion: a
 # vocabulary match is supplied by unrelated text. A skip here would be an absence reading as OK,
 # and this job never runs from a fork, so an absent credential is a defect and not a fork condition.
@@ -257,6 +275,44 @@ DRIFT_CRED_REFUSAL = "::error::CLOUDFLARE_API_TOKEN is unset"
 check("the drift workflow REFUSES on an absent credential instead of skipping",
       DRIFT_CRED_REFUSAL in drift_text,
       "an unperformed check must not look like a check that ran and found nothing")
+
+# cp#536: the live release gate. Every live suite skips itself (describe.skipIf) when its env is
+# missing, and vitest then exits 0, so a bare `npx vitest run` step reads green having measured
+# nothing. Every live-suite step must go through scripts/run-live-suite.sh, which refuses a skip.
+# And every tests/*.live.test.ts must be either run by the gate or named in its left-off comment,
+# so a new suite cannot quietly be missing from the gate.
+gate_path = root / ".github/workflows/live-release-gate.yml"
+gate_text = gate_path.read_text()
+gate = yaml.safe_load(gate_text)
+gate_runs = [str(st.get("run", "")) for st in gate.get("jobs", {}).get("live-gate", {}).get("steps", [])]
+bare = [r.strip() for r in gate_runs if ".live.test.ts" in r and "scripts/run-live-suite.sh" not in r]
+check("every live-gate suite step runs through run-live-suite.sh (cp#536)", not bare,
+      "bare vitest step(s): " + "; ".join(bare))
+for suite in sorted(p.name for p in (root / "tests").glob("*.live.test.ts")):
+    ran = any(("tests/" + suite) in r for r in gate_runs)
+    named_off = any(line.lstrip().startswith("#") and suite in line for line in gate_text.splitlines())
+    check("live suite " + suite + " is run by the live gate or named as left off (cp#536)",
+          ran or named_off, "add a step, or name it in the left-off comment with the reason")
+# cp#536: one red suite must not hide the rest. Every suite step after preflight runs whatever an
+# earlier suite did (`!cancelled()` plus install/preflight success), carries an id, and the final
+# `aggregate` step (if: always()) reads every one of those ids, so the job still fails on any.
+gate_steps = gate.get("jobs", {}).get("live-gate", {}).get("steps", [])
+suite_steps = [st for st in gate_steps if "run-live-suite.sh" in str(st.get("run", ""))]
+check("every live-gate suite step runs after an earlier red (cp#536)",
+      bool(suite_steps) and all("!cancelled()" in str(st.get("if", "")) and st.get("id") for st in suite_steps),
+      "steps without !cancelled() or an id: " + "; ".join(str(st.get("name")) for st in suite_steps
+          if not ("!cancelled()" in str(st.get("if", "")) and st.get("id"))))
+agg = [st for st in gate_steps if str(st.get("name", "")).startswith("aggregate")]
+agg_env = str(agg[-1].get("env", {})) if agg else ""
+check("the aggregate step is last, always runs, and reads every suite outcome (cp#536)",
+      bool(agg) and gate_steps and gate_steps[-1] is agg[-1] and "always()" in str(agg[-1].get("if", ""))
+      and all(("steps." + str(st.get("id")) + ".outcome") in agg_env for st in suite_steps),
+      "aggregate missing, not last, not always(), or missing a suite id")
+
+check("run-live-suite.sh refuses a skipped suite (cp#536)",
+      "skipped" in (root / "scripts/run-live-suite.sh").read_text()
+      and "sys.exit(1)" in (root / "scripts/run-live-suite.sh").read_text(),
+      "the wrapper must exit 1 when any test is skipped")
 
 print("")
 print("  " + str(checks - len(failures)) + " passed, " + str(len(failures)) + " failed")

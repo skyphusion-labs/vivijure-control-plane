@@ -56,6 +56,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # cp#574. On 2026-11-01 the plane was taken OUT OF SERVICE on our deployment (custom domain,
+      # route and cron removed; Worker and data kept). A tag deploy re-renders all three from
+      # wrangler.toml.example, so ANY tag would silently put it back in service. This makes "do not
+      # tag" a control instead of a reminder: with the repo variable CP_OUT_OF_SERVICE = 1, every run
+      # refuses here, first, before anything installs or renders. A workflow_dispatch DRY RUN still
+      # proceeds, because it never migrates or deploys. Unset or empty means in service. Any other
+      # value refuses as malformed, so a typo cannot read as "in service".
+      - name: Refuse while the plane is out of service (cp#574)
+        env:
+          CP_OUT_OF_SERVICE: ${{ vars.CP_OUT_OF_SERVICE }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+        run: |
+          set -eu
+          v="${CP_OUT_OF_SERVICE-}"
+          case "$v" in
+            "") echo "CP_OUT_OF_SERVICE is unset: the plane is in service, deploy proceeds." ;;
+            1)
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "::notice::CP_OUT_OF_SERVICE=1, but this is a workflow_dispatch dry run, which never migrates or deploys: proceeding."
+              else
+                echo "::error::CP_OUT_OF_SERVICE=1: the control plane is out of service on this deployment (cp#574). A deploy would re-add studio.vivijure.com, *.studio.vivijure.com/* and the */5 cron. Refusing. Unset the variable only when it is meant to come back."
+                exit 1
+              fi ;;
+            *)
+              echo "::error::CP_OUT_OF_SERVICE has the value '$v'; only 1 (out of service) or unset (in service) is meaningful. Refusing rather than guess."
+              exit 1 ;;
+          esac
       # fetch-depth: 0 is LOAD-BEARING here for the same reason it is in ci.yml, and it became
       # load-bearing when the config guard suite moved onto this path (cp#246).
       # scripts/changelog-released-immutable.py resolves released sections by matching `## vX.Y.Z`
@@ -63,11 +90,11 @@ jobs:
       # 6 failures out of 53 on a shallow tagless clone. A preflight that failed that way would be
       # red for a reason that has nothing to do with the config, which teaches whoever is on the tag
       # to ignore a red.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -144,6 +171,14 @@ jobs:
           AUP_VERSION: ${{ vars.AUP_VERSION }}
           AUP_URL: ${{ vars.AUP_URL }}
         run: bash scripts/check-aup-pin.sh
+
+      # cp#533. Repo variables whose VALUE is declared in config/declared-vars.json, so a change is a
+      # PR with a diff and drift refuses the deploy instead of shipping quietly (SHARED_RUNPOD_ENDPOINTS
+      # carried a deleted endpoint for six weeks and silently blocked the v1.29.4 rollback).
+      - name: Declared repo variables match config/declared-vars.json
+        env:
+          SHARED_RUNPOD_ENDPOINTS: ${{ vars.SHARED_RUNPOD_ENDPOINTS }}
+        run: node scripts/check-declared-vars.mjs
 
       # SHARED-POOL INVOKE-KEY SCOPE (cp#396). Refuse the deploy when the pool names an endpoint
       # the shared key cannot actually submit to.
@@ -363,7 +398,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history so the ancestry guard below can walk main to the built commit.
           fetch-depth: 0
@@ -388,7 +423,7 @@ jobs:
           fi
           echo "commit ${head} is on origin/main; ancestry guard passed."
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -417,6 +452,14 @@ jobs:
           AUP_VERSION: ${{ vars.AUP_VERSION }}
           AUP_URL: ${{ vars.AUP_URL }}
         run: bash scripts/check-aup-pin.sh
+
+      # cp#533. Repo variables whose VALUE is declared in config/declared-vars.json, so a change is a
+      # PR with a diff and drift refuses the deploy instead of shipping quietly (SHARED_RUNPOD_ENDPOINTS
+      # carried a deleted endpoint for six weeks and silently blocked the v1.29.4 rollback).
+      - name: Declared repo variables match config/declared-vars.json
+        env:
+          SHARED_RUNPOD_ENDPOINTS: ${{ vars.SHARED_RUNPOD_ENDPOINTS }}
+        run: node scripts/check-declared-vars.mjs
 
       - name: Render wrangler.toml
         env:

@@ -1,0 +1,5 @@
+### fix(runpod): retire wan-train from the provision plan; declare the current shared backend (#589)
+
+Wan training is not used, and RunPod serves SDXL keyframes only. The wan-train endpoint `zqb7tougbqfkqa` is gone, so the plan entry, its `vivijure-wan-train` pin and the `RUNPOD_WAN_TRAIN_ENDPOINT_ID` binding are removed. `wan-train` moves to `RETIRED_ENDPOINT_KEYS`, so a tenant's surviving `vivijure-<slug>-wan-train` debris still reports as that tenant's orphan. The binding keeps a disposition (conditional, never bound), so an older studio release that declares it still provisions. The studio already treats it as optional. The plan is now 2 capabilities (1 endpoint-backed); the endpoint worker sum falls from 4 to 2.
+
+`config/declared-vars.json` declares `SHARED_RUNPOD_ENDPOINTS` as `{"backend":{"id":"xe5d1ivs40ohjo","name":"vivijure-backend-hosted"}}`, the current endpoint. The live variable still names two retired endpoints. The pool parser refuses its `wan-train` key, and the deploy gate refuses the disagreement until the variable is set to match.

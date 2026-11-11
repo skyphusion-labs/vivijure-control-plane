@@ -29,11 +29,18 @@ function readPins() {
   const org = /GHCR_ORG = "([^"]+)"/.exec(src)?.[1];
   if (!org) fail(2, "could not read GHCR_ORG from src/satellite-pins.ts");
   const body = src.slice(src.indexOf("export const SATELLITE_PINS"));
-  const re = /"?([a-z-]+)"?:\s*\{\s*repo:\s*"([^"]+)",\s*tag:\s*"([^"]+)",\s*mirrors:\s*\{\s*endpointId:\s*"([^"]+)",\s*readAt:\s*"([^"]+)"/g;
+  const re = /"?([a-z-]+)"?:\s*\{\s*repo:\s*"([^"]+)",\s*tag:\s*"([^"]+)",\s*digest:\s*"([^"]+)",\s*mirrors:\s*\{\s*endpointId:\s*"([^"]+)",\s*readAt:\s*"([^"]+)"/g;
   const pins = [...body.matchAll(re)].map((m) => ({
-    key: m[1], repo: m[2], tag: m[3], endpointId: m[4], readAt: m[5],
+    key: m[1], repo: m[2], tag: m[3], digest: m[4], endpointId: m[5], readAt: m[6],
   }));
   if (pins.length === 0) fail(2, "parsed ZERO pins from src/satellite-pins.ts -- refusing to report a pass");
+  // cp#601: a pin the pattern does not match (say, one missing its digest) would otherwise be
+  // silently left out of the check. Every `repo:` entry must have parsed.
+  const entries = (body.slice(0, body.indexOf("};")).match(/\brepo:\s*"/g) || []).length;
+  if (entries !== pins.length) fail(2, `parsed ${pins.length} of ${entries} pins -- a pin is missing its tag, digest or mirrors`);
+  for (const p of pins) {
+    if (!/^sha256:[0-9a-f]{64}$/.test(p.digest)) fail(2, `pin ${p.key} digest is not sha256:<64 hex>`);
+  }
   return { org, pins };
 }
 
@@ -83,14 +90,24 @@ async function checkRegistry(org, pins) {
       console.log(`  FAIL  ${p.key.padEnd(14)} ghcr.io/${org}/${p.repo}:${p.tag} does not resolve (HTTP ${r.status})`);
       continue;
     }
-    console.log(`  ok    ${p.key.padEnd(14)} ghcr.io/${org}/${p.repo}:${p.tag}  ${digest.slice(0, 19)}`);
+    // cp#601: the tag must still resolve to the PINNED digest. A re-pushed tag is drift even when
+    // the tag itself resolves, because tenants pull by digest.
+    if (digest !== p.digest) {
+      bad++;
+      console.log(`  FAIL  ${p.key.padEnd(14)} ghcr.io/${org}/${p.repo}:${p.tag} now resolves to ${digest}, pinned ${p.digest}`);
+      continue;
+    }
+    console.log(`  ok    ${p.key.padEnd(14)} ghcr.io/${org}/${p.repo}:${p.tag}  ${digest.slice(0, 19)} == pinned`);
   }
   return bad;
 }
 
 async function prodImages(key, wantedIds) {
   const auth = { Authorization: `Bearer ${key}` };
-  const eps = await withTimeout(`${RUNPOD_API}/endpoints`, { headers: auth });
+  // includeTemplate=true (default false): without it the list carries no image at all, and the
+  // only route to the image was the template read below (measured 2026-11-11 on the hosted upscale
+  // endpoint: rc=2, "template mazn6lcp0y read failed: HTTP 404").
+  const eps = await withTimeout(`${RUNPOD_API}/endpoints?includeTemplate=true`, { headers: auth });
   if (!eps.ok) fail(2, `RunPod endpoint list failed: HTTP ${eps.status}`);
   const list = await eps.json();
   if (!Array.isArray(list)) fail(2, "RunPod endpoint list was not an array -- API shape changed");
@@ -98,8 +115,16 @@ async function prodImages(key, wantedIds) {
   for (const ep of list) {
     // Only the endpoints a pin claims to mirror. Reading every template in the account would let an
     // UNRELATED endpoint (e.g. a hub template this key cannot read) make the check unrunnable.
-    if (!wantedIds.has(ep.id) || !ep.templateId) continue;
-    const t = await withTimeout(`${RUNPOD_API}/templates/${ep.templateId}`, { headers: auth });
+    if (!wantedIds.has(ep.id)) continue;
+    // cp#601: an endpoint read can carry the image INLINE with no template id (measured on the
+    // hosted endpoints, 2026-11-11). Use the inline image when it is there; read the template only
+    // when it is not; and when neither exists, refuse to measure rather than call it drift.
+    const inline = [ep.imageName, ep.image, ep.template?.imageName].find((v) => typeof v === "string" && v);
+    if (inline) { byId.set(ep.id, { name: ep.name, image: inline }); continue; }
+    if (!ep.templateId) fail(2, `RunPod endpoint ${ep.id} carries neither an image nor a templateId -- cannot measure`);
+    // includeEndpointBoundTemplates=true (default false): an endpoint's own template is
+    // endpoint-bound, and without the flag RunPod answers 404 for it, which is the 404 measured.
+    const t = await withTimeout(`${RUNPOD_API}/templates/${ep.templateId}?includeEndpointBoundTemplates=true`, { headers: auth });
     if (!t.ok) fail(2, `RunPod template ${ep.templateId} (endpoint ${ep.id}) read failed: HTTP ${t.status}`);
     const tpl = await t.json();
     byId.set(ep.id, { name: ep.name, image: tpl.imageName || "" });
@@ -120,7 +145,7 @@ async function checkProd(org, pins) {
       console.log(`  FAIL  ${p.key.padEnd(14)} production endpoint ${p.endpointId} not visible to this key`);
       continue;
     }
-    const want = `ghcr.io/${org}/${p.repo}:${p.tag}`;
+    const want = `ghcr.io/${org}/${p.repo}:${p.tag}@${p.digest}`;
     if (ep.image !== want) {
       bad++;
       console.log(`  DRIFT ${p.key.padEnd(14)} pinned ${want}`);

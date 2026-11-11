@@ -153,7 +153,9 @@ export async function sendMagicLink(
     email,
     iso(now + LOGIN_TTL_MINUTES * 60 * 1000),
   );
-  const link = `${publicOrigin}/auth/email/callback?token=${token}`;
+  // In the FRAGMENT, not the query: a browser never sends a fragment, so the token never appears in a
+  // request line or a request log. public/auth-callback.js moves it into the confirm form.
+  const link = `${publicOrigin}/auth/email/callback#token=${token}`;
   const { subject, text } = magicLinkMail(link, LOGIN_TTL_MINUTES);
   await mailer.send(email, subject, text);
 }
@@ -177,21 +179,15 @@ export async function redeemMagicLink(
   return await upsertAccountForVerifiedEmail(store, "email", row.email, row.email, allowCreate);
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 /**
  * Confirm page for a magic-link GET. The token is NOT spent here. Mail scanners and prefetch
  * land on this page and change nothing; only the POST spends the token (cp#437).
+ *
+ * The page is the same for every request and carries no token: the token rides in the link's
+ * fragment, which the server never receives, and public/auth-callback.js copies it into the form.
+ * A query string on this URL is never read.
  */
-export function magicLinkConfirmPage(token: string): string {
-  const safe = escapeHtml(token);
+export function magicLinkConfirmPage(): string {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -217,19 +213,24 @@ export function magicLinkConfirmPage(token: string): string {
           Nothing has happened yet.
         </p>
         <form method="post" action="/auth/email/callback" class="actions">
-          <input type="hidden" name="token" value="${safe}" />
-          <button type="submit" class="primary">Continue</button>
+          <input type="hidden" name="token" id="magic-link-token" value="" />
+          <button type="submit" class="primary" id="magic-link-continue" disabled>Continue</button>
         </form>
+        <p class="muted small" id="magic-link-missing" hidden>
+          This link is incomplete. Open it straight from the email, or ask for a new one.
+        </p>
+        <noscript><p class="muted small">Signing in needs JavaScript on this page.</p></noscript>
         <p class="muted small">If you did not ask for a sign-in link, close this page.</p>
       </section>
     </main>
+    <script src="/auth-callback.js"></script>
   </body>
 </html>
 `;
 }
 
-export function magicLinkConfirmResponse(token: string): Response {
-  return new Response(magicLinkConfirmPage(token), {
+export function magicLinkConfirmResponse(): Response {
+  return new Response(magicLinkConfirmPage(), {
     status: 200,
     headers: {
       "content-type": "text/html; charset=utf-8",
