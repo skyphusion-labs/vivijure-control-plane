@@ -45,3 +45,14 @@
 # was never served; SHA256SUMS is append-only, so this is a new version rather than an edit. Not
 # yet served at the time of writing.
 1.2.0 e24c001313af2490c2b4dfbd284f66ba8a8adf24a7f1589825711676795fbe12
+
+# 1.3.0 -- 1.2.0 with section 3.2 rewritten to cover EVERY hosted module (Conrad's rulings of
+# 2026-11-11 on cp#514): the cloud modules that call a third party's model on our accounts, the
+# GPU modules that run open models, and the GPU capacity itself. 3.2 is written by kind of rule and
+# names no provider, so adding or dropping a model does not force a new version. It adds the
+# no-training-on-outputs condition that 1.2.0 left out (scoped to outputs of third-party models;
+# images made only by the open GPU models are outside it), states that a provider's content rule
+# beats section 2.5, and adds own-use, safety-filter and sanctions conditions. Section 2.5 gains
+# one clause pointing at 3.2. Every other byte is 1.2.0. 1.2.0 was never served; this manifest is
+# append-only, so this is a new version rather than an edit. Not yet served at the time of writing.
+1.3.0 6228f2a710b7e7165c1757d1f16df343d8166112bbf4135d30ba556a928e3457
