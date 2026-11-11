@@ -13,7 +13,32 @@
 
 import { SATELLITE_PINS, type SatelliteKey, imageRef } from "./satellite-pins";
 
-const RUNPOD_API = "https://rest.runpod.io/v1";
+// RunPod REST v2 (fleet-chezmoi#2083): REST v1 retires 2026-11-15. v2 paths and
+// shapes are from RunPod's own OpenAPI (https://api.runpod.io/v2/openapi.json, info.version 2.0.0):
+// endpoints live under /v2/serverless, every list is cursor-paginated, and an ENDPOINT carries its own
+// image and env -- a v2 template is applied once at create and keeps no link to the endpoint.
+const RUNPOD_API = "https://api.runpod.io/v2";
+
+/**
+ * GPU type -> the v2 pool that holds it. v2 endpoints select GPUs by POOL (`gpu.pools`), not by type id.
+ * Read from RunPod's GPU catalog (list-gpu-types, 2026-11-11): H200 SXM is HOPPER_141, B200 is
+ * BLACKWELL_180. A type with no entry is refused at create rather than guessed.
+ */
+export const GPU_POOL_BY_TYPE: Readonly<Record<string, string>> = {
+  "NVIDIA H200": "HOPPER_141",
+  "NVIDIA B200": "BLACKWELL_180",
+};
+
+/** v2 pools for a plan's GPU types, in order, de-duplicated. Throws on a type with no known pool. */
+export function gpuPoolsFor(gpuTypeIds: readonly string[]): string[] {
+  const pools: string[] = [];
+  for (const t of gpuTypeIds) {
+    const pool = GPU_POOL_BY_TYPE[t];
+    if (!pool) throw new Error(`no RunPod v2 pool is known for GPU type "${t}"`);
+    if (!pools.includes(pool)) pools.push(pool);
+  }
+  return pools;
+}
 
 /** GPU classes for the render backend. Same-class (sm_90+) only; see runpod-provision.py section 4. */
 const BACKEND_GPUS = ["NVIDIA H200", "NVIDIA B200"];
@@ -320,23 +345,45 @@ export class RunPodClient {
     return (text ? JSON.parse(text) : null) as T;
   }
 
+  /**
+   * Walk a v2 list to its end. Every v2 list is cursor-paginated (`pagination.nextCursor` while
+   * `pagination.hasNextPage`); stopping at the first page would make "not listed" look like "gone".
+   * A page that claims more without a cursor is refused rather than read as the end.
+   */
+  private async listAll<T>(operation: string, path: string, key: string): Promise<T[]> {
+    const out: T[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 1000; page++) {
+      const q: string = `?limit=1000${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+      const res = await this.call<unknown>(operation, "GET", `${path}${q}`);
+      out.push(...normalizeList<T>(res, key));
+      const pg = (res && typeof res === "object" ? (res as { pagination?: { hasNextPage?: unknown; nextCursor?: unknown } }).pagination : undefined);
+      if (!pg || pg.hasNextPage !== true) return out;
+      if (typeof pg.nextCursor !== "string" || !pg.nextCursor) {
+        throw new RunPodError(operation, 200, "list reported more pages but gave no cursor");
+      }
+      cursor = pg.nextCursor;
+    }
+    throw new RunPodError(operation, 200, "list did not end within 1000 pages");
+  }
+
   /** Endpoint list. Also the account-identity check: never create against the wrong account. */
   async listEndpoints(): Promise<{ id: string; name: string; workersMax?: number }[]> {
-    const res = await this.call<unknown>("endpoints.list", "GET", "/endpoints");
-    return normalizeList(res, "endpoints");
+    const rows = await this.listAll<{ id: string; name: string; workers?: { max?: number } }>("endpoints.list", "/serverless", "endpoints");
+    return rows.map((e) => ({ id: e.id, name: e.name, ...(typeof e.workers?.max === "number" ? { workersMax: e.workers.max } : {}) }));
   }
 
   async listTemplates(): Promise<{ id: string; name: string }[]> {
-    const res = await this.call<unknown>("templates.list", "GET", "/templates");
-    return normalizeList(res, "templates");
+    const rows = await this.listAll<{ id: string; name: string }>("templates.list", "/templates", "templates");
+    return rows.map((t) => ({ id: t.id, name: t.name }));
   }
 
   async createTemplate(name: string, imageName: string, env: Record<string, string>, diskGb = 20) {
     return await this.call<{ id: string }>("templates.create", "POST", "/templates", {
       name,
-      imageName,
-      isServerless: true,
-      containerDiskInGb: diskGb,
+      image: imageName,
+      serverless: true,
+      disk: diskGb,
       env,
     });
   }
@@ -350,6 +397,8 @@ export class RunPodClient {
    * The env passed here is the COMPLETE template env (templateEnv builds it), so a full overwrite is
    * correct: there is no partial-merge case where a key we do not set must survive.
    */
+  // ON v2 THIS CHANGES THE TEMPLATE ONLY: a v2 endpoint keeps no link to its template, so a live
+  // endpoint's env moves with updateEndpointEnv. Kept for the template record itself.
   async updateTemplateEnv(templateId: string, env: Record<string, string>) {
     return await this.call<{ id: string }>("templates.update", "PATCH", `/templates/${templateId}`, { env });
   }
@@ -365,13 +414,24 @@ export class RunPodClient {
    * 0.1.0, six-plus releases behind the pins this file resolves, so an adopt-only rebuild would have
    * put the endpoints back on stale bytes and read as done.
    *
-   * The endpoint does not have to be recreated for this to bite: an endpoint resolves its image
-   * THROUGH its template, so converging the template is what moves the pin.
+   * ON v2 THAT NO LONGER HOLDS (fleet-chezmoi#2083). RunPod's v2 docs: a template is "resolved at
+   * create time" and "later template edits do not affect the endpoint". So this moves the TEMPLATE's
+   * image only; a live endpoint's pin moves with updateEndpointImage.
    */
   async updateTemplateImage(templateId: string, imageName: string) {
     return await this.call<{ id: string }>("templates.update_image", "PATCH", `/templates/${templateId}`, {
-      imageName,
+      image: imageName,
     });
+  }
+
+  /** v2: move a LIVE endpoint's image (the re-pin). `PATCH /v2/serverless/{id}`. */
+  async updateEndpointImage(endpointId: string, image: string) {
+    return await this.call<{ id: string }>("endpoints.update_image", "PATCH", `/serverless/${endpointId}`, { image });
+  }
+
+  /** v2: rewrite a LIVE endpoint's env (complete env, as templateEnv builds it). `PATCH /v2/serverless/{id}`. */
+  async updateEndpointEnv(endpointId: string, env: Record<string, string>) {
+    return await this.call<{ id: string }>("endpoints.update_env", "PATCH", `/serverless/${endpointId}`, { env });
   }
 
   async createEndpoint(args: {
@@ -381,32 +441,25 @@ export class RunPodClient {
     workersMax: number;
     idleTimeout?: number;
   }) {
-    return await this.call<{ id: string }>("endpoints.create", "POST", "/endpoints", {
+    return await this.call<{ id: string }>("endpoints.create", "POST", "/serverless", {
       name: args.name,
+      // Applied once at create: the endpoint takes the template's image and env and keeps no link.
       templateId: args.templateId,
-      computeType: "GPU",
-      gpuTypeIds: args.gpuTypeIds,
-      gpuCount: 1,
+      gpu: { pools: gpuPoolsFor(args.gpuTypeIds), count: 1 },
       // Scale-to-zero: idle costs nothing. The whole GPU-rationing thesis in one field.
-      workersMin: 0,
-      workersMax: args.workersMax,
-      idleTimeout: args.idleTimeout ?? 5,
-      scalerType: "QUEUE_DELAY",
-      scalerValue: 4,
+      workers: { min: 0, max: args.workersMax, idleTimeout: args.idleTimeout ?? 5 },
+      scaling: { type: "QUEUE_DELAY", queueDelay: 4 },
     });
   }
 
   async deleteEndpoint(id: string): Promise<void> {
-    await this.call<unknown>("endpoints.delete", "DELETE", `/endpoints/${id}`);
+    await this.call<unknown>("endpoints.delete", "DELETE", `/serverless/${id}`);
   }
 
   /** Read a template back. The live gate uses it to verify the pin RunPod HOLDS, not the one we sent. */
   async getTemplate(templateId: string): Promise<{ id: string; imageName: string }> {
-    return await this.call<{ id: string; imageName: string }>(
-      "templates.get",
-      "GET",
-      `/templates/${templateId}`,
-    );
+    const t = await this.call<{ id: string; image?: string }>("templates.get", "GET", `/templates/${templateId}`);
+    return { id: t.id, imageName: t.image ?? "" };
   }
 
   async deleteTemplate(id: string): Promise<void> {
@@ -416,18 +469,20 @@ export class RunPodClient {
   /**
    * Endpoint detail: the closest thing REST gives us to a worker view.
    *
-   * There is NO worker-list on the REST API. GET /v1/endpoints/{id}/workers 400s with "that path
-   * ... does not exist in the specification" (verified live), and the detail payload carries only
-   * workersMin/workersMax/workersStandby, not running workers. A real worker list needs the legacy
-   * GraphQL API.
+   * v1 had NO worker-list (GET /v1/endpoints/{id}/workers 400'd). v2 lists them at
+   * GET /v2/serverless/{id}/workers; this method still answers the configured capacity
+   * (workers.min / workers.max), the question teardown asks.
    *
    * This matters for teardown verification ("list WORKERS, not just endpoints"): what REST can
    * honestly tell us is the endpoint's CONFIGURED capacity, which answers "can this thing scale up
    * and spend?" but not "is something running right now". Stated rather than papered over; the
    * GraphQL worker list is tracked separately if we need the stronger check.
    */
-  async getEndpoint(endpointId: string): Promise<{ id: string; workersMin?: number; workersMax?: number; workersStandby?: number }> {
-    return await this.call("endpoints.get", "GET", `/endpoints/${endpointId}`);
+  async getEndpoint(endpointId: string): Promise<{ id: string; image?: string; workersMin?: number; workersMax?: number }> {
+    const e = await this.call<{ id: string; image?: string; workers?: { min?: number; max?: number } }>(
+      "endpoints.get", "GET", `/serverless/${endpointId}`,
+    );
+    return { id: e.id, image: e.image, workersMin: e.workers?.min, workersMax: e.workers?.max };
   }
 }
 
@@ -439,6 +494,10 @@ function normalizeList<T>(payload: unknown, key: string): T[] {
     if (Array.isArray(wrapped)) return wrapped as T[];
     const data = (payload as Record<string, unknown>).data;
     if (Array.isArray(data)) return data as T[];
+    // v2 names the list by kind in its OpenAPI (`endpoints`, `templates`); RunPod's own v2 tooling
+    // was read returning `items` (2026-11-11). Accept both rather than read a renamed key as empty.
+    const items = (payload as Record<string, unknown>).items;
+    if (Array.isArray(items)) return items as T[];
   }
   return [];
 }

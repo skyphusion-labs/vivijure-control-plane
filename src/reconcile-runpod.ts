@@ -554,8 +554,10 @@ export function parseInventoryBody(
 /**
  * Was a RunPod list payload WHOLE, or might it have been a page of a longer list?
  *
- * Mirrored by wholePage() in scripts/reconcile-runpod.mjs (a .mjs operator tool cannot import TS);
- * keep the two in step. This exists because every absence conclusion downstream ("that endpoint is
+ * RunPod REST v2 (fleet-chezmoi#2083) puts `pagination: { nextCursor, hasNextPage }` on EVERY list,
+ * the last page included, so a page is whole only when that block says `hasNextPage: false`. A
+ * pagination block that says anything else, or is malformed, is not whole. scripts/reconcile-runpod.mjs
+ * walks the pages with the same rule (a .mjs operator tool cannot import TS); keep the two in step. This exists because every absence conclusion downstream ("that endpoint is
  * gone", "no record owns this") is only as sound as the census it came from, and a truncated page
  * that reports itself complete is precisely how a reconciliation invents a missing resource.
  */
@@ -563,8 +565,13 @@ export function listWasWhole(payload: unknown): boolean {
   if (Array.isArray(payload)) return true;
   if (!payload || typeof payload !== "object") return false;
   const p = payload as Record<string, unknown>;
-  for (const cursor of ["next", "nextCursor", "next_cursor", "cursor", "paginate", "pagination"]) {
+  const listed = Array.isArray(p.endpoints) || Array.isArray(p.templates) || Array.isArray(p.data) || Array.isArray(p.items);
+  if (p.pagination !== undefined) {
+    const pg = p.pagination as { hasNextPage?: unknown } | null;
+    return Boolean(pg && typeof pg === "object" && pg.hasNextPage === false && listed);
+  }
+  for (const cursor of ["next", "nextCursor", "next_cursor", "cursor", "paginate"]) {
     if (p[cursor]) return false;
   }
-  return Array.isArray(p.endpoints) || Array.isArray(p.templates) || Array.isArray(p.data);
+  return listed;
 }

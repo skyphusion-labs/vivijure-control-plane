@@ -44,7 +44,9 @@ const D1_NAME = process.env.CONTROL_PLANE_D1_NAME ?? "vivijure-control-plane";
 // two accounts exist to label, so a whitelist costs nothing and the printed line carries a constant.
 const ACCOUNT_LABEL = process.env.RUNPOD_ACCOUNT_LABEL === "scratch" ? "scratch" : "prod";
 
-const RUNPOD_API = "https://rest.runpod.io/v1";
+// RunPod REST v2 (fleet-chezmoi#2083).
+const RUNPOD_API = "https://api.runpod.io/v2";
+const LIST_PATH = { endpoints: "/serverless", templates: "/templates" } as const;
 
 let tenants: Tenant[] = [];
 let endpoints: RunPodResource[] = [];
@@ -53,8 +55,8 @@ let inventoryComplete = false;
 
 /** The RAW list, so completeness can be judged before any absence is concluded from it. */
 async function rawList(kind: "endpoints" | "templates"): Promise<unknown> {
-  const res = await fetch(`${RUNPOD_API}/${kind}`, { headers: { authorization: `Bearer ${RUNPOD_KEY}` } });
-  expect(res.ok, `GET /${kind} returned HTTP ${res.status}`).toBe(true);
+  const res = await fetch(`${RUNPOD_API}${LIST_PATH[kind]}?limit=1000`, { headers: { authorization: `Bearer ${RUNPOD_KEY}` } });
+  expect(res.ok, `GET ${LIST_PATH[kind]} returned HTTP ${res.status}`).toBe(true);
   return await res.json();
 }
 

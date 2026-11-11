@@ -20,7 +20,9 @@ import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PINS_TS = join(HERE, "..", "src", "satellite-pins.ts");
-const RUNPOD_API = "https://rest.runpod.io/v1";
+// RunPod REST v2 (fleet-chezmoi#2083; v1 retires 2026-11-15). RUNPOD_API_BASE exists for the
+// script's own tests, which point it at a local fake; nothing else sets it.
+const RUNPOD_API = (process.env.RUNPOD_API_BASE || "https://api.runpod.io/v2").replace(/\/$/, "");
 const TIMEOUT_MS = 20_000;
 
 /** Parse the pins out of the TS source: no build step, no runtime dep, one source of truth. */
@@ -104,30 +106,23 @@ async function checkRegistry(org, pins) {
 
 async function prodImages(key, wantedIds) {
   const auth = { Authorization: `Bearer ${key}` };
-  // includeTemplate=true (default false): without it the list carries no image at all, and the
-  // only route to the image was the template read below (measured 2026-11-11 on the hosted upscale
-  // endpoint: rc=2, "template mazn6lcp0y read failed: HTTP 404").
-  const eps = await withTimeout(`${RUNPOD_API}/endpoints?includeTemplate=true`, { headers: auth });
-  if (!eps.ok) fail(2, `RunPod endpoint list failed: HTTP ${eps.status}`);
-  const list = await eps.json();
-  if (!Array.isArray(list)) fail(2, "RunPod endpoint list was not an array -- API shape changed");
+  // v2: an endpoint carries its own image (`GET /v2/serverless/{id}` -> `image`), so each pinned
+  // endpoint is one read and no template is involved. Only the endpoints a pin claims to mirror are
+  // read, so an unrelated endpoint can never make the check unrunnable.
   const byId = new Map();
-  for (const ep of list) {
-    // Only the endpoints a pin claims to mirror. Reading every template in the account would let an
-    // UNRELATED endpoint (e.g. a hub template this key cannot read) make the check unrunnable.
-    if (!wantedIds.has(ep.id)) continue;
-    // cp#601: an endpoint read can carry the image INLINE with no template id (measured on the
-    // hosted endpoints, 2026-11-11). Use the inline image when it is there; read the template only
-    // when it is not; and when neither exists, refuse to measure rather than call it drift.
-    const inline = [ep.imageName, ep.image, ep.template?.imageName].find((v) => typeof v === "string" && v);
-    if (inline) { byId.set(ep.id, { name: ep.name, image: inline }); continue; }
-    if (!ep.templateId) fail(2, `RunPod endpoint ${ep.id} carries neither an image nor a templateId -- cannot measure`);
-    // includeEndpointBoundTemplates=true (default false): an endpoint's own template is
-    // endpoint-bound, and without the flag RunPod answers 404 for it, which is the 404 measured.
-    const t = await withTimeout(`${RUNPOD_API}/templates/${ep.templateId}?includeEndpointBoundTemplates=true`, { headers: auth });
-    if (!t.ok) fail(2, `RunPod template ${ep.templateId} (endpoint ${ep.id}) read failed: HTTP ${t.status}`);
-    const tpl = await t.json();
-    byId.set(ep.id, { name: ep.name, image: tpl.imageName || "" });
+  for (const id of wantedIds) {
+    const res = await withTimeout(`${RUNPOD_API}/serverless/${encodeURIComponent(id)}`, { headers: auth });
+    // 404: this key cannot see that endpoint. checkProd reports it as a FAIL by name.
+    if (res.status === 404) continue;
+    if (!res.ok) fail(2, `RunPod endpoint ${id} read failed: HTTP ${res.status}`);
+    let ep;
+    try {
+      ep = await res.json();
+    } catch {
+      fail(2, `RunPod endpoint ${id} returned a body that is not JSON`);
+    }
+    if (typeof ep?.image !== "string" || !ep.image) fail(2, `RunPod endpoint ${id} carries no image -- cannot measure`);
+    byId.set(id, { name: String(ep.name ?? id), image: ep.image });
   }
   return byId;
 }
