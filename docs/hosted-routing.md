@@ -1,9 +1,7 @@
 # Hosted tier: routing + domains
 
-> **Skyphusion's own deployment of this control plane is retired** (cp#574: its route, domain and
-> cron are removed, and `CP_OUT_OF_SERVICE` makes our tag deploys refuse). The code is maintained,
-> and an operator can run it. Where this page names `studio.vivijure.com`, read it as your own
-> plane host.
+> **This repo is a reference implementation of a multi-tenant control plane for hosting Vivijure Studio; maintained, not operated by Skyphusion.** Where this page names `studio.vivijure.com`, read it as
+> your own plane host.
 
 How a request reaches a tenant studio on the hosted door (epic #40, issue #55). Companion to
 `docs/DEPLOYMENT.md` (core deploy) and `docs/module-dispatch.md` (the Phase-3 module namespace).

@@ -4,7 +4,7 @@ Guidance for Claude Code (and the crew) working in this repo.
 
 ## What this is
 
-**Vivijure Control Plane: the multi-tenant hosted provisioner.** A Cloudflare Worker that owns
+**Vivijure Control Plane: a reference implementation of a multi-tenant control plane for hosting Vivijure Studio; maintained, not operated by Skyphusion.** A Cloudflare Worker that owns
 accounts, sign-in, AUP gate, tenant records, provisioning, and admin switches. It installs the
 **published studio release** into per-tenant Workers (dispatch namespaces). It is **not** the studio
 UI and owns **no film data** (projects, cast, renders stay in the tenant studio).
@@ -17,7 +17,7 @@ Version: see root `package.json` / latest `v*` tag / `CHANGELOG.md`.
 
 | Repo | Role |
 |------|------|
-| **This repo** | Open-source multi-tenant control plane (provision + front door) an operator can run; Skyphusion's own deployment is retired (cp#574) |
+| **This repo** | A reference implementation of a multi-tenant control plane (provision + front door); maintained, not operated by Skyphusion |
 | `vivijure-cf` | Studio panel Worker (the bytes tenants run) |
 | `vivijure-core` | Shared orchestration / module contract (studio dep, not this plane) |
 | `vivijure-local` | Self-host Node panel (parity peer of cf) |

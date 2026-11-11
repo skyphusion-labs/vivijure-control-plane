@@ -1,6 +1,7 @@
 # The platform control plane
 
-A control plane you can run to host vivijure studio for tenants (epic #40, skeleton #52). A **separate Worker** from the studio
+A reference implementation of a multi-tenant control plane for hosting vivijure studio; maintained,
+not operated by Skyphusion (epic #40, skeleton #52). A **separate Worker** from the studio
 that deploys independently, exactly like the MCP Worker: `npm run deploy`.
 
 It owns accounts, auth, the AUP gate, tenant records, and the admin switches. It owns **no tenant

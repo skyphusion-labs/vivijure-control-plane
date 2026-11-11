@@ -1,9 +1,7 @@
 # hosted/ -- the hosted-tier front door assets
 
-> **Skyphusion's own deployment of this control plane is retired** (cp#574: its route, domain and
-> cron are removed, and `CP_OUT_OF_SERVICE` makes our tag deploys refuse). The code is maintained,
-> and an operator can run it. Where this page names `studio.vivijure.com`, read it as your own
-> plane host.
+> **This repo is a reference implementation of a multi-tenant control plane for hosting Vivijure Studio; maintained, not operated by Skyphusion.** Where this page names `studio.vivijure.com`, read it as
+> your own plane host.
 
 Static assets for the **platform control plane** worker (the hosted signup +
 onboarding door at `studio.vivijure.com`). Vanilla JS/HTML/CSS, no framework, no
