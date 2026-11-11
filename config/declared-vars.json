@@ -1,0 +1,11 @@
+{
+  "_doc": "cp#533. Repo Actions variables whose VALUE is declared here, so a change is a PR with a diff. scripts/check-declared-vars.mjs runs in deploy.yml and refuses a deploy when a live variable and its declaration disagree. Change both together: this file in a PR, then the variable. Never put a secret here.",
+  "SHARED_RUNPOD_ENDPOINTS": {
+    "compare": "json",
+    "_note": "AS-IS at 2026-11-11 (variable updated 2026-09-27). KNOWN STALE: both endpoints were retired on purpose (Conrad 2026-11-10: RunPod is SDXL keyframes only, wan train is not used). Replaced in cp#589, together with dropping wan-train from PROVISION_PLAN. Declared as found so the gate starts from the live state; cp#589 is the change.",
+    "value": {
+      "backend": { "id": "t9wcvlxh8rc5la", "name": "vivijure-backend" },
+      "wan-train": { "id": "zqb7tougbqfkqa", "name": "vivijure-prod-wan-train" }
+    }
+  }
+}

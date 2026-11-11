@@ -172,6 +172,14 @@ jobs:
           AUP_URL: ${{ vars.AUP_URL }}
         run: bash scripts/check-aup-pin.sh
 
+      # cp#533. Repo variables whose VALUE is declared in config/declared-vars.json, so a change is a
+      # PR with a diff and drift refuses the deploy instead of shipping quietly (SHARED_RUNPOD_ENDPOINTS
+      # carried a deleted endpoint for six weeks and silently blocked the v1.29.4 rollback).
+      - name: Declared repo variables match config/declared-vars.json
+        env:
+          SHARED_RUNPOD_ENDPOINTS: ${{ vars.SHARED_RUNPOD_ENDPOINTS }}
+        run: node scripts/check-declared-vars.mjs
+
       # SHARED-POOL INVOKE-KEY SCOPE (cp#396). Refuse the deploy when the pool names an endpoint
       # the shared key cannot actually submit to.
       #
@@ -444,6 +452,14 @@ jobs:
           AUP_VERSION: ${{ vars.AUP_VERSION }}
           AUP_URL: ${{ vars.AUP_URL }}
         run: bash scripts/check-aup-pin.sh
+
+      # cp#533. Repo variables whose VALUE is declared in config/declared-vars.json, so a change is a
+      # PR with a diff and drift refuses the deploy instead of shipping quietly (SHARED_RUNPOD_ENDPOINTS
+      # carried a deleted endpoint for six weeks and silently blocked the v1.29.4 rollback).
+      - name: Declared repo variables match config/declared-vars.json
+        env:
+          SHARED_RUNPOD_ENDPOINTS: ${{ vars.SHARED_RUNPOD_ENDPOINTS }}
+        run: node scripts/check-declared-vars.mjs
 
       - name: Render wrangler.toml
         env:

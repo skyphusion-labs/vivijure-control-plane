@@ -239,6 +239,12 @@ for name, text in (("deploy.yml", str(wf)), ("studio-pin-drift.yml", drift_text)
           "CHECK_STUDIO_PIN_TIMEOUT_MS" not in text,
           "an abbreviated timeout is not a measurement of the live estate")
 
+# cp#533: BOTH deploy.yml jobs (the dry run and the deploy) run the declared-variable gate, each fed
+# the live variable, so a declared value can never be skipped on the path that ships.
+check("both deploy.yml jobs run the declared-variable gate (cp#533)",
+      str(wf).count("node scripts/check-declared-vars.mjs") == 2,
+      "a deploy job without the gate ships a variable no file describes")
+
 # cp#574: the out-of-service refusal is the FIRST preflight step (before checkout, install and
 # render), it reads the repo variable, and the release job still depends on preflight, so a refusal
 # there stops the deploy. A later edit that moves or drops it makes "do not tag" a reminder again.
