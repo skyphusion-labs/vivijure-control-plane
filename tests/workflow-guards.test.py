@@ -239,6 +239,18 @@ for name, text in (("deploy.yml", str(wf)), ("studio-pin-drift.yml", drift_text)
           "CHECK_STUDIO_PIN_TIMEOUT_MS" not in text,
           "an abbreviated timeout is not a measurement of the live estate")
 
+# cp#574: the out-of-service refusal is the FIRST preflight step (before checkout, install and
+# render), it reads the repo variable, and the release job still depends on preflight, so a refusal
+# there stops the deploy. A later edit that moves or drops it makes "do not tag" a reminder again.
+pre_steps = wf.get("jobs", {}).get("preflight", {}).get("steps", [])
+check("the out-of-service refusal is the first preflight step (cp#574)",
+      bool(pre_steps) and "out of service" in str(pre_steps[0].get("name", ""))
+      and "vars.CP_OUT_OF_SERVICE" in str(pre_steps[0].get("env", {})),
+      "first preflight step: " + str(pre_steps[0].get("name") if pre_steps else None))
+check("the release job still needs preflight, so the refusal stops the deploy (cp#574)",
+      "preflight" in str(wf.get("jobs", {}).get("release", {}).get("needs", "")),
+      "release needs: " + str(wf.get("jobs", {}).get("release", {}).get("needs")))
+
 # Anchored on the EMITTED string, for the reason recorded above the mirror-notice assertion: a
 # vocabulary match is supplied by unrelated text. A skip here would be an absence reading as OK,
 # and this job never runs from a fork, so an absent credential is a defect and not a fork condition.
