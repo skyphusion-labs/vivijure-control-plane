@@ -38,6 +38,7 @@ import { resolveStorageQuota, storageQuotaBindings, type StorageQuotaConfig } fr
 import { videoFinishTierStateBindings } from "./video-finish-tier-state";
 import type { TokenMinter } from "./token-minter";
 import type { ModuleBundle, ModuleBundleSource } from "./tenant-modules";
+import { tenantModuleScriptPrefix, TENANT_MODULE_PREFIX_BINDING } from "./tenant-modules";
 import {
   TENANT_MODULE_CATALOG,
   installTenantModules,
@@ -796,6 +797,9 @@ export async function runProvisionJob(
         // studio code, so the studio bytes stay byte-identical to self-host (parity). A WfP user
         // worker carrying a dispatch_namespace binding was live-proven in the cf#99 step-1 probe.
         { type: "dispatch_namespace", name: "MODULE_DISPATCH", namespace: deps.moduleNamespace },
+        // That namespace holds every tenant's modules, so the studio is told which scripts are its own:
+        // its module install accepts only a script under this prefix (vivijure-cf TENANT_MODULE_PREFIX).
+        { type: "plain_text", name: TENANT_MODULE_PREFIX_BINDING, text: tenantModuleScriptPrefix(tenant.id) },
         { type: "d1", name: "DB", id: dbUuid },
         { type: "r2_bucket", name: "R2_RENDERS", bucket_name: bucket },
         { type: "r2_bucket", name: "R2", bucket_name: bucket },
