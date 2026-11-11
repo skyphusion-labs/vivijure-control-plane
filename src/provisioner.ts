@@ -15,7 +15,7 @@
 // /retry answers 409 runpod_key_required instead of quietly re-running with a key it kept.
 
 import type { CfApi } from "./cf-api";
-import { CfApiError, classifyVpcBindingFailure, isScriptAbsent } from "./cf-api";
+import { CfApiError, classifyVpcBindingFailure, isD1Absent, isScriptAbsent } from "./cf-api";
 import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
 import type { TemplateConvergence, TenantR2Creds, ResolvedDoor } from "./runpod";
@@ -2390,8 +2390,32 @@ export async function teardownTenant(
     // harvest failure also stops the delete, instead of a new failure mode quietly bypassing the
     // one interlock that protects the mapping.
     const harvestFailed = failures.some((f) => f.resource === "job_index_harvest");
-    if (tenant.d1_database_id && !d1Guarded && !harvestFailed) {
-      await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!), "d1");
+    // cp#605: a harvest also fails when the database is ALREADY GONE (removed out of band). The log the
+    // interlock protects is then destroyed already, so no retry can ever harvest it, and holding the d1
+    // leg back would pin the row forever. So when the harvest failed, ask whether the database exists.
+    //   * Proven gone (GET answers 404): the harvest is recorded ABSENT, not failed, and logged loudly as
+    //     a lost job log; the d1 is recorded ABSENT and its column blanked, as cp#110 does for a gone
+    //     worker. Teardown converges: a second pass has nothing left to do.
+    //   * Present, or a probe that cannot tell: the interlock stays shut and the harvest failure stands.
+    let d1ProvenGone = false;
+    if (tenant.d1_database_id && !d1Guarded && harvestFailed) {
+      try {
+        d1ProvenGone = !(await deps.cf.d1Present(tenant.d1_database_id));
+      } catch (e) {
+        deps.log("teardown.d1_presence_unknown", { tenant: tenant.id, error: String(e) });
+      }
+    }
+    if (d1ProvenGone) {
+      const i = failures.findIndex((f) => f.resource === "job_index_harvest");
+      const lost = i >= 0 ? failures.splice(i, 1)[0] : undefined;
+      absent.push({ resource: "job_index_harvest", detail: `the D1 was already gone, so its job log could not be indexed: ${lost?.error ?? ""}` });
+      deps.log("teardown.job_index_lost", { tenant: tenant.id, d1: tenant.d1_database_id, error: lost?.error });
+      absent.push({ resource: "d1", detail: "the D1 was already gone (404) before teardown" });
+      deps.log("teardown.d1_absent", { tenant: tenant.id });
+      await clearColumn("d1", "d1");
+    } else if (tenant.d1_database_id && !d1Guarded && !harvestFailed) {
+      // A database that vanishes between the harvest and this delete is absent too, not a failure.
+      await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!), "d1", isD1Absent);
     }
     // EMPTY-THEN-DELETE (cf#72), wired here by this issue caller work.
     //
