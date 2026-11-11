@@ -399,25 +399,62 @@ describe("teardown harvests the job index before reaping the D1 (cp#270)", () =>
     expect(store.tenants.get(t.id)?.d1_database_id).toBe("db-1");
   });
 
-  it("a harvest that fails because the D1 is ALREADY GONE lets the d1 leg run and report it", async () => {
-    // The live reclaim suite's case: the database was removed out of band. Holding the d1 leg back
-    // would say "harvest failed, D1 kept" about a database that does not exist.
+  it("cp#605: a D1 that is ALREADY GONE converges: harvest and d1 absent, column blanked, ok", async () => {
+    // The live reclaim case: the database was removed out of band, so its log is lost already and no
+    // retry could ever harvest it. A failure here would pin the row forever.
     const t = await tenant();
     const cf = jobLogCf(() => {
       throw new Error("d1.query -> 404");
     });
     (cf as unknown as { d1Present: unknown }).d1Present = vi.fn(async () => (calls.push("d1Present"), false));
-    (cf as unknown as { deleteD1: unknown }).deleteD1 = vi.fn(async () => {
-      calls.push("deleteD1");
-      throw new Error("d1.delete -> 404");
+    const logs: string[] = [];
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf, log: (ev: string) => void logs.push(ev) }), store.tenants.get(t.id)!, { deleteData: true });
+
+    expect(res.ok, JSON.stringify(res.failures)).toBe(true);
+    expect(res.failures).toEqual([]);
+    expect(res.absent.map((a) => a.resource)).toEqual(expect.arrayContaining(["job_index_harvest", "d1"]));
+    expect(logs).toContain("teardown.job_index_lost");
+    expect(calls).toContain("d1Present");
+    expect(calls).not.toContain("deleteD1"); // the GET already proved it gone
+    expect(store.tenants.get(t.id)?.d1_database_id ?? null).toBeNull();
+
+    // A second pass has nothing left to do with the D1.
+    calls.length = 0;
+    const again = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+    expect(again.failures).toEqual([]);
+    expect(calls).not.toContain("queryD1");
+    expect(calls).not.toContain("d1Present");
+  });
+
+  it("a D1 that vanishes between harvest and delete is absent, not failed", async () => {
+    const t = await tenant();
+    const cf = fakeCf({
+      queryD1: vi.fn(async () => (calls.push("queryD1"), [{ results: [] }])),
+      deleteD1: vi.fn(async () => {
+        calls.push("deleteD1");
+        throw new CfApiError("d1.delete", 404, [{ code: 7404, message: "not found" }]);
+      }),
     });
     await store.setTenantD1(t.id, "db-1");
     const res = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+    expect(res.failures).toEqual([]);
+    expect(res.absent.map((a) => a.resource)).toContain("d1");
+    expect(store.tenants.get(t.id)?.d1_database_id ?? null).toBeNull();
+  });
 
-    expect(res.ok).toBe(false);
-    expect(res.failures.map((f) => f.resource)).toEqual(expect.arrayContaining(["job_index_harvest", "d1"]));
-    expect(calls).toContain("d1Present");
-    expect(calls).toContain("deleteD1");
+  it("CONTROL: a d1 delete that fails with anything but 404 is still a failure", async () => {
+    const t = await tenant();
+    const cf = fakeCf({
+      queryD1: vi.fn(async () => (calls.push("queryD1"), [{ results: [] }])),
+      deleteD1: vi.fn(async () => {
+        throw new CfApiError("d1.delete", 500, [{ code: 1, message: "boom" }]);
+      }),
+    });
+    await store.setTenantD1(t.id, "db-1");
+    const res = await teardownTenant(deps({ cf }), store.tenants.get(t.id)!, { deleteData: true });
+    expect(res.failures.map((f) => f.resource)).toContain("d1");
+    expect(store.tenants.get(t.id)?.d1_database_id).toBe("db-1");
   });
 
   it("a presence probe that cannot tell keeps the interlock shut", async () => {

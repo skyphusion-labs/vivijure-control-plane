@@ -92,6 +92,12 @@ export function classifyVpcBindingFailure(e: unknown, attachingVpc: boolean): Vp
  * a failure can be retried, while a real failure recorded as "already gone" blanks a column over a
  * resource that is still live.
  */
+/** cp#605: a D1 call answered HTTP 404, the database does not exist. Status only: D1's error codes for
+ *  this were not measured, and d1Present (the proving read) also keys on the 404. */
+export function isD1Absent(e: unknown): boolean {
+  return e instanceof CfApiError && e.status === 404;
+}
+
 export function isScriptAbsent(e: unknown): boolean {
   return e instanceof CfApiError && e.status === 404 && e.cfErrors.some((c) => c.code === CF_SCRIPT_NOT_FOUND);
 }
@@ -420,7 +426,7 @@ export class CfApi {
       await this.call<unknown>("d1.get", `/accounts/${this.accountId}/d1/database/${databaseId}`);
       return true;
     } catch (e) {
-      if (e instanceof CfApiError && e.status === 404) return false;
+      if (isD1Absent(e)) return false;
       throw e;
     }
   }
