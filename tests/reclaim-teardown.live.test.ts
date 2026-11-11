@@ -36,6 +36,7 @@
 // left behind.
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { listAllBucketNames, listAllD1 } from "./live-census";
 import { CfApi } from "../src/cf-api";
 import { CfTokenMinter } from "../src/token-minter";
 import {
@@ -278,11 +279,13 @@ afterAll(async () => {
     leftovers.push(`token census failed: ${String(e).slice(0, 120)}`);
   }
 
+  // EVERY page (cp#614): one GET returns the first 20 buckets by name, and the rehearsal
+  // buckets sort past them on this account, so a one-page sweep saw none and said nothing.
+  const census = { api: API, account: ACCOUNT!, token: TOKEN! };
   try {
-    const res = await fetch(`${API}/accounts/${ACCOUNT}/r2/buckets`, { headers: { authorization: `Bearer ${TOKEN}` } });
-    const body = (await res.json()) as { result?: { buckets?: { name: string }[] } };
-    for (const b of body.result?.buckets ?? []) {
-      if (!b.name.startsWith(RESOURCE_PREFIX)) continue;
+    for (const name of await listAllBucketNames(census)) {
+      if (!name.startsWith(RESOURCE_PREFIX)) continue;
+      const b = { name };
       try {
         // EMPTY THEN DELETE, the same cycle the code under test runs, because a bare delete cannot
         // remove a bucket this file deliberately filled.
@@ -311,11 +314,7 @@ afterAll(async () => {
   }
 
   try {
-    const res = await fetch(`${API}/accounts/${ACCOUNT}/d1/database?per_page=100`, {
-      headers: { authorization: `Bearer ${TOKEN}` },
-    });
-    const body = (await res.json()) as { result?: { uuid: string; name: string }[] };
-    for (const db of body.result ?? []) {
+    for (const db of await listAllD1(census)) {
       if (!db.name.startsWith(RESOURCE_PREFIX)) continue;
       try { await cf.deleteD1(db.uuid); } catch (e) { leftovers.push(`d1 ${db.name}: ${String(e).slice(0, 120)}`); }
     }
@@ -338,8 +337,23 @@ afterAll(async () => {
     }
   }
 
+  // VERIFY THE ACCOUNT, not the sweep's own bookkeeping (cp#614): re-read every page and count
+  // what is still there under this file's prefix.
+  try {
+    for (const name of await listAllBucketNames(census)) {
+      if (name.startsWith(RESOURCE_PREFIX)) leftovers.push(`bucket ${name}: STILL ON THE ACCOUNT after the sweep`);
+    }
+    for (const db of await listAllD1(census)) {
+      if (db.name.startsWith(RESOURCE_PREFIX)) leftovers.push(`d1 ${db.name}: STILL ON THE ACCOUNT after the sweep`);
+    }
+  } catch (e) {
+    leftovers.push(`post-sweep census failed: ${String(e).slice(0, 120)}`);
+  }
+
   if (leftovers.length > 0) {
     console.error(`LEFTOVERS THIS SWEEP COULD NOT REMOVE (reap them by hand):\n  ${leftovers.join("\n  ")}`);
+    // Fail the run (cp#614): a printed line alone let eight runs go green with a bucket left.
+    throw new Error(`rehearsal sweep left ${leftovers.length} resource(s) on the account; see LEFTOVERS above`);
   }
 }, 300_000);
 
