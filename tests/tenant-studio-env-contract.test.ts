@@ -223,6 +223,11 @@ describe("the tenant studio platform-env contract (#116)", () => {
     expect(ai!.type).toBe("ai");
   });
 
+  it("binds Cloudflare Images onto the studio so GET /api/thumb is not a 503 (cp#573)", async () => {
+    const bindings = await provisionAndCaptureStudioBindings();
+    expect(bindings.filter((b) => b.name === "IMAGES")).toEqual([{ type: "images", name: "IMAGES" }]);
+  });
+
   it("binds GATEWAY_ID + CF_AIG_TOKEN on the studio when the plane names a gateway (cf#98)", async () => {
     const { deps, store, uploads } = recordingDeps();
     (deps as { aiGatewayId: string | null }).aiGatewayId = "vivijure-hosted";

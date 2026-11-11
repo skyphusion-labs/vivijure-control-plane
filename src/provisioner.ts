@@ -885,6 +885,9 @@ export async function runProvisionJob(
         // has a working Workers AI local path; GATEWAY_ID + CF_AIG_TOKEN are both-or-neither when
         // TENANT_AI_GATEWAY_ID is configured (same rule as modules). CF_AIG_TOKEN is secret_text only.
         { type: "ai", name: "AI" },
+        // cp#573: GET /api/thumb (vivijure-cf#1211) resizes stills through env.IMAGES and answers 503
+        // without it. Not in the verify census: a studio without it still renders, and says so.
+        { type: "images", name: "IMAGES" },
         ...(deps.aiGatewayId && studioAigTokenValue
           ? [
               { type: "plain_text" as const, name: "GATEWAY_ID", text: deps.aiGatewayId },
