@@ -92,6 +92,12 @@ export function classifyVpcBindingFailure(e: unknown, attachingVpc: boolean): Vp
  * a failure can be retried, while a real failure recorded as "already gone" blanks a column over a
  * resource that is still live.
  */
+/** cp#605: a D1 call answered HTTP 404, the database does not exist. Status only: D1's error codes for
+ *  this were not measured, and d1Present (the proving read) also keys on the 404. */
+export function isD1Absent(e: unknown): boolean {
+  return e instanceof CfApiError && e.status === 404;
+}
+
 export function isScriptAbsent(e: unknown): boolean {
   return e instanceof CfApiError && e.status === 404 && e.cfErrors.some((c) => c.code === CF_SCRIPT_NOT_FOUND);
 }
@@ -408,6 +414,21 @@ export class CfApi {
       `/accounts/${this.accountId}/d1/database/${databaseId}/export`,
       { method: "POST", body: JSON.stringify({ output_format: "polling" }), headers: { "content-type": "application/json" } },
     );
+  }
+
+  /**
+   * Does this D1 database exist? true on 200, false ONLY on HTTP 404, and every other answer THROWS:
+   * "could not tell" must never read as "gone". The live reclaim suite's own positive control reads
+   * the same GET (tests/reclaim-teardown.live.test.ts d1Exists).
+   */
+  async d1Present(databaseId: string): Promise<boolean> {
+    try {
+      await this.call<unknown>("d1.get", `/accounts/${this.accountId}/d1/database/${databaseId}`);
+      return true;
+    } catch (e) {
+      if (isD1Absent(e)) return false;
+      throw e;
+    }
   }
 
   async deleteD1(databaseId: string): Promise<void> {
