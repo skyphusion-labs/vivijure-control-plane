@@ -7,6 +7,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { harvestTenantJobLog, HARVEST_ROW_CAP, TENANT_JOB_LOG_TABLE } from "../src/runpod-job-index";
+import { mintJobHandle } from "../src/runpod-proxy-auth";
 
 /** D1's wire shape: an array of statement results, each carrying its own `results` array. */
 const d1 = (rows: Record<string, unknown>[]) => [{ results: rows }];
@@ -39,6 +40,13 @@ const job = (id: string, over: Record<string, unknown> = {}) => ({
 });
 
 describe("harvestTenantJobLog", () => {
+  it("cp#575: a proxied module logs the job handle; the index keys on the RunPod id inside it", async () => {
+    const h = (await mintJobHandle("k", "ten_1", "ep1", "abc-123-u1"))!;
+    const { cf } = fakeD1({ tableExists: true, rows: [job(h), job("direct-9")] });
+    const res = await harvestTenantJobLog(cf, "db-1");
+    expect(res.rows.map((r) => r.job_id)).toEqual(["abc-123-u1", "direct-9"]);
+  });
+
   it("reads the log and returns ids and machine labels only", async () => {
     const { cf } = fakeD1({ tableExists: true, rows: [job("j1"), job("j2", { outcome: "failed" })] });
     const res = await harvestTenantJobLog(cf, "db-1");

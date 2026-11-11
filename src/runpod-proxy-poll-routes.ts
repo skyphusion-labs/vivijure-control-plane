@@ -22,7 +22,7 @@
 
 import { bearerFrom } from "./crypto";
 import { PLANE_REFUSAL_HEADER, passthrough, type PassthroughOp, type RunpodPollDeps } from "./runpod-proxy-poll";
-import { verifyTenantProxyToken } from "./runpod-proxy-auth";
+import { verifyJobHandle, verifyTenantProxyToken } from "./runpod-proxy-auth";
 
 /**
  * What the poll route may check about its caller, and what it deliberately may not.
@@ -81,5 +81,11 @@ export async function handleProxyPoll(
   // tenant while authorizing nothing.
   if (!auth.isAllowed(endpointId)) return refuse("endpoint_not_allowed", 403);
 
-  return await passthrough(deps, op, endpointId, jobId);
+  // A job-scoped op names the job by the handle submit returned (cp#575). It must verify for THIS
+  // tenant and THIS endpoint; anything else (another tenant's job, a bare RunPod id, a forged MAC)
+  // is one and the same answer, so the route says nothing about whose job an id is.
+  if (op === "health") return await passthrough(deps, op, endpointId);
+  const runpodJobId = await verifyJobHandle(auth.signingKey, tenantId, endpointId, jobId);
+  if (!runpodJobId) return refuse("unknown_job", 404);
+  return await passthrough(deps, op, endpointId, runpodJobId);
 }
