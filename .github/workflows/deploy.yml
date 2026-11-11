@@ -90,11 +90,11 @@ jobs:
       # 6 failures out of 53 on a shallow tagless clone. A preflight that failed that way would be
       # red for a reason that has nothing to do with the config, which teaches whoever is on the tag
       # to ignore a red.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -398,7 +398,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history so the ancestry guard below can walk main to the built commit.
           fetch-depth: 0
@@ -423,7 +423,7 @@ jobs:
           fi
           echo "commit ${head} is on origin/main; ancestry guard passed."
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm

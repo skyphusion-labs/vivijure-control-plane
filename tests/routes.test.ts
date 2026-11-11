@@ -453,7 +453,10 @@ describe("GET /auth/email/callback", () => {
   async function link(email = "new@b.com"): Promise<string> {
     await handle(jsonReq("/api/auth/email/start", { email }), env(), ctx, deps);
     await flush();
-    return new URL(sent[0].text.split("\n").find((l) => l.startsWith("http"))!).searchParams.get("token")!;
+    const mailed = new URL(sent[0].text.split("\n").find((l) => l.startsWith("http"))!);
+    // The token rides in the fragment; the query must carry nothing.
+    expect(mailed.search).toBe("");
+    return new URLSearchParams(mailed.hash.slice(1)).get("token")!;
   }
 
   function unspent(): boolean {
@@ -462,14 +465,15 @@ describe("GET /auth/email/callback", () => {
 
   it("renders a confirm page and does NOT spend the token (cp#437)", async () => {
     const token = await link();
-    const res = await handle(req(`/auth/email/callback?token=${token}`), env(), ctx, deps);
+    const res = await handle(req("/auth/email/callback"), env(), ctx, deps);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     expect(res.headers.get("set-cookie")).toBeNull();
     const html = await res.text();
     expect(html).toContain("Finish signing in");
-    expect(html).toContain(`value="${token}"`);
     expect(html).toContain('method="post"');
+    expect(html).toContain('<script src="/auth-callback.js"></script>');
+    expect(html).not.toContain(token);
     expect(await store.getAccountByEmail("new@b.com")).toBeNull();
     expect(unspent()).toBe(true);
   });
@@ -494,17 +498,14 @@ describe("GET /auth/email/callback", () => {
     expect(unspent()).toBe(true);
   });
 
-  it("REFUSES a GET with no token", async () => {
-    const res = await handle(req("/auth/email/callback"), env(), ctx, deps);
-    expect(res.headers.get("location")).toContain("error=link_invalid");
-  });
-
-  it("escapes a hostile token in the confirm page", async () => {
-    const hostile = `"><img src=x onerror=alert(1)>`;
-    const res = await handle(req(`/auth/email/callback?token=${encodeURIComponent(hostile)}`), env(), ctx, deps);
-    const html = await res.text();
-    expect(html).not.toContain("<img");
-    expect(html).toContain("&quot;&gt;");
+  it("never reads a query string: the page is byte-identical with or without one", async () => {
+    const token = await link();
+    const plain = await (await handle(req("/auth/email/callback"), env(), ctx, deps)).text();
+    const withQuery = await (await handle(req(`/auth/email/callback?token=${token}`), env(), ctx, deps)).text();
+    const hostile = await (await handle(req(`/auth/email/callback?token=${encodeURIComponent(`"><img src=x>`)}`), env(), ctx, deps)).text();
+    expect(withQuery).toBe(plain);
+    expect(hostile).toBe(plain);
+    expect(plain).not.toContain(token);
     expect(unspent()).toBe(true);
   });
 });
@@ -513,7 +514,10 @@ describe("POST /auth/email/callback", () => {
   async function link(email = "new@b.com"): Promise<string> {
     await handle(jsonReq("/api/auth/email/start", { email }), env(), ctx, deps);
     await flush();
-    return new URL(sent[0].text.split("\n").find((l) => l.startsWith("http"))!).searchParams.get("token")!;
+    const mailed = new URL(sent[0].text.split("\n").find((l) => l.startsWith("http"))!);
+    // The token rides in the fragment; the query must carry nothing.
+    expect(mailed.search).toBe("");
+    return new URLSearchParams(mailed.hash.slice(1)).get("token")!;
   }
 
   const formReq = (token: string, init: RequestInit = {}) =>

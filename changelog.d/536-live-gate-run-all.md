@@ -1,0 +1,3 @@
+### ci(live-gate): every suite reports; reconcile-runpod held while the plane is out of service (#536)
+
+The first live run (42998956207) stopped at its first red suite, so three suites never reported. Every live-gate suite now runs once install and preflight passed, whatever an earlier suite did. A final `aggregate` step lists each suite's outcome and fails the job when any did not pass, including one that was skipped. `reconcile-runpod` joins `provision-e2e` and `pre-deploy-smoke` in the left-off list while #574 holds: it asserts a non-deleted testbed tenant, and there is none while the plane is out of service. `RUNPOD_API_KEY` leaves the preflight with it. `tests/workflow-guards.test.py` asserts both the run-after-red condition and the aggregate's coverage.
