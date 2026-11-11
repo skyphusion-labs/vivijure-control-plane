@@ -2,13 +2,19 @@
 
 The control plane deploys from a **SemVer tag on this repository**, and only from a tag.
 
-```
-# bump both, they are gated against each other
-#   package.json  "version"
-#   src/version.ts CONTROL_PLANE_VERSION
-git commit -am "chore(release): v1.2.3"
-git tag -a v1.2.3 -m "control plane v1.2.3"
-git push origin main --follow-tags
+> **Skyphusion's own deployment of this control plane is retired** (cp#574: its route, domain and
+> cron are removed, and `CP_OUT_OF_SERVICE` makes our tag deploys refuse). The code is maintained,
+> and an operator can run it. Where this page names `studio.vivijure.com`, read it as your own
+> plane host.
+
+1. **Release PR:** bump BOTH `package.json` `"version"` and `src/version.ts` `CONTROL_PLANE_VERSION`
+   (the pipeline refuses if they disagree), merged through the normal gate. No direct push to `main`.
+2. **An org admin tags that PR's merge commit:**
+
+```bash
+sha="$(gh pr view <release-pr> --json mergeCommit -q .mergeCommit.oid)"
+git tag -a v1.2.3 -m "control plane v1.2.3" "$sha"
+git push origin v1.2.3
 ```
 
 `.github/workflows/deploy.yml` then runs, in this order:

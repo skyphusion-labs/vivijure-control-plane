@@ -1,8 +1,11 @@
 # Vivijure Control Plane
 
-This is the **hosted door** for Vivijure Studio. It is the software that lets someone sign up,
-agree to the rules, and get their own working film studio on our shared render pool a few
-minutes later, without ever installing anything or pasting a RunPod key.
+This is **a control plane you can run to host Vivijure Studio for tenants**. It is the software
+that lets someone sign up, agree to the rules, and get their own working film studio a few
+minutes later, without installing anything.
+
+Skyphusion's own deployment of it is retired (cp#574). The code is maintained and is the
+reference control plane an operator can self-host.
 
 It is a single Cloudflare Worker. It runs separately from the studio itself, and it is released
 and deployed on its own schedule.
@@ -115,9 +118,9 @@ This is the flow the onboarding pages in `public/` walk a person through.
    done, and the acceptance is recorded against a known account.
 3. **Pick a name.** This becomes both your web address and the internal name of your studio.
 4. **Paste key A.** A RunPod key that can create things. We use it once and **never store it**.
-5. **We build your studio.** Database, storage, the studio Worker, four GPU endpoints, and five
-   render modules. You can watch the progress.
-6. **Mint key B in the RunPod console.** A weaker key that can only run the four endpoints we
+5. **We build your studio.** Database, storage, the studio Worker, the GPU render endpoint plus the
+   upscale door (`PROVISION_PLAN` in `src/runpod.ts`), and the render modules. You can watch the progress.
+6. **Mint key B in the RunPod console.** A weaker key that can only run the endpoints we
    just made for you.
 7. **Paste key B.** We check it, store it on your studio, and you are live.
 
@@ -127,9 +130,9 @@ This is the heart of the security story, so it is worth being plain about it.
 
 | | **Key A** (provisioning) | **Key B** (stored) |
 |---|---|---|
-| What it can do | Create things across your whole RunPod account | Run your four endpoints, and nothing else |
+| What it can do | Create things across your whole RunPod account | Run your endpoints, and nothing else |
 | How long we hold it | Used once, in memory, **never written down** | Stored as a secret on your own studio |
-| If it leaked | Your whole RunPod account | Four endpoints you already own |
+| If it leaked | Your whole RunPod account | Endpoints you already own |
 
 **Why two steps and not one?** RunPod keys can only be made by hand in their console, and a key
 cannot be limited to endpoints that do not exist yet. So key B is *physically impossible* to make
@@ -356,13 +359,14 @@ other.
 The control plane deploys from a **SemVer tag, and only from a tag**. There is no deploy-from-main
 path, and no deploy-from-a-laptop path.
 
+1. **Release PR:** bump BOTH `package.json` `"version"` and `src/version.ts` `CONTROL_PLANE_VERSION`
+   (the pipeline refuses if they disagree), merged through the normal gate. No direct push to `main`.
+2. **An org admin tags that PR's merge commit:**
+
 ```bash
-# bump BOTH; the pipeline refuses if they disagree
-#   package.json    "version"
-#   src/version.ts  CONTROL_PLANE_VERSION
-git commit -am "chore(release): v1.2.3"
-git tag -a v1.2.3 -m "control plane v1.2.3"
-git push origin main --follow-tags
+sha="$(gh pr view <release-pr> --json mergeCommit -q .mergeCommit.oid)"
+git tag -a v1.2.3 -m "control plane v1.2.3" "$sha"
+git push origin v1.2.3
 ```
 
 `.github/workflows/deploy.yml` then runs. It is **two jobs with a gate between them**, which is the
