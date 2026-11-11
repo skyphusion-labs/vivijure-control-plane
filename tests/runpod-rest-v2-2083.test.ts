@@ -205,13 +205,16 @@ describe("no rest.runpod.io left in src/ or scripts/ (the #2083 done condition, 
     });
   }
   const SCAN = [...files(join(ROOT, "src")), ...files(join(ROOT, "scripts"))];
+  // A substring match, not a URL parse: any mention of the retired host counts, comments included.
+  const namesV1Host = (text: string) => text.includes("rest.runpod.io");
   it("CONTROL: the scan covers both trees and its matcher can fire", () => {
     expect(SCAN.some((f) => f.includes("/src/runpod.ts"))).toBe(true);
     expect(SCAN.some((f) => f.includes("/scripts/reconcile-runpod.mjs"))).toBe(true);
-    expect(/rest\.runpod\.io/.test('const B = "https://rest.runpod.io/v1";')).toBe(true);
+    expect(namesV1Host('const B = "https://rest.runpod.io/v1";')).toBe(true);
+    expect(namesV1Host('const B = "https://api.runpod.io/v2";')).toBe(false);
   });
   it("names it nowhere", () => {
-    const hits = SCAN.filter((f) => /rest\.runpod\.io/.test(readFileSync(f, "utf8"))).map((f) => relative(ROOT, f));
+    const hits = SCAN.filter((f) => namesV1Host(readFileSync(f, "utf8"))).map((f) => relative(ROOT, f));
     expect(hits).toEqual([]);
   });
 });
