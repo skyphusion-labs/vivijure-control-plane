@@ -26,6 +26,7 @@
 
 import { describe, it, expect, afterAll } from "vitest";
 import { CfApi } from "../src/cf-api";
+import { emptyBucketBounded } from "../src/r2-empty";
 import { presignR2WithConfig, type R2PresignConfig } from "./r2-presign-sigv4";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -59,27 +60,26 @@ afterAll(async () => {
       console.warn(`LEFTOVER ${what}: ${String(e).slice(0, 120)}`);
     }
   };
-  // The bucket now has an object in it, and R2 will not delete a non-empty bucket (proven here,
-  // the hard way, by leaving one behind). Empty it FIRST, with a fresh cred, then delete.
+  // The bucket now has an object in it, and R2 will not delete a non-empty bucket. Empty it FIRST,
+  // with a fresh bucket-scoped credential, through the same code teardown uses (src/r2-empty.ts):
+  // R2's S3 endpoint takes SigV4 only. The old cleanup sent the CF API token as a Bearer header to
+  // the S3 endpoint, which answers 400 every time, so EVERY run left this bucket behind, green or not.
   await drop("objects", async () => {
     const t = await cf.mintR2Token(`${stamp}-cleanup`, OWN_BUCKET, [R2_BUCKET_ITEM_READ, R2_BUCKET_ITEM_WRITE]);
     try {
-      const cfg = {
-        accessKeyId: t.id,
-        secretAccessKey: await sha256Hex(t.value),
+      const res = await emptyBucketBounded({
         endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
         bucket: OWN_BUCKET,
-      };
-      for (let i = 0; i < 20; i++) {
-        const res = await fetch(await presignR2WithConfig(cfg, "PUT", "verify.txt"), { method: "PUT", body: "x" });
-        if (res.status < 300) break;
-        await new Promise((r) => setTimeout(r, 1500));
-      }
-      const del = await fetch(`${cfg.endpoint}/${OWN_BUCKET}/verify.txt`, {
-        method: "DELETE",
-        headers: { authorization: `Bearer ${TOKEN}` },
+        credential: { accessKeyId: t.id, secretAccessKey: await sha256Hex(t.value) },
+        budgetMs: 60_000,
+        now: () => Date.now(),
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        fetch,
+        log: (event, fields) => console.log(`  [cleanup ${event}]`, JSON.stringify(fields)),
       });
-      if (del.status >= 400) throw new Error(`object delete HTTP ${del.status} (empty it manually)`);
+      if (res.stalled || !res.emptied) {
+        throw new Error(`bucket not emptied (stalled: ${res.stalled ?? "no"}, more: ${res.more}); empty it manually`);
+      }
     } finally {
       await cf.revokeToken(t.id);
     }
@@ -87,7 +87,9 @@ afterAll(async () => {
   if (state.tokenId) await drop("token", () => cf.revokeToken(state.tokenId!));
   await drop("own bucket", () => cf.deleteR2Bucket(OWN_BUCKET));
   await drop("other bucket", () => cf.deleteR2Bucket(OTHER_BUCKET));
-});
+  // A fresh credential needs time to propagate before the empty can start, so the vitest default
+  // hook budget (10 s) is too short for this hook.
+}, 180_000);
 
 describe.skipIf(!LIVE)("per-tenant R2 credential lifecycle (real R2)", () => {
   it("mints a bucket-scoped credential (the leg that was blocked on a dashboard cred)", async () => {
@@ -129,7 +131,9 @@ describe.skipIf(!LIVE)("per-tenant R2 credential lifecycle (real R2)", () => {
     const get = await fetch(await presignR2WithConfig(state.cfg!, "GET", "verify.txt"));
     expect(get.status).toBe(200);
     expect(await get.text()).toBe("hello from the tenant credential");
-  });
+    // The propagation poll above can take up to 20 x 1.5 s, so the vitest default (5 s) cut this test
+    // off while the credential was still propagating. The budget covers the poll it runs.
+  }, 60_000);
 
   it("CANNOT touch another bucket: bucket-scoping is real, not a promise", async () => {
     // THE test. The whole reason we ship one bucket per tenant instead of prefixes in a shared one.
