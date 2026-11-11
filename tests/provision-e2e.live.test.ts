@@ -54,11 +54,17 @@ import { MemoryStore, TEST_PROVISION_FACTS } from "./memory-store";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { expectProvisionFailure } from "./provision-assert";
+import { SATELLITE_PINS } from "../src/satellite-pins";
 
 const LIVE = provisionE2eLive();
 const env = LIVE ? provisionE2eEnvOrThrow(true)! : null;
 
-const PROD_TELL = "t9wcvlxh8rc5la";
+// The PRODUCTION tell: if this RunPod key can see any endpoint the pins mirror, it is the
+// production account, and this suite must not provision there. cp#601: this was the literal
+// "t9wcvlxh8rc5la", which stopped existing when the backend moved to xe5d1ivs40ohjo, so the tell
+// matched nothing and a production key would have read as scratch. Derived from the pins now, so
+// it moves when production moves; tests/satellite-pins.test.ts asserts this file keeps deriving it.
+const PROD_TELLS = Object.values(SATELLITE_PINS).map((p) => p.mirrors.endpointId);
 const RUN = Date.now().toString(36).slice(-6);
 const slug = `rollins-e2e-${RUN}`;
 // The tenant id carries the run token too, and that is not cosmetic. Module script names derive
@@ -86,7 +92,7 @@ const migrations = LIVE
 beforeAll(async () => {
   if (!LIVE || !env) return;
   const eps = await runpodClient.listEndpoints();
-  scratchOk = !eps.some((e) => e.id === PROD_TELL);
+  scratchOk = !eps.some((e) => PROD_TELLS.includes(e.id));
 
   store = new MemoryStore();
   const tag = (JSON.parse(readFileSync(join(env.studioReleaseDir, "manifest.json"), "utf8")) as { tag: string }).tag;
