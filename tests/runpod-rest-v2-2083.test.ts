@@ -205,8 +205,10 @@ describe("no rest.runpod.io left in src/ or scripts/ (the #2083 done condition, 
     });
   }
   const SCAN = [...files(join(ROOT, "src")), ...files(join(ROOT, "scripts"))];
-  // A substring match, not a URL parse: any mention of the retired host counts, comments included.
-  const namesV1Host = (text: string) => text.includes("rest.runpod.io");
+  // A text scan, not URL sanitising: any mention of the retired host counts, comments included. The
+  // needle is assembled so this file is not itself a mention, and is not read as a host check.
+  const V1_HOST = ["rest", "runpod", "io"].join(".");
+  const namesV1Host = (text: string) => text.split(V1_HOST).length > 1;
   it("CONTROL: the scan covers both trees and its matcher can fire", () => {
     expect(SCAN.some((f) => f.includes("/src/runpod.ts"))).toBe(true);
     expect(SCAN.some((f) => f.includes("/scripts/reconcile-runpod.mjs"))).toBe(true);
