@@ -25,7 +25,7 @@
 //   - Moving a pin means the mirrored production endpoint moved first. If you are tempted to pin
 //     ahead of production, the thing to change is production.
 
-export type SatelliteKey = "backend" | "upscale" | "wan-train";
+export type SatelliteKey = "backend" | "upscale";
 
 /** The GHCR org every satellite image lives under. The ONE place this string appears. */
 export const GHCR_ORG = "skyphusion-labs";
@@ -35,6 +35,14 @@ export interface SatellitePin {
   repo: string;
   /** Bare release tag, e.g. "1.0.11". Never `latest`, never a git sha. */
   tag: string;
+  /**
+   * The manifest digest the tag resolved to when the pin was read (`sha256:<64 hex>`), REQUIRED
+   * (cp#601). Production templates are created as `<repo>:<tag>@<digest>`, so a tag-only pin can
+   * never equal what production runs, and a tag can be re-pushed while a digest cannot. A tenant
+   * template built from `imageRef()` is therefore immutable, and `check:pins` (registry mode)
+   * goes red if the tag at GHCR no longer resolves to this digest.
+   */
+  digest: string;
   /**
    * Provenance: the PRODUCTION endpoint this pin was read off, and when. This is the pin's only
    * authority, and it is what `check:pins:prod` re-reads. A pin without a live production endpoint
@@ -64,27 +72,32 @@ export interface SatellitePin {
  * `infinitetalk` now does at motion time, and resemble-enhance is CUDA, which the finishing tier's
  * destination cannot host (fc#2234). So the pin mirrored nothing and no code consumes the image.
  * Nothing replaces this key.
+ *
+ * NO WAN-TRAIN PIN (cp#589). There was one, `vivijure-wan-train:train-0.2.1` mirroring endpoint
+ * zqb7tougbqfkqa. Wan training is not used (Conrad, 2026-10-30, restated 2026-11-10: RunPod is
+ * SDXL keyframes only) and that endpoint no longer exists, so the pin mirrored nothing.
  */
+// RE-READ 2026-11-11 (cp#601). Both earlier mirrors were gone: backend 1.0.13 mirrored
+// t9wcvlxh8rc5la and upscale 1.0.4 mirrored 4q8idwbk6tyqbq, and neither endpoint exists. The live
+// hosted endpoints (lead, RunPod get-endpoint) run the images below as tag@digest, and the anonymous
+// GHCR resolve of each tag returned the same digest.
 export const SATELLITE_PINS: Record<SatelliteKey, SatellitePin> = {
   backend: {
     repo: "vivijure-backend",
-    tag: "1.0.13",
-    mirrors: { endpointId: "t9wcvlxh8rc5la", readAt: "2026-08-03" },
+    tag: "1.1.18",
+    digest: "sha256:3ec3849279aa18e6c58ba0716bd768366162a70d8a6d61e9bdde2254ee4e049a",
+    mirrors: { endpointId: "xe5d1ivs40ohjo", readAt: "2026-11-11" },
   },
   upscale: {
     repo: "vivijure-upscale",
-    tag: "1.0.4",
-    mirrors: { endpointId: "4q8idwbk6tyqbq", readAt: "2026-07-25" },
-  },
-  "wan-train": {
-    repo: "vivijure-wan-train",
-    tag: "train-0.2.1",
-    mirrors: { endpointId: "zqb7tougbqfkqa", readAt: "2026-08-16" },
+    tag: "1.1.3",
+    digest: "sha256:8b8b514688830b53c446b211052ddce962c1587b6df13bbefc45bda9833a3a94",
+    mirrors: { endpointId: "0m7puc409hqw8a", readAt: "2026-11-11" },
   },
 };
 
-/** The full image reference a tenant template is created with. */
+/** The full image reference a tenant template is created with: tag for the reader, digest for the pull. */
 export const imageRef = (key: SatelliteKey): string => {
   const pin = SATELLITE_PINS[key];
-  return `ghcr.io/${GHCR_ORG}/${pin.repo}:${pin.tag}`;
+  return `ghcr.io/${GHCR_ORG}/${pin.repo}:${pin.tag}@${pin.digest}`;
 };

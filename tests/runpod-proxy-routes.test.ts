@@ -27,7 +27,6 @@ const TENANT_ID = "ten_1";
 // takes a door, never a proxied RunPod route.
 const POOL_JSON = JSON.stringify({
   backend: { id: "pool-backend", name: "vivijure-prod-backend" },
-  "wan-train": { id: "pool-wan-train", name: "vivijure-prod-wan-train" },
 });
 
 /** A public model slug from the eight-entry cost-door list. Deliberately narration-gen's: it is
@@ -257,7 +256,7 @@ describe("the endpoint allow-list", () => {
   });
 
   it("allows a POOL endpoint id, which arrives as DATA from SHARED_RUNPOD_ENDPOINTS", async () => {
-    expect((await handle(submitReq("pool-wan-train", await goodToken()), env(), ctx, deps)).status).toBe(200);
+    expect((await handle(submitReq("pool-backend", await goodToken()), env(), ctx, deps)).status).toBe(200);
   });
 
   it("allows the SPEECH slug in the cost-door list: the membership rule is BILLS RUNPOD, not i2v", async () => {
@@ -668,8 +667,9 @@ describe("cp#575: status and cancel bind a job to its tenant", () => {
     const token = await goodToken();
     const refusals = [
       await status("job-1", token),
-      await status(await handleFor("job-1", "pool-wan-train"), token),
-      await status(h, token, "pool-wan-train"),
+      // cp#589: the pool has one key now, so the OTHER allowed endpoint is the public cost-door slug.
+      await status(await handleFor("job-1", PUBLIC_SLUG), token),
+      await status(h, token, PUBLIC_SLUG),
       await status(await handleFor("job-1", "pool-backend", TENANT_ID, "some-other-key"), token),
       await cancel("job-1", token),
     ];

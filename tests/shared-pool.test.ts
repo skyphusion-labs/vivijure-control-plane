@@ -59,11 +59,11 @@ describe("parseSharedPool", () => {
     // The expectation is DERIVED (cp#396): it used to name upscale and audio-upscale as missing.
     // upscale is now served by our own iron and audio-upscale is retired (cp#519), so demanding
     // either would assert a refusal the code must no longer produce.
-    const first = endpointBackedPlan()[0];
-    const res = parseSharedPool(JSON.stringify({ [first.key]: { id: "a", name: "n" } }));
+    // cp#589: with ONE endpoint-backed key, the partial pool is the empty one.
+    const res = parseSharedPool(JSON.stringify({}));
     expect(res.ok).toBe(false);
     if (!res.ok) {
-      for (const spec of endpointBackedPlan().slice(1)) {
+      for (const spec of endpointBackedPlan()) {
         expect(res.detail, `missing key ${spec.key} not named`).toContain(spec.key);
       }
       // And it must NOT demand an own-iron key: naming one here would send an operator to add an
@@ -72,6 +72,18 @@ describe("parseSharedPool", () => {
         expect(res.detail, `${c.key} demanded as a missing pool key`).not.toContain(c.key);
       }
     }
+  });
+
+  it("REFUSES the pre-cp#589 pool that still names wan-train, so a stale variable cannot deploy", () => {
+    // The live SHARED_RUNPOD_ENDPOINTS carried backend + wan-train until cp#589. With wan-train out
+    // of the plan, a pool that still names it is refused by name, not silently narrowed.
+    const stale = JSON.stringify({
+      backend: { id: "pool-backend", name: "vivijure-prod-backend" },
+      "wan-train": { id: "pool-wan-train", name: "vivijure-prod-wan-train" },
+    });
+    const res = parseSharedPool(stale);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.detail).toContain("wan-train");
   });
 
   it("refuses an entry missing its NAME, which is what the reconcile exclusion depends on", () => {
@@ -85,7 +97,9 @@ describe("parseSharedPool", () => {
     if (!res.ok) expect(res.detail).toContain(victim);
   });
 
-  it("refuses a duplicated endpoint id, which is a copy-paste rather than a pool", () => {
+  // cp#589: a duplicate id needs two endpoint-backed keys, and the plan has one. The refusal stays in
+  // runpod-pool.ts for the day a second key returns; this case runs again then, by itself.
+  it.skipIf(endpointBackedPlan().length < 2)("refuses a duplicated endpoint id, which is a copy-paste rather than a pool", () => {
     const dup = JSON.parse(POOL_JSON) as Record<string, { id: string; name: string }>;
     dup[endpointBackedPlan()[endpointBackedPlan().length - 1].key].id = dup.backend.id;
     const res = parseSharedPool(JSON.stringify(dup));

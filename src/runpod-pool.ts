@@ -87,7 +87,7 @@ export const requiredPoolKeys = (): string[] => endpointBackedPlan().map((spec) 
  * Parse the SHARED_RUNPOD_ENDPOINTS var into a pool.
  *
  * SHAPE: a JSON object keyed by ENDPOINT-BACKED PROVISION_PLAN key.
- *   {"backend":{"id":"abc123","name":"vivijure-prod-backend"}, "wan-train":{...}}
+ *   {"backend":{"id":"abc123","name":"vivijure-prod-backend"}}
  *
  * The example named "upscale" until cp#517 and was a config this function REFUSES: upscale is
  * own-iron (cp#396) and naming it is rejected forty lines below. An example that the code rejects

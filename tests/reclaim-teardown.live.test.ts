@@ -365,26 +365,42 @@ describe.skipIf(!LIVE)("reclaim teardown, live against real Cloudflare", () => {
     expect(await bucketExists(BUCKET)).toBe(false);
   }, 180_000);
 
-  it("REPORTS a real failure instead of swallowing it, and still reaps what it can", async () => {
+  it("a D1 already gone CONVERGES: recorded absent, the rest reaped, and a second pass is clean (cp#605)", async () => {
     const t = await buildHalfBuiltTenant();
     tenant = t;
-    // Delete the D1 out from under teardown so its own delete meets a database that is already gone.
-    // A REAL Cloudflare error rather than an injected one, which is the point: the mocked suite can
-    // only prove we handle a failure we invented.
+    // The row teardown blanks, so convergence is read back from the store rather than assumed.
+    await deps.store.createAccount(t.account_id, "rehearsal-605@example.invalid");
+    await deps.store.createTenant(t.id, t.slug, t.account_id, "failed");
+    await deps.store.setTenantD1(t.id, t.d1_database_id!);
+    // Delete the D1 out from under teardown, so teardown meets a database that is really gone: a REAL
+    // Cloudflare answer rather than an injected one, which the mocked suite cannot give.
     await cf.deleteD1(t.d1_database_id!);
     expect(await d1Exists(t.d1_database_id!)).toBe(false);
 
     const result = await teardownTenant(deps, t, { deleteData: true });
 
-    // The whole reason the reclaim path refuses to complete on a partial teardown: it must SAY SO,
-    // because the row is the only remaining record of what still needs reaping.
-    expect(result.ok).toBe(false);
-    expect(result.failures.map((f) => f.resource)).toContain("d1");
-    expect(String(result.failures.find((f) => f.resource === "d1")?.error)).not.toBe("");
-    // And it kept going: teardown COLLECTS failures rather than stopping at the first one, so the
-    // worker and the bucket are still reaped.
+    // The job-log harvest (#280) reads the D1 first and fails on it. The log it protects is already
+    // destroyed, so no retry could ever harvest it: a failure here would pin the row forever. Teardown
+    // proves the database is gone (GET 404), records the harvest and the d1 as ABSENT, logs the lost
+    // log, and blanks the column, the way cp#110 treats a worker removed out of band.
+    expect(result.failures).toEqual([]);
+    expect(result.ok).toBe(true);
+    const absent = result.absent.map((a) => a.resource);
+    expect(absent).toContain("job_index_harvest");
+    expect(absent).toContain("d1");
+    // And the rest was reaped.
     expect(await scriptExists(NAMESPACE, SCRIPT)).toBe(false);
     expect(await bucketExists(BUCKET)).toBe(false);
+
+    // CONVERGENCE: the row no longer claims the database, so a second pass finds nothing to fail on.
+    const row = await deps.store.getTenantById(t.id);
+    expect(row).not.toBeNull();
+    expect(row!.d1_database_id ?? null).toBeNull();
+    // The second pass carries the D1 column as the store now holds it; the worker and bucket are
+    // nulled because they were reaped above, so this pass isolates the D1.
+    const again = await teardownTenant(deps, { ...t, d1_database_id: row!.d1_database_id, script_name: null, r2_bucket_name: null }, { deleteData: true });
+    expect(again.failures).toEqual([]);
+    expect(again.ok).toBe(true);
   }, 180_000);
 });
 

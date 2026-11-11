@@ -163,7 +163,11 @@ export const TENANT_STUDIO_VAR_DISPOSITION: Record<string, { disposition: VarDis
   FINISH_BLENDER_DOORS: { disposition: "conditional", why: "Comma-separated HTTPS origins for blender poll." },
   RUNPOD_WAN_TRAIN_ENDPOINT_ID: {
     disposition: "conditional",
-    why: "Shared pool wan-train endpoint id. Bound from the pool when present.",
+    why:
+      "RETIRED capability (cp#589): wan-train left the plan, so nothing on this plane supplies it " +
+      "and it is never bound; the studio reads it as optional and hides the Wan training pane. " +
+      "Kept because an older pinned studio release may still declare it, and an undeclared " +
+      "disposition refuses every provision and every upgrade",
   },
   SPEND_PRICEBOOK: { disposition: "not-hosted", why: "plane-only price book; tenants do not price themselves" },
 };

@@ -1,0 +1,10 @@
+{
+  "_doc": "cp#533. Repo Actions variables whose VALUE is declared here, so a change is a PR with a diff. scripts/check-declared-vars.mjs runs in deploy.yml and refuses a deploy when a live variable and its declaration disagree. Change both together: this file in a PR, then the variable. Never put a secret here.",
+  "SHARED_RUNPOD_ENDPOINTS": {
+    "compare": "json",
+    "_note": "cp#589, 2026-11-11. The current shared backend endpoint, read from RunPod by the lead (list-endpoints, read-only): the account has exactly two serverless endpoints, xe5d1ivs40ohjo vivijure-backend-hosted and 0m7puc409hqw8a vivijure-upscale-hosted. upscale is NOT a pool key: it is own-iron in PROVISION_PLAN and parseSharedPool refuses it (cp#396). wan-train retired with this change. Replaces the AS-IS value t9wcvlxh8rc5la + zqb7tougbqfkqa, both gone. The repo variable must be set to this same value: the deploy gate refuses until they agree.",
+    "value": {
+      "backend": { "id": "xe5d1ivs40ohjo", "name": "vivijure-backend-hosted" }
+    }
+  }
+}

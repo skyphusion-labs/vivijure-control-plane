@@ -223,6 +223,11 @@ describe("the tenant studio platform-env contract (#116)", () => {
     expect(ai!.type).toBe("ai");
   });
 
+  it("binds Cloudflare Images onto the studio so GET /api/thumb is not a 503 (cp#573)", async () => {
+    const bindings = await provisionAndCaptureStudioBindings();
+    expect(bindings.filter((b) => b.name === "IMAGES")).toEqual([{ type: "images", name: "IMAGES" }]);
+  });
+
   it("binds GATEWAY_ID + CF_AIG_TOKEN on the studio when the plane names a gateway (cf#98)", async () => {
     const { deps, store, uploads } = recordingDeps();
     (deps as { aiGatewayId: string | null }).aiGatewayId = "vivijure-hosted";
@@ -391,10 +396,11 @@ describe("the tenant studio transport contract (cp#396)", () => {
   it("EXACTLY ONE TRANSPORT per capability, counted across the whole plan", () => {
     // The summary claim, asserted as BOTH numbers. One figure cannot distinguish a capability that
     // was DROPPED from one that MOVED transport, and telling those apart is the entire point.
-    expect(endpointBackedPlan()).toHaveLength(2);
+    // ONE endpoint-backed capability since cp#589 retired wan-train.
+    expect(endpointBackedPlan()).toHaveLength(1);
     // ONE own-iron capability since cp#519 retired audio-upscale with the speech-upscale module.
     expect(vpcBackedPlan()).toHaveLength(1);
-    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend", "wan-train"]);
+    expect(endpointBackedPlan().map((c) => c.key).sort()).toEqual(["backend"]);
     expect(vpcBackedPlan().map((c) => c.key).sort()).toEqual(["upscale"]);
   });
 });

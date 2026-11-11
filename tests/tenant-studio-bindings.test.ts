@@ -12,6 +12,7 @@
 // a tenant studio secrets cannot be reproduced by the plane at all.
 
 import { describe, expect, it, beforeEach, vi } from "vitest";
+import { tenantModuleScriptPrefix } from "../src/tenant-modules";
 import { CfApiError, type CfApi, type WorkerBinding } from "../src/cf-api";
 import type { ProvisionDeps } from "../src/provisioner";
 import {
@@ -147,10 +148,39 @@ describe("cp#112: refreshing an existing tenant studio bindings", () => {
 
     expect(patched.length).toBe(1);
     const sent = patched[0].bindings;
-    expect(new Set(sent.map((b) => b.name))).toEqual(new Set(LIVE_BINDINGS.map((b) => b.name)));
+    // Every live binding, plus the module-script prefix and the Images binding, which are SET rather
+    // than inherited.
+    expect(new Set(sent.map((b) => b.name))).toEqual(new Set([...LIVE_BINDINGS.map((b) => b.name), "TENANT_MODULE_PREFIX", "IMAGES"]));
     expect(sent.filter((b) => b.type === "inherit").length).toBe(LIVE_BINDINGS.length);
     expect(sent.some((b) => b.type === "vpc_service")).toBe(false);
     expect(sent.find((b) => b.name === VIDEO_FINISH_BINDING)).toBeUndefined();
+  });
+
+  it("gives an existing studio its own module-script prefix, set (not inherited), once", async () => {
+    const t = await tenant();
+    await run(deps(census()), t);
+    expect(patched[0].bindings.filter((b) => b.name === "TENANT_MODULE_PREFIX")).toEqual([
+      { type: "plain_text", name: "TENANT_MODULE_PREFIX", text: tenantModuleScriptPrefix(t.id) },
+    ]);
+  });
+
+  it("gives an existing studio the Images binding, set once (cp#573)", async () => {
+    const t = await tenant();
+    await run(deps(census()), t);
+    expect(patched[0].bindings.filter((b) => b.name === "IMAGES")).toEqual([{ type: "images", name: "IMAGES" }]);
+  });
+
+  it("a studio that already has IMAGES gets it set again, not inherited twice", async () => {
+    const t = await tenant();
+    await run(deps(census({ before: [...LIVE_BINDINGS, { type: "images", name: "IMAGES" }] })), t);
+    expect(patched[0].bindings.filter((b) => b.name === "IMAGES")).toEqual([{ type: "images", name: "IMAGES" }]);
+  });
+
+  it("a studio that already carries the prefix gets it SET again, with no duplicate inherit", async () => {
+    const t = await tenant();
+    await run(deps(census({ before: [...LIVE_BINDINGS, { type: "plain_text", name: "TENANT_MODULE_PREFIX" }] })), t);
+    const mine = patched[0].bindings.filter((b) => b.name === "TENANT_MODULE_PREFIX");
+    expect(mine).toEqual([{ type: "plain_text", name: "TENANT_MODULE_PREFIX", text: tenantModuleScriptPrefix(t.id) }]);
   });
 
   it("sends NO binding value of any kind: every carried binding is exactly {type,name}", async () => {

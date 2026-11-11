@@ -160,6 +160,12 @@ export const RETIRED_ENDPOINT_KEYS: readonly string[] = [
   // did fed post-hoc mouth replacement, which infinitetalk does at motion time on the
   // `motion.backend` door, and that door is not an endpoint this plane provisions.
   "audio-upscale",
+  // cp#589: wan-train, the Cast LoRA training endpoint. Retired outright (Conrad, 2026-10-30,
+  // restated 2026-11-10: RunPod is SDXL keyframes only and Wan training is not used). Its pinned
+  // endpoint zqb7tougbqfkqa is gone. Here for the reason the keys above are: a dedicated tenant
+  // provisioned before this change got a `vivijure-<slug>-wan-train` endpoint and template, and
+  // that debris must still report as the tenant's orphan, not as unattributed. Nothing replaces it.
+  "wan-train",
 ];
 
 export const PROVISION_PLAN: PlannedCapability[] = [
@@ -180,14 +186,6 @@ export const PROVISION_PLAN: PlannedCapability[] = [
       { bindingName: "FINISH_DOOR_TOKEN", envVar: "FINISH_DOOR_TOKEN" },
       { bindingName: "FINISH_DOOR_TOKEN_PROPAGANDHI", envVar: "FINISH_DOOR_TOKEN_PROPAGANDHI" },
     ],
-  },
-  {
-    ...pinned("wan-train"),
-    backing: "runpod",
-    label: "Cast LoRA training (Wan)",
-    maxWorkers: 2,
-    gpuTypeIds: BACKEND_GPUS,
-    endpointVar: "RUNPOD_WAN_TRAIN_ENDPOINT_ID",
   },
 ];
 

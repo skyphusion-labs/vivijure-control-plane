@@ -15,7 +15,7 @@
 // /retry answers 409 runpod_key_required instead of quietly re-running with a key it kept.
 
 import type { CfApi } from "./cf-api";
-import { CfApiError, classifyVpcBindingFailure, isScriptAbsent } from "./cf-api";
+import { CfApiError, classifyVpcBindingFailure, isD1Absent, isScriptAbsent } from "./cf-api";
 import { applyStudioMigrations, type StudioMigration } from "./migrate";
 import { randomToken } from "./crypto";
 import type { TemplateConvergence, TenantR2Creds, ResolvedDoor } from "./runpod";
@@ -38,6 +38,7 @@ import { resolveStorageQuota, storageQuotaBindings, type StorageQuotaConfig } fr
 import { videoFinishTierStateBindings } from "./video-finish-tier-state";
 import type { TokenMinter } from "./token-minter";
 import type { ModuleBundle, ModuleBundleSource } from "./tenant-modules";
+import { tenantModuleScriptPrefix, TENANT_MODULE_PREFIX_BINDING } from "./tenant-modules";
 import {
   TENANT_MODULE_CATALOG,
   installTenantModules,
@@ -796,6 +797,9 @@ export async function runProvisionJob(
         // studio code, so the studio bytes stay byte-identical to self-host (parity). A WfP user
         // worker carrying a dispatch_namespace binding was live-proven in the cf#99 step-1 probe.
         { type: "dispatch_namespace", name: "MODULE_DISPATCH", namespace: deps.moduleNamespace },
+        // That namespace holds every tenant's modules, so the studio is told which scripts are its own:
+        // its module install accepts only a script under this prefix (vivijure-cf TENANT_MODULE_PREFIX).
+        { type: "plain_text", name: TENANT_MODULE_PREFIX_BINDING, text: tenantModuleScriptPrefix(tenant.id) },
         { type: "d1", name: "DB", id: dbUuid },
         { type: "r2_bucket", name: "R2_RENDERS", bucket_name: bucket },
         { type: "r2_bucket", name: "R2", bucket_name: bucket },
@@ -881,6 +885,9 @@ export async function runProvisionJob(
         // has a working Workers AI local path; GATEWAY_ID + CF_AIG_TOKEN are both-or-neither when
         // TENANT_AI_GATEWAY_ID is configured (same rule as modules). CF_AIG_TOKEN is secret_text only.
         { type: "ai", name: "AI" },
+        // cp#573: GET /api/thumb (vivijure-cf#1211) resizes stills through env.IMAGES and answers 503
+        // without it. Not in the verify census: a studio without it still renders, and says so.
+        { type: "images", name: "IMAGES" },
         ...(deps.aiGatewayId && studioAigTokenValue
           ? [
               { type: "plain_text" as const, name: "GATEWAY_ID", text: deps.aiGatewayId },
@@ -2383,8 +2390,32 @@ export async function teardownTenant(
     // harvest failure also stops the delete, instead of a new failure mode quietly bypassing the
     // one interlock that protects the mapping.
     const harvestFailed = failures.some((f) => f.resource === "job_index_harvest");
-    if (tenant.d1_database_id && !d1Guarded && !harvestFailed) {
-      await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!), "d1");
+    // cp#605: a harvest also fails when the database is ALREADY GONE (removed out of band). The log the
+    // interlock protects is then destroyed already, so no retry can ever harvest it, and holding the d1
+    // leg back would pin the row forever. So when the harvest failed, ask whether the database exists.
+    //   * Proven gone (GET answers 404): the harvest is recorded ABSENT, not failed, and logged loudly as
+    //     a lost job log; the d1 is recorded ABSENT and its column blanked, as cp#110 does for a gone
+    //     worker. Teardown converges: a second pass has nothing left to do.
+    //   * Present, or a probe that cannot tell: the interlock stays shut and the harvest failure stands.
+    let d1ProvenGone = false;
+    if (tenant.d1_database_id && !d1Guarded && harvestFailed) {
+      try {
+        d1ProvenGone = !(await deps.cf.d1Present(tenant.d1_database_id));
+      } catch (e) {
+        deps.log("teardown.d1_presence_unknown", { tenant: tenant.id, error: String(e) });
+      }
+    }
+    if (d1ProvenGone) {
+      const i = failures.findIndex((f) => f.resource === "job_index_harvest");
+      const lost = i >= 0 ? failures.splice(i, 1)[0] : undefined;
+      absent.push({ resource: "job_index_harvest", detail: `the D1 was already gone, so its job log could not be indexed: ${lost?.error ?? ""}` });
+      deps.log("teardown.job_index_lost", { tenant: tenant.id, d1: tenant.d1_database_id, error: lost?.error });
+      absent.push({ resource: "d1", detail: "the D1 was already gone (404) before teardown" });
+      deps.log("teardown.d1_absent", { tenant: tenant.id });
+      await clearColumn("d1", "d1");
+    } else if (tenant.d1_database_id && !d1Guarded && !harvestFailed) {
+      // A database that vanishes between the harvest and this delete is absent too, not a failure.
+      await attempt("d1", () => deps.cf.deleteD1(tenant.d1_database_id!), "d1", isD1Absent);
     }
     // EMPTY-THEN-DELETE (cf#72), wired here by this issue caller work.
     //
