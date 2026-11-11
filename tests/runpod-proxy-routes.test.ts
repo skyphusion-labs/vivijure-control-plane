@@ -11,7 +11,7 @@ import { handle } from "../src/index";
 import type { ControlPlaneDeps } from "../src/deps";
 import type { ControlPlaneEnv } from "../src/env";
 import { MemoryStore } from "./memory-store";
-import { mintTenantProxyToken } from "../src/runpod-proxy-auth";
+import { jobIdFromHandle, mintJobHandle, mintTenantProxyToken } from "../src/runpod-proxy-auth";
 import { PLANE_REFUSAL_HEADER } from "../src/runpod-proxy-poll";
 
 const ROOT_HOST = "studio.example.com";
@@ -80,6 +80,9 @@ const submitReq = (endpointId: string, token: string | null, body: unknown = { i
   });
 
 const goodToken = async () => (await mintTenantProxyToken(SIGNING_KEY, TENANT_ID))!;
+/** The handle submit returns for a job (cp#575); status and cancel take only this. */
+const handleFor = async (jobId = "job-1", endpointId = "pool-backend", tenantId = TENANT_ID, key = SIGNING_KEY) =>
+  (await mintJobHandle(key, tenantId, endpointId, jobId))!;
 
 async function liveSharedTenant(): Promise<void> {
   await store.createAccount("acct_1", "a@b.com");
@@ -335,7 +338,10 @@ describe("submit: body rewrite and the attribution write", () => {
     // The job is already submitted upstream. Failing the caller would not unsubmit it; it would
     // only lose the render on top of losing the row.
     expect(res.status).toBe(200);
-    expect(JSON.parse(await res.text())).toMatchObject({ id: "job-1" });
+    // The tenant gets its job handle, and the RunPod id inside it is the submitted job.
+    const id = (JSON.parse(await res.text()) as { id: string }).id;
+    expect(id).toBe(await handleFor());
+    expect(jobIdFromHandle(id)).toBe("job-1");
   });
 });
 
@@ -505,8 +511,9 @@ describe("the poll path", () => {
   it("passes status, cancel and health upstream with OUR credential", async () => {
     const token = await goodToken();
     upstreamReply = () => new Response(JSON.stringify({ status: "IN_PROGRESS" }), { status: 200 });
-    await handle(modReq("/api/runpod/v2/pool-backend/status/job-1", token), env(), ctx, deps);
-    await handle(modReq("/api/runpod/v2/pool-backend/cancel/job-1", token, { method: "POST" }), env(), ctx, deps);
+    const h = await handleFor();
+    await handle(modReq(`/api/runpod/v2/pool-backend/status/${h}`, token), env(), ctx, deps);
+    await handle(modReq(`/api/runpod/v2/pool-backend/cancel/${h}`, token, { method: "POST" }), env(), ctx, deps);
     await handle(modReq("/api/runpod/v2/pool-backend/health", token), env(), ctx, deps);
     expect(upstreamCalls().map((c) => c.url)).toEqual([
       "https://api.runpod.ai/v2/pool-backend/status/job-1",
@@ -518,7 +525,7 @@ describe("the poll path", () => {
 
   it("keeps CANCEL reachable: it is the modules' spend-leak guard, and blocking it leaves jobs billing", async () => {
     const res = await handle(
-      modReq("/api/runpod/v2/pool-backend/cancel/job-1", await goodToken(), { method: "POST" }),
+      modReq(`/api/runpod/v2/pool-backend/cancel/${await handleFor()}`, await goodToken(), { method: "POST" }),
       env(),
       ctx,
       deps,
@@ -538,7 +545,7 @@ describe("the poll path", () => {
 
   it("does NOT invent a status when the plane cannot serve, so a module can tell us from RunPod", async () => {
     const res = await handle(
-      modReq("/api/runpod/v2/pool-backend/status/job-1", await goodToken()),
+      modReq(`/api/runpod/v2/pool-backend/status/${await handleFor()}`, await goodToken()),
       env({ SHARED_RUNPOD_INVOKE_KEY: undefined }),
       ctx,
       deps,
@@ -609,5 +616,85 @@ describe("a store failure on the callback path is NAMED, not a generic 500", () 
       deps,
     );
     expect(res.status).toBe(404);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// cp#575: a job answers only to the tenant that submitted it.
+// ------------------------------------------------------------------------------------------------
+
+describe("cp#575: status and cancel bind a job to its tenant", () => {
+  const OTHER = "ten_2";
+  const otherToken = async () => (await mintTenantProxyToken(SIGNING_KEY, OTHER))!;
+  beforeEach(async () => {
+    await store.createTenant(OTHER, "other", "acct_1", "live");
+    await store.setTenantRunPodMode(OTHER, "shared");
+    upstreamReply = (url) =>
+      url.endsWith("/run")
+        ? new Response(JSON.stringify({ id: "job-1", status: "IN_QUEUE" }), { status: 200 })
+        : new Response(JSON.stringify({ id: "job-1", status: "IN_PROGRESS" }), { status: 200 });
+  });
+  const submitted = async (): Promise<string> => {
+    const res = await handle(submitReq("pool-backend", await goodToken()), env(), ctx, deps);
+    return (JSON.parse(await res.text()) as { id: string }).id;
+  };
+  const status = async (h: string, token: string, ep = "pool-backend") => handle(modReq(`/api/runpod/v2/${ep}/status/${h}`, token), env(), ctx, deps);
+  const cancel = async (h: string, token: string, ep = "pool-backend") =>
+    handle(modReq(`/api/runpod/v2/${ep}/cancel/${h}`, token, { method: "POST" }), env(), ctx, deps);
+  const polls = () => upstreamCalls().filter((c) => !c.url.endsWith("/run"));
+
+  it("the submitting tenant gets status and cancel on its job, upstream under the RunPod id", async () => {
+    const h = await submitted();
+    expect(h).not.toBe("job-1");
+    expect((await status(h, await goodToken())).status).toBe(200);
+    expect((await cancel(h, await goodToken())).status).toBe(200);
+    expect(polls().map((c) => c.url)).toEqual([
+      "https://api.runpod.ai/v2/pool-backend/status/job-1",
+      "https://api.runpod.ai/v2/pool-backend/cancel/job-1",
+    ]);
+  });
+
+  it("another tenant is refused status and cancel on that job, and nothing reaches RunPod", async () => {
+    const h = await submitted();
+    const s = await status(h, await otherToken());
+    const c = await cancel(h, await otherToken());
+    expect([s.status, c.status]).toEqual([404, 404]);
+    expect(s.headers.get(PLANE_REFUSAL_HEADER)).toBe("unknown_job");
+    expect(polls()).toHaveLength(0);
+  });
+
+  it("a bare RunPod id, a handle for another endpoint and a handle under another key are refused alike", async () => {
+    const h = await submitted();
+    const token = await goodToken();
+    const refusals = [
+      await status("job-1", token),
+      await status(await handleFor("job-1", "pool-wan-train"), token),
+      await status(h, token, "pool-wan-train"),
+      await status(await handleFor("job-1", "pool-backend", TENANT_ID, "some-other-key"), token),
+      await cancel("job-1", token),
+    ];
+    const other = await status(h, await otherToken());
+    const bodies = await Promise.all([...refusals, other].map(async (r) => [r.status, await r.text()]));
+    expect(new Set(bodies.map((b) => JSON.stringify(b))).size).toBe(1);
+    expect(bodies[0][0]).toBe(404);
+    expect(polls()).toHaveLength(0);
+  });
+
+  it("CONTROL: the other tenant DOES reach its own job", async () => {
+    upstreamReply = (url) => new Response(JSON.stringify({ id: "job-9", status: url.endsWith("/run") ? "IN_QUEUE" : "IN_PROGRESS" }), { status: 200 });
+    const res = await handle(submitReq("pool-backend", await otherToken()), env(), ctx, deps);
+    const h = (JSON.parse(await res.text()) as { id: string }).id;
+    expect((await status(h, await otherToken())).status).toBe(200);
+    expect((await status(h, await goodToken())).status).toBe(404);
+  });
+
+  it("submit changes only the id field of RunPod's answer", async () => {
+    upstreamReply = () => new Response(JSON.stringify({ id: "job-1", status: "IN_QUEUE", extra: { a: 1 } }), { status: 200 });
+    const res = await handle(submitReq("pool-backend", await goodToken()), env(), ctx, deps);
+    expect(JSON.parse(await res.text())).toEqual({ id: await handleFor(), status: "IN_QUEUE", extra: { a: 1 } });
+  });
+
+  it("health needs no handle", async () => {
+    expect((await handle(modReq("/api/runpod/v2/pool-backend/health", await otherToken()), env(), ctx, deps)).status).toBe(200);
   });
 });

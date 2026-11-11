@@ -41,7 +41,7 @@ import {
 // The poll half is a LEAF and this direction of dependency is the safe one: the metering half may
 // know about the poll half's refusal vocabulary; the reverse would hand a poll a store.
 import { PLANE_REFUSAL_HEADER } from "./runpod-proxy-poll";
-import { verifyTenantProxyToken } from "./runpod-proxy-auth";
+import { mintJobHandle, verifyTenantProxyToken } from "./runpod-proxy-auth";
 import type { Tenant } from "./store";
 
 /** Why a submit was refused. Every value is a distinguishable state on the wire, because a module
@@ -224,9 +224,15 @@ export async function handleProxySubmit(
     console.error("runpod_proxy.no_job_id", JSON.stringify({ endpoint: endpointId, status: upstream.status }));
   }
 
-  // Verbatim pass-through. The module parses RunPod's own body, so anything we reshape here is a
-  // second contract to keep in sync with a vendor's.
-  return new Response(text, {
+  // Pass-through, with ONE field changed: `id` becomes the job handle (cp#575), which status and
+  // cancel require. Every other byte of RunPod's answer is kept, so the module still parses the
+  // vendor's own body; it already treats `id` as an opaque string it sends back.
+  let out = text;
+  if (jobId) {
+    const handle = await mintJobHandle(deps.signingKey, tenant.id, endpointId, jobId);
+    if (handle) out = JSON.stringify({ ...(JSON.parse(text) as Record<string, unknown>), id: handle });
+  }
+  return new Response(out, {
     status: upstream.status,
     headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
   });
