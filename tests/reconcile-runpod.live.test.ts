@@ -3,6 +3,9 @@
 //   RUNPOD_API_KEY=<key> CF_PROVISIONER_TOKEN=<token> CF_ACCOUNT_ID=<id> RECONCILE_LIVE=1 \
 //     npx vitest run tests/reconcile-runpod.live.test.ts
 //
+// Add RECONCILE_PRINT_FULL=1 for the full report (tenant ids, slugs, RunPod ids). Without it the
+// log carries counts only, because this suite also runs in a public repo's Actions (cp#536).
+//
 // This repo is PUBLIC, so the env contract is named here and the place the credential is kept is
 // not. Operators know where their own credentials live; a public file naming the path tells
 // everyone else.
@@ -93,7 +96,17 @@ describe.skipIf(!LIVE)("reconcileRunPod against live RunPod and the live tenants
       },
     );
     // The artifact this run exists to produce. Ids and names only; no credential can reach here.
-    console.log(JSON.stringify(report, null, 2));
+    // cp#536: this suite now also runs in live-release-gate.yml, and this repo is PUBLIC, so its
+    // Actions logs are public. Tenant ids, slugs and RunPod endpoint ids are estate topology. The
+    // full report prints only when an operator asks for it on their own terminal; by default the
+    // log carries counts, which is what the gate needs.
+    if (process.env.RECONCILE_PRINT_FULL === "1") {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      const byKind: Record<string, number> = {};
+      for (const f of report.findings) byKind[f.kind] = (byKind[f.kind] ?? 0) + 1;
+      console.log(JSON.stringify({ census: report.census, findings_by_kind: byKind, writes: report.writes }));
+    }
 
     expect(report.census.tenants).toBe(tenants.length);
     expect(report.census.endpoints).toBe(endpoints.length);
@@ -143,6 +156,11 @@ describe.skipIf(!LIVE)("reconcileRunPod against live RunPod and the live tenants
     expect(verdict, "the testbed tenant is missing from the per-tenant verdicts").toBeTruthy();
     // Printed from the ROW, never from the environment: the row is what the reconciliation actually
     // read, and it keeps an env value out of the printed line.
-    console.log(`testbed ${rows[0].slug} (${rows[0].id}): ${JSON.stringify(verdict)}`);
+    // cp#536: the slug and id stay off a public log unless an operator asks (see the report above).
+    if (process.env.RECONCILE_PRINT_FULL === "1") {
+      console.log(`testbed ${rows[0].slug} (${rows[0].id}): ${JSON.stringify(verdict)}`);
+    } else {
+      console.log(`testbed verdict: ${verdict!.verdict} (findings ${verdict!.findings})`);
+    }
   });
 });
