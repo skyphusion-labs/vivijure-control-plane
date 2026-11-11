@@ -362,6 +362,7 @@ describe("listWasWhole: a page that might be truncated is never called whole", (
     expect(listWasWhole({ endpoints: [], pagination: {} })).toBe(false);
     expect(listWasWhole({ endpoints: [], pagination: null })).toBe(false);
     expect(listWasWhole({ pagination: { nextCursor: null, hasNextPage: false } })).toBe(false);
+    expect(listWasWhole({ items: [], pagination: { nextCursor: null, hasNextPage: false } })).toBe(true);
   });
   it("accepts a bare array and a wrapped array with no cursor (the controls)", () => {
     expect(listWasWhole([{ id: "e", name: "n" }])).toBe(true);

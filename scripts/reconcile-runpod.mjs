@@ -69,6 +69,8 @@ function itemsOf(payload, key) {
   if (payload && typeof payload === "object") {
     if (Array.isArray(payload[key])) return payload[key];
     if (Array.isArray(payload.data)) return payload.data;
+    // v2's OpenAPI names the list by kind; RunPod's own v2 tooling was read returning `items`.
+    if (Array.isArray(payload.items)) return payload.items;
   }
   return [];
 }

@@ -565,7 +565,7 @@ export function listWasWhole(payload: unknown): boolean {
   if (Array.isArray(payload)) return true;
   if (!payload || typeof payload !== "object") return false;
   const p = payload as Record<string, unknown>;
-  const listed = Array.isArray(p.endpoints) || Array.isArray(p.templates) || Array.isArray(p.data);
+  const listed = Array.isArray(p.endpoints) || Array.isArray(p.templates) || Array.isArray(p.data) || Array.isArray(p.items);
   if (p.pagination !== undefined) {
     const pg = p.pagination as { hasNextPage?: unknown } | null;
     return Boolean(pg && typeof pg === "object" && pg.hasNextPage === false && listed);

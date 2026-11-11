@@ -494,6 +494,10 @@ function normalizeList<T>(payload: unknown, key: string): T[] {
     if (Array.isArray(wrapped)) return wrapped as T[];
     const data = (payload as Record<string, unknown>).data;
     if (Array.isArray(data)) return data as T[];
+    // v2 names the list by kind in its OpenAPI (`endpoints`, `templates`); RunPod's own v2 tooling
+    // was read returning `items` (2026-11-11). Accept both rather than read a renamed key as empty.
+    const items = (payload as Record<string, unknown>).items;
+    if (Array.isArray(items)) return items as T[];
   }
   return [];
 }

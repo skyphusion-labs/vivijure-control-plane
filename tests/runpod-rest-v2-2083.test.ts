@@ -44,6 +44,10 @@ describe("RunPodClient on REST v2", () => {
     const { c } = client(() => ({ endpoints: [], pagination: { nextCursor: null, hasNextPage: true } }));
     await expect(c.listEndpoints()).rejects.toThrow(/gave no cursor/);
   });
+  it("accepts a list keyed `items` (as RunPod's v2 tooling returns it) as well as by kind", async () => {
+    const { c } = client(() => ({ items: [{ id: "e9", name: "x" }], pagination: { nextCursor: null, hasNextPage: false } }));
+    expect(await c.listEndpoints()).toEqual([{ id: "e9", name: "x" }]);
+  });
   it("lists templates from /v2/templates", async () => {
     const { c, calls } = client(() => last({ templates: [{ id: "t1", name: "x" }] }));
     expect(await c.listTemplates()).toEqual([{ id: "t1", name: "x" }]);
