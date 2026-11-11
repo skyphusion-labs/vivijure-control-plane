@@ -239,6 +239,17 @@ for name, text in (("deploy.yml", str(wf)), ("studio-pin-drift.yml", drift_text)
           "CHECK_STUDIO_PIN_TIMEOUT_MS" not in text,
           "an abbreviated timeout is not a measurement of the live estate")
 
+# cp#564: the flagship check runs on the same daily schedule, and its test-only overrides are
+# asserted ABSENT from every workflow under the same rule as the pin checker's.
+check("the drift workflow runs the flagship deployed-bytes check (cp#564)",
+      "check:flagship-version" in drift_text,
+      "the flagship Worker's deployed version is the pair the pin check cannot see")
+for name, text in (("deploy.yml", str(wf)), ("studio-pin-drift.yml", drift_text)):
+    check("no workflow redirects or shortens the flagship checker (" + name + ")",
+          "CHECK_FLAGSHIP_GH_API" not in text and "CHECK_FLAGSHIP_CF_API" not in text
+          and "CHECK_FLAGSHIP_TIMEOUT_MS" not in text,
+          "a redirected or abbreviated run is not a measurement of the live estate")
+
 # cp#533: BOTH deploy.yml jobs (the dry run and the deploy) run the declared-variable gate, each fed
 # the live variable, so a declared value can never be skipped on the path that ships.
 check("both deploy.yml jobs run the declared-variable gate (cp#533)",

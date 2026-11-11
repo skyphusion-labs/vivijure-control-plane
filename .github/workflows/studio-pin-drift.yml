@@ -93,3 +93,16 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_TOKEN: ${{ github.token }}
         run: npm run check:studio-pin:deployed
+
+      # cp#564. A DIFFERENT pair from the step above, and the one nothing watched: the version the
+      # FLAGSHIP vivijure-studio Worker actually runs, read out of its DEPLOYED BYTES, against
+      # vivijure-cf's newest release TAG and its latest PUBLISHED release. The step above compares
+      # the pin with "latest published", so it froze together with the pin from 2026-10-14 to
+      # 2026-10-19 while the flagship served unpublished 1.36.0 and 1.37.0 bytes (cf#1023). Its own
+      # step and unpiped, so the exit judged is the script's: 1 is drift, 2 could not measure.
+      - name: Flagship drift -- deployed vivijure-studio bytes vs newest tag and latest published
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npm run check:flagship-version
