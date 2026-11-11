@@ -383,6 +383,9 @@ export function tenantModuleProxyUnboundReason(
 export const tenantModuleScriptPrefix = (tenantId: string): string =>
   tenantId.replace(/[^a-z0-9]+/gi, "-").toLowerCase() + "-";
 
+/** The studio var naming its own module-script prefix (read by the studio's module install). */
+export const TENANT_MODULE_PREFIX_BINDING = "TENANT_MODULE_PREFIX";
+
 /** The resident script name for one tenant module (e.g. `ten-<hex>-keyframe`). */
 export const tenantModuleScriptName = (tenantId: string, moduleName: string): string =>
   tenantModuleScriptPrefix(tenantId) + moduleName;
