@@ -1,5 +1,8 @@
 # hosted/ -- the hosted-tier front door assets
 
+> **This repo is a reference implementation of a multi-tenant control plane for hosting Vivijure Studio; maintained, not operated by Skyphusion.** Where this page names `studio.vivijure.com`, read it as
+> your own plane host.
+
 Static assets for the **platform control plane** worker (the hosted signup +
 onboarding door at `studio.vivijure.com`). Vanilla JS/HTML/CSS, no framework, no
 build step, like the rest of the studio frontend.

@@ -4,7 +4,7 @@ Guidance for Claude Code (and the crew) working in this repo.
 
 ## What this is
 
-**Vivijure Control Plane: the multi-tenant hosted provisioner.** A Cloudflare Worker that owns
+**Vivijure Control Plane: a reference implementation of a multi-tenant control plane for hosting Vivijure Studio; maintained, not operated by Skyphusion.** A Cloudflare Worker that owns
 accounts, sign-in, AUP gate, tenant records, provisioning, and admin switches. It installs the
 **published studio release** into per-tenant Workers (dispatch namespaces). It is **not** the studio
 UI and owns **no film data** (projects, cast, renders stay in the tenant studio).
@@ -17,11 +17,11 @@ Version: see root `package.json` / latest `v*` tag / `CHANGELOG.md`.
 
 | Repo | Role |
 |------|------|
-| **This repo** | Hosted multi-tenant plane (provision + front door) |
+| **This repo** | A reference implementation of a multi-tenant control plane (provision + front door); maintained, not operated by Skyphusion |
 | `vivijure-cf` | Studio panel Worker (the bytes tenants run) |
 | `vivijure-core` | Shared orchestration / module contract (studio dep, not this plane) |
 | `vivijure-local` | Self-host Node panel (parity peer of cf) |
-| `vivijure-backend` + finish/train satellites | GPU render path; hosted tenants reach it through the plane proxy + shared pool |
+| `vivijure-backend` + the upscale satellite | GPU render path; hosted tenants reach it through the plane proxy + shared pool |
 | `vivijure-mcp` | Agent MCP door against a studio `STUDIO_URL` |
 | Hub `vivijure` | Docs / legal history only; not deployable studio |
 
@@ -70,11 +70,12 @@ Merge to `main` is CI only; it does **not** redeploy the live plane.
 
 1. Release PR: bump `package.json` **and** `src/version.ts` `CONTROL_PLANE_VERSION` (gated equal),
    promote `CHANGELOG.md` (`## Unreleased` -> `## vX.Y.Z`, leave a fresh empty Unreleased).
-2. Tag matching `package.json`:
+2. **An org admin tags the release PR's merge commit** (matching `package.json`; crew cannot create
+   release tags):
 
 ```bash
-git fetch origin main && git checkout main && git pull --ff-only
-git tag -a vX.Y.Z -m "control plane vX.Y.Z"
+sha="$(gh pr view <release-pr> --json mergeCommit -q .mergeCommit.oid)"
+git tag -a vX.Y.Z -m "control plane vX.Y.Z" "$sha"
 git push origin vX.Y.Z
 ```
 

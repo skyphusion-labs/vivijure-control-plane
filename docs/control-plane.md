@@ -1,6 +1,7 @@
 # The platform control plane
 
-The hosted door for vivijure studio (epic #40, skeleton #52). A **separate Worker** from the studio
+A reference implementation of a multi-tenant control plane for hosting vivijure studio; maintained,
+not operated by Skyphusion (epic #40, skeleton #52). A **separate Worker** from the studio
 that deploys independently, exactly like the MCP Worker: `npm run deploy`.
 
 It owns accounts, auth, the AUP gate, tenant records, and the admin switches. It owns **no tenant
@@ -1256,7 +1257,8 @@ provisioned with the binding, so assemble and mux work for them.
 ### The tier is SHARED, and the isolation is by construction, not by policy
 
 Tenants render against the same always-on finishing containers, selected by the `tier=finishing`
-swarm label rather than a fixed node list (measured 2026-08-01: descendents, badbrains, jello).
+swarm label rather than a fixed node list (measured 2026-08-01 on swarm hosts that are now retired;
+where finishing runs today depends on the operator's deployment).
 That is safe for a reason worth stating precisely, because "shared compute with per-tenant
 credentials" usually means a policy someone can misconfigure:
 

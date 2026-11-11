@@ -1,5 +1,7 @@
 # Zone security (vivijure.com) -- IaC home
 
+> This page describes a deployment; it is not verified against live state.
+
 Edge protections for the vivijure.com zone (Cloudflare Pro, activated 2026-07-17). Nothing here is
 dashboard-controlled; `apply-waf.sh` is the record and the mechanism.
 

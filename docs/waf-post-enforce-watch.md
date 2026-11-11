@@ -1,5 +1,7 @@
 # Standing post-enforce WAF watch: OWASP 949110 (cp#14)
 
+> This page describes a deployment; it is not verified against live state.
+
 **Domain:** `vivijure.com` (and studio / mcp hostnames on the same zone).
 **Mode:** enforce since 2026-07-18 (tuning window had zero legitimate blocks).
 

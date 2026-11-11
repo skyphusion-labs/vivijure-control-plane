@@ -1,6 +1,8 @@
 > **Note (docs audit 2026-08-05):** this runbook historically mixed studio-panel wording.
 > **This repository deploys the control plane** from a `v*` tag (`package.json` / `CONTROL_PLANE_VERSION`).
 > Studio panel deploys live in `vivijure-cf`. Prefer `docs/deploy.md` for the plane path.
+> The rest of this page is a copy of the studio runbook as it stood then: its fleet hosts, its
+> Cloudflare Access note and its audio-upscale endpoint are all retired. Read it as history.
 
 # Production Deploy Runbook -- vivijure-studio (feature-complete cut)
 

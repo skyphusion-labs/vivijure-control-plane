@@ -1,5 +1,8 @@
 # Hosted tier: routing + domains
 
+> **This repo is a reference implementation of a multi-tenant control plane for hosting Vivijure Studio; maintained, not operated by Skyphusion.** Where this page names `studio.vivijure.com`, read it as
+> your own plane host.
+
 How a request reaches a tenant studio on the hosted door (epic #40, issue #55). Companion to
 `docs/DEPLOYMENT.md` (core deploy) and `docs/module-dispatch.md` (the Phase-3 module namespace).
 
