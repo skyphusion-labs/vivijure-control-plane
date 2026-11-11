@@ -102,7 +102,8 @@ describe("the deploy-time shared-pool scope gate (cp#396)", () => {
   it("carries the pool parser OWN refusal rather than re-deriving one", async () => {
     // An incomplete pool is refused by runpod-pool.ts and this gate must surface that verbatim.
     // Two components restating one rule in two voices is how they drift apart.
-    const partial = JSON.stringify({ backend: { id: "ep-backend", name: "b" } });
+    // cp#589: backend is the only endpoint-backed key, so the incomplete pool is the empty one.
+    const partial = JSON.stringify({});
     const v = await verifySharedPoolScope(partial, KEY, fakeRunPod(["ep-backend"]));
     expect(v.ok).toBe(false);
     expect(v.state).toBe("pool_unparseable");
@@ -131,10 +132,9 @@ describe("the gate carries the own-iron refusal too (cp#396)", () => {
     // the CORRECT config until the transport split.
     const withOwnIron = JSON.stringify({
       backend: { id: "ep-backend", name: "b" },
-      "wan-train": { id: "ep-wan-train", name: "w" },
       upscale: { id: "4q8idwbk6tyqbq", name: "vivijure-video-upscale" },
     });
-    const v = await verifySharedPoolScope(withOwnIron, KEY, fakeRunPod(["ep-backend", "ep-wan-train"]));
+    const v = await verifySharedPoolScope(withOwnIron, KEY, fakeRunPod(["ep-backend"]));
     expect(v.ok).toBe(false);
     expect(v.state).toBe("pool_unparseable");
     expect(v.detail).toContain("upscale");
@@ -144,9 +144,8 @@ describe("the gate carries the own-iron refusal too (cp#396)", () => {
   it("CONTROL: the SAME pool minus that key passes, so the refusal is the key and not the shape", async () => {
     const clean = JSON.stringify({
       backend: { id: "ep-backend", name: "b" },
-      "wan-train": { id: "ep-wan-train", name: "w" },
     });
-    const v = await verifySharedPoolScope(clean, KEY, fakeRunPod(["ep-backend", "ep-wan-train"]));
+    const v = await verifySharedPoolScope(clean, KEY, fakeRunPod(["ep-backend"]));
     expect(v.ok).toBe(true);
     expect(v.state).toBe("scope_verified");
   });

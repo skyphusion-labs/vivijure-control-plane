@@ -25,7 +25,7 @@
 //   - Moving a pin means the mirrored production endpoint moved first. If you are tempted to pin
 //     ahead of production, the thing to change is production.
 
-export type SatelliteKey = "backend" | "upscale" | "wan-train";
+export type SatelliteKey = "backend" | "upscale";
 
 /** The GHCR org every satellite image lives under. The ONE place this string appears. */
 export const GHCR_ORG = "skyphusion-labs";
@@ -64,6 +64,10 @@ export interface SatellitePin {
  * `infinitetalk` now does at motion time, and resemble-enhance is CUDA, which the finishing tier's
  * destination cannot host (fc#2234). So the pin mirrored nothing and no code consumes the image.
  * Nothing replaces this key.
+ *
+ * NO WAN-TRAIN PIN (cp#589). There was one, `vivijure-wan-train:train-0.2.1` mirroring endpoint
+ * zqb7tougbqfkqa. Wan training is not used (Conrad, 2026-10-30, restated 2026-11-10: RunPod is
+ * SDXL keyframes only) and that endpoint no longer exists, so the pin mirrored nothing.
  */
 export const SATELLITE_PINS: Record<SatelliteKey, SatellitePin> = {
   backend: {
@@ -75,11 +79,6 @@ export const SATELLITE_PINS: Record<SatelliteKey, SatellitePin> = {
     repo: "vivijure-upscale",
     tag: "1.0.4",
     mirrors: { endpointId: "4q8idwbk6tyqbq", readAt: "2026-07-25" },
-  },
-  "wan-train": {
-    repo: "vivijure-wan-train",
-    tag: "train-0.2.1",
-    mirrors: { endpointId: "zqb7tougbqfkqa", readAt: "2026-08-16" },
   },
 };
 
