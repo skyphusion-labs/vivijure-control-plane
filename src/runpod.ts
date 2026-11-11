@@ -443,6 +443,8 @@ export class RunPodClient {
   }) {
     return await this.call<{ id: string }>("endpoints.create", "POST", "/serverless", {
       name: args.name,
+      // v2 requires the request-routing type on create, and it is fixed from then on.
+      type: "QUEUE",
       // Applied once at create: the endpoint takes the template's image and env and keeps no link.
       templateId: args.templateId,
       gpu: { pools: gpuPoolsFor(args.gpuTypeIds), count: 1 },
