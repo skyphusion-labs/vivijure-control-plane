@@ -544,6 +544,64 @@ else
 fi
 rm -rf "$hatch_tmp" "$mutant_tmp"
 
+# WHITESPACE-ONLY DRIFT (cp#580, ported from vivijure-cf#1368). On an isolated synthetic repo with ONE
+# released, tagged section and NO allowlisted version, so any real change is refused. Three
+# whitespace-only edits must pass with their own note and no CHANGED line; five edits that only LOOK
+# like whitespace (or hide a rewrite inside a sweep) must still be refused as content drift.
+ws_fixture() {
+  git init -q "$1"
+  git -C "$1" config user.email "cp580-fixture@example.com"
+  git -C "$1" config user.name "cp580 fixture"
+  mkdir -p "$1/scripts"
+  printf "%s\n" "# cp580 fixture: no version is allowlisted" > "$1/scripts/changelog-corrections.txt"
+  printf "## Unreleased\n\n## v1.0.0 -- 2026-02-01\n\n### feat: shipped in v1.0.0\n" > "$1/CHANGELOG.md"
+  git -C "$1" add -A
+  git -C "$1" commit -q -m "cp580 fixture"
+  git -C "$1" tag v1.0.0
+}
+# ws_case <label> <want: pass|refuse> <python repr of the new v1.0.0 block>
+ws_case() {
+  ws_tmp="$(mktemp -d)"
+  ws_fixture "$ws_tmp"
+  "$PY" - "$ws_tmp/CHANGELOG.md" "$3" <<"PY"
+import ast, sys
+path, new = sys.argv[1], ast.literal_eval(sys.argv[2])
+old = "## v1.0.0 -- 2026-02-01\n\n### feat: shipped in v1.0.0\n"
+t = open(path).read()
+assert t.count(old) == 1, "cp580 fixture drifted"
+open(path, "w").write(t.replace(old, new))
+PY
+  ws_out="$("$PY" "$here/scripts/changelog-released-immutable.py" "$ws_tmp" 2>&1)" && ws_rc=0 || ws_rc=1
+  if [ "$2" = pass ]; then
+    if [ "$ws_rc" -eq 0 ] && printf "%s" "$ws_out" | grep -q "v1.0.0 differs from its tag in WHITESPACE ONLY" \
+      && ! printf "%s" "$ws_out" | grep -q "has CHANGED"; then
+      echo "  ok   WHITESPACE (cp#580): $1 passes, with its own note and no CHANGED line"
+      pass=$((pass + 1))
+    else
+      echo "  FAIL WHITESPACE (cp#580): $1 :: $(printf "%s" "$ws_out" | tr "\n" " ")"
+      fail=$((fail + 1))
+    fi
+  else
+    if [ "$ws_rc" -ne 0 ] && printf "%s" "$ws_out" | grep -q "the v1.0.0 section has CHANGED" \
+      && ! printf "%s" "$ws_out" | grep -q "WHITESPACE ONLY"; then
+      echo "  ok   CONTROL (cp#580): $1 is still refused as content drift"
+      pass=$((pass + 1))
+    else
+      echo "  FAIL CONTROL (cp#580): $1 :: $(printf "%s" "$ws_out" | tr "\n" " ")"
+      fail=$((fail + 1))
+    fi
+  fi
+  rm -rf "$ws_tmp"
+}
+ws_case "a doubled blank line" pass '"## v1.0.0 -- 2026-02-01\n\n\n### feat: shipped in v1.0.0\n"'
+ws_case "trailing spaces on a line" pass '"## v1.0.0 -- 2026-02-01   \n\n### feat: shipped in v1.0.0\t\n"'
+ws_case "a blank line holding only spaces" pass '"## v1.0.0 -- 2026-02-01\n   \n### feat: shipped in v1.0.0\n"'
+ws_case "a rewritten claim" refuse '"## v1.0.0 -- 2026-02-01\n\n### feat: never shipped in v1.0.0\n"'
+ws_case "a rewrite hidden inside a whitespace sweep" refuse '"## v1.0.0 -- 2026-02-01  \n\n\n### feat: never shipped in v1.0.0\n"'
+ws_case "a changed indent (list nesting / code block)" refuse '"## v1.0.0 -- 2026-02-01\n\n    ### feat: shipped in v1.0.0\n"'
+ws_case "the only blank line removed (merges two blocks)" refuse '"## v1.0.0 -- 2026-02-01\n### feat: shipped in v1.0.0\n"'
+ws_case "whitespace inside a line" refuse '"## v1.0.0 -- 2026-02-01\n\n### feat:  shipped in v1.0.0\n"'
+
 # MUTATION CONTROL (cp#400, the historical shape): reconstruct cp#335/cp#334 directly and watch the
 # fix stop conflating them. Poison a COPY of the branch live CHANGELOG.md (mk_cl_copy is the RIGHT
 # tool here, and only here: this is deliberately the OLD fixture provenance) with an UNRELATED
