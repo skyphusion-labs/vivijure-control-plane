@@ -47,7 +47,21 @@ Listed but undeclared is refused: the record would be silently corrected and the
 Declared but unlisted is refused: that is the cp#245 defect itself. Neither half waives anything on
 its own, and an edit with neither is the case the original incident produced.
 
-Exit 0 and print nothing when every released section is untouched; exit 1 and name each drift.
+WHITESPACE-ONLY DRIFT IS NOT CONTENT DRIFT (cp#580, ported from vivijure-cf#1368 / cf#824). Byte-
+exactness is still the detection layer: a section is compared byte for byte first, and nothing below
+weakens that. But a whitespace sweep and a rewritten claim used to print the same sentence, so every
+alert cost a manual diff to tell them apart, and a real rewrite could arrive as one more identical
+line nobody triaged. So a section that differs ONLY in whitespace is reported on its own line, as a
+note, and does not count as drift.
+
+The normaliser is deliberately NARROW, because a generous one turns this guard into decoration. It
+does exactly two things: strip trailing whitespace from each line, and collapse a run of blank lines
+to one blank line. It does NOT touch leading indentation (that changes list nesting and code blocks),
+does NOT remove the last blank line between two paragraphs (that merges them), does NOT join or split
+lines, and does NOT touch whitespace inside a line. Anything else is content.
+
+Exit 0 and print nothing when every released section is untouched; exit 1 and name each drift. A
+whitespace-only difference prints its note and does not change the exit status.
 """
 import re
 import subprocess
@@ -118,6 +132,21 @@ def sections(text):
     return out, duplicates
 
 
+def normalise_whitespace(body):
+    """The cp#580 (cf#824) normaliser, and it must stay this narrow (see the header). Strips
+    trailing whitespace per line and collapses each run of blank lines to ONE blank line."""
+    out = []
+    prev_blank = False
+    for line in body.split("\n"):
+        line = line.rstrip()
+        blank = line == ""
+        if blank and prev_blank:
+            continue
+        out.append(line)
+        prev_blank = blank
+    return "\n".join(out)
+
+
 def git(*args):
     return subprocess.run(
         ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
@@ -147,6 +176,14 @@ for version, body in head.items():
         print("changelog-immutable: " + version + " has no section in its own tagged file; NOT checked")
         continue
     checked += 1
+    if at_tag != body and normalise_whitespace(at_tag) == normalise_whitespace(body):
+        # cp#580: bytes differ, content does not. Reported, so the sweep is visible, but on its own
+        # line and never counted as drift, so it cannot bury a real rewrite in a list of look-alikes.
+        print(
+            "changelog-immutable: " + version + " differs from its tag in WHITESPACE ONLY (trailing "
+            "spaces or a run of blank lines); not a content change, not counted as drift"
+        )
+        continue
     if at_tag != body:
         # BOTH halves, and the two failures are reported DIFFERENTLY on purpose: "you forgot the
         # waiver" and "you forgot to tell the reader" send a person to different places, and one
