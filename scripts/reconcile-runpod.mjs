@@ -19,7 +19,11 @@
 // shape, or a census that could not be proven whole). 2 is never a pass: an unreadable check is not
 // a clean one, exactly as in check-satellite-pins.mjs.
 
-const RUNPOD_API = "https://rest.runpod.io/v1";
+// RunPod REST v2 (fleet-chezmoi#2083; v1 retires 2026-11-15). RUNPOD_API_BASE exists for the
+// script's own tests, which point it at a local fake; nothing else sets it.
+const RUNPOD_API = (process.env.RUNPOD_API_BASE || "https://api.runpod.io/v2").replace(/\/$/, "");
+/** The v2 path for each kind this tool inventories. */
+const LIST_PATH = { endpoints: "/serverless", templates: "/templates" };
 const TIMEOUT_MS = 20_000;
 
 function fail(code, msg) {
@@ -60,15 +64,6 @@ const withTimeout = async (url, init = {}) => {
  * A truncated page that reports itself complete turns into a confident "that resource is gone",
  * which is the one wrong answer this tool must never give.
  */
-function wholePage(payload) {
-  if (Array.isArray(payload)) return true;
-  if (!payload || typeof payload !== "object") return false;
-  for (const cursor of ["next", "nextCursor", "next_cursor", "cursor", "paginate", "pagination"]) {
-    if (payload[cursor]) return false;
-  }
-  return Array.isArray(payload.endpoints) || Array.isArray(payload.templates) || Array.isArray(payload.data);
-}
-
 function itemsOf(payload, key) {
   if (Array.isArray(payload)) return payload;
   if (payload && typeof payload === "object") {
@@ -78,23 +73,40 @@ function itemsOf(payload, key) {
   return [];
 }
 
+/**
+ * Read one v2 list to its END. v2 paginates every list (`pagination.nextCursor` while
+ * `pagination.hasNextPage`), so a single page is not an inventory. `whole` is true only when the walk
+ * reached a page that says it is the last; anything else (a page claiming more with no cursor, a
+ * page with no pagination block, the page cap) is reported as incomplete, never as complete.
+ */
 async function readList(kind) {
-  let res;
-  try {
-    res = await withTimeout(`${RUNPOD_API}/${kind}`, { headers: { authorization: `Bearer ${KEY}` } });
-  } catch (e) {
-    fail(2, `GET /${kind} failed: ${String(e).slice(0, 160)}`);
+  const items = [];
+  let cursor = null;
+  for (let page = 0; page < 1000; page++) {
+    const url = `${RUNPOD_API}${LIST_PATH[kind]}?limit=1000${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+    let res;
+    try {
+      res = await withTimeout(url, { headers: { authorization: `Bearer ${KEY}` } });
+    } catch (e) {
+      fail(2, `GET ${LIST_PATH[kind]} failed: ${String(e).slice(0, 160)}`);
+    }
+    if (!res.ok) fail(2, `GET ${LIST_PATH[kind]} returned HTTP ${res.status}`);
+    let payload;
+    try {
+      payload = await res.json();
+    } catch (e) {
+      fail(2, `GET ${LIST_PATH[kind]} returned a body that is not JSON: ${String(e).slice(0, 120)}`);
+    }
+    const rows = itemsOf(payload, kind).map((r) => ({ id: String(r.id ?? ""), name: String(r.name ?? "") }));
+    if (rows.some((r) => !r.id)) fail(2, `GET ${LIST_PATH[kind]} returned an entry with no id; refusing to report on it`);
+    items.push(...rows);
+    const pg = payload && typeof payload === "object" ? payload.pagination : undefined;
+    if (!pg || typeof pg !== "object") return { items, whole: false };
+    if (pg.hasNextPage !== true) return { items, whole: true };
+    if (typeof pg.nextCursor !== "string" || !pg.nextCursor) return { items, whole: false };
+    cursor = pg.nextCursor;
   }
-  if (!res.ok) fail(2, `GET /${kind} returned HTTP ${res.status}`);
-  let payload;
-  try {
-    payload = await res.json();
-  } catch (e) {
-    fail(2, `GET /${kind} returned a body that is not JSON: ${String(e).slice(0, 120)}`);
-  }
-  const items = itemsOf(payload, kind).map((r) => ({ id: String(r.id ?? ""), name: String(r.name ?? "") }));
-  if (items.some((r) => !r.id)) fail(2, `GET /${kind} returned an entry with no id; refusing to report on it`);
-  return { items, whole: wholePage(payload) };
+  return { items, whole: false };
 }
 
 const endpoints = await readList("endpoints");
