@@ -55,6 +55,7 @@ import { CfApiError, classifyVpcBindingFailure, type WorkerBinding } from "./cf-
 import { isVideoFinishUnreachable, withVideoFinishTierState } from "./video-finish-tier-state";
 import type { ProvisionDeps } from "./provisioner";
 import type { Tenant } from "./store";
+import { tenantModuleScriptPrefix, TENANT_MODULE_PREFIX_BINDING } from "./tenant-modules";
 
 /** The studio binding name the video-finish tier is reached through (cf#118). */
 export const VIDEO_FINISH_BINDING = "VIDEO_FINISH_VPC";
@@ -181,13 +182,15 @@ export async function refreshTenantStudioBindings(
   const doorNames = new Set(Object.keys(deps.mediaDoorUrls));
   const desired: WorkerBinding[] = [
     ...before
-      .filter((b) => b.name !== VIDEO_FINISH_BINDING && !doorNames.has(b.name))
+      .filter((b) => b.name !== VIDEO_FINISH_BINDING && !doorNames.has(b.name) && b.name !== TENANT_MODULE_PREFIX_BINDING)
       .map((b) => ({ type: "inherit" as const, name: b.name })),
     ...Object.entries(deps.mediaDoorUrls).map(([name, text]) => ({
       type: "plain_text" as const,
       name,
       text,
     })),
+    // Set, not inherited, so a studio provisioned before the var existed gets it on its next refresh.
+    { type: "plain_text" as const, name: TENANT_MODULE_PREFIX_BINDING, text: tenantModuleScriptPrefix(tenant.id) },
   ];
 
   try {
