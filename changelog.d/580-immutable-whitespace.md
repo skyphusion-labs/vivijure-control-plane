@@ -1,0 +1,3 @@
+### fix(ci): the changelog immutability guard tells a whitespace sweep from a rewrite (#580)
+
+A released section that differs from its tag only in whitespace (trailing spaces, or a run of blank lines) now prints its own `WHITESPACE ONLY` note and is not counted as drift. Before, it printed the same `has CHANGED` line as a rewritten claim, so a real rewrite could hide among look-alikes. The byte comparison still runs first. The normaliser is narrow: a changed indent, a removed paragraph break, whitespace inside a line, and a rewrite hidden inside a whitespace sweep are all still refused. Ported from vivijure-cf#1368.
