@@ -17,7 +17,7 @@
 // were driven RED before this file was trusted (see the mutation record in the PR).
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { TENANT_MODULE_CATALOG, tenantModuleProxyBinding, tenantModuleScriptName } from "../src/tenant-modules";
+import { TENANT_MODULE_CATALOG, TenantModuleError, tenantModuleProxyBinding, tenantModuleScriptName } from "../src/tenant-modules";
 import { provisionerWiring } from "../src/deps";
 import { CfApi } from "../src/cf-api";
 import type { ControlPlaneEnv } from "../src/env";
@@ -104,13 +104,90 @@ describe("a PROXIED tenant's module scripts get no RunPod key", () => {
     expect(moduleKeyPuts(puts).map((p) => p.script)).toEqual([]);
   });
 
-  it("still installs the key on the STUDIO, which is a known remaining gap and not an oversight", async () => {
-    // The studio submits RunPod work of its own (cast LoRA training, via vivijure-core
-    // runpod-submit), and core carries no proxy branch, so this copy cannot be removed until core
-    // learns the proxy. Asserted rather than left implicit: if someone removes it as "finishing the
-    // job", this test tells them what breaks and why it is tracked separately.
+  it("installs NO key on the studio either (fleet-chezmoi#2048)", async () => {
+    // Core routes the studio's own RunPod work (cast LoRA training) through the proxy when the pair
+    // is bound, so the studio copy that used to stay here has nothing left to serve.
     const puts = await recordInstall(env(), tenantOf("shared"));
-    expect(studioKeyPuts(puts)).toHaveLength(1);
+    expect(studioKeyPuts(puts)).toHaveLength(0);
+  });
+});
+
+// ---- 1b. THE STUDIO: the pair goes in, the old key comes out, and the result is read back ---------
+
+type Op = { op: "put" | "delete"; script: string; name: string; text?: string };
+
+/** Records puts AND deletes in order, and answers the read-back with `names` (a function of what
+ *  was written unless overridden), so the studio sequence can be asserted end to end. */
+async function recordStudio(
+  e: ControlPlaneEnv,
+  tenant: Tenant,
+  readback?: (written: Set<string>) => string[],
+): Promise<{ ops: Op[]; error: unknown }> {
+  const ops: Op[] = [];
+  const studioNames = new Set<string>(["RUNPOD_API_KEY", "STUDIO_API_TOKEN"]); // a studio from an earlier install
+  vi.spyOn(CfApi.prototype, "putScriptSecret").mockImplementation(
+    async (_ns: string, script: string, name: string, text: string) => {
+      ops.push({ op: "put", script, name, text });
+      if (script === tenant.script_name) studioNames.add(name);
+    },
+  );
+  vi.spyOn(CfApi.prototype, "deleteScriptSecret").mockImplementation(
+    async (_ns: string, script: string, name: string) => {
+      ops.push({ op: "delete", script, name });
+      if (script === tenant.script_name) studioNames.delete(name);
+    },
+  );
+  vi.spyOn(CfApi.prototype, "getScriptSecretNames").mockImplementation(async () =>
+    readback ? readback(studioNames) : [...studioNames],
+  );
+  const w = provisionerWiring(e, {} as ControlPlaneStore)!;
+  let error: unknown = null;
+  // The module readiness probe afterwards has no dispatch binding; only the studio sequence is claimed.
+  await w.installInvokeKey(tenant, KEY_B).catch((x) => (error = x));
+  return { ops, error };
+}
+
+const studioOps = (ops: Op[]) => ops.filter((o) => o.script === "tenant-hero-studio");
+
+describe("a PROXIED tenant's studio holds the proxy pair instead of the key (fleet-chezmoi#2048)", () => {
+  it("puts BASE and TOKEN, the same values the modules get, then deletes the key, in that order", async () => {
+    const tenant = tenantOf("shared");
+    const { ops } = await recordStudio(env(), tenant);
+    const expected = await tenantModuleProxyBinding("shared", { base: `https://${HOST}/api/runpod/v2`, signingKey: SIGNING_KEY }, tenant.id);
+    expect(expected).not.toBeNull();
+    expect(studioOps(ops).map((o) => `${o.op}:${o.name}`)).toEqual([
+      "put:RUNPOD_PROXY_BASE",
+      "put:RUNPOD_PROXY_TOKEN",
+      "delete:RUNPOD_API_KEY",
+    ]);
+    const put = (n: string) => studioOps(ops).find((o) => o.op === "put" && o.name === n)?.text;
+    expect(put("RUNPOD_PROXY_BASE")).toBe(expected!.base);
+    expect(put("RUNPOD_PROXY_TOKEN")).toBe(expected!.token);
+    // The key value is never written to the studio on this path.
+    expect(studioOps(ops).some((o) => o.text === KEY_B)).toBe(false);
+  });
+
+  it("refuses when the read-back still shows the key", async () => {
+    const { error } = await recordStudio(env(), tenantOf("shared"), (w) => [...w, "RUNPOD_API_KEY"]);
+    expect(error).toBeInstanceOf(TenantModuleError);
+    expect(String(error)).toMatch(/RUNPOD_API_KEY still present/);
+  });
+
+  it("refuses when the read-back is missing half the pair", async () => {
+    const { error } = await recordStudio(env(), tenantOf("shared"), (w) => [...w].filter((n) => n !== "RUNPOD_PROXY_TOKEN"));
+    expect(error).toBeInstanceOf(TenantModuleError);
+    expect(String(error)).toMatch(/RUNPOD_PROXY_TOKEN missing/);
+  });
+
+  it("an UNPROXIED studio gets the key and no pair, and nothing is deleted", async () => {
+    for (const [label, e, mode] of [
+      ["dedicated", env(), "dedicated"],
+      ["shared, no signing key", env({ RUNPOD_PROXY_SIGNING_KEY: undefined }), "shared"],
+    ] as const) {
+      vi.restoreAllMocks();
+      const { ops } = await recordStudio(e, tenantOf(mode));
+      expect(studioOps(ops).map((o) => `${o.op}:${o.name}`), label).toEqual(["put:RUNPOD_API_KEY"]);
+    }
   });
 });
 

@@ -192,21 +192,24 @@ The provisioner closes it the SAME way self-host does (Phase-3 dynamic dispatch)
 safe because module conformance is envelope+degrade only (async GPU modules return pending/degrade;
 the gate never triggers real GPU work), and every module answers the conformance probe with a
 well-formed `{ ok:false }` envelope before it reads any RunPod credential (live-verified across all
-catalogued modules with no key B bound). Key B ALWAYS lands on the studio, in place (a secret PUT,
-no re-upload). Where it goes next depends on the shape:
+catalogued modules with no key B bound). Where key B goes depends on the shape:
 
-- **Proxied** (shared tier): it stops at the studio. Module scripts carry the proxy pair and no
-  direct `RUNPOD_API_KEY` -- `installInvokeKey` skips the module loop entirely and logs
-  `modules_invoke_key_retired`. A proxied module reaching RunPod on its `RUNPOD_PROXY_TOKEN` while
+- **Proxied** (shared tier): nowhere. The studio gets the proxy pair (`RUNPOD_PROXY_BASE`,
+  `RUNPOD_PROXY_TOKEN`, as secrets so they survive a studio upgrade), any `RUNPOD_API_KEY` left on
+  it is deleted, and the studio secret names are read back: the install is refused if the pair is
+  missing or the key is still there (fleet-chezmoi#2048, `studio_invoke_key_retired`). Module
+  scripts carry the proxy pair and no direct `RUNPOD_API_KEY` -- `installInvokeKey` skips the module
+  loop entirely and logs `modules_invoke_key_retired`. A proxied module reaching RunPod on its `RUNPOD_PROXY_TOKEN` while
   also holding the direct key would be a consumer holding a RunPod credential on our account
   (cp#290 / plane v1.22.0).
-- **Non-proxied** (dedicated, BYO, self-host): the key lands on every module script in the catalog
-  via `installInvokeKey`, and the module can then render.
+- **Non-proxied** (dedicated, BYO, self-host): the key lands on the studio (a secret PUT, in place,
+  no re-upload) and on every module script in the catalog via `installInvokeKey`, and the module
+  can then render.
 
-The studio copy is installed on EVERY tier including shared, which is a known gap rather than the
-intended end state: the studio genuinely submits RunPod work (cast-LoRA training through
-vivijure-core, which has no proxy branch), so removing it before core learns the proxy would break
-that path. Tracked separately; retiring the module copies did not depend on it.
+The studio needs no key on the shared tier because its own RunPod work (cast-LoRA training) goes
+through vivijure-core's `runpodRoute`, which takes the proxy when `RUNPOD_PROXY_BASE` is bound (core
+1.10.0 and later; vivijure-cf has read the pair, with `RUNPOD_API_KEY` optional, since v1.21.0). A
+studio pinned to a release older than that would refuse cast training on this path.
 
 **The job-log binding (cp#248).** Every module that submits a RunPod job also carries the tenant
 STUDIO database as `TELEMETRY_DB` (`{ type: "d1", name: "TELEMETRY_DB", id: <tenant d1 uuid> }`),
