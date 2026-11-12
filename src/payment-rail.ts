@@ -46,6 +46,39 @@ export interface SettlementEvent {
   external_ref: string;
   /** Free-text provenance for the audit trail. Never a credential. */
   note: string | null;
+  /**
+   * The processor's order id this money settles (fc#2052), when the event carries one. The webhook
+   * matches it against the order recorded at checkout before anything is credited.
+   */
+  order_ref?: string;
+}
+
+/** An order this plane created at checkout, as recorded then (fc#2052). */
+export interface TopUpOrder {
+  rail: string;
+  order_ref: string;
+  tenant_id: string;
+  amount_micro_usd: MicroUsd;
+  created_at: string;
+}
+
+/**
+ * Why a settlement does not match a recorded order, or null when it matches (fc#2052).
+ *
+ * A verified webhook proves the processor sent the event. It does not prove the order is one this
+ * plane created, or that the tenant and amount on the event are the ones we asked for. So money is
+ * credited only when the order id, the tenant and the amount all agree with the row written at
+ * checkout, and it is credited to the RECORDED tenant.
+ */
+export function settlementMismatch(
+  settlement: SettlementEvent,
+  order: TopUpOrder | null,
+): "no_order_ref" | "unknown_order" | "tenant_mismatch" | "amount_mismatch" | null {
+  if (!settlement.order_ref) return "no_order_ref";
+  if (!order || order.order_ref !== settlement.order_ref) return "unknown_order";
+  if (settlement.tenant_id !== order.tenant_id) return "tenant_mismatch";
+  if (settlement.amount_micro_usd !== order.amount_micro_usd) return "amount_mismatch";
+  return null;
 }
 
 /**
