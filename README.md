@@ -1,8 +1,7 @@
 # Vivijure Control Plane
 
-This is the **hosted door** for Vivijure Studio. It is the software that lets someone sign up,
-agree to the rules, and get their own working film studio on our shared render pool a few
-minutes later, without ever installing anything or pasting a RunPod key.
+This is **a reference implementation of a multi-tenant control plane for hosting Vivijure Studio; maintained, not operated by Skyphusion**. It is the software that lets someone sign up, agree to the rules, and
+get their own working film studio a few minutes later, without installing anything.
 
 It is a single Cloudflare Worker. It runs separately from the studio itself, and it is released
 and deployed on its own schedule.
@@ -103,8 +102,8 @@ flowchart TD
 ```
 
 Read it in one line: **a visitor signs up at the front door, the provisioner builds them a studio
-out of a published release artifact, and that studio talks to GPUs on the customer's own RunPod
-account.**
+out of a published release artifact, and that studio renders on the shared RunPod pool the
+operator configures.**
 
 ## Signing up, step by step
 
@@ -114,22 +113,28 @@ This is the flow the onboarding pages in `public/` walk a person through.
 2. **Agree to the rules.** The Acceptable Use Policy. This blocks everything else until it is
    done, and the acceptance is recorded against a known account.
 3. **Pick a name.** This becomes both your web address and the internal name of your studio.
-4. **Paste key A.** A RunPod key that can create things. We use it once and **never store it**.
-5. **We build your studio.** Database, storage, the studio Worker, four GPU endpoints, and five
-   render modules. You can watch the progress.
-6. **Mint key B in the RunPod console.** A weaker key that can only run the four endpoints we
-   just made for you.
-7. **Paste key B.** We check it, store it on your studio, and you are live.
+4. **The plane builds your studio.** Database, storage, the studio Worker and the render modules.
+   You can watch the progress. You paste no RunPod key: the studio renders on the shared RunPod
+   pool the operator configured, and the plane creates no RunPod endpoint (cp#396;
+   `src/provisioner.ts`, the shared-pool branch). A plane with no pool refuses provisioning with
+   `runpod_key_required` (`src/index.ts`).
 
-## Why there are two keys
+## The pool key, and the two-key flow it replaced
 
-This is the heart of the security story, so it is worth being plain about it.
+**Today:** the operator sets the pool (`SHARED_RUNPOD_ENDPOINTS`) and one invoke key for it
+(`SHARED_RUNPOD_INVOKE_KEY`; `docs/deploy.md`). Before the plane uses that key, it checks that the
+key can only run the pool's endpoints and cannot reach RunPod's admin interface
+(`src/shared-pool-scope.ts`, `src/runpod-invoke-key.ts`). The route that stores a tenant key checks
+it the same way before writing it (`src/index.ts`).
+
+**History:** before cp#396, a tenant brought their own RunPod account and pasted two keys. That
+flow is removed. The rest of this section records it.
 
 | | **Key A** (provisioning) | **Key B** (stored) |
 |---|---|---|
-| What it can do | Create things across your whole RunPod account | Run your four endpoints, and nothing else |
+| What it can do | Create things across your whole RunPod account | Run your endpoints, and nothing else |
 | How long we hold it | Used once, in memory, **never written down** | Stored as a secret on your own studio |
-| If it leaked | Your whole RunPod account | Four endpoints you already own |
+| If it leaked | Your whole RunPod account | Endpoints you already own |
 
 **Why two steps and not one?** RunPod keys can only be made by hand in their console, and a key
 cannot be limited to endpoints that do not exist yet. So key B is *physically impossible* to make
@@ -356,13 +361,14 @@ other.
 The control plane deploys from a **SemVer tag, and only from a tag**. There is no deploy-from-main
 path, and no deploy-from-a-laptop path.
 
+1. **Release PR:** bump BOTH `package.json` `"version"` and `src/version.ts` `CONTROL_PLANE_VERSION`
+   (the pipeline refuses if they disagree), merged through the normal gate. No direct push to `main`.
+2. **An org admin tags that PR's merge commit:**
+
 ```bash
-# bump BOTH; the pipeline refuses if they disagree
-#   package.json    "version"
-#   src/version.ts  CONTROL_PLANE_VERSION
-git commit -am "chore(release): v1.2.3"
-git tag -a v1.2.3 -m "control plane v1.2.3"
-git push origin main --follow-tags
+sha="$(gh pr view <release-pr> --json mergeCommit -q .mergeCommit.oid)"
+git tag -a v1.2.3 -m "control plane v1.2.3" "$sha"
+git push origin v1.2.3
 ```
 
 `.github/workflows/deploy.yml` then runs. It is **two jobs with a gate between them**, which is the
@@ -470,7 +476,7 @@ Vivijure is not one program. It is a small group of programs that work together.
   there.
 - **[vivijure-cf](https://github.com/skyphusion-labs/vivijure-cf)** is the Studio itself on
   Cloudflare. Self-host it and you never need this repo at all.
-- **vivijure-control-plane** (this repo) is the hosted door in front of it.
+- **vivijure-control-plane** (this repo) is a reference implementation of a multi-tenant control plane for hosting Vivijure Studio; maintained, not operated by Skyphusion.
 - **[vivijure-backend](https://github.com/skyphusion-labs/vivijure-backend)** is the GPU render
   engine on RunPod.
 
