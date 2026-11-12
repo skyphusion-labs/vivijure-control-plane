@@ -1,5 +1,8 @@
 # Deploy-time config injection: `wrangler.toml.example` -> rendered `wrangler.toml`
 
+> This page was written for the studio and copied here. No vivijure host uses Cloudflare Access, so
+> read its `ACCESS_AUD` rows as history; this plane's `wrangler.toml.example` has no Access keys.
+
 How vivijure keeps account-specific config (the CF Access AUD, resource IDs) **out of the public
 repo** while still deploying a complete `wrangler.toml`. The committed file is a **template**; the
 real file is **rendered at deploy** from encrypted CI secrets. This doc is written so you can

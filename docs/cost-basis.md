@@ -180,7 +180,7 @@ planner token volume per tenant is unmeasured. That number should come from the 
 ## 4. CPU finishing (excluded from the meter by ruling)
 
 CPU finishing runs on owned swarm iron, selected by the `tier=finishing` swarm label rather than a
-fixed node list (measured 2026-08-01: descendents, badbrains, jello). It is included in the base by
+fixed node list (measured 2026-08-01 on swarm hosts that are now retired). It is included in the base by
 ruling, so it carries **no meter rate**. It is recorded here for capacity planning only.
 
 The finishing tier is five CPU containers reached over Workers VPC: `video-finish`, `audio-master`,
