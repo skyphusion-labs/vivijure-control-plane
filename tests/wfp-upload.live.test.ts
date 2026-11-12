@@ -132,13 +132,20 @@ describe.skipIf(!LIVE)("wfp_upload with the REAL studio bundle", () => {
         { type: "r2_bucket", name: "R2", bucket_name: state.bucket },
         { type: "plain_text", name: "AUTH_MODE", text: "token" },
         { type: "secret_text", name: "STUDIO_API_TOKEN", text: "livetest-not-a-real-token" },
+        // cp#573: the provisioner binds IMAGES (src/provisioner.ts) for GET /api/thumb. This is
+        // the same upload, with the same CF_PROVISIONER_TOKEN, so a green run proves the token
+        // can set an images binding on a tenant script.
+        { type: "images", name: "IMAGES" },
       ],
     });
   }, 180_000);
 
   it("the uploaded tenant worker carries the bindings the provisioner asked for", async () => {
-    const names = new Set((await cf.getScriptBindings(state.ns!, SCRIPT)).map((b) => b.name));
-    for (const want of ["DB", "R2_RENDERS", "R2", "AUTH_MODE"]) expect(names, want).toContain(want);
+    const bindings = await cf.getScriptBindings(state.ns!, SCRIPT);
+    const names = new Set(bindings.map((b) => b.name));
+    for (const want of ["DB", "R2_RENDERS", "R2", "AUTH_MODE", "IMAGES"]) expect(names, want).toContain(want);
+    // cp#573: present AND of the images type, as the provisioner asks for it.
+    expect(bindings.find((b) => b.name === "IMAGES")?.type).toBe("images");
     expect(await cf.getScriptSecretNames(state.ns!, SCRIPT)).toContain("STUDIO_API_TOKEN");
   });
 });
