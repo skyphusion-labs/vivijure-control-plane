@@ -9,7 +9,7 @@ import { topUpAvailable } from "../src/credits-api";
 import type { ControlPlaneDeps } from "../src/deps";
 import type { ControlPlaneEnv } from "../src/env";
 import { handle } from "../src/index";
-import { PaymentRailError, applySettlement } from "../src/payment-rail";
+import { PaymentRailError, applySettlement, settlementMismatch } from "../src/payment-rail";
 import {
   PayPalRail,
   microUsdToPayPalValue,
@@ -53,6 +53,7 @@ const CAPTURE_BODY = {
     id: "CAP-99",
     custom_id: TEN,
     amount: { currency_code: "USD", value: "10.00" },
+    supplementary_data: { related_ids: { order_id: "ORDER-1" } },
   },
 };
 
@@ -281,6 +282,7 @@ describe("PayPalRail.parseSettlement", () => {
         amount_micro_usd: USD(10),
         external_ref: "CAP-99",
         note: "paypal PAYMENT.CAPTURE.COMPLETED",
+        order_ref: "ORDER-1",
       },
     });
   });
@@ -361,6 +363,7 @@ describe("PayPalRail.captureApprovedOrder", () => {
         amount_micro_usd: USD(10),
         external_ref: "CAP-99",
         note: "paypal capture of order ORDER-1",
+        order_ref: "ORDER-1",
       },
     });
   });
@@ -433,6 +436,13 @@ describe("PayPal routes", () => {
     await store.createTenant(TEN, "hero", account.id, "live");
     await credits.createAccount("acct_1", "a@b.com");
     await credits.createTenant(TEN, "hero", "acct_1", "live");
+    await credits.recordTopUpOrder({
+      rail: "paypal",
+      order_ref: "ORDER-1",
+      tenant_id: TEN,
+      amount_micro_usd: USD(10),
+      created_at: "2026-08-16T00:00:00.000Z",
+    });
     await store.recordAupAcceptance("acct_1", "1", "sha", null, null);
     const { token } = await startSession(store, account.id, Date.now());
     cookie = `${SESSION_COOKIE}=${token}`;
@@ -569,6 +579,90 @@ describe("PayPal routes", () => {
     expect((await credits.readBalanceSums(TEN)).settled).toBe(0);
   });
 
+  // ---- fc#2052: credit only an order this plane created, for its recorded tenant and amount ----
+
+  it("records the order at checkout, before the buyer is sent to pay", async () => {
+    const d = {
+      ...deps,
+      fetch: mockFetch({
+        order: () => jsonRes({ id: "ORDER-7", links: [{ rel: "approve", href: "https://pp.example/ORDER-7" }] }),
+      }),
+    };
+    expect((await topup({ amount_micro_usd: USD(25) }, env(PAYPAL), d)).status).toBe(200);
+    expect(await credits.getTopUpOrder("paypal", "ORDER-7")).toMatchObject({
+      tenant_id: TEN,
+      amount_micro_usd: USD(25),
+    });
+  });
+
+  it("refuses the checkout when the order cannot be recorded", async () => {
+    const d = { ...deps, credits: Object.assign(Object.create(credits), { recordTopUpOrder: async () => { throw new Error("d1 down"); } }) };
+    const res = await topup({ amount_micro_usd: USD(10) }, env(PAYPAL), d);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: "topup_failed" });
+  });
+
+  it("does not capture an approved order this plane never created", async () => {
+    const captured: string[] = [];
+    const d = { ...deps, fetch: mockFetch({ capture: (_i, id) => (captured.push(id), jsonRes(CAPTURE_RESPONSE)) }) };
+    const body = { ...APPROVED_BODY, resource: { ...APPROVED_BODY.resource, id: "ORDER-ELSEWHERE" } };
+    const res = await webhook(body, env(PAYPAL), d);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ applied: false });
+    expect(captured).toEqual([]);
+    expect((await credits.readBalanceSums(TEN)).settled).toBe(0);
+  });
+
+  it("does not capture an approved order whose tenant differs from the recorded one", async () => {
+    const captured: string[] = [];
+    const d = { ...deps, fetch: mockFetch({ capture: (_i, id) => (captured.push(id), jsonRes(CAPTURE_RESPONSE)) }) };
+    const body = {
+      ...APPROVED_BODY,
+      resource: { ...APPROVED_BODY.resource, purchase_units: [{ custom_id: "ten_other", amount: { currency_code: "USD", value: "10.00" } }] },
+    };
+    const res = await webhook(body, env(PAYPAL), d);
+    expect(await res.json()).toEqual({ applied: false });
+    expect(captured).toEqual([]);
+  });
+
+  it("does not credit a capture for an order this plane never created", async () => {
+    const body = { ...CAPTURE_BODY, resource: { ...CAPTURE_BODY.resource, supplementary_data: { related_ids: { order_id: "ORDER-ELSEWHERE" } } } };
+    const res = await webhook(body);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ applied: false });
+    expect((await credits.readBalanceSums(TEN)).settled).toBe(0);
+  });
+
+  it("does not credit a capture that names a different tenant than the recorded order", async () => {
+    await credits.createTenant("ten_other", "other", "acct_1", "live");
+    const body = { ...CAPTURE_BODY, resource: { ...CAPTURE_BODY.resource, custom_id: "ten_other" } };
+    const res = await webhook(body);
+    expect(await res.json()).toEqual({ applied: false });
+    expect((await credits.readBalanceSums("ten_other")).settled).toBe(0);
+    expect((await credits.readBalanceSums(TEN)).settled).toBe(0);
+  });
+
+  it("does not credit a capture whose amount differs from the recorded order", async () => {
+    const body = { ...CAPTURE_BODY, resource: { ...CAPTURE_BODY.resource, amount: { currency_code: "USD", value: "500.00" } } };
+    const res = await webhook(body);
+    expect(await res.json()).toEqual({ applied: false });
+    expect((await credits.readBalanceSums(TEN)).settled).toBe(0);
+  });
+
+  it("does not credit a capture that carries no order id", async () => {
+    const { supplementary_data: _drop, ...resource } = CAPTURE_BODY.resource;
+    const res = await webhook({ ...CAPTURE_BODY, resource });
+    expect(await res.json()).toEqual({ applied: false });
+    expect((await credits.readBalanceSums(TEN)).settled).toBe(0);
+  });
+
+  it("503s when the recorded order cannot be read, so PayPal retries", async () => {
+    const d = { ...deps, credits: Object.assign(Object.create(credits), { getTopUpOrder: async () => { throw new Error("d1 down"); } }) };
+    const res = await webhook(CAPTURE_BODY, env(PAYPAL), d);
+    expect(res.status).toBe(503);
+    expect((await credits.readBalanceSums(TEN)).settled).toBe(0);
+  });
+
   it("applySettlement replay is namespaced on the paypal rail id", async () => {
     const event = {
       tenant_id: TEN,
@@ -580,5 +674,18 @@ describe("PayPal routes", () => {
     const replay = await applySettlement(credits, { railId: "paypal", event, rowId: "led_2", now: "2026-08-16T00:00:00.000Z" });
     expect([a.applied, replay.applied]).toEqual([true, false]);
     expect((await credits.readBalanceSums(TEN)).settled).toBe(USD(10));
+  });
+});
+
+describe("settlementMismatch (fc#2052)", () => {
+  const order = { rail: "paypal", order_ref: "ORDER-1", tenant_id: TEN, amount_micro_usd: USD(10), created_at: "t" };
+  const ok = { tenant_id: TEN, amount_micro_usd: USD(10), external_ref: "CAP-1", note: null, order_ref: "ORDER-1" };
+  it("matches only when order id, tenant and amount all agree", () => {
+    expect(settlementMismatch(ok, order)).toBeNull();
+    expect(settlementMismatch({ ...ok, order_ref: undefined }, order)).toBe("no_order_ref");
+    expect(settlementMismatch(ok, null)).toBe("unknown_order");
+    expect(settlementMismatch({ ...ok, order_ref: "ORDER-2" }, order)).toBe("unknown_order");
+    expect(settlementMismatch({ ...ok, tenant_id: "ten_other" }, order)).toBe("tenant_mismatch");
+    expect(settlementMismatch({ ...ok, amount_micro_usd: USD(11) }, order)).toBe("amount_mismatch");
   });
 });

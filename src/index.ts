@@ -35,6 +35,7 @@ import {
   ManualRail,
   PaymentRailError,
   applySettlement,
+  settlementMismatch,
   validateCreditAmount,
 } from "./payment-rail";
 import { PayPalRail, paypalCredentialsPresent } from "./paypal-rail";
@@ -783,13 +784,34 @@ async function paypalWebhook(
   // been collected: an order left uncaptured expires and the balance never moves. Capturing from the
   // webhook rather than from the buyer's redirect is deliberate -- a buyer who closes the tab has
   // still paid, and a rail that only collects when a browser comes back loses that money silently.
+  // THE ORDER MUST BE ONE THIS PLANE CREATED (fc#2052). A verified signature says PayPal sent the
+  // event; only the row written at checkout says the order, its tenant and its amount are ours.
+  const orderRef = event.kind === "approved" ? event.order_ref : event.settlement.order_ref;
+  let order = null;
+  if (orderRef) {
+    try {
+      order = await deps.credits.getTopUpOrder(rail.id, orderRef);
+    } catch {
+      // 503 so PayPal retries: an unreadable order table is not a reason to drop a payment.
+      return err("order_lookup_failed", 503);
+    }
+  }
+
   let settlement;
   if (event.kind === "settlement") {
     settlement = event.settlement;
   } else {
+    // Not ours, or not for the tenant we recorded: do not collect money we would not credit.
+    if (!order || order.tenant_id !== event.tenant_ref) {
+      console.error(
+        "paypal.approved_unmatched",
+        JSON.stringify({ order: event.order_ref, recorded: order !== null }),
+      );
+      return json({ applied: false });
+    }
     let outcome;
     try {
-      outcome = await rail.captureApprovedOrder(event);
+      outcome = await rail.captureApprovedOrder({ order_ref: event.order_ref, tenant_ref: order.tenant_id });
     } catch (e) {
       // 503, so PayPal RETRIES the approval and the capture is attempted again. Answering 200 here
       // would tell PayPal we handled an order we in fact never collected.
@@ -803,6 +825,17 @@ async function paypalWebhook(
     // approval that can never succeed again.
     if (outcome.kind === "already_captured") return json({ applied: false });
     settlement = outcome.settlement;
+  }
+
+  const mismatch = settlementMismatch(settlement, order);
+  if (mismatch) {
+    // 200, so PayPal stops retrying an event that will never match. Logged at error level: if money
+    // did move, an operator reconciles it by hand rather than the plane guessing whom to credit.
+    console.error(
+      "paypal.settlement_unmatched",
+      JSON.stringify({ reason: mismatch, order: settlement.order_ref ?? null, external_ref: settlement.external_ref }),
+    );
+    return json({ applied: false });
   }
 
   try {
@@ -960,6 +993,20 @@ async function tenantRoutes(
     }
     try {
       const intent = await rail.createTopUp({ tenantId: tenant.id, amountMicroUsd: raw });
+      // RECORDED BEFORE THE BUYER IS SENT TO PAY (fc#2052). The webhook credits only an order it can
+      // find here, so a checkout link for an order we failed to record is a payment we could not
+      // credit. Refuse the checkout instead.
+      try {
+        await deps.credits.recordTopUpOrder({
+          rail: rail.id,
+          order_ref: intent.external_ref,
+          tenant_id: tenant.id,
+          amount_micro_usd: raw,
+          created_at: new Date(deps.now()).toISOString(),
+        });
+      } catch {
+        return err("topup_failed", 503);
+      }
       return json({ checkout_url: intent.checkout_url, external_ref: intent.external_ref, rail: rail.id });
     } catch (e) {
       if (e instanceof PaymentRailError) {

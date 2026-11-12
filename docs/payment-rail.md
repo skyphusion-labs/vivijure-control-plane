@@ -159,6 +159,16 @@ Crediting from the capture RESPONSE and crediting from the later `PAYMENT.CAPTUR
 resolve to ONE ledger row, because both carry PayPal's own capture id and `applySettlement` is
 idempotent on it. The tenant is credited once whichever arrives first, and once if only one arrives.
 
+**Only an order this plane created is credited (fleet-chezmoi#2052).** Checkout records each order
+(rail, order id, tenant, amount) in `topup_orders` before the buyer is sent to pay, and refuses the
+checkout if that write fails. A verified signature proves PayPal sent the event, not that the order
+is ours, so the webhook looks the order up first. An approved order that is not recorded, or is
+recorded for another tenant, is not captured. A settlement is credited only when its order id
+(`supplementary_data.related_ids.order_id` on `PAYMENT.CAPTURE.COMPLETED`), tenant and amount match
+the record, and it is credited to the recorded tenant. A mismatch answers `200 applied:false` and
+logs `paypal.settlement_unmatched` at error level for an operator to reconcile through the operator
+credit path. An order table that cannot be read answers `503`, so PayPal retries.
+
 *Verify:* PayPal's dashboard shows a successful delivery for BOTH event types, and the tenant's
 balance moves by the expected amount exactly once. A replay of the same capture is `200` with
 `applied: false`. A capture that fails transiently answers `503`, which is what earns a PayPal
