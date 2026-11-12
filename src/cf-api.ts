@@ -748,6 +748,23 @@ export class CfApi {
   }
 
   /**
+   * Remove a single secret from a resident script (fleet-chezmoi#2048). A 404 is success: the secret
+   * is already absent, which is the state the caller asked for, so a retry converges.
+   */
+  async deleteScriptSecret(namespace: string, scriptName: string, name: string): Promise<void> {
+    try {
+      await this.call<unknown>(
+        "wfp.deleteSecret",
+        `/accounts/${this.accountId}/workers/dispatch/namespaces/${namespace}/scripts/${scriptName}/secrets/${encodeURIComponent(name)}`,
+        { method: "DELETE" },
+      );
+    } catch (e) {
+      if (e instanceof CfApiError && e.status === 404) return;
+      throw e;
+    }
+  }
+
+  /**
    * Change a resident script BINDINGS without re-uploading the worker (cp#112).
    *
    * MULTIPART, NOT JSON, AND THAT IS MEASURED. This endpoint answers a JSON body with
