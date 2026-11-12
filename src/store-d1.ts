@@ -5,6 +5,7 @@
 // migrations/0001_init.sql. The in-memory store in tests/ never substitutes for that.
 
 import type { HoldRow, LedgerRow } from "./credits";
+import type { TopUpOrder } from "./payment-rail";
 import type { RunPodMode } from "./runpod-pool";
 import type { HarvestedJob } from "./runpod-job-index";
 import type { LlmSpendStore, RollupPeriodWrite } from "./llm-spend-ingest";
@@ -1405,6 +1406,28 @@ export class D1Store implements ControlPlaneStore, CreditStore {
   // tests/credits-sql.test.ts, because a fake store cannot catch a malformed statement and this file
   // has already shipped that bug once (the unquoted-literal 500 recorded at the top of
   // tests/store-d1-sql.test.ts).
+
+  async recordTopUpOrder(order: TopUpOrder): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO topup_orders (rail, order_ref, tenant_id, amount_micro_usd, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (rail, order_ref) DO NOTHING`,
+      )
+      .bind(order.rail, order.order_ref, order.tenant_id, order.amount_micro_usd, order.created_at)
+      .run();
+  }
+
+  async getTopUpOrder(rail: string, orderRef: string): Promise<TopUpOrder | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT rail, order_ref, tenant_id, amount_micro_usd, created_at
+           FROM topup_orders WHERE rail = ?1 AND order_ref = ?2`,
+      )
+      .bind(rail, orderRef)
+      .first<TopUpOrder>();
+    return row ?? null;
+  }
 
   async appendLedgerRow(row: {
     id: string;
