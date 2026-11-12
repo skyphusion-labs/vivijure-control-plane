@@ -698,3 +698,61 @@ describe("cp#575: status and cancel bind a job to its tenant", () => {
     expect((await handle(modReq("/api/runpod/v2/pool-backend/health", await otherToken()), env(), ctx, deps)).status).toBe(200);
   });
 });
+
+// ------------------------------------------------------------------------------------------------
+// fleet-chezmoi#2049: the credit FLOOR on submit. With CREDITS_ENFORCING on, a tenant at or below
+// zero available credit is refused before anything reaches RunPod. A floor, not a price: any
+// positive balance is admitted (the edge case below is the positive control).
+// ------------------------------------------------------------------------------------------------
+
+describe("the credit floor on submit (fleet-chezmoi#2049)", () => {
+  const withSums = (settled: number, held = 0) =>
+    ({ ...deps, credits: { readBalanceSums: async () => ({ settled, held }) } as never }) as ControlPlaneDeps;
+  const submit = async (d: ControlPlaneDeps, e = env({ CREDITS_ENFORCING: "true" })) =>
+    handle(submitReq("pool-backend", await goodToken()), e, ctx, d);
+
+  it("CONTROL: with enforcement OFF a zero-balance tenant still submits", async () => {
+    const res = await submit(withSums(0), env());
+    expect(res.status).toBe(200);
+    expect(upstreamCalls()).toHaveLength(1);
+  });
+
+  it("refuses a ZERO balance with 402 insufficient_credit, before any upstream call", async () => {
+    const res = await submit(withSums(0));
+    expect(res.status).toBe(402);
+    expect(res.headers.get(PLANE_REFUSAL_HEADER)).toBe("insufficient_credit");
+    expect(upstreamCalls()).toHaveLength(0);
+  });
+
+  it("refuses a NEGATIVE balance", async () => {
+    const res = await submit(withSums(-5_000_000));
+    expect(res.status).toBe(402);
+    expect(upstreamCalls()).toHaveLength(0);
+  });
+
+  it("POSITIVE CONTROL at the edge: one micro-USD available is admitted (a floor, not a price)", async () => {
+    const res = await submit(withSums(1));
+    expect(res.status).toBe(200);
+    expect(upstreamCalls()).toHaveLength(1);
+  });
+
+  it("counts held money as unavailable: settled 5 USD, held 5 USD is refused", async () => {
+    const res = await submit(withSums(5_000_000, 5_000_000));
+    expect(res.status).toBe(402);
+  });
+
+  it("FAILS CLOSED with 503 balance-unknown when the balance cannot be read", async () => {
+    const d = { ...deps, credits: { readBalanceSums: async () => { throw new Error("d1 down"); } } as never } as ControlPlaneDeps;
+    const res = await submit(d);
+    expect(res.status).toBe(503);
+    expect(res.headers.get(PLANE_REFUSAL_HEADER)).toBe("balance-unknown");
+    expect(upstreamCalls()).toHaveLength(0);
+  });
+
+  it("FAILS CLOSED when enforcement is on and no credit store is configured", async () => {
+    const res = await submit(deps);
+    expect(res.status).toBe(503);
+    expect(res.headers.get(PLANE_REFUSAL_HEADER)).toBe("balance-unknown");
+    expect(upstreamCalls()).toHaveLength(0);
+  });
+});

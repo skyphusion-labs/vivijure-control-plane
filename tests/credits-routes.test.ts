@@ -220,8 +220,11 @@ describe("credit read routes", () => {
       unknown
     >;
     expect(knobOn.enforcement_configured).toBe(true);
-    expect(knobOn.enforcing).toBe(false);
-    expect(String(knobOn.enforcement_reason)).toMatch(/no submit-time gate/i);
+    // fleet-chezmoi#2049: the submit gate is wired, as a FLOOR. Applied, and the reason says what it
+    // is NOT, so `enforcing: true` cannot be read as a price or a ceiling.
+    expect(knobOn.enforcing).toBe(true);
+    expect(String(knobOn.enforcement_reason)).toMatch(/floor only/i);
+    expect(String(knobOn.enforcement_reason)).toMatch(/one job past zero/i);
   });
 
   it("the admin view carries the same enforcement pair, so the operator surface cannot disagree", async () => {
@@ -230,8 +233,8 @@ describe("credit read routes", () => {
       unknown
     >;
     expect(body.enforcement_configured).toBe(true);
-    expect(body.enforcing).toBe(false);
-    expect(body.enforcement_reason).not.toBeNull();
+    expect(body.enforcing).toBe(true);
+    expect(String(body.enforcement_reason)).toMatch(/floor only/i);
   });
 
   // ---- what the operator sees ----------------------------------------------------------------
