@@ -964,7 +964,7 @@ async function tenantRoutes(
   }
 
   if (request.method === "POST" && path === "/api/tenant/provision") {
-    return await provision(request, ctx, deps, account);
+    return await provision(request, env, ctx, deps, account);
   }
 
   // cp#474: the review step has called this since the wizard shipped, and nothing served it.
@@ -1552,8 +1552,49 @@ export async function runPendingProvisionDrive(deps: ControlPlaneDeps): Promise<
   return { tenants_seen: candidates.length, tenants_deferred: deferred, drives, drive_errors: errors };
 }
 
+/**
+ * The provision throttle (fleet-chezmoi#2051). One provision creates a D1, an R2 bucket, a token and
+ * a Worker, so it is limited per ACCOUNT and per CLIENT ADDRESS before anything is created: an account
+ * alone does not bound a caller who makes many accounts. The address goes into the limiter key as a
+ * SHA-256, never raw, as the AUP record does (aup.ts). Same binding as email-start (CP_RATE_LIMIT).
+ *
+ * FAIL CLOSED: a plane that can provision but has no limiter binding refuses with 503 rather than
+ * provisioning unthrottled. Returns null when the request may proceed.
+ */
+async function provisionThrottle(
+  request: Request,
+  env: ControlPlaneEnv,
+  deps: ControlPlaneDeps,
+  account: Account,
+): Promise<Response | null> {
+  if (!env.CP_RATE_LIMIT) {
+    if (!deps.provisioner) return null; // nothing to mint; the provisioner_unconfigured refusal follows
+    console.error("CP_RATE_LIMIT binding required when the provisioner is configured");
+    return err("rate_limit_unconfigured", 503, {
+      message: "provisioning is unavailable on this deployment right now. Nothing was created.",
+    });
+  }
+  const ip = request.headers.get("cf-connecting-ip") ?? "";
+  const keys = [
+    `provision-acct:${account.id}`,
+    `provision-ip:${ip ? await sha256HexOfString(ip) : "none"}`,
+  ];
+  for (const key of keys) {
+    const { success } = await env.CP_RATE_LIMIT.limit({ key });
+    if (!success) {
+      return json(
+        { error: "rate_limited", message: "too many studio requests in a short time. Wait a minute and try again. Nothing was created." },
+        429,
+        { "retry-after": "60" },
+      );
+    }
+  }
+  return null;
+}
+
 async function provision(
   request: Request,
+  env: ControlPlaneEnv,
   ctx: ExecutionContext,
   deps: ControlPlaneDeps,
   account: Account,
@@ -1563,6 +1604,11 @@ async function provision(
 
   const valid = validateSlug(slug);
   if (!valid.ok) return err("invalid_slug", 400, { message: slugRejectionMessage(valid.reason) });
+
+  // Before any lookup or cloud write (fleet-chezmoi#2051). After slug validation only, so a malformed
+  // request does not spend the caller's budget.
+  const throttled = await provisionThrottle(request, env, deps, account);
+  if (throttled) return throttled;
 
   // PRODUCT RULING (2026-07-17): signups_enabled means "can NEW accounts be created", full stop.
   // The toggle aims at the front door, not at people already inside it: an existing, AUP-accepted

@@ -35,7 +35,7 @@ The worker serving these needs its `ASSETS` binding pointing at **`public`**.
 | `GET /api/aup/current` -> `{version, url, summary}` | the rules step (rendered as text + link, never innerHTML) |
 | `POST /api/aup/accept` `{version}` | the blocking gate |
 | `GET /api/tenant/slug-available?slug` | the name step |
-| `POST /api/tenant/provision` `{slug, runpod_api_key}` | starts the build |
+| `POST /api/tenant/provision` `{slug}` | starts the build; `429 rate_limited` with `retry-after` when the account or the client address is over the provision throttle (fleet-chezmoi#2051) |
 | `GET /api/tenant/:id/job` | polled; `error_message` shown VERBATIM |
 | `POST /api/tenant/:id/retry` (409 `runpod_key_required`) | the re-paste path |
 | `POST /api/tenant/:id/invoke-key` `{runpod_invoke_key}` | key B |
