@@ -303,6 +303,7 @@ export class PayPalRail implements PaymentRail {
         amount_micro_usd: amount,
         external_ref: captureId,
         note: `paypal capture of order ${order.order_ref}`,
+        order_ref: order.order_ref,
       },
     };
   }
@@ -431,6 +432,7 @@ function settlementFromVerifiedEvent(event: unknown): SettlementEvent | null {
     amount_micro_usd: amount,
     external_ref: externalRef,
     note: "paypal PAYMENT.CAPTURE.COMPLETED",
+    ...(orderId ? { order_ref: orderId } : {}),
   };
 }
 

@@ -1277,6 +1277,15 @@ export interface SmokeRender {
  */
 export interface CreditStore {
   /**
+   * Record an order created at checkout (fc#2052). A settlement is credited only when it matches one
+   * of these. Idempotent on (rail, order_ref): recording the same order twice keeps the first row.
+   */
+  recordTopUpOrder(order: import("./payment-rail").TopUpOrder): Promise<void>;
+
+  /** The recorded order, or null when this plane never created it. Throws if the read fails. */
+  getTopUpOrder(rail: string, orderRef: string): Promise<import("./payment-rail").TopUpOrder | null>;
+
+  /**
    * Append a money row. Idempotent on (tenant_id, idem_ref): a replay returns the EXISTING row with
    * applied=false rather than writing a second one. Callers must treat applied=false as success.
    */
