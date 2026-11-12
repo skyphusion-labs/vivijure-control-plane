@@ -23,7 +23,16 @@ const PINS_TS = join(HERE, "..", "src", "satellite-pins.ts");
 // RunPod REST v2 (fleet-chezmoi#2083; v1 retires 2026-11-15). RUNPOD_API_BASE exists for the
 // script's own tests, which point it at a local fake; nothing else sets it.
 const RUNPOD_API = (process.env.RUNPOD_API_BASE || "https://api.runpod.io/v2").replace(/\/$/, "");
-const TIMEOUT_MS = 20_000;
+// GHCR's base and the timeout are overridable ONLY so the test suite can drive the transport-failure
+// arms against a local server in milliseconds (cp#627). Any override is PRINTED on every run, so a
+// redirected or shortened run cannot pass for a measurement of the registry, and
+// tests/workflow-guards.test.py asserts no workflow sets one. The timeout override can only turn a
+// slow read into a REFUSAL (exit 2), never a drift into a pass.
+const GHCR = (process.env.CHECK_SATELLITE_PINS_GHCR || "https://ghcr.io").replace(/\/$/, "");
+const TIMEOUT_MS = Number(process.env.CHECK_SATELLITE_PINS_TIMEOUT_MS) || 20_000;
+const OVERRIDES = ["CHECK_SATELLITE_PINS_GHCR", "CHECK_SATELLITE_PINS_TIMEOUT_MS", "RUNPOD_API_BASE"].filter(
+  (k) => process.env[k],
+);
 
 /** Parse the pins out of the TS source: no build step, no runtime dep, one source of truth. */
 function readPins() {
@@ -56,6 +65,23 @@ const withTimeout = async (url, init = {}) => {
   const t = setTimeout(() => ac.abort(), TIMEOUT_MS);
   try {
     return await fetch(url, { ...init, signal: ac.signal });
+  } catch (e) {
+    // cp#627, the same defect cp#393 fixed in check-studio-pin.mjs. Without this catch the
+    // rejection reached the top level unhandled, and Node exited 1, which is the DRIFT band, with
+    // a raw stack. Measured on PR #626, 2026-11-12: a 20s GHCR stall read as "a pin does not
+    // resolve", and the remedy that message points at is moving a pin that was fine. A transport
+    // failure says nothing about the pin, so it is could-not-perform. Only the ORIGIN is reported.
+    let origin = "the endpoint";
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      /* do not let reporting throw */
+    }
+    if (e && e.name === "AbortError") {
+      fail(2, `request to ${origin} exceeded the ${TIMEOUT_MS}ms timeout -- the check could not be performed`);
+    }
+    const code = (e && (e.cause?.code || e.code || e.name)) || "unknown";
+    fail(2, `request to ${origin} failed at the transport layer (${code}) -- the check could not be performed`);
   } finally {
     clearTimeout(t);
   }
@@ -63,7 +89,7 @@ const withTimeout = async (url, init = {}) => {
 
 /** Anonymous GHCR pull token for a public package. */
 async function ghcrToken(org, repo) {
-  const url = `https://ghcr.io/token?service=ghcr.io&scope=repository:${org}/${repo}:pull`;
+  const url = `${GHCR}/token?service=ghcr.io&scope=repository:${org}/${repo}:pull`;
   const r = await withTimeout(url);
   if (!r.ok) fail(2, `GHCR token request for ${org}/${repo} failed: HTTP ${r.status}`);
   const j = await r.json();
@@ -83,7 +109,7 @@ async function checkRegistry(org, pins) {
   for (const p of pins) {
     const token = await ghcrToken(org, p.repo);
     const r = await withTimeout(
-      `https://ghcr.io/v2/${org}/${p.repo}/manifests/${encodeURIComponent(p.tag)}`,
+      `${GHCR}/v2/${org}/${p.repo}/manifests/${encodeURIComponent(p.tag)}`,
       { method: "HEAD", headers: { Authorization: `Bearer ${token}`, Accept: ACCEPT } },
     );
     const digest = r.headers.get("docker-content-digest") || "";
@@ -155,6 +181,9 @@ async function checkProd(org, pins) {
 const prod = process.argv.includes("--prod");
 const { org, pins } = readPins();
 console.log(`check-satellite-pins: ${pins.length} pins, mode=${prod ? "production" : "registry"}`);
+if (OVERRIDES.length) {
+  console.log(`  REDIRECTED by ${OVERRIDES.join(", ")}: this run is NOT a measurement of the live registry`);
+}
 const bad = prod ? await checkProd(org, pins) : await checkRegistry(org, pins);
 if (bad > 0) {
   console.error(
