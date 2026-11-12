@@ -360,7 +360,9 @@ jobs:
       # RELEASE MODE ONLY, deliberately. `--deployed` reads the LIVE Worker binding, and during a
       # deploy that binding is precisely what is about to change, so it would be red by construction
       # on every release carrying a pin bump. A check that fires on normal operation is a check
-      # somebody mutes. The deployed comparison runs on its own cadence in studio-pin-drift.yml.
+      # somebody mutes. The deployed comparison is `npm run check:studio-pin:deployed`, run by
+      # whoever operates this plane against its own account. Skyphusion does not operate it, so it
+      # is not scheduled here (cp#620, cp#625).
       #
       # EXIT 2 IS NOT A PASS here either: an unreadable freshness check is an unverified pin, and a
       # GitHub API outage failing this deploy is the correct trade in a tag-gated estate.
