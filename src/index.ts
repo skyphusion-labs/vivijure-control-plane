@@ -17,6 +17,7 @@
 import {
   balanceFromSums,
   creditsEnforcementState,
+  parseEnforcing,
   parseMicroUsd,
   type Balance,
   type HoldRow,
@@ -922,6 +923,17 @@ async function runpodProxyRoutes(
     signingKey: env.RUNPOD_PROXY_SIGNING_KEY,
     poolEndpointIds,
     now: deps.now,
+    // fleet-chezmoi#2049: the credit floor, only when enforcing is configured. Enforcing with no
+    // credit store reads as an unknown balance and refuses (fail closed), never as an open door.
+    creditGate: parseEnforcing(env.CREDITS_ENFORCING)
+      ? {
+          readBalance: async (tenantId: string) => {
+            if (!deps.credits) throw new Error("credit store not configured");
+            const sums = await deps.credits.readBalanceSums(tenantId);
+            return balanceFromSums({ settled: sums.settled, held: sums.held, complete: true });
+          },
+        }
+      : null,
   };
 
   if (route.kind === "submit") return await handleProxySubmit(proxyDeps, request, route.endpointId);

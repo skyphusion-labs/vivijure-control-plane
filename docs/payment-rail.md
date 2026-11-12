@@ -202,19 +202,25 @@ The `PayPalRail` is built, including the capture leg. Settlements go through the
 unchanged, and it refuses `captureApprovedOrder` for the same reason it refuses the other two: an
 operator credit is settled the moment it is written, so there is no order to collect.
 
-**`CREDITS_ENFORCING` currently applies nothing, and the API now says so.** There is no submit-time
-gate on this plane: nothing calls `decideSubmit` and no hold is ever taken, so setting the knob
-refuses nothing and debits nothing. The credit views report `enforcing: false` with
-`enforcement_configured: true` and a stated `enforcement_reason` whenever the knob is on, rather than
-echoing the knob back as though it were a control. `src/credits.ts` carries the one place that
-answer lives (`SUBMIT_GATE_WIRED`), and `tests/credits-enforcement-wiring.test.ts` measures it
-against the source in both directions.
+**`CREDITS_ENFORCING` applies a FLOOR, and the API says exactly that (fleet-chezmoi#2049).** With the
+knob on, the proxied submit (`handleProxySubmit`) calls `decideSubmit` with
+`required_micro_usd = SUBMIT_FLOOR_MICRO_USD` (one micro-USD): a tenant whose available credit is at
+or below zero is refused with `402 insufficient_credit` and the plane-refusal header, before anything
+reaches RunPod. A balance that cannot be read refuses with `503 balance-unknown` (fail closed), and so
+does enforcement with no credit store configured. No hold is taken.
+
+It is not a price and not a spend ceiling. Any positive balance is admitted, so about one job past
+zero per tenant still runs, and more when several submits are in flight as the balance crosses zero.
+A real ceiling needs a per-job price and a hold, which is the pricing decision on `cp#190`. The credit
+views report `enforcing: true` with an `enforcement_reason` that says "a floor only" and names that
+residual exposure. `src/credits.ts` carries the one place the wiring answer lives
+(`SUBMIT_GATE_WIRED`), and `tests/credits-enforcement-wiring.test.ts` measures it against the source.
 
 **Do not flip `CREDITS_ENFORCING` in the same act as wiring credentials.** A purchase door in front
 of a counting ledger sells credits that refuse nothing; flipping enforcement is a named acceptance
 criterion of `cp#193` and happens when you decide the door is proven, not when the class lands. Note
-that flipping it today does not even do that much: the gate has to be built first, and what a render
-costs a tenant is a pricing decision that does not exist yet.
+that flipping it today applies the zero-balance floor only; what a render costs a tenant is still a
+pricing decision that does not exist yet (`cp#190`).
 
 `credits_apply` stays false for every tenant until `compute_mode` exists. Configuring PayPal does
 not invent a billing relationship for a studio we do not bill.

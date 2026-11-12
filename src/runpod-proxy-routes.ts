@@ -43,6 +43,7 @@ import {
 import { PLANE_REFUSAL_HEADER } from "./runpod-proxy-poll";
 import { mintJobHandle, verifyTenantProxyToken } from "./runpod-proxy-auth";
 import type { Tenant } from "./store";
+import { SUBMIT_FLOOR_MICRO_USD, balanceFromSums, decideSubmit } from "./credits";
 
 /** Why a submit was refused. Every value is a distinguishable state on the wire, because a module
  *  that cannot tell "your studio is suspended" from "the plane is broken" degrades wrongly. */
@@ -53,6 +54,7 @@ export type SubmitRefusal =
   | "tenant_suspended"
   | "not_shared_mode"
   | "endpoint_not_allowed"
+  | "insufficient_credit"
   | "bad_body";
 
 /**
@@ -81,6 +83,7 @@ const HTTP_FOR: Record<SubmitRefusal, number> = {
   tenant_suspended: 403,
   not_shared_mode: 403,
   endpoint_not_allowed: 403,
+  insufficient_credit: 402,
   bad_body: 400,
 };
 
@@ -148,6 +151,26 @@ export async function handleProxySubmit(
   // THE CHOKEPOINT. An endpoint the proxy does not know is an endpoint the meter cannot price, and
   // forwarding it would put unattributed spend on our own credit.
   if (!isAllowedEndpoint(endpointId, deps.poolEndpointIds)) return refuse("endpoint_not_allowed");
+
+  // THE CREDIT FLOOR (fleet-chezmoi#2049), only when CREDITS_ENFORCING is on. A FLOOR, NOT A PRICE:
+  // decideSubmit with SUBMIT_FLOOR_MICRO_USD refuses a tenant at or below zero and admits any
+  // positive balance, so about one job past zero per tenant still runs (more with concurrent
+  // submits; no hold is taken). The per-job price is cp#190. Before the body and the credential, so
+  // a refused submit reads nothing else and spends nothing.
+  if (deps.creditGate) {
+    let balance;
+    try {
+      balance = await deps.creditGate.readBalance(tenant.id);
+    } catch {
+      balance = balanceFromSums({ settled: 0, held: 0, complete: false });
+    }
+    const verdict = decideSubmit({ balance, required_micro_usd: SUBMIT_FLOOR_MICRO_USD, enforcing: true });
+    if (!verdict.ok) {
+      // An unknown balance is OUR failure, so it is a 503 the module can tell from "out of credit".
+      if (verdict.reason === "balance_unknown") return planeUnavailable("balance-unknown", verdict.message);
+      return refuse("insufficient_credit");
+    }
+  }
 
   let tenantBody: unknown;
   try {

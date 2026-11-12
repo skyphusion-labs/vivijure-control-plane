@@ -194,6 +194,24 @@ export function decideSubmit(args: {
   };
 }
 
+/**
+ * The submit FLOOR (fleet-chezmoi#2049): the `required_micro_usd` the proxied submit asks
+ * decideSubmit for. One micro-USD, which makes the gate "refuse when available credit is at or
+ * below zero" and nothing more.
+ *
+ * NOT A PRICE. What a job costs a tenant is the open pricing decision (cp#190: price per job class
+ * versus metered), and the per-job proxy cannot compute it anyway: billing is per FILM, on the final
+ * delivered length, which the proxy never sees. This floor answers a narrower question that needs
+ * no price: does this tenant have any credit left at all.
+ *
+ * THE RESIDUAL EXPOSURE, stated so nobody reads this as a spend ceiling. A tenant with ANY positive
+ * balance may submit, so the job that crosses zero runs in full: about one job past zero per tenant
+ * submitting one at a time. No hold is taken, so concurrent submits all read the same balance and
+ * all pass: with N in flight when the balance crosses zero, the exposure is up to N jobs. A real
+ * ceiling needs a per-job price and a hold, which is cp#190's decision.
+ */
+export const SUBMIT_FLOOR_MICRO_USD: MicroUsd = 1;
+
 // --------------------------------------------------------------------------- operator knobs
 
 /**
@@ -216,31 +234,26 @@ export function parseEnforcing(raw: string | undefined): boolean {
 /**
  * IS there a submit-time gate at all?
  *
- * MEASURED, NOT ASSUMED, and this constant is the single place the answer lives. As of this change
- * the answer is NO: `decideSubmit` above has no production caller, and `takeHold`, `captureHold`,
- * `releaseHold` and `expireHolds` are never called outside tests. Nothing in the render path consults
- * a balance, so no tenant is ever refused and no hold is ever taken.
+ * MEASURED, NOT ASSUMED, and this constant is the single place the answer lives. As of
+ * fleet-chezmoi#2049 the answer is YES, AND IT IS A FLOOR: the proxied submit (`handleProxySubmit`)
+ * calls `decideSubmit` with `required_micro_usd = SUBMIT_FLOOR_MICRO_USD`, so with CREDITS_ENFORCING
+ * on, a tenant whose available credit is at or below zero is refused, and an unreadable balance
+ * refuses too (fail closed). `takeHold`, `captureHold`, `releaseHold` and `expireHolds` are still
+ * never called outside tests: no hold is taken and nothing is reserved per job.
+ *
+ * WHAT "APPLIED" THEREFORE MEANS. Refusals are in force, at the floor only. Not a per-job price and
+ * not a spend ceiling: see SUBMIT_FLOOR_MICRO_USD for the residual exposure (about one job past zero
+ * per tenant, more with concurrent submits). The per-job price is cp#190, still open.
  *
  * WHY A CONSTANT RATHER THAN A COMMENT. `CREDITS_ENFORCING` used to be echoed straight back by the
- * credit views, which reported `enforcing: true` on a plane that refused nothing. That is worse than
- * a knob that is plainly off: it is the surface an operator checks INSTEAD of checking the bill, so
- * the one reading that would reveal the gap is the reading that reassures them. Routing the knob
+ * credit views, which reported `enforcing: true` on a plane that refused nothing. Routing the knob
  * through here makes "configured" and "applied" two different facts that cannot be conflated by
  * accident.
  *
- * `tests/credits-enforcement-wiring.test.ts` asserts this constant against the source: it goes RED
- * the day somebody wires the gate and forgets to flip it, and RED today if it were set to true. It
- * is not a promise, it is a measurement with a gate behind it.
- *
- * WHY THE GATE IS NOT WIRED IN THIS CHANGE. The submit path (`handleProxySubmit`) cannot compute
- * `required_micro_usd`: the standing ruling bills on the final delivered video length, per FILM, on
- * the last writer of the `film.finish` chain, which the per-JOB proxy never sees
- * (`src/runpod-proxy-routes.ts` states this in its own header). Wiring a gate here would mean
- * inventing a per-job price, and what a render costs a tenant is a pricing decision, not an infra
- * one. Until that decision exists the honest move is to say so on the surface rather than to claim
- * a control nobody applies.
+ * `tests/credits-enforcement-wiring.test.ts` asserts this constant against the source: RED if it
+ * disagrees with whether anything in src/ calls the gate.
  */
-export const SUBMIT_GATE_WIRED = false;
+export const SUBMIT_GATE_WIRED = true;
 
 /**
  * What enforcement is CONFIGURED to do, and what it ACTUALLY does. Two facts, deliberately not one.
@@ -250,7 +263,11 @@ export interface EnforcementState {
   configured: boolean;
   /** Whether refusals are in force IN FACT. False whenever no submit-time gate exists to apply them. */
   applied: boolean;
-  /** Non-null exactly when configured and applied disagree, naming why. Never a bare boolean gap. */
+  /**
+   * Non-null when configured and applied disagree, naming why, AND when what is applied is narrower
+   * than a reader of `applied: true` would assume (fleet-chezmoi#2049: a zero-balance floor, not a
+   * price or a ceiling). Never a bare boolean gap.
+   */
   reason: string | null;
 }
 
@@ -268,7 +285,14 @@ export function creditsEnforcementState(raw: string | undefined): EnforcementSta
         "debited. The ledger is RECORDING ONLY. Do not read this knob as a spend control.",
     };
   }
-  return { configured: true, applied: true, reason: null };
+  return {
+    configured: true,
+    applied: true,
+    reason:
+      "a floor only: a proxied submit is refused when the tenant's available credit is at or below " +
+      "zero. There is no per-job price and no hold, so about one job past zero per tenant still runs " +
+      "(more with concurrent submits). Do not read this as a spend ceiling.",
+  };
 }
 
 /**

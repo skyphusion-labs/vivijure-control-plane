@@ -342,6 +342,11 @@ export interface RunpodProxyDeps {
   poolEndpointIds: readonly string[];
   /** Injectable clock, so a submit's recorded time is deterministic under test. */
   now(): number;
+  /**
+   * The credit floor on submit (fleet-chezmoi#2049), or null when CREDITS_ENFORCING is off. Reads the
+   * tenant's balance; a throw means "unknown" and refuses (fail closed). See SUBMIT_FLOOR_MICRO_USD.
+   */
+  creditGate?: { readBalance(tenantId: string): Promise<import("./credits").Balance> } | null;
 }
 
 /** The callback URL for one job. The token is the LAST path segment so a proxy or log that truncates
