@@ -4144,3 +4144,74 @@ describe("LLM overage settlement route", () => {
     expect(audit).toContain("allowance_configured");
   });
 });
+
+// fleet-chezmoi#2051: provisioning is throttled per account and per client address, before anything
+// is created, and fails closed when the limiter binding is missing.
+describe("POST /api/tenant/provision is throttled (fleet-chezmoi#2051)", () => {
+  async function ready() {
+    const s = await signedIn();
+    await handle(jsonReq("/api/aup/accept", { version: AUP }, { headers: { cookie: s.cookie } }), env(), ctx, deps);
+    return s;
+  }
+  const limiter = (refuse: (key: string) => boolean, seen: string[] = []) => ({
+    limit: async ({ key }: { key: string }) => (seen.push(key), { success: !refuse(key) }),
+  });
+  const provisionAs = (cookie: string, e: ControlPlaneEnv, slug = "hero", headers: Record<string, string> = {}) =>
+    handle(jsonReq("/api/tenant/provision", { slug }, { headers: { cookie, ...headers } }), e, ctx, deps);
+
+  it("CONTROL: a limiter that admits lets the provision through", async () => {
+    const { cookie } = await ready();
+    const seen: string[] = [];
+    const res = await provisionAs(cookie, env({ CP_RATE_LIMIT: limiter(() => false, seen) as never }));
+    expect(res.status).toBe(202);
+    expect(seen.length).toBe(2);
+  });
+
+  it("refuses 429 with retry-after when the ACCOUNT is over its limit, and creates nothing", async () => {
+    const { cookie } = await ready();
+    const before = store.tenants.size;
+    const res = await provisionAs(cookie, env({ CP_RATE_LIMIT: limiter((k) => k.startsWith("provision-acct:")) as never }));
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBe("60");
+    expect(await res.json()).toMatchObject({ error: "rate_limited" });
+    expect(store.tenants.size).toBe(before);
+    expect(wiring.start).not.toHaveBeenCalled();
+  });
+
+  it("refuses 429 when the client ADDRESS is over its limit, even on a fresh account", async () => {
+    const { cookie } = await ready();
+    const before = store.tenants.size;
+    const res = await provisionAs(cookie, env({ CP_RATE_LIMIT: limiter((k) => k.startsWith("provision-ip:")) as never }), "hero", {
+      "cf-connecting-ip": "203.0.113.7",
+    });
+    expect(res.status).toBe(429);
+    expect(store.tenants.size).toBe(before);
+    expect(wiring.start).not.toHaveBeenCalled();
+  });
+
+  it("keys the address as a SHA-256, never the raw address", async () => {
+    const { cookie } = await ready();
+    const seen: string[] = [];
+    await provisionAs(cookie, env({ CP_RATE_LIMIT: limiter(() => false, seen) as never }), "hero", { "cf-connecting-ip": "203.0.113.7" });
+    expect(seen).toContain(`provision-ip:${await sha256Hex("203.0.113.7")}`);
+    expect(seen.join("|")).not.toContain("203.0.113.7");
+  });
+
+  it("fails closed with 503 when the provisioner is configured and the limiter binding is missing", async () => {
+    const { cookie } = await ready();
+    const before = store.tenants.size;
+    const res = await provisionAs(cookie, env({ CP_RATE_LIMIT: undefined }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: "rate_limit_unconfigured" });
+    expect(store.tenants.size).toBe(before);
+    expect(wiring.start).not.toHaveBeenCalled();
+  });
+
+  it("an invalid slug is refused before the limiter, so it spends no budget", async () => {
+    const { cookie } = await ready();
+    const seen: string[] = [];
+    const res = await provisionAs(cookie, env({ CP_RATE_LIMIT: limiter(() => false, seen) as never }), "X!");
+    expect(res.status).toBe(400);
+    expect(seen).toEqual([]);
+  });
+});
