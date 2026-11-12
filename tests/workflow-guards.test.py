@@ -188,8 +188,8 @@ check("ci pin check names the residual when mirror credentials are absent",
 # These are SHAPE assertions: the freshness check is credential-free, but this suite does not reach
 # the network, so what is asserted here is that the wiring exists and cannot quietly disappear.
 
-drift_path = root / ".github/workflows/studio-pin-drift.yml"
-check("the scheduled studio-pin drift workflow exists", drift_path.exists(),
+drift_path = root / ".github/workflows/flagship-drift.yml"
+check("the scheduled flagship drift workflow exists", drift_path.exists(),
       "the deploy gate cannot observe the window between a cf release and the next deploy")
 
 drift_wf = yaml.safe_load(drift_path.read_text()) if drift_path.exists() else {}
@@ -208,12 +208,17 @@ check("the deploy path uses RELEASE mode, never the deployed-binding read",
       "check:studio-pin:deployed" not in preflight_text and "--deployed" not in preflight_text,
       "preflight must not assert against a binding it is in the middle of replacing")
 
-# The drift workflow's whole reason to exist is the surface deploy CANNOT check. If it dropped to
-# release mode it would re-ask the question the deploy gate already answers and the runtime surface
-# would go unmeasured again -- silently, and with a green tick.
-check("the drift workflow reads the DEPLOYED binding, not just the variable",
-      "check:studio-pin:deployed" in drift_text,
-      "the repo variable is a proposal; the deployed binding is what a tenant receives")
+# cp#625 INVERTED THIS. The scheduled read of the deployed vivijure-control-plane binding was
+# retired: Skyphusion does not operate that Worker (cp#620; out of service since cp#574, script
+# gone 2026-11-12), so the step could only be red, and it failed ahead of the flagship check. A
+# scheduled check against a deployment nobody runs is noise, and it is asserted ABSENT so it
+# cannot come back unreviewed. `npm run check:studio-pin:deployed` stays for operators to run.
+check("the scheduled drift workflow does NOT read the retired plane's deployed binding (cp#625)",
+      "check:studio-pin:deployed" not in drift_text and "studio-pin" not in drift_text.replace("cp#", ""),
+      "the vivijure-control-plane Worker is not operated by Skyphusion; its binding cannot be read")
+check("the retired studio-pin-drift.yml workflow is gone (cp#625)",
+      not (root / ".github/workflows/studio-pin-drift.yml").exists(),
+      "a renamed workflow left behind under its old name would run the retired read again")
 
 check("the drift workflow runs on a schedule", bool((drift_wf.get(True) or drift_wf.get("on") or {}).get("schedule")),
       "a deploy-triggered check cannot observe a window in which nothing deploys")
@@ -226,7 +231,7 @@ check("the drift workflow runs on ubuntu-latest (public repo; fork-safe lane)",
 # be redirected so the test suite can drive every refusal path locally. The script prints the
 # redirection on every such run, but a workflow setting it would produce a green that measured
 # nothing. Asserting its ABSENCE is what protects the deletion; sync-checking what remains does not.
-for name, text in (("deploy.yml", str(wf)), ("studio-pin-drift.yml", drift_text)):
+for name, text in (("deploy.yml", str(wf)), ("flagship-drift.yml", drift_text)):
     check("no workflow redirects the pin checker's endpoints (" + name + ")",
           "CHECK_STUDIO_PIN_GH_API" not in text and "CHECK_STUDIO_PIN_CF_API" not in text,
           "a redirected run is not a measurement of the live estate")
@@ -244,7 +249,7 @@ for name, text in (("deploy.yml", str(wf)), ("studio-pin-drift.yml", drift_text)
 check("the drift workflow runs the flagship deployed-bytes check (cp#564)",
       "check:flagship-version" in drift_text,
       "the flagship Worker's deployed version is the pair the pin check cannot see")
-for name, text in (("deploy.yml", str(wf)), ("studio-pin-drift.yml", drift_text)):
+for name, text in (("deploy.yml", str(wf)), ("flagship-drift.yml", drift_text)):
     check("no workflow redirects or shortens the flagship checker (" + name + ")",
           "CHECK_FLAGSHIP_GH_API" not in text and "CHECK_FLAGSHIP_CF_API" not in text
           and "CHECK_FLAGSHIP_TIMEOUT_MS" not in text,

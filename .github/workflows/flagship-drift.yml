@@ -1,0 +1,80 @@
+name: Flagship drift
+
+# Is the FLAGSHIP vivijure-studio Worker running the newest released studio? (cp#564, cf#1023)
+#
+# WHAT THIS READS. The version the flagship `vivijure-studio` Worker actually runs, read out of its
+# DEPLOYED BYTES, against vivijure-cf's newest release TAG and its latest PUBLISHED release. From
+# 2026-10-14 to 2026-10-19 the flagship served unpublished 1.36.0 and 1.37.0 bytes and nothing
+# reported it (cf#1023). A cadence is the only thing that sees a gap in which nothing deploys.
+#
+# WHAT THIS NO LONGER READS, and why (cp#625, 2026-11-12). This workflow was `studio-pin-drift.yml`.
+# Its first step read the `STUDIO_RELEASE` binding off the deployed `vivijure-control-plane`
+# Worker. Skyphusion does not operate that Worker. This repo is a reference implementation,
+# maintained but not operated (cp#620). The plane went out of service on 2026-11-01 (cp#574), and
+# the script is no longer on the account. Its step was red every day: first as DRIFT (the binding
+# stayed at v1.42.2 because CP_OUT_OF_SERVICE blocks every deploy), then as COULD NOT MEASURE.
+# A check against a deployment nobody runs cannot go green, so it is noise. Worse, it failed before
+# the flagship step below, so that live check never ran. The hosted door Skyphusion does operate is
+# a separate deployment, and its pin is checked where it is deployed.
+#
+# KEPT for whoever operates this plane: `npm run check:studio-pin:deployed`
+# (scripts/check-studio-pin.mjs --deployed) still reads a deployed plane's binding. Run it, or
+# schedule it, against the account where your plane runs. The deploy path keeps the
+# credential-free RELEASE mode (deploy.yml preflight).
+#
+# Runner: ubuntu-latest (public repo). NOT A CI GATE: it reports on the live estate, which a PR
+# cannot change. Red is a real drift (exit 1) or an unperformed check (exit 2). Neither is a pass.
+
+on:
+  schedule:
+    # Daily, well clear of the CodeQL slot.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flagship-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # Presence-check only, and the compliant form is the whole form: ${var:+SET} has no else
+      # branch, because any `:-` variant expands to the VALUE in exactly the case being tested.
+      #
+      # This job never runs from a fork (schedule and workflow_dispatch both run in this repo), so
+      # an absent secret here is a real defect rather than an expected fork condition, and it
+      # REFUSES instead of skipping. A step that silently skips when its credential is missing is a
+      # control that cannot fire, and it looks identical to one that ran and found nothing.
+      - name: Preflight -- credentials for the deployed read (presence-check only)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -eu
+          test -n "${CLOUDFLARE_API_TOKEN:+SET}" || { echo "::error::CLOUDFLARE_API_TOKEN is unset -- the deployed-bytes read cannot be performed, and an unperformed check is not a pass."; exit 1; }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:+SET}" || { echo "::error::CLOUDFLARE_ACCOUNT_ID is unset -- the deployed-bytes read cannot be performed."; exit 1; }
+          echo "both credentials for the deployed read are present"
+
+      # Its own step and unpiped, so the exit judged is the script's: 1 is drift, 2 could not measure.
+      - name: Flagship drift -- deployed vivijure-studio bytes vs newest tag and latest published
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npm run check:flagship-version
