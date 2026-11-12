@@ -255,6 +255,16 @@ for name, text in (("deploy.yml", str(wf)), ("flagship-drift.yml", drift_text)):
           and "CHECK_FLAGSHIP_TIMEOUT_MS" not in text,
           "a redirected or abbreviated run is not a measurement of the live estate")
 
+# cp#627: check-satellite-pins.mjs gained two test-only overrides (the GHCR base and the timeout) so
+# its transport-failure arms are testable. Same rule as the pin and flagship checkers: asserted ABSENT
+# from EVERY workflow, because `check:pins` runs in ci.yml and in deploy.yml, and a redirected or
+# shortened run there would be a green that measured a local stand-in rather than the registry.
+for wf_path in sorted((root / ".github/workflows").glob("*.yml")):
+    wf_raw = wf_path.read_text()
+    check("no workflow redirects or shortens the satellite-pin checker (" + wf_path.name + ")",
+          "CHECK_SATELLITE_PINS_GHCR" not in wf_raw and "CHECK_SATELLITE_PINS_TIMEOUT_MS" not in wf_raw,
+          "a redirected or abbreviated run is not a measurement of the registry")
+
 # cp#533: BOTH deploy.yml jobs (the dry run and the deploy) run the declared-variable gate, each fed
 # the live variable, so a declared value can never be skipped on the path that ships.
 check("both deploy.yml jobs run the declared-variable gate (cp#533)",
