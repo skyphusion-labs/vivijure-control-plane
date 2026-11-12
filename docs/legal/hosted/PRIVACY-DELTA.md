@@ -189,14 +189,14 @@ The design of record (from the #40 spike and the #60 probes) is **two-key custod
 
 | Key | Shape | Where it lives |
 |---|---|---|
-| **Provisioning key** | Restricted key, `api.runpod.io/graphql` = **Read/Write**, `api.runpod.ai` (invoke) = **None**. Fully provisioning-capable, and account-wide powerful (it can create pods; RunPod says so plainly). | **Held transiently, in memory, for the length of the provision job. Never written to control-plane D1, never to a tenant secret, never to a log, never to a provision-job record.** |
-| **Stored runtime key** | Restricted key, invoke-scoped to exactly the tenant's 4 endpoints. Verified in the #60 probes: 403 on out-of-scope endpoints, 401 on `PATCH workersMax` even for its own endpoint. | Stored as a secret **on the tenant's own dispatched studio Worker**, the same place a self-host operator puts it. Never in shared storage. |
+| **Provisioning key** | A key the tenant mints that can create and change serverless endpoints on their RunPod account. Fully provisioning-capable, and account-wide powerful (it can create pods; RunPod says so plainly). (Corrected 2026-11-11. This cell used to name the key by a scope: "`api.runpod.io/graphql` = Read/Write, `api.runpod.ai` (invoke) = None". Provisioning moved from GraphQL to RunPod's REST API v2, `api.runpod.io/v2`, on 2026-11-11. RunPod's documentation does not say which key permission governs that API, and it has not been probed since the move, so no scope label is asserted here. The custody rule in this row (held in memory, never stored) does not depend on the label.) | **Held transiently, in memory, for the length of the provision job. Never written to control-plane D1, never to a tenant secret, never to a log, never to a provision-job record.** |
+| **Stored runtime key** | Restricted key, invoke-only, scoped to exactly the endpoints provisioned for that tenant. The plane refuses to store a key that can reach `api.runpod.io/graphql`, and requires the key to reach every endpoint the studio submits to (`src/runpod-invoke-key.ts`). The #60 probes, run in July 2026 against the API of that time, showed 403 on out-of-scope endpoints and 401 on `PATCH workersMax` even for the key's own endpoint. (Corrected 2026-11-11. This cell used to say "the tenant's 4 endpoints". The provision plan in `src/runpod.ts` now creates one RunPod endpoint, so the count is gone and the rule is stated without one.) | Stored as a secret **on the tenant's own dispatched studio Worker**, the same place a self-host operator puts it. Never in shared storage. |
 
 **What the privacy text is allowed to claim, and nothing more:**
 
 - ALLOWED: "the key you paste to provision is used once, held only in memory for the length of the
   job, and is never stored."
-- ALLOWED: "what your studio stores is a restricted key that can only invoke your own four
+- ALLOWED: "what your studio stores is a restricted key that can only invoke your own
   endpoints."
 - **NOT ALLOWED** unless and until the code does it: any claim that we mint, rotate, or manage keys
   on the tenant's behalf.
@@ -206,7 +206,7 @@ it lands in the direction this document was written to assume, so the claims abo
 
 - The **provisioning key is transient and never stored**, as stated.
 - The tenant **hand-mints the second key** in the RunPod console after provisioning, invoke-only and
-  scoped to exactly their 4 endpoints, and pastes it. The provisioner does not mint it.
+  scoped to exactly the endpoints provisioned for them, and pastes it. The provisioner does not mint it.
 - The provisioner **live scope-verifies** that stored key before go-live, rather than trusting the
   paste. A key that is not correctly scoped does not reach a live studio.
 - An **account-wide invoke key is rejected outright.** The stored secret is narrow or it is refused.
@@ -242,7 +242,7 @@ relationships.
 ### 4.3 RunPod (the tenant's own provider, NOT our sub-processor)
 This is the unusual and good part of tier 1, and the policy should say it plainly:
 
-- The 4 GPU endpoints are created **on the tenant's own RunPod account**, with the tenant's key, at
+- The GPU endpoints are created **on the tenant's own RunPod account**, with the tenant's key, at
   the tenant's instruction, and billed to the tenant.
 - **The contract is between the tenant and RunPod.** RunPod's terms and acceptable-use policy bind
   the tenant directly. We are not a party to it and cannot act on their account.

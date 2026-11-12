@@ -17,7 +17,7 @@ Two honest modes for hosted GPU compute, tenant's choice, markup stated up front
 
 | Mode | Whose RunPod account | Who bills the tenant | Cost to tenant |
 |---|---|---|---|
-| `byok` (default, current architecture) | Theirs; endpoints created ON their account with THEIR key at provision | RunPod, directly | RunPod list price |
+| `byok` (historical; see the note above) | Theirs; endpoints created ON their account with THEIR key at provision | RunPod, directly | RunPod list price |
 | `managed` | Ours; jobs run on our prod endpoints via the dispatch proxy | Us, one bill, prepaid credits | RunPod-derived rate + a published markup |
 
 This is exactly Cloudflare's Unified Billing posture: BYOK and pay the vendor directly (cheaper),
