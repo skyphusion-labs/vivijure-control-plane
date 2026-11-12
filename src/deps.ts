@@ -99,9 +99,11 @@ import {
   tenantModuleProxyBinding,
   tenantModuleProxyUnboundReason,
   tenantModuleScriptName,
+  TenantModuleError,
   type ModuleReadiness,
   type TenantModuleObservation,
 } from "./tenant-modules";
+import { MODULE_PROXY_BASE_BINDING, MODULE_PROXY_TOKEN_BINDING } from "./runpod-proxy-auth";
 
 /** The secret name the studio reads its stored invoke key (key B) from (src/env.ts). */
 export const TENANT_RUNPOD_SECRET = "RUNPOD_API_KEY";
@@ -120,16 +122,18 @@ export interface ProvisionerWiring {
    */
   resume(jobId: string, tenant: Tenant, stepsDone: readonly string[]): Promise<void>;
   /**
-   * Install the VERIFIED invoke key as the tenant studio secret, and on every tenant module script
-   * EXCEPT where those modules are proxied, then PROVE the modules actually serve a credential
+   * Install the VERIFIED invoke key on the tenant studio and on every tenant module script, EXCEPT
+   * where the tenant is proxied, then PROVE the modules actually serve a credential
    * before the caller flips the tenant live (cf#114). Throws on API failure, and on a readiness
    * probe that fails or times out -- the tenant then stays at awaiting_go_live rather than being
    * promoted on credentials nothing has proven.
    *
-   * THE EXCEPTION IS THE POINT (cp#288). A proxied module reaches RunPod through the plane on its
-   * RUNPOD_PROXY_TOKEN and must hold no RunPod credential at all; an unproxied one (dedicated, BYO,
-   * self-host) still needs the key and still gets it. The two cases are decided by the SAME
-   * expression that binds the proxy pair, never by a second reading of the tenant's mode.
+   * THE EXCEPTION IS THE POINT (cp#288). A proxied tenant reaches RunPod through the plane on its
+   * RUNPOD_PROXY_TOKEN and must hold no RunPod credential at all, on its modules OR its studio
+   * (fleet-chezmoi#2048): the studio gets the proxy pair instead of the key, and a key left from an
+   * earlier install is deleted. An unproxied tenant (dedicated, BYO, self-host) still needs the key
+   * and still gets it. The cases are decided by the SAME expression that binds the proxy pair,
+   * never by a second reading of the tenant's mode.
    *
    * Readiness is unaffected by the exception, and that is measured rather than assumed: a proxied
    * module's /ready reports `credentials.runpod_api_key = Boolean(route.credential)` where the
@@ -744,32 +748,60 @@ export function provisionerWiring(env: ControlPlaneEnv, store: ControlPlaneStore
     },
     async installInvokeKey(tenant, key): Promise<ModuleReadiness> {
       if (!tenant.script_name) throw new Error("tenant has no studio worker to install the key on");
-      // Key B lands on the studio (cf#99): the studio reads its own RUNPOD_API_KEY. Rotates in
-      // place (putScriptSecret, no re-upload).
-      //
-      // THE STUDIO COPY IS STILL INSTALLED ON EVERY TIER, INCLUDING SHARED, AND THAT IS A KNOWN
-      // GAP RATHER THAN THE INTENDED END STATE (cp#288, Conrad 2026-08-03: the hosted tier must
-      // hold no RunPod key it could extract, in any fashion). The studio genuinely SUBMITS RunPod
-      // work -- cast LoRA training, vivijure-core runpod-submit submitTrainLoraJob, reached from
-      // vivijure-cf src/index.ts via handleCastTrainLora -- and vivijure-core has no proxy branch
-      // at all, so removing this copy before core learns the proxy would break that path rather
-      // than close the hole. Closing it is a core release, then a cf release, then a plane change;
-      // it is tracked separately. Retiring the FIFTEEN module copies below does not depend on it.
-      await cf.putScriptSecret(DISPATCH_NAMESPACE, tenant.script_name, TENANT_RUNPOD_SECRET, key);
-      // THE SAME EXPRESSION uploadTenantModules used to decide whether to bind the proxy pair. Not
+      // THE SAME EXPRESSION uploadTenantModules uses to decide whether to bind the proxy pair. Not
       // a second reading of the mode: see tenantModuleProxyBinding for why two expressions here can
-      // only disagree into the one state that breaks every render (neither pair nor key).
-      //
-      // A PROXIED MODULE MUST NOT RECEIVE THIS KEY. It reaches RunPod through the plane on its
-      // RUNPOD_PROXY_TOKEN, so the direct key is dead weight AND a live invariant violation -- a
-      // consumer holding a RunPod credential on our account. An UNPROXIED module still needs it:
-      // that is dedicated, BYO and the self-host door, which is the permanently supported unbound
-      // branch of vivijure-cf modules/_shared/runpod-route.ts and must never lose the key.
+      // only disagree into the one state that breaks every render (neither pair nor key). It now
+      // decides the STUDIO too (fleet-chezmoi#2048), for the same reason.
       const moduleProxy = await tenantModuleProxyBinding(
         readRunPodMode(tenant.runpod_mode),
         deps.runpodProxy,
         tenant.id,
       );
+
+      if (moduleProxy) {
+        // A PROXIED STUDIO HOLDS THE PAIR, NOT THE KEY (cp#288; fleet-chezmoi#2048, cp#321 step 3).
+        // The studio submits RunPod work of its own (cast LoRA training, vivijure-core
+        // submitTrainLoraJob). Core routes it on RUNPOD_PROXY_BASE being bound (runpodRoute, core
+        // >= 1.10.0), and vivijure-cf reads the pair with RUNPOD_API_KEY optional (cf v1.21.0). So
+        // the copy that used to stay here for lack of a core proxy branch has nothing left to serve.
+        //
+        // ORDER: pair first, then the delete. In between, the studio holds both, and BASE being bound
+        // means core takes the proxy; it never reaches for the key. Delete first would leave a window
+        // with neither, and every cast train in it would refuse.
+        //
+        // Both go in as secret_text via PUT /secrets: a secret installed that way survives the
+        // studio upgrade re-upload (tenant-studio-upgrade.ts measured this), where an upload-time
+        // plain_text binding has to be carried forward by hand. BASE is not sensitive; it is a
+        // secret only for that durability, and core reads either shape.
+        await cf.putScriptSecret(DISPATCH_NAMESPACE, tenant.script_name, MODULE_PROXY_BASE_BINDING, moduleProxy.base);
+        await cf.putScriptSecret(DISPATCH_NAMESPACE, tenant.script_name, MODULE_PROXY_TOKEN_BINDING, moduleProxy.token);
+        await cf.deleteScriptSecret(DISPATCH_NAMESPACE, tenant.script_name, TENANT_RUNPOD_SECRET);
+        // READ BACK, names only, rather than trusting three 200s. A studio left holding the key, or
+        // missing half the pair, is refused here so the tenant is not promoted on it.
+        const names = new Set(await cf.getScriptSecretNames(DISPATCH_NAMESPACE, tenant.script_name));
+        const wrong = [
+          ...(names.has(MODULE_PROXY_BASE_BINDING) ? [] : [`${MODULE_PROXY_BASE_BINDING} missing`]),
+          ...(names.has(MODULE_PROXY_TOKEN_BINDING) ? [] : [`${MODULE_PROXY_TOKEN_BINDING} missing`]),
+          ...(names.has(TENANT_RUNPOD_SECRET) ? [`${TENANT_RUNPOD_SECRET} still present`] : []),
+        ];
+        if (wrong.length > 0) {
+          throw new TenantModuleError(
+            "modules_install",
+            `studio ${tenant.script_name}: proxy pair not in place after install (${wrong.join(", ")})`,
+          );
+        }
+        deps.log("studio_invoke_key_retired", { tenant: tenant.id, reason: "proxied" });
+      } else {
+        // Key B lands on the studio (cf#99): an unproxied studio reads its own RUNPOD_API_KEY.
+        // Rotates in place (putScriptSecret, no re-upload).
+        await cf.putScriptSecret(DISPATCH_NAMESPACE, tenant.script_name, TENANT_RUNPOD_SECRET, key);
+      }
+
+      // THE MODULES. A PROXIED MODULE MUST NOT RECEIVE THE KEY. It reaches RunPod through the plane
+      // on its RUNPOD_PROXY_TOKEN, so the direct key is dead weight AND a live invariant violation --
+      // a consumer holding a RunPod credential on our account. An UNPROXIED module still needs it:
+      // that is dedicated, BYO and the self-host door, which is the permanently supported unbound
+      // branch of vivijure-cf modules/_shared/runpod-route.ts and must never lose the key.
       if (moduleProxy) {
         // Deliberately LOUD and deliberately not silent-by-omission: absence is the mechanism on
         // this path, so a reader has to be able to tell "retired on purpose" from "the install
